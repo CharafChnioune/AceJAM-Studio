@@ -1,0 +1,14 @@
+/cache/
+/logs/
+/app/env/
+/app/model_cache/
+/app/composer_models/
+/app/data/
+/app/__pycache__/
+/app/**/__pycache__/
+/app/*.pyc
+/app/**/*.pyc
+/app/.pytest_cache/
+/app/**/.pytest_cache/
+/.DS_Store
+**/.DS_Store

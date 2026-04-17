@@ -1,0 +1,13 @@
+.claude/
+env/
+model_cache/
+composer_models/
+data/
+__pycache__/
+**/__pycache__/
+*.pyc
+**/*.pyc
+.pytest_cache/
+**/.pytest_cache/
+.DS_Store
+**/.DS_Store
