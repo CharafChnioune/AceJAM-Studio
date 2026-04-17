@@ -1,7 +1,7 @@
 {
   "title": "AceJAM",
   "description": "Describe any song in plain English, compose it locally with an embedded Qwen GGUF model, and generate it with ACE-Step v1.5.",
-  "icon": "icon.svg",
+  "icon": "icon.png",
   "links": [{
     "title": "Model References",
     "links": [{

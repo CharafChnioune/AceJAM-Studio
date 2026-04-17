@@ -55,7 +55,7 @@ module.exports = {
       venv: "env",
       path: "app",
       message: [
-        "uv pip install --upgrade --force-reinstall --no-cache-dir llama-cpp-python==0.3.20",
+        "uv pip install --upgrade --force-reinstall --no-cache-dir llama-cpp-python==0.3.20 numpy==1.26.4",
         "python -c \"import llama_cpp; print(llama_cpp.__version__)\""
       ]
     }

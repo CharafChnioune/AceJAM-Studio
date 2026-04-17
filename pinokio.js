@@ -2,7 +2,7 @@ module.exports = {
   version: "7.0",
   title: "AceJAM",
   description: "Describe any song in plain English, compose it locally, and generate the audio with ACE-Step v1.5.",
-  icon: "icon.svg",
+  icon: "icon.png",
   menu: async (kernel, info) => {
     let installed = info.exists("app/env")
     let running = {
