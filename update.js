@@ -2,13 +2,8 @@ module.exports = {
   run: [{
     method: "shell.run",
     params: {
-      shell: "{{which('bash')}}",
       message: [
-        "if git remote get-url origin >/dev/null 2>&1; then",
-        "  git pull",
-        "else",
-        "  echo \"No launcher git remote configured, skipping launcher update.\"",
-        "fi"
+        "git pull"
       ]
     }
   }, {
