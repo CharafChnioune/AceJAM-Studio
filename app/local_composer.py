@@ -136,7 +136,7 @@ def _gpu_memory_gb() -> float | None:
 
 
 def _is_apple_mps() -> bool:
-    if platform.system() != "Darwin":
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
         return False
     try:
         import torch
