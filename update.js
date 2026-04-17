@@ -8,16 +8,6 @@ module.exports = {
     }
   }, {
     when: "{{exists('app/requirements.txt')}}",
-    method: "shell.run",
-    params: {
-      venv: "env",
-      path: "app",
-      message: [
-        "uv pip install -r requirements.txt"
-      ]
-    }
-  }, {
-    when: "{{exists('app/requirements.txt')}}",
     method: "script.start",
     params: {
       uri: "torch.js",
@@ -25,6 +15,16 @@ module.exports = {
         venv: "env",
         path: "app"
       }
+    }
+  }, {
+    when: "{{exists('app/requirements.txt')}}",
+    method: "shell.run",
+    params: {
+      venv: "env",
+      path: "app",
+      message: [
+        "uv pip install -r requirements.txt"
+      ]
     }
   }, {
     when: "{{exists('app/requirements.txt') && platform === 'darwin' && arch === 'arm64'}}",
