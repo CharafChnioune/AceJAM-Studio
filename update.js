@@ -43,7 +43,18 @@ module.exports = {
       ]
     }
   }, {
-    when: "{{exists('app/requirements.txt') && (platform !== 'darwin' || arch !== 'arm64')}}",
+    when: "{{exists('app/requirements.txt') && platform === 'win32' && arch === 'x64'}}",
+    method: "shell.run",
+    params: {
+      venv: "env",
+      path: "app",
+      message: [
+        "uv pip install --upgrade --force-reinstall \"https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.19/llama_cpp_python-0.3.19-cp310-cp310-win_amd64.whl\"",
+        "python -c \"import llama_cpp; print(llama_cpp.__version__)\""
+      ]
+    }
+  }, {
+    when: "{{exists('app/requirements.txt') && platform !== 'darwin' && platform !== 'win32'}}",
     method: "shell.run",
     params: {
       venv: "env",

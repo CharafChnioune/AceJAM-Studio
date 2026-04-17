@@ -32,6 +32,7 @@ The app turns a plain-English song description into a full track:
 - `Auto` is the default composer mode. Use `Tiny` for the lowest-memory path, `Balanced` for a reasonable default, and `Quality` if the machine has the headroom.
 - `Auto` now escalates long non-instrumental requests to a stronger composer profile so 2-minute songs are less likely to collapse into placeholder lyrics.
 - The composer runs CPU-first by default so VRAM stays available for ACE-Step. You can override this with `ACE_STEP_COMPOSER_GPU_LAYERS`.
+- On Windows x64 with Python 3.10, the launcher installs the official upstream `llama-cpp-python` `0.3.19` wheel directly to avoid slow local builds.
 - On Apple Silicon, the launcher builds `llama-cpp-python` from source with Metal enabled because the hosted Metal wheel path has been unreliable here; other platforms use the CPU wheel by default so the composer stays independent of the ACE-Step GPU path.
 - On Apple Silicon, the launcher now defaults to `acestep-v15-turbo` plus the `Tiny` composer profile when `Auto` is selected, because that is much faster and lighter than the XL + quality path.
 - On MPS, ACE-Step now uses lower precision automatically when the local PyTorch build supports it. Override with `ACE_STEP_DTYPE=auto|bfloat16|float16|float32`.
