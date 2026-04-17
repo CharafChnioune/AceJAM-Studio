@@ -77,7 +77,7 @@ module.exports = {
       venv: "env",
       path: "app",
       message: [
-        "python -c \"import numpy, soundfile, torch, gradio, transformers, diffusers; print('Core Python deps ready')\""
+        "python -c \"import sys, platform, numpy, soundfile, torch, gradio, transformers, diffusers; intel_mac = sys.platform == 'darwin' and platform.machine() == 'x86_64'; assert (not intel_mac) or numpy.__version__.split('.')[0] == '1', f'Intel Mac requires NumPy 1.x, got {numpy.__version__}'; assert (not intel_mac) or diffusers.__version__ == '0.31.0', f'Intel Mac requires diffusers 0.31.0, got {diffusers.__version__}'; print('Core Python deps ready')\""
       ]
     }
   }]
