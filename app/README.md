@@ -13,6 +13,17 @@ This folder contains the self-contained AceJAM web app runtime. Pinokio launcher
 - `data/`: uploads, generated results, local library, LoRA datasets, tensor outputs, training jobs, and adapters.
 - `model_cache/checkpoints/`: ACE-Step DiT, VAE, text encoder, and LM checkpoints.
 
+## Model Advice Runtime
+
+`studio_core.py` owns the model advice layer:
+
+- `MODEL_PROFILES` covers all known ACE-Step 1.5 DiT checkpoints.
+- `LM_MODEL_PROFILES` covers `auto`, `none`, and the 0.6B/1.7B/4B 5Hz LM choices.
+- `/api/config` returns `model_profiles`, `lm_model_profiles`, `recommended_song_model`, `recommended_lm_model`, installed model lists, and per-model capabilities.
+- Unknown local `acestep-v15-*` folders get a fallback profile inferred from the model name, so locally discovered checkpoints still render safely.
+
+The UI renders this metadata in the model dropdown, model advice panel, Simple LM selector, and Album LM selector. Unsupported task/model combinations remain disabled through the same compatibility matrix used by the generation API.
+
 ## Trainer Flow
 
 1. Scan a folder containing audio files.

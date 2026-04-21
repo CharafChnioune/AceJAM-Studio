@@ -22,6 +22,33 @@ Generated data lives under `app/data/` and model files under `app/model_cache/`.
 - **Library**: local saved songs with metadata.
 - **Settings**: advanced inference controls.
 
+## ACE-Step Model Advice
+
+AceJAM now shows official ACE-Step model guidance directly beside the model selector. The dropdown labels and advice panel include best use, quality, speed, VRAM class, steps, CFG support, supported tasks, and whether the checkpoint is already installed in `app/model_cache/checkpoints`.
+
+DiT quick guide:
+
+| Model | Best Use | Notes |
+| --- | --- | --- |
+| `acestep-v15-turbo` | Best default daily driver | 8 steps, no CFG, fastest proven choice for text2music, cover, and repaint. |
+| `acestep-v15-turbo-shift3` | Clearer/richer timbre | Fast niche variant that can sound drier with simpler orchestration. |
+| `acestep-v15-sft` | CFG/detail tuning without XL | 50 steps, slower, better when prompt adherence and detail matter. |
+| `acestep-v15-base` | Extract, lego, complete, fine-tuning | Most flexible 2B model and required for the advanced context tasks. |
+| `acestep-v15-xl-turbo` | Best 20GB+ quality daily driver | XL quality with 8-step turbo speed; 20GB+ VRAM is recommended without offload. |
+| `acestep-v15-xl-sft` | Highest-detail XL standard tasks | 50 steps with CFG for slower, detailed tuning. |
+| `acestep-v15-xl-base` | XL all-task model | Best XL choice for extract, lego, complete, and advanced control. |
+
+LM quick guide:
+
+| LM | Best Use |
+| --- | --- |
+| `none` | Manual metadata and fastest controlled runs. |
+| `acestep-5Hz-lm-0.6B` | Low-VRAM prototyping. |
+| `acestep-5Hz-lm-1.7B` | Best default planner. |
+| `acestep-5Hz-lm-4B` | Strongest complex planning and audio understanding. |
+
+The guidance is based on the official ACE-Step 1.5 [Hugging Face model card](https://huggingface.co/ACE-Step/Ace-Step1.5), [XL Turbo card](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo), [Ultimate Guide](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md), and [Inference docs](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md).
+
 ## Trainer Notes
 
 The trainer uses the official ACE-Step 1.5 `training_v2` / Side-Step CLI as an isolated subprocess. AceJAM does not import that vendor package into the running app process, which prevents conflicts with AceJAM's local `app/acestep` runtime.
@@ -94,6 +121,7 @@ curl -X POST http://127.0.0.1:7860/api/lora/train \
 
 ## Main Endpoints
 
+- `GET /api/config` returns available models, installed flags, recommendations, model advice, and compatibility.
 - `POST /api/compose`
 - `POST /api/create_sample`
 - `POST /api/format_sample`

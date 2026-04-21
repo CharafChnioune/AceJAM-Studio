@@ -73,13 +73,17 @@ from studio_core import (
     clamp_float,
     clamp_int,
     ensure_task_supported,
+    lm_model_profiles_for_models,
     model_label,
+    model_profiles_for_models,
     normalize_audio_format,
     normalize_task_type,
     normalize_track_names,
     ordered_models,
     parse_bool,
     parse_timesteps,
+    recommended_lm_model,
+    recommended_song_model,
     safe_filename,
     safe_id,
     supported_tasks_for_model,
@@ -118,6 +122,29 @@ def _available_acestep_models() -> list[str]:
             if child.is_dir() and child.name.startswith("acestep-v15-"):
                 available.add(child.name)
     return ordered_models(list(available))
+
+
+def _installed_acestep_models() -> set[str]:
+    checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
+    if not checkpoint_dir.exists():
+        return set()
+    return {
+        child.name
+        for child in checkpoint_dir.iterdir()
+        if child.is_dir() and child.name.startswith("acestep-v15-")
+    }
+
+
+def _installed_lm_models() -> set[str]:
+    checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
+    installed = {"auto", "none"}
+    if checkpoint_dir.exists():
+        installed.update(
+            child.name
+            for child in checkpoint_dir.iterdir()
+            if child.is_dir() and child.name.startswith("acestep-5Hz-lm-")
+        )
+    return installed
 
 
 def _normalize_song_model(requested: str | None) -> str:
@@ -489,8 +516,13 @@ def _resolve_audio_reference(payload: dict[str, Any], upload_key: str, result_ke
 
 
 def _model_capabilities() -> dict[str, Any]:
+    installed = _installed_acestep_models()
     return {
-        model: {"label": _song_model_label(model), "tasks": supported_tasks_for_model(model)}
+        model: {
+            "label": _song_model_label(model),
+            "tasks": supported_tasks_for_model(model),
+            "installed": model in installed,
+        }
         for model in _available_acestep_models()
     }
 
@@ -540,6 +572,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "batch_size": batch_size,
         "seed": str(payload.get("seeds") or payload.get("seed") or "-1"),
         "song_model": song_model,
+        "ace_lm_model": str(payload.get("ace_lm_model") or "auto").strip() or "auto",
         "reference_audio": _resolve_audio_reference(payload, "reference_audio_id", "reference_result_id"),
         "src_audio": _resolve_audio_reference(payload, "src_audio_id", "src_result_id"),
         "audio_code_string": str(payload.get("audio_code_string") or ""),
@@ -953,12 +986,23 @@ def community() -> str:
 
 @app.api(name="config", concurrency_limit=8)
 def config() -> str:
+    available_models = _available_acestep_models()
+    installed_models = _installed_acestep_models()
+    installed_lms = _installed_lm_models()
+    model_profiles = model_profiles_for_models(available_models, installed_models)
+    lm_profiles = lm_model_profiles_for_models(ACE_STEP_LM_MODELS, installed_lms)
     return json.dumps(
         {
             "active_song_model": ACTIVE_ACE_STEP_MODEL,
             "default_song_model": _default_acestep_checkpoint(),
-            "available_song_models": _available_acestep_models(),
-            "model_labels": {name: _song_model_label(name) for name in _available_acestep_models()},
+            "recommended_song_model": recommended_song_model(installed_models),
+            "recommended_lm_model": recommended_lm_model(installed_lms),
+            "available_song_models": available_models,
+            "installed_song_models": sorted(installed_models),
+            "installed_lm_models": sorted(installed_lms),
+            "model_labels": {name: model_profiles[name]["label"] for name in available_models},
+            "model_profiles": model_profiles,
+            "lm_model_profiles": lm_profiles,
             "model_capabilities": _model_capabilities(),
             "task_types": TASK_TYPES,
             "track_names": TRACK_NAMES,
@@ -998,6 +1042,7 @@ def generate_album(
     language: str = "en",
     song_model: str = "auto",
     embedding_model: str = "nomic-embed-text",
+    ace_lm_model: str = "auto",
 ) -> str:
     """Plan album with CrewAI agents, then generate ALL tracks with ACE-Step."""
     logs: list[str] = []
@@ -1021,6 +1066,7 @@ def generate_album(
             return json.dumps({"tracks": tracks, "logs": logs, "success": False, "error": "Planning failed"})
 
         logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
+        logs.append(f"ACE-Step LM profile: {ace_lm_model}")
         logs.append("---")
         logs.append("Phase 2: Generating music for each track with ACE-Step...")
 
@@ -1067,6 +1113,7 @@ def generate_album(
                     "audio_file": audio_file,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "album_concept": concept,
+                    "ace_lm_model": ace_lm_model,
                     "track_number": track.get("track_number", i + 1),
                 }
                 (song_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -1509,6 +1556,7 @@ async def api_generate_album(request: Request):
         language=str(body.get("language") or "en"),
         song_model=str(body.get("song_model") or "auto"),
         embedding_model=str(body.get("embedding_model") or "nomic-embed-text"),
+        ace_lm_model=str(body.get("ace_lm_model") or "auto"),
     )
     return JSONResponse(json.loads(raw))
 

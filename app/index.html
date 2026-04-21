@@ -137,6 +137,28 @@
       min-height: 18px;
       margin-top: 6px;
     }
+    .model-advice, .lm-advice {
+      margin-top: 8px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.025);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .model-advice-title, .lm-advice-title {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text);
+      font-weight: 700;
+      margin-bottom: 5px;
+    }
+    .model-advice-summary, .lm-advice-summary { color: var(--muted); margin-bottom: 7px; }
+    .model-badges { display: flex; gap: 5px; flex-wrap: wrap; }
+    .model-warning { color: var(--accent-2); margin-top: 7px; }
     .track-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -201,6 +223,7 @@
     .badge {
       display: inline-flex;
       align-items: center;
+      gap: 3px;
       min-height: 22px;
       padding: 0 7px;
       border-radius: 999px;
@@ -209,6 +232,7 @@
       font-size: 11px;
       background: rgba(255, 255, 255, 0.03);
     }
+    .badge strong { color: var(--text); font-weight: 650; }
     .badge.ok { color: var(--ok); border-color: rgba(127, 210, 155, 0.45); }
     .badge.warn { color: var(--accent-2); border-color: rgba(242, 198, 109, 0.45); }
     .trainer-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -241,6 +265,7 @@
           <label for="song-model">ACE-Step model</label>
           <select id="song-model"></select>
           <div class="capability" id="capability"></div>
+          <div class="model-advice" id="model-advice"></div>
         </div>
         <div>
           <label for="duration">Duration</label>
@@ -262,16 +287,21 @@
           <label for="simple-description">Song idea</label>
           <textarea id="simple-description" placeholder="A Dutch melodic rap song about late-night Rotterdam, warm keys, 808 bass, emotional hook"></textarea>
         </div>
-        <div class="grid-2">
+        <div class="grid-3">
           <div>
             <label for="ollama-model">Ollama songwriter</label>
             <select id="ollama-model"></select>
+          </div>
+          <div>
+            <label for="ace-lm-model">ACE-Step LM</label>
+            <select id="ace-lm-model"></select>
           </div>
           <div>
             <label>&nbsp;</label>
             <label class="check"><input type="checkbox" id="instrumental" /> Instrumental</label>
           </div>
         </div>
+        <div class="lm-advice" id="lm-advice"></div>
         <div class="row" style="margin-top:10px;">
           <button class="secondary" id="compose-btn">Compose</button>
           <button class="primary" data-generate>Generate</button>
@@ -423,7 +453,7 @@
             <select id="album-language"></select>
           </div>
         </div>
-        <div class="grid-2" style="margin-top:10px;">
+        <div class="grid-3" style="margin-top:10px;">
           <div>
             <label for="album-ollama">Ollama</label>
             <select id="album-ollama"></select>
@@ -432,7 +462,12 @@
             <label for="album-embed">Embedding</label>
             <select id="album-embed"></select>
           </div>
+          <div>
+            <label for="album-ace-lm-model">ACE-Step LM</label>
+            <select id="album-ace-lm-model"></select>
+          </div>
         </div>
+        <div class="lm-advice" id="album-lm-advice"></div>
         <div class="row" style="margin-top:10px;">
           <button class="primary" id="album-btn">Generate Album</button>
           <button class="secondary" id="refresh-ollama">Refresh Ollama</button>
@@ -719,6 +754,103 @@
       return data;
     }
 
+    function asList(value) {
+      if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+      return value || "";
+    }
+
+    function modelOptionLabel(name) {
+      const profile = state.config?.model_profiles?.[name];
+      const base = profile?.dropdown_label || state.config?.model_labels?.[name] || name;
+      return profile && !profile.installed ? `${base} (not installed)` : base;
+    }
+
+    function lmOptionLabel(name) {
+      const profile = state.config?.lm_model_profiles?.[name];
+      const base = profile?.dropdown_label || name;
+      return profile && !profile.installed ? `${base} (not installed)` : base;
+    }
+
+    function modeRecommendation(mode, profile, ok) {
+      const task = taskForMode[mode];
+      if (["extract", "lego", "complete"].includes(task)) {
+        return ok ? "Base task ready. XL Base gives higher quality when memory allows." : "Base or XL Base is required for Extract, Lego, and Complete.";
+      }
+      if (mode === "simple") return "Turbo is recommended for fast prompt-to-song; XL Turbo is the quality daily driver on 20GB+ GPUs.";
+      if (mode === "custom") return "Turbo for speed; SFT or XL SFT when CFG and 50-step detail matter.";
+      if (mode === "cover" || mode === "repaint") return "Turbo is fastest; SFT or XL SFT adds CFG control for slower tuning.";
+      if (mode === "album") return "Turbo keeps albums practical; XL Turbo is the quality-first choice on large GPUs.";
+      return profile?.summary || "";
+    }
+
+    function badge(label, value, className = "") {
+      if (!value) return "";
+      return `<span class="badge ${className}"><strong>${esc(label)}</strong>${esc(value)}</span>`;
+    }
+
+    function renderModelAdvice(actual, ok, task) {
+      const target = $("model-advice");
+      const profile = state.config?.model_profiles?.[actual];
+      if (!target || !profile) {
+        if (target) target.innerHTML = "";
+        return;
+      }
+      const installClass = profile.installed ? "ok" : "warn";
+      const installText = profile.installed ? "Installed" : "Download required";
+      const warning = ok
+        ? modeRecommendation(state.mode, profile, ok)
+        : `${modeRecommendation(state.mode, profile, ok)} Current task: ${task}.`;
+      target.innerHTML = `
+        <div class="model-advice-title">
+          <span>${esc(profile.label || actual)}</span>
+          <span class="badge ${installClass}">${esc(installText)}</span>
+        </div>
+        <div class="model-advice-summary">${esc(profile.summary || "")}</div>
+        <div class="model-badges">
+          ${badge("Best for", asList(profile.best_for))}
+          ${badge("Quality", profile.quality)}
+          ${badge("Speed", profile.speed)}
+          ${badge("VRAM", profile.vram)}
+          ${badge("Steps", profile.steps)}
+          ${badge("CFG", profile.cfg)}
+          ${badge("Tasks", asList(profile.tasks))}
+        </div>
+        <div class="model-warning">${esc(warning)}</div>
+      `;
+    }
+
+    function updateLmAdvice(selectId = "ace-lm-model", targetId = "lm-advice") {
+      const select = $(selectId);
+      const target = $(targetId);
+      if (!select || !target || !state.config) return;
+      const name = select.value || state.config.recommended_lm_model || "auto";
+      const profile = state.config.lm_model_profiles?.[name];
+      if (!profile) {
+        target.innerHTML = "";
+        return;
+      }
+      const installClass = profile.installed ? "ok" : "warn";
+      const installText = profile.installed ? "Installed" : "Download required";
+      target.innerHTML = `
+        <div class="lm-advice-title">
+          <span>${esc(profile.label || name)}</span>
+          <span class="badge ${installClass}">${esc(installText)}</span>
+        </div>
+        <div class="lm-advice-summary">${esc(profile.summary || "")}</div>
+        <div class="model-badges">
+          ${badge("Best for", asList(profile.best_for))}
+          ${badge("Quality", profile.quality)}
+          ${badge("Speed", profile.speed)}
+          ${badge("VRAM", profile.vram)}
+        </div>
+      `;
+    }
+
+    function updateAllLmAdvice() {
+      updateLmAdvice("ace-lm-model", "lm-advice");
+      updateLmAdvice("album-ace-lm-model", "album-lm-advice");
+    }
+
     function setBusy(isBusy) {
       document.querySelectorAll("button").forEach((button) => button.disabled = isBusy && !button.classList.contains("danger"));
       if (!isBusy && state.config) updateCapability();
@@ -747,20 +879,28 @@
       const model = $("song-model").value || "auto";
       if (!state.config || !task) {
         $("capability").textContent = "";
+        renderModelAdvice(model === "auto" ? state.config?.default_song_model : model, true, task);
         return;
       }
       const actual = model === "auto" ? state.config.default_song_model : model;
       const caps = state.config.model_capabilities?.[actual]?.tasks || [];
       const ok = caps.includes(task);
-      $("capability").textContent = ok ? `${state.config.model_labels?.[actual] || actual}: ${caps.join(", ")}` : `${state.config.model_labels?.[actual] || actual} cannot run ${task}`;
+      const label = state.config.model_profiles?.[actual]?.label || state.config.model_labels?.[actual] || actual;
+      $("capability").textContent = ok ? `${label}: ${modeRecommendation(state.mode, state.config.model_profiles?.[actual], ok)}` : `${label} cannot run ${task}`;
+      renderModelAdvice(actual, ok, task);
       document.querySelectorAll("[data-generate]").forEach((button) => button.disabled = Boolean(task && !ok));
     }
 
     async function loadConfig() {
       state.config = await api("/api/config");
       const modelSelect = $("song-model");
-      modelSelect.innerHTML = `<option value="auto">Auto (${state.config.model_labels?.[state.config.default_song_model] || state.config.default_song_model})</option>` +
-        state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(state.config.model_labels?.[name] || name)}</option>`).join("");
+      modelSelect.innerHTML = `<option value="auto">Auto (${esc(modelOptionLabel(state.config.default_song_model))})</option>` +
+        state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(modelOptionLabel(name))}</option>`).join("");
+      const lmOptions = (state.config.lm_models || ["auto", "none"]).map((name) => `<option value="${esc(name)}">${esc(lmOptionLabel(name))}</option>`).join("");
+      for (const id of ["ace-lm-model", "album-ace-lm-model"]) {
+        $(id).innerHTML = lmOptions;
+        $(id).value = state.config.recommended_lm_model || "auto";
+      }
       const languages = state.config.valid_languages || ["unknown", "en"];
       for (const id of ["language", "album-language"]) {
         $(id).innerHTML = languages.map((lang) => `<option value="${esc(lang)}"${lang === "en" ? " selected" : ""}>${esc(lang)}</option>`).join("");
@@ -772,6 +912,7 @@
         `<label class="check"><input type="checkbox" value="${esc(track)}" /> ${esc(track)}</label>`
       ).join("");
       updateCapability();
+      updateAllLmAdvice();
       setStatus("Studio ready.", "ok");
     }
 
@@ -888,6 +1029,7 @@
         duration: Number($("duration").value),
         batch_size: Number($("batch-size").value),
         song_model: $("song-model").value,
+        ace_lm_model: $("ace-lm-model").value,
         seed: $("seed").value,
         bpm: $("bpm").value,
         key_scale: $("key-scale").value,
@@ -1074,7 +1216,8 @@
           ollama_model: $("album-ollama").value,
           embedding_model: $("album-embed").value,
           language: $("album-language").value,
-          song_model: $("song-model").value
+          song_model: $("song-model").value,
+          ace_lm_model: $("album-ace-lm-model").value
         });
         $("album-log").textContent = (data.logs || []).join("\\n");
         if (!data.success) throw new Error(data.error || "Album failed");
@@ -1289,6 +1432,8 @@
 
     function bindEvents() {
       $("song-model").addEventListener("change", updateCapability);
+      $("ace-lm-model").addEventListener("change", () => updateLmAdvice("ace-lm-model", "lm-advice"));
+      $("album-ace-lm-model").addEventListener("change", () => updateLmAdvice("album-ace-lm-model", "album-lm-advice"));
       $("compose-btn").addEventListener("click", compose);
       $("format-btn").addEventListener("click", formatSample);
       document.querySelectorAll("[data-generate]").forEach((button) => button.addEventListener("click", () => generate()));
