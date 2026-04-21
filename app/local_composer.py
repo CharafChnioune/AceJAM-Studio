@@ -3,14 +3,10 @@ from __future__ import annotations
 import gc
 import json
 import os
-import platform
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from huggingface_hub import hf_hub_download
 
 
 SONG_SCHEMA = {
@@ -20,195 +16,167 @@ SONG_SCHEMA = {
         "tags": {
             "type": "array",
             "items": {"type": "string"},
-            "minItems": 3,
+            "minItems": 4,
             "maxItems": 6,
         },
         "bpm": {"type": "integer"},
+        "key_scale": {"type": "string"},
+        "time_signature": {"type": "integer"},
         "language": {"type": "string"},
         "lyrics": {"type": "string"},
     },
-    "required": ["title", "tags", "bpm", "language", "lyrics"],
+    "required": ["title", "tags", "bpm", "key_scale", "time_signature", "language", "lyrics"],
 }
 
-SYSTEM_PROMPT = """You are a professional songwriter helping a local music generator.
+SYSTEM_PROMPT = """You are an expert songwriter and music producer crafting input for ACE-Step, a state-of-the-art AI music generator. Your job is to take any description—even a vague one—and expand it into a rich, professional-grade song specification that will produce the highest quality music.
 
 Reply with exactly one JSON object and nothing else.
 
-Rules:
-- `title` must be a short, catchy song title.
-- `tags` must be an array of 3 to 6 concise style tags.
-- `bpm` must be a plausible tempo integer.
+## Tag rules (the `tags` array)
+Tags are the MOST important factor for music quality. Follow this layered format:
+1. Primary genre + optional era (e.g. "indie folk", "80s synth pop", "modern R&B")
+2. 2-3 key instruments (e.g. "acoustic guitar", "synth pads", "808 drums")
+3. Mood / atmosphere (e.g. "melancholic", "uplifting", "dreamy", "energetic")
+4. Vocal character if not instrumental (e.g. "female breathy vocal", "male raspy vocal", "powerful belt")
+5. Production style (e.g. "high-fidelity", "lo-fi", "warm analog", "crisp modern mix")
+- Use 4 to 6 focused, complementary tags. Never mix contradictory styles (e.g. "ambient" + "hardcore metal"). For genre fusion, use primary + influence format: "jazz, electronic elements".
+- Include tempo descriptor in tags when relevant (e.g. "slow tempo", "driving rhythm", "groovy").
+
+Available instruments for tags (pick 2-3 that fit the genre):
+Keys: piano, Rhodes, organ, electric piano, grand piano, clavinet, celesta
+Guitar: acoustic guitar, electric guitar, clean guitar, distorted guitar, nylon guitar, fingerpicked guitar, slide guitar, power chords
+Bass: bass guitar, upright bass, synth bass, 808 bass, sub-bass, slap bass, fretless bass
+Drums: drums, trap hi-hats, 808 kick, snare, claps, shaker, tambourine, congas, timpani, punchy snare, gated drums, breakbeat
+Synth: synth pads, arpeggiated synth, analog synth, lead synth, warm synth, dark synths, evolving drones
+Strings: strings, violin, viola, cello, orchestral strings, pulsing strings, pizzicato
+Brass/Wind: brass, trumpet, trombone, saxophone, alto sax, flute, clarinet
+World: sitar, tabla, koto, djembe, steel drums, accordion, banjo, mandolin, ukulele, harmonica
+Production: vinyl texture, tape hiss, wide stereo mix, warm mix, crisp mix, lo-fi texture
+
+## BPM rules
+- `bpm` must be a plausible tempo integer (30-300).
+- Slow ambient/cinematic: 30-60. Ballads: 60-80. Mid-tempo pop/R&B: 90-120. Upbeat dance/rock: 120-150. Fast punk/drum&bass: 150-200. Extreme speedcore: 200-300.
+- Match BPM to the mood and genre implied by the description.
+
+## Key and scale rules
+- `key_scale` must be a valid musical key: a note letter (A-G), optional sharp (#) or flat (b), followed by "major" or "minor".
+- Examples: "C major", "Ab minor", "F# major", "Bb minor", "D major", "Em".
+- Match the key to the genre and mood:
+  - Major keys for uplifting, happy, bright music (C major, G major, D major, F major)
+  - Minor keys for sad, dark, intense, emotional music (Am, Em, Dm, Cm)
+- Common genre associations: C major (neutral pop), Am (melancholic ballad), G major (folk/country), Em (rock/alternative), Bb major (jazz/R&B/soul), F# minor (electronic/synthwave), Eb major (epic/cinematic).
+
+## Time signature rules
+- `time_signature` must be one of: 2, 3, 4, 6.
+- 4 is standard for most pop, rock, hip-hop, electronic, R&B.
+- 3 is for waltzes, some ballads, folk songs.
+- 6 is for compound time (6/8 folk, blues, some ballads).
+- 2 is for marches, polka.
+- Default to 4 unless the genre or style specifically calls for another.
+
+## Lyrics rules
+ACE-Step sings approximately 2-3 words per second. Lyrics act as a temporal script controlling how music unfolds.
+- Each line should be 4-8 words for natural singability. Avoid tongue twisters, complex vocabulary, or overly long sentences.
+- Every section marker must be followed by actual sung lyric lines (except instrumental markers).
+- Mood and emotion of lyrics MUST match the tags.
+
+## Lyric craft — WRITE LIKE A PROFESSIONAL SONGWRITER, NOT AN AI
+
+SHOW DON'T TELL: Never state emotions directly. Instead of "I am sad", write "The coffee's gone cold on the counter again". Instead of "I love you", write "Your laugh still echoes in the passenger seat". Paint scenes the listener can see, hear, smell, taste, touch.
+
+USE SPECIFIC DETAILS: Replace generic words with precise ones.
+- NOT "car" → "rusted Civic" or "midnight Uber"
+- NOT "flower" → "dandelion" or "wilted orchid"
+- NOT "city" → "the 3 AM bodega on Fifth" or "rain-slick Rotterdam cobblestones"
+- NOT "drink" → "lukewarm sake" or "flat champagne"
+
+SENSORY WRITING: Engage ALL five senses, not just sight.
+- Sound: "the hum of the highway through thin motel walls"
+- Smell: "gasoline and jasmine on the August wind"
+- Touch: "your cold ring finger pressed against my neck"
+- Taste: "copper on my tongue from biting back the words"
+
+EMOTIONAL TENSION: The best lyrics hold two feelings at once.
+- Joy + loss: celebrating what's already gone
+- Love + anger: wanting someone you shouldn't
+- Freedom + fear: leaving everything behind
+
+IN MEDIAS RES: Start verses in the middle of action, not with setup.
+- NOT "I was walking down the street one day" → "Halfway through the red light, you called"
+
+METAPHOR RULES: Use 1-2 strong metaphors per song, not scattered random ones. Pick ONE metaphor world (ocean, fire, astronomy, weather) and stay in it.
+
+BANNED CLICHÉ PHRASES — NEVER use these:
+"echoes of", "shattered dreams", "empty streets", "fading light", "stories untold",
+"lost in time", "forgotten memories", "endless night", "unseen tears", "whispers in the dark",
+"waves crashing", "endless road", "burning bridges", "fading away", "broken chains",
+"heart on fire", "dancing in the rain", "light at the end of the tunnel", "stars aligned",
+"wings to fly", "ocean of emotions", "paint the sky", "chase the sun", "against all odds".
+
+Available section markers: [Intro], [Verse], [Pre-Chorus], [Chorus], [Bridge], [Outro], [Instrumental], [inst].
+Vocal style modifiers: [Verse - rap], [Verse - whispered], [Chorus - anthemic], [Verse - melodic rap], [Bridge - Whispering], [Chorus - Layered vocals], [Intro - Dreamy].
+Instrumental sections: [Guitar Solo], [Drum Break].
+Energy markers: [building energy], [explosive drop].
+Text formatting: UPPERCASE = emphasis/power. (parentheses) = background vocals/harmonies.
+Vocal tags: female vocal, male vocal, female breathy vocal, male raspy vocal, male rap vocal, female rap vocal, powerful belt, falsetto.
+
+## CRITICAL: Rap and hip-hop vocal delivery
+When the description mentions rap, hip-hop, trap, drill, grime, or similar genres:
+- ALWAYS use [Verse - rap], [Chorus - rap] section markers.
+- Tags MUST include "male rap vocal" or "female rap vocal" (NOT just "male vocal").
+- Lines: 4-6 words, punchy, rhythmic internal rhymes.
+- Trap: "trap, 808 bass, dark, aggressive rap vocal, hi-hats".
+- Melodic rap: [Verse - melodic rap], "melodic rap, autotune vocal, atmospheric".
+
+## Enhancing vague prompts
+If the description is vague (e.g. "a happy song"), you MUST:
+- Invent a specific scene, character, or moment (NOT abstract emotions)
+- Choose concrete imagery: a place, a time of day, an object, a sensory detail
+- Build an emotional arc across sections (tension → release, or joy → doubt)
+- Write lyrics that could only belong to THIS song, not any generic song
+
+## Other rules
+- `title` must be a short, catchy, evocative song title that captures the essence of the song.
 - `language` must be one of: en, zh, ja, ko, instrumental, unknown.
-- `lyrics` must be a single string using section markers like [Verse], [Chorus], [Bridge].
 - If the request is instrumental, set `language` to `instrumental` and `lyrics` to `[Instrumental]`.
-- Match the lyric length and number of sections to the requested duration and section plan.
-- For non-instrumental songs, every section marker must be followed by actual sung lyric lines.
 - Never return empty sections or placeholder markers such as [END], [LYRICS], [LYRITIC], or repeated labels without lyrics.
 - Never wrap the JSON in markdown fences.
 """
 
 
-@dataclass(frozen=True)
-class ComposerProfile:
-    key: str
-    repo_id: str
-    filename: str
-    label: str
-    n_ctx: int
-    max_tokens: int
-
-
-COMPOSER_PROFILES = {
-    "tiny": ComposerProfile(
-        key="tiny",
-        repo_id="ggml-org/Qwen3-0.6B-GGUF",
-        filename="Qwen3-0.6B-Q4_0.gguf",
-        label="Qwen3 0.6B Q4_0",
-        n_ctx=4096,
-        max_tokens=900,
-    ),
-    "balanced": ComposerProfile(
-        key="balanced",
-        repo_id="Qwen/Qwen3-1.7B-GGUF",
-        filename="Qwen3-1.7B-Q8_0.gguf",
-        label="Qwen3 1.7B Q8_0",
-        n_ctx=6144,
-        max_tokens=1200,
-    ),
-    "quality": ComposerProfile(
-        key="quality",
-        repo_id="Qwen/Qwen3-4B-GGUF",
-        filename="Qwen3-4B-Q4_K_M.gguf",
-        label="Qwen3 4B Q4_K_M",
-        n_ctx=8192,
-        max_tokens=1400,
-    ),
-}
-
 STOP_WORDS = {
-    "a",
-    "about",
-    "an",
-    "and",
-    "any",
-    "are",
-    "at",
-    "for",
-    "from",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "lyrics",
-    "music",
-    "of",
-    "on",
-    "song",
-    "that",
-    "the",
-    "their",
-    "this",
-    "to",
-    "with",
+    "a", "about", "an", "and", "any", "are", "at", "for", "from", "in",
+    "into", "is", "it", "its", "lyrics", "music", "of", "on", "song",
+    "that", "the", "their", "this", "to", "with",
 }
-
-
-def _system_memory_gb() -> float | None:
-    try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        page_count = os.sysconf("SC_PHYS_PAGES")
-        return (page_size * page_count) / (1024 ** 3)
-    except (AttributeError, OSError, ValueError):
-        return None
-
-
-def _gpu_memory_gb() -> float | None:
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            return props.total_memory / (1024 ** 3)
-    except Exception:
-        return None
-    return None
-
-
-def _is_apple_mps() -> bool:
-    if platform.system() != "Darwin" or platform.machine() != "arm64":
-        return False
-    try:
-        import torch
-
-        return bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
-    except Exception:
-        return False
-
-
-def _strip_wrappers(raw: str) -> str:
-    cleaned = raw.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    return cleaned.strip()
-
-
-def _extract_json(raw: str) -> dict[str, Any]:
-    cleaned = _strip_wrappers(raw)
-    try:
-        payload = json.loads(cleaned)
-        if isinstance(payload, dict):
-            return payload
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    if not match:
-        raise ValueError("model did not return JSON")
-    payload = json.loads(match.group(0))
-    if not isinstance(payload, dict):
-        raise ValueError("model returned non-object JSON")
-    return payload
-
-
-def _guess_title(description: str) -> str:
-    words = re.findall(r"[A-Za-z0-9']+", description)
-    if not words:
-        return "Untitled"
-    return " ".join(words[:5]).title()[:48].strip() or "Untitled"
 
 
 def _lyric_plan(audio_duration: float) -> dict[str, Any]:
-    if audio_duration >= 105:
-        return {
-            "structure": "[Verse], [Chorus], [Verse], [Chorus], [Bridge], [Chorus], optional [Outro]",
-            "line_range": "12 to 20",
-            "min_lines": 10,
-            "min_words": 52,
-            "sections": ("Verse", "Chorus", "Verse", "Chorus", "Bridge", "Chorus", "Outro"),
-        }
-    if audio_duration >= 75:
-        return {
-            "structure": "[Verse], [Chorus], [Verse], [Chorus], optional [Bridge]",
-            "line_range": "8 to 14",
-            "min_lines": 8,
-            "min_words": 36,
-            "sections": ("Verse", "Chorus", "Verse", "Chorus", "Bridge"),
-        }
-    if audio_duration >= 45:
-        return {
-            "structure": "[Verse], [Chorus], [Verse], [Chorus]",
-            "line_range": "6 to 10",
-            "min_lines": 6,
-            "min_words": 24,
-            "sections": ("Verse", "Chorus", "Verse", "Chorus"),
-        }
+    dur = int(audio_duration)
+    target_words = int(dur * 1.3)
+    word_min = int(dur * 0.9)
+    word_max = int(dur * 1.8)
+    target_lines = max(4, int(target_words / 5.5))
+
+    if dur <= 45:
+        num_verses, structure = 1, "[Verse], [Chorus]"
+    elif dur <= 90:
+        num_verses, structure = 2, "[Verse], [Chorus], [Verse], [Chorus]"
+    elif dur <= 150:
+        num_verses, structure = 2, "[Verse], [Chorus], [Verse], [Chorus], [Bridge], [Chorus]"
+    elif dur <= 210:
+        num_verses, structure = 3, "[Verse], [Chorus], [Verse], [Chorus], [Bridge], [Verse], [Chorus]"
+    elif dur <= 270:
+        num_verses, structure = 3, "[Intro], [Verse], [Chorus], [Verse], [Chorus], [Bridge], [Verse], [Chorus], [Outro]"
+    else:
+        num_verses, structure = 4, "[Intro], [Verse], [Chorus], [Verse], [Chorus], [Bridge], [Verse], [Chorus], [Verse], [Chorus], [Outro]"
+
     return {
-        "structure": "[Verse], [Chorus], optional [Bridge]",
-        "line_range": "4 to 8",
-        "min_lines": 4,
-        "min_words": 16,
-        "sections": ("Verse", "Chorus"),
+        "structure": structure, "num_verses": num_verses,
+        "target_words": target_words, "word_range": f"{word_min}-{word_max}",
+        "target_lines": target_lines, "line_range": f"{target_lines - 2} to {target_lines + 2}",
+        "min_lines": max(4, target_lines - 3), "min_words": max(16, word_min),
+        "sections": tuple(s.strip("[] ") for s in structure.replace("optional ", "").split(",")),
     }
 
 
@@ -234,44 +202,27 @@ def _subject_terms(description: str) -> list[str]:
 def _fallback_lines(section: str, section_index: int, hook: str, theme: str, accent: str) -> list[str]:
     if section == "Verse":
         variants = [
-            [
-                f"{hook} in the air while the {theme} starts to rise",
-                "We lean into the feeling and let it color the night",
-            ],
-            [
-                f"Every little spark of {accent} keeps the whole room bright",
-                "We sing it like a secret that finally found the light",
-            ],
-            [
-                "Another wave of heat makes the windows start to shake",
-                f"We laugh into the echo of every move we make",
-            ],
+            [f"{hook} in the air while the {theme} starts to rise",
+             "We lean into the feeling and let it color the night"],
+            [f"Every little spark of {accent} keeps the whole room bright",
+             "We sing it like a secret that finally found the light"],
+            ["Another wave of heat makes the windows start to shake",
+             "We laugh into the echo of every move we make"],
         ]
         return variants[min(section_index, len(variants) - 1)]
-
     if section == "Chorus":
         variants = [
-            [
-                f"{hook}, keep the fire moving through the night",
-                f"{theme.title()}, in the rhythm everything feels right",
-            ],
-            [
-                f"{hook}, turn the hunger into something we can sing",
-                "Hold the heat a little higher, let the whole room ring",
-            ],
+            [f"{hook}, keep the fire moving through the night",
+             f"{theme.title()}, in the rhythm everything feels right"],
+            [f"{hook}, turn the hunger into something we can sing",
+             "Hold the heat a little higher, let the whole room ring"],
         ]
         return variants[min(section_index, len(variants) - 1)]
-
     if section == "Bridge":
-        return [
-            f"We ride the taste of {theme} like a midnight wave",
-            "Let the beat go softer just before it breaks",
-        ]
-
-    return [
-        f"{hook} on our lips as the final lights grow thin",
-        "We carry that flavor with us when the next song begins",
-    ]
+        return [f"We ride the taste of {theme} like a midnight wave",
+                "Let the beat go softer just before it breaks"]
+    return [f"{hook} on our lips as the final lights grow thin",
+            "We carry that flavor with us when the next song begins"]
 
 
 def _fallback_lyrics(title: str, description: str, audio_duration: float, instrumental: bool) -> str:
@@ -315,31 +266,32 @@ def _normalize_tags(tags: Any, description: str) -> list[str]:
         if len(normalized) == 6:
             break
 
-    if len(normalized) >= 3:
+    if len(normalized) >= 4:
         return normalized
 
-    fallback = [
-        "melodic",
-        "studio production",
-        "cinematic",
-        "modern",
-        "emotional",
-        "songwriting",
-    ]
-    if "lofi" in description.lower() or "lo-fi" in description.lower():
-        fallback.insert(0, "lo-fi")
-    elif "rock" in description.lower():
-        fallback.insert(0, "rock")
-    elif "rap" in description.lower() or "hip hop" in description.lower():
-        fallback.insert(0, "hip-hop")
+    desc_lower = description.lower()
+    if "lofi" in desc_lower or "lo-fi" in desc_lower:
+        fallback = ["lo-fi hip hop", "mellow piano", "vinyl texture", "chill", "warm analog mix"]
+    elif "rock" in desc_lower:
+        fallback = ["rock", "electric guitar", "powerful drums", "energetic", "high-fidelity"]
+    elif "rap" in desc_lower or "hip hop" in desc_lower or "trap" in desc_lower or "drill" in desc_lower:
+        fallback = ["hip-hop", "808 bass", "trap hi-hats", "male rap vocal", "crisp modern mix"]
+    elif "jazz" in desc_lower:
+        fallback = ["jazz", "saxophone", "upright bass", "smooth", "warm analog"]
+    elif "electronic" in desc_lower or "edm" in desc_lower:
+        fallback = ["electronic", "synth pads", "driving rhythm", "energetic", "high-fidelity"]
+    elif "sad" in desc_lower or "melanchol" in desc_lower:
+        fallback = ["ballad", "piano", "soft strings", "melancholic", "intimate"]
+    elif "classical" in desc_lower:
+        fallback = ["orchestral", "strings", "piano", "cinematic", "high-fidelity"]
     else:
-        fallback.insert(0, "pop")
+        fallback = ["pop", "synth", "catchy melody", "uplifting", "high-fidelity"]
 
     for tag in fallback:
         if tag not in seen:
             normalized.append(tag)
             seen.add(tag)
-        if len(normalized) == 4:
+        if len(normalized) == 5:
             break
     return normalized
 
@@ -347,8 +299,11 @@ def _normalize_tags(tags: Any, description: str) -> list[str]:
 def _normalize_lyrics(lyrics: Any, instrumental: bool) -> str:
     if instrumental:
         return "[Instrumental]"
-
-    text = str(lyrics or "").replace("\r\n", "\n").strip()
+    # Handle lyrics as array (some models return lines as JSON array)
+    if isinstance(lyrics, list):
+        text = "\n".join(str(line) for line in lyrics)
+    else:
+        text = str(lyrics or "").replace("\r\n", "\n").strip()
     if not text:
         return ""
     if "[" not in text:
@@ -360,7 +315,6 @@ def _has_meaningful_lyrics(text: str, audio_duration: float) -> bool:
     lowered = text.lower()
     if any(token in lowered for token in ("[end]", "[lyrics]", "[lyritic]", "[end song]")):
         return False
-
     plan = _lyric_plan(audio_duration)
     nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
     lyric_lines: list[str] = []
@@ -368,10 +322,8 @@ def _has_meaningful_lyrics(text: str, audio_duration: float) -> bool:
         stripped = re.sub(r"\[[^\]]+\]", "", line).strip()
         if stripped:
             lyric_lines.append(stripped)
-
     if len(lyric_lines) < plan["min_lines"]:
         return False
-
     body = "\n".join(lyric_lines)
     words = re.findall(r"[^\W_]+(?:'[^\W_]+)?", body, re.UNICODE)
     return len(words) >= plan["min_words"]
@@ -379,14 +331,55 @@ def _has_meaningful_lyrics(text: str, audio_duration: float) -> bool:
 
 def _duration_prompt(audio_duration: float, instrumental: bool) -> str:
     if instrumental:
-        return "Keep the output instrumental."
+        return "Keep the output instrumental. Set lyrics to [Instrumental]."
     plan = _lyric_plan(audio_duration)
+    target_words = int(audio_duration * 1.3)
+    word_min = int(audio_duration * 0.9)
+    word_max = int(audio_duration * 1.8)
     return (
         f"Use this section plan: {plan['structure']}.\n"
         f"Write {plan['line_range']} non-empty lyric lines total.\n"
+        f"Target approximately {target_words} sung words total ({word_min}-{word_max} range).\n"
+        f"Reference: real hit songs average ~1.3 words/sec including instrumental breaks. "
+        f"For {int(audio_duration)} seconds, {word_min}-{word_max} words is realistic. "
+        "Use more words for rap, fewer for ballads.\n"
+        "Keep each line 4-8 words for natural singability.\n"
         "Every section must include actual sung lines, not empty labels.\n"
         "Do not emit placeholder tokens such as [END], [LYRICS], or [Instrumental]."
     )
+
+
+def _guess_title(description: str) -> str:
+    words = re.findall(r"[A-Za-z0-9']+", description)
+    if not words:
+        return "Untitled"
+    return " ".join(words[:5]).title()[:48].strip() or "Untitled"
+
+
+def _strip_wrappers(raw: str) -> str:
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def _extract_json(raw: str) -> dict[str, Any]:
+    # Strip <think>...</think> tags
+    cleaned = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL)
+    cleaned = _strip_wrappers(cleaned)
+    try:
+        payload = json.loads(cleaned)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if not match:
+        raise ValueError("model did not return JSON")
+    payload = json.loads(match.group(0))
+    if not isinstance(payload, dict):
+        raise ValueError("model returned non-object JSON")
+    return payload
 
 
 def _log_block(label: str, text: str) -> None:
@@ -396,43 +389,14 @@ def _log_block(label: str, text: str) -> None:
     print(f"[/{label}] ---")
 
 
+# ── Ollama-based Composer ────────────────────────────────────────────────
+
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+
 class LocalComposer:
-    def __init__(self, models_dir: str | Path):
-        self.models_dir = Path(models_dir)
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-
-    def resolve_profile(
-        self,
-        requested: str | None,
-        audio_duration: float = 60.0,
-        instrumental: bool = False,
-    ) -> ComposerProfile:
-        override = os.environ.get("ACE_STEP_COMPOSER_PROFILE", "").strip().lower()
-        key = (override or requested or "auto").strip().lower()
-
-        if key == "auto":
-            ram_gb = _system_memory_gb()
-            vram_gb = _gpu_memory_gb()
-            long_vocal_request = (not instrumental) and audio_duration >= 90
-            if _is_apple_mps():
-                # Apple Silicon ends up CPU-driving the local composer in this launcher.
-                # Keep short requests fast, but move long vocal songs to the stronger composer.
-                key = "quality" if long_vocal_request else "tiny"
-            elif long_vocal_request:
-                if (ram_gb is not None and ram_gb >= 24) or (vram_gb is not None and vram_gb >= 16):
-                    key = "quality"
-                else:
-                    key = "balanced"
-            elif (vram_gb is not None and vram_gb <= 8) or (ram_gb is not None and ram_gb < 16):
-                key = "tiny"
-            elif (ram_gb is not None and ram_gb >= 24) or (vram_gb is not None and vram_gb >= 16):
-                key = "quality"
-            else:
-                key = "balanced"
-
-        if key not in COMPOSER_PROFILES:
-            key = "balanced"
-        return COMPOSER_PROFILES[key]
+    def __init__(self, ollama_model: str | None = None):
+        self.ollama_model = ollama_model
 
     def compose(
         self,
@@ -440,65 +404,66 @@ class LocalComposer:
         audio_duration: float = 60.0,
         profile: str = "auto",
         instrumental: bool = False,
+        ollama_model: str | None = None,
     ) -> dict[str, Any]:
+        import ollama
+
+        model = ollama_model or self.ollama_model
+        if not model:
+            # Try to pick the first available model
+            try:
+                client = ollama.Client(host=OLLAMA_BASE_URL)
+                models = client.list().models
+                if models:
+                    model = models[0].model
+                    print(f"[composer] auto-selected Ollama model: {model}")
+                else:
+                    raise RuntimeError("No Ollama models available. Pull a model first: ollama pull qwen3:4b")
+            except Exception as exc:
+                raise RuntimeError(f"Cannot connect to Ollama at {OLLAMA_BASE_URL}: {exc}") from exc
+
         compose_started_at = time.perf_counter()
-        selected = self.resolve_profile(profile, audio_duration=audio_duration, instrumental=instrumental)
-        print(
-            "[composer] "
-            f"starting profile_request={profile} "
-            f"profile_resolved={selected.key} "
-            f"model={selected.label} "
-            f"duration={audio_duration} "
-            f"instrumental={instrumental}"
-        )
-        model_path = self._ensure_model(selected)
-        ensure_elapsed = time.perf_counter() - compose_started_at
-        print(f"[composer] model ready path={model_path} elapsed={ensure_elapsed:.2f}s")
-        load_started_at = time.perf_counter()
-        llm = self._load_llm(selected, model_path)
-        load_elapsed = time.perf_counter() - load_started_at
-        print(f"[composer] llama loaded elapsed={load_elapsed:.2f}s")
+        print(f"[composer] starting model={model} duration={audio_duration} instrumental={instrumental}")
 
         user_prompt = (
             f"Description: {description.strip()}\n"
             f"Instrumental: {'yes' if instrumental else 'no'}\n"
-            f"Target duration seconds: {int(audio_duration)}\n"
+            f"Target duration: {int(audio_duration)} seconds\n"
             f"{_duration_prompt(audio_duration, instrumental)}\n"
+            "If the description is vague, expand it creatively into a fully detailed, "
+            "professional specification with rich tags, specific instrumentation, "
+            "and vivid lyrics. Aim for radio-quality output.\n"
             "Write the song spec now."
         )
         _log_block("composer.prompt", user_prompt)
 
         try:
             generation_started_at = time.perf_counter()
-            print("[composer] generating song spec...")
-            response = llm.create_chat_completion(
+            print("[composer] generating song spec via Ollama...")
+            client = ollama.Client(host=OLLAMA_BASE_URL)
+            response = client.chat(
+                model=model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={
-                    "type": "json_object",
-                    "schema": SONG_SCHEMA,
+                format="json",
+                think=False,
+                options={
+                    "temperature": 0.6,
+                    "top_p": 0.95,
+                    "top_k": 20,
                 },
-                temperature=0.8,
-                top_p=0.92,
-                repeat_penalty=1.05,
-                max_tokens=selected.max_tokens,
             )
-            content = response["choices"][0]["message"]["content"] or "{}"
+            content = response.message.content or "{}"
             generation_elapsed = time.perf_counter() - generation_started_at
-            print(f"[composer] completion received elapsed={generation_elapsed:.2f}s chars={len(content)}")
+            print(f"[composer] response received elapsed={generation_elapsed:.2f}s chars={len(content)}")
             _log_block("composer.raw_response", content)
             payload = _extract_json(content)
             print(f"[composer] parsed response keys={sorted(payload.keys())}")
-        except Exception:
+        except Exception as exc:
+            print(f"[composer] ERROR: {exc}")
             payload = {}
-        finally:
-            closer = getattr(llm, "close", None)
-            if callable(closer):
-                closer()
-            del llm
-            gc.collect()
 
         title = str(payload.get("title") or _guess_title(description)).strip()[:60] or "Untitled"
         tags = _normalize_tags(payload.get("tags"), description)
@@ -507,7 +472,19 @@ class LocalComposer:
             bpm_value = int(bpm)
         except (TypeError, ValueError):
             bpm_value = 120
-        bpm_value = min(180, max(60, bpm_value))
+        bpm_value = min(300, max(30, bpm_value))
+
+        key_scale = str(payload.get("key_scale") or "").strip()
+        if not re.match(r'^[A-G][#b]?\s+(major|minor)$', key_scale, re.IGNORECASE):
+            key_scale = ""
+
+        time_sig = payload.get("time_signature")
+        try:
+            time_sig_value = int(time_sig)
+        except (TypeError, ValueError):
+            time_sig_value = 4
+        if time_sig_value not in (2, 3, 4, 6):
+            time_sig_value = 4
 
         language = str(payload.get("language") or ("instrumental" if instrumental else "en")).strip().lower()
         if language not in {"en", "zh", "ja", "ko", "instrumental", "unknown"}:
@@ -522,12 +499,9 @@ class LocalComposer:
 
         total_elapsed = time.perf_counter() - compose_started_at
         print(
-            "[composer] "
-            f"done profile={selected.key} "
-            f"language={language} "
-            f"bpm={bpm_value} "
-            f"fallback_lyrics={used_fallback_lyrics} "
-            f"total={total_elapsed:.2f}s"
+            f"[composer] done model={model} language={language} bpm={bpm_value} "
+            f"key_scale={key_scale or 'N/A'} time_signature={time_sig_value} "
+            f"fallback_lyrics={used_fallback_lyrics} total={total_elapsed:.2f}s"
         )
         print(f"[composer] title={title}")
         print(f"[composer] tags={', '.join(tags)}")
@@ -537,36 +511,9 @@ class LocalComposer:
             "title": title,
             "tags": ", ".join(tags),
             "bpm": bpm_value,
+            "key_scale": key_scale,
+            "time_signature": str(time_sig_value),
             "language": language,
             "lyrics": lyrics,
-            "composer_profile": selected.key,
-            "composer_model": selected.label,
+            "composer_model": model,
         }
-
-    def _ensure_model(self, profile: ComposerProfile) -> Path:
-        model_dir = self.models_dir / profile.key
-        model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = hf_hub_download(
-            repo_id=profile.repo_id,
-            filename=profile.filename,
-            local_dir=model_dir,
-        )
-        return Path(model_path)
-
-    def _load_llm(self, profile: ComposerProfile, model_path: Path):
-        try:
-            from llama_cpp import Llama
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "llama-cpp-python is not installed in app/env. Re-run Install or Update."
-            ) from exc
-
-        gpu_layers = int(os.environ.get("ACE_STEP_COMPOSER_GPU_LAYERS", "0") or "0")
-        return Llama(
-            model_path=str(model_path),
-            n_ctx=profile.n_ctx,
-            n_batch=min(512, profile.n_ctx),
-            n_gpu_layers=max(0, gpu_layers),
-            n_threads=max(1, (os.cpu_count() or 4) - 1),
-            verbose=False,
-        )

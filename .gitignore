@@ -1,9 +1,14 @@
 /cache/
 /logs/
 /app/env/
+/app/vendor/
 /app/model_cache/
 /app/composer_models/
 /app/data/
+/app/lora_datasets/
+/app/loras/
+/app/uploads/
+/app/results/
 /app/__pycache__/
 /app/**/__pycache__/
 /app/*.pyc

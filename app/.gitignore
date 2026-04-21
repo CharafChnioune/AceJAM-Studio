@@ -1,8 +1,16 @@
 .claude/
 env/
+vendor/
 model_cache/
 composer_models/
 data/
+lora_datasets/
+loras/
+uploads/
+results/
+lora_jobs/
+lora_tensors/
+lora_training/
 __pycache__/
 **/__pycache__/
 *.pyc
@@ -11,3 +19,5 @@ __pycache__/
 **/.pytest_cache/
 .DS_Store
 **/.DS_Store
+.env
+.crewai/

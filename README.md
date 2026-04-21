@@ -1,139 +1,129 @@
-# AceJAM
+# AceJAM Full ACE-Step Studio
 
-A Pinokio launcher for the fully local `AceJAM` app.
+AceJAM is a native Pinokio app for ACE-Step 1.5 music generation. It keeps the fast AceJAM prompt-to-song flow, Ollama songwriter support, album generation, and local library, while exposing the deeper ACE-Step studio tasks: custom text-to-music, cover/remix, repaint, extract, lego, complete, batches, scoring, LRC timestamps, audio codes, and LoRA/LoKr adapter workflows.
 
-The app turns a plain-English song description into a full track:
+## Install And Run
 
-- a local Qwen GGUF model writes the title, tags, and lyrics
-- ACE-Step v1.5 generates the audio
-- the custom frontend lets you play, download, and browse a local song feed
+1. In Pinokio, open AceJAM and run **Install**.
+2. Install creates/uses `app/env`, installs `app/requirements.txt` with `uv pip install -r requirements.txt`, and syncs the official ACE-Step 1.5 trainer into `app/vendor/ACE-Step-1.5`.
+3. Run **Start**. The Web UI URL is captured by `start.js` and shown by Pinokio.
 
-## What You Need
+Generated data lives under `app/data/` and model files under `app/model_cache/`. These folders are ignored by git.
 
-- A working GPU is strongly recommended for ACE-Step.
-- No Hugging Face token is required.
-- The first generation downloads ACE-Step checkpoints and the selected local composer model, so expect a long cold start.
+## Studio Modes
 
-## How To Use
+- **Simple**: prompt-to-song with Ollama composition helpers.
+- **Custom**: direct caption, lyrics, metadata, seed, batch, and inference controls.
+- **Cover/Remix**: source audio plus cover strength.
+- **Repaint**: source audio plus start/end repaint window.
+- **Extract, Lego, Complete**: base-model tasks for stems/layers and arrangement completion.
+- **Album**: multi-track generation through the same generation engine.
+- **Trainer Studio**: dataset scan, official dataset JSON export, tensor preprocessing, LoRA/LoKr training, estimate, stop, export/load adapter.
+- **Library**: local saved songs with metadata.
+- **Settings**: advanced inference controls.
 
-1. Click `Install`.
-2. Click `Start`.
-3. Wait for the app URL, then open the web UI.
-4. Describe the song you want, choose a composer profile if needed, and click `Generate`.
+## Trainer Notes
 
-## Notes
+The trainer uses the official ACE-Step 1.5 `training_v2` / Side-Step CLI as an isolated subprocess. AceJAM does not import that vendor package into the running app process, which prevents conflicts with AceJAM's local `app/acestep` runtime.
 
-- The launcher owns the app under `app/` and installs Python dependencies into `app/env`.
-- PyTorch is installed by the launcher with platform/GPU-specific commands in `torch.js`.
-- ACE-Step checkpoints live under `app/model_cache/`.
-- Local composer GGUF files live under `app/composer_models/`.
-- Shared download caches live under `cache/` in the launcher root.
-- Saved songs live under `app/data/songs/`.
-- `Auto` is the default composer mode. Use `Tiny` for the lowest-memory path, `Balanced` for a reasonable default, and `Quality` if the machine has the headroom.
-- `Auto` now escalates long non-instrumental requests to a stronger composer profile so 2-minute songs are less likely to collapse into placeholder lyrics.
-- The composer runs CPU-first by default so VRAM stays available for ACE-Step. You can override this with `ACE_STEP_COMPOSER_GPU_LAYERS`.
-- On Windows x64 with Python 3.10, the launcher installs the official upstream `llama-cpp-python` `0.3.19` wheel directly to avoid slow local builds.
-- On Apple Silicon, the launcher builds `llama-cpp-python` from source with Metal enabled because the hosted Metal wheel path has been unreliable here; other platforms use the CPU wheel by default so the composer stays independent of the ACE-Step GPU path.
-- On Intel Mac with Python 3.10, the launcher uses the older `torch==2.2.2` stack, pins `numpy==1.26.4`, `diffusers==0.31.0`, `numba==0.61.2`, and `vector-quantize-pytorch==1.25.0`, and builds `llama-cpp-python` from source with Metal disabled because the newer wheel lines used elsewhere are no longer published for `macos x86_64` and Metal-backed composer init can stall there.
-- On Apple Silicon, the launcher now defaults to `acestep-v15-turbo` plus the `Tiny` composer profile when `Auto` is selected, because that is much faster and lighter than the XL + quality path.
-- On MPS, ACE-Step now uses lower precision automatically when the local PyTorch build supports it. Override with `ACE_STEP_DTYPE=auto|bfloat16|float16|float32`.
-- The web UI now exposes the ACE-Step song model directly, so you can choose `Turbo`, `XL Turbo`, or leave it on `Auto`.
-- Override the checkpoint with `ACE_STEP_MODEL`, for example `ACE_STEP_MODEL=acestep-v15-xl-turbo` if you explicitly want the larger model.
+Training is hardware-dependent. The UI and API report missing vendor files or Python dependencies clearly. During preprocess/train/estimate, generation is locked and the loaded ACE-Step generation model is released to free memory.
 
-## API
+## HTTP API Examples
 
-Base URL: use the URL captured by Pinokio from `start.js`, usually something like `http://127.0.0.1:7860`.
-
-The app exposes four public Gradio named APIs:
-
-- `/create`
-  - Parameters: `description`, `audio_duration`, `seed`, `community`, `composer_profile`, `song_model`, `instrumental`
-  - Returns: a JSON string containing `audio`, `title`, `tags`, `lyrics`, `bpm`, `language`, `composer_profile`, `composer_model`, `song_model`, and optionally `community_url`
-- `/generate`
-  - Parameters: `prompt`, `lyrics`, `audio_duration`, `infer_step`, `guidance_scale`, `seed`, `lora_name_or_path`, `lora_weight`, `song_model`
-  - Returns: a `data:audio/wav;base64,...` string
-- `/community`
-  - Parameters: none
-  - Returns: a JSON string containing the current local feed
-- `/config`
-  - Parameters: none
-  - Returns: a JSON string containing `active_song_model`, `default_song_model`, and `available_song_models`
-
-These APIs are queued Gradio endpoints. For JavaScript and Python, use the Gradio client libraries. For raw HTTP, use the queue endpoints under `/gradio_api/call/<name>`.
-
-### JavaScript
+JavaScript:
 
 ```js
-import { Client } from "@gradio/client";
+const base = "http://127.0.0.1:7860";
 
-const client = await Client.connect("http://127.0.0.1:7860");
+const sample = await fetch(`${base}/api/create_sample`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ description: "bright garage pop anthem", duration: 60 })
+}).then((r) => r.json());
 
-const result = await client.predict("/create", {
-  description: "A glossy synth-pop breakup anthem with a huge chorus",
-  audio_duration: 30,
-  seed: -1,
-  community: false,
-  composer_profile: "auto",
-  song_model: "auto",
-  instrumental: false
-});
-
-const raw = result.data?.[0] ?? result.data ?? result;
-const song = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-
-console.log(song.title);
-console.log(song.tags);
-console.log(song.composer_model);
-console.log(song.song_model);
-console.log(song.audio);
+const generated = await fetch(`${base}/api/generate_advanced`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    task_type: "text2music",
+    caption: sample.tags,
+    lyrics: sample.lyrics,
+    duration: 60,
+    song_model: "acestep-v15-turbo",
+    batch_size: 2,
+    auto_score: true,
+    auto_lrc: true,
+    save_to_library: true
+  })
+}).then((r) => r.json());
 ```
 
-To call the other public APIs, swap `"/create"` for `"/generate"` or `"/community"` and pass the matching parameters listed above.
-
-### Python
+Python:
 
 ```python
-import json
-from gradio_client import Client
+import requests
 
-client = Client("http://127.0.0.1:7860")
-
-raw = client.predict(
-    description="A cinematic electronic track about starting over",
-    audio_duration=30.0,
-    seed=-1,
-    community=False,
-    composer_profile="auto",
-    song_model="auto",
-    instrumental=False,
-    api_name="/create",
-)
-
-song = json.loads(raw)
-
-print(song["title"])
-print(song["tags"])
-print(song["composer_profile"])
-print(song["song_model"])
-print(song["audio"][:64])
+base = "http://127.0.0.1:7860"
+payload = {
+    "task_type": "cover",
+    "caption": "energetic synth rock cover",
+    "lyrics": "[Instrumental]",
+    "src_audio_id": "uploaded-audio-id",
+    "audio_cover_strength": 0.65,
+    "duration": 90,
+}
+result = requests.post(f"{base}/api/generate_advanced", json=payload, timeout=3600).json()
+print(result["result_id"])
 ```
 
-### Curl
+curl:
 
 ```bash
-EVENT_ID=$(
-  curl -X POST http://127.0.0.1:7860/gradio_api/call/create \
-    -s \
-    -H "Content-Type: application/json" \
-    -d '{"data":["A moody trip-hop ballad with whispered vocals",30,-1,false,"auto","auto",false]}' \
-  | python -c 'import sys, json; print(json.load(sys.stdin)["event_id"])'
-)
+curl -X POST http://127.0.0.1:7860/api/lora/dataset/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/path/to/audio/folder"}'
 
-curl -N http://127.0.0.1:7860/gradio_api/call/create/$EVENT_ID
+curl -X POST http://127.0.0.1:7860/api/lora/preprocess \
+  -H 'Content-Type: application/json' \
+  -d '{"dataset_json":"/path/to/app/data/lora_datasets/unit.json","song_model":"acestep-v15-turbo"}'
+
+curl -X POST http://127.0.0.1:7860/api/lora/train \
+  -H 'Content-Type: application/json' \
+  -d '{"tensor_dir":"/path/to/app/data/lora_tensors/job","adapter_type":"lora","train_epochs":10}'
 ```
 
-For the other APIs, the queue payloads are:
+## Main Endpoints
 
-- `/generate`: `{"data":["trip-hop, smoky, cinematic, downtempo","[Verse]\\nCity lights fade under silver rain",30,8,7.0,-1,"",0.8,"auto"]}`
-- `/community`: `{"data":[]}`
-- `/config`: `{"data":[]}`
+- `POST /api/compose`
+- `POST /api/create_sample`
+- `POST /api/format_sample`
+- `POST /api/generate_advanced`
+- `POST /api/generate_album`
+- `POST /api/uploads`
+- `GET /api/results/{id}`
+- `POST /api/audio-codes`
+- `POST /api/lrc`
+- `POST /api/score`
+- `GET /api/lora/status`
+- `POST /api/lora/dataset/scan`
+- `POST /api/lora/dataset/save`
+- `POST /api/lora/preprocess`
+- `POST /api/lora/train`
+- `POST /api/lora/estimate`
+- `GET /api/lora/jobs`
+- `GET /api/lora/jobs/{id}`
+- `GET /api/lora/jobs/{id}/log`
+- `POST /api/lora/jobs/{id}/stop`
+- `GET /api/lora/adapters`
+- `POST /api/lora/load`
+- `POST /api/lora/unload`
+- `POST /api/lora/use`
+
+## Development
+
+App code stays in `app/`; launcher scripts stay in the project root. `start.js` must keep Pinokio's generic URL capture pattern:
+
+```js
+event: "/(http:\\/\\/[0-9.:]+)/"
+url: "{{input.event[1]}}"
+```

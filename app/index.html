@@ -3,991 +3,1318 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AceJAM</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"></script>
+  <title>AceJAM Studio</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+    *, *::before, *::after { box-sizing: border-box; }
     :root {
       color-scheme: dark;
-      --bg:          oklch(0.13 0.006 260);
-      --surface:     rgba(255, 255, 255, 0.04);
-      --surface-2:   rgba(255, 255, 255, 0.06);
-      --surface-3:   rgba(255, 255, 255, 0.09);
-      --border:      rgba(255, 255, 255, 0.08);
-      --accent:      oklch(0.90 0.005 260);
-      --accent-dim:  oklch(0.40 0.005 260);
-      --accent-glow: rgba(255, 255, 255, 0.08);
-      --progress:    oklch(0.72 0.14 155);
-      --text:        rgba(255, 255, 255, 0.87);
-      --text-muted:  rgba(255, 255, 255, 0.40);
-      --text-faint:  rgba(255, 255, 255, 0.25);
-      --error:       oklch(0.68 0.19 22);
-      --success:     oklch(0.72 0.14 155);
-      --radius:      8px;
-      --radius-lg:   10px;
-      --font:        'Hanken Grotesk', system-ui, sans-serif;
+      --bg: #101113;
+      --rail: #15171a;
+      --panel: #1b1e22;
+      --panel-2: #22262b;
+      --line: #30363d;
+      --text: #eceff2;
+      --muted: #9aa3aa;
+      --faint: #69727a;
+      --accent: #8bd7b5;
+      --accent-2: #f2c66d;
+      --danger: #ee7b70;
+      --ok: #7fd29b;
+      --shadow: rgba(0, 0, 0, 0.24);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-
-    html, body {
-      height: 100%; background: var(--bg); color: var(--text);
-      font-family: var(--font); font-size: 13.5px; line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    body { display: flex; flex-direction: column; min-height: 100vh; }
-
-    /* ── Layout ───────────────────────────────────────────────────────────── */
-    .page { display: flex; flex: 1; max-width: 1100px; width: 100%; margin: 0 auto; padding: 28px 20px 0; gap: 20px; align-items: flex-start; }
-    .col-left { flex: 1; min-width: 0; max-width: 480px; position: sticky; top: 0; background: var(--bg); }
-    .col-right { flex: 1; min-width: 0; }
-
-    /* ── Header ───────────────────────────────────────────────────────────── */
-    header { padding: 0 0 20px; text-align: left; }
-    .wordmark { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-    .wordmark-logo {
-      height: 21px; width: auto; color: var(--text); flex-shrink: 0;
-    }
-    header p { font-size: 14px; color: var(--text-muted); }
-
-    /* ── Compose box ─────────────────────────────────────────────────────── */
-    .compose-box {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-lg); margin-bottom: 10px;
-      transition: border-color 0.15s;
-    }
-    .compose-box:focus-within { border-color: rgba(255, 255, 255, 0.14); }
-    .compose-box #description-input {
-      background: transparent; border: none; border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-      padding: 14px 14px 6px; height: 80px;
-    }
-    .compose-box #description-input:focus,
-    .compose-box #description-input:focus-visible { border: none; outline: none; }
-    .compose-controls {
-      display: flex; gap: 4px; padding: 4px 10px 10px;
-      align-items: center; flex-wrap: wrap;
-    }
-    .compose-controls .pill {
-      background: transparent; border: none; padding: 4px 8px;
-      font-size: 11px; border-radius: 6px;
-    }
-    .compose-controls .pill:hover { background: var(--surface-2); }
-    .compose-controls .pill select {
-      font-size: 11px; min-width: 44px; background-color: transparent; border: none;
-      background-position: right 0 center; padding-right: 16px;
-    }
-    .compose-controls .pill input[type="checkbox"] { width: 11px; height: 11px; }
-    .compose-controls .seed-input {
-      width: 48px !important; font-size: 11px !important; padding: 3px 6px !important;
-      background: transparent !important; border-radius: 6px !important;
-    }
-    .compose-controls .generate-btn {
-      width: auto; padding: 5px 14px; font-size: 12px;
-      border-radius: 6px; letter-spacing: 0;
-    }
-    .model-note {
-      padding: 0 14px 12px;
-      font-size: 11px;
-      color: var(--text-faint);
-    }
-
-    /* ── Inputs ───────────────────────────────────────────────────────────── */
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+    body { overflow: hidden; }
+    button, input, textarea, select { font: inherit; }
+    button { cursor: pointer; }
     textarea, input[type="text"], input[type="number"], select {
-      width: 100%; background: var(--surface-2); border: 1px solid var(--border);
-      border-radius: var(--radius); color: var(--text); font-family: var(--font);
-      font-size: 13.5px; padding: 9px 11px; outline: none; transition: border-color 0.15s;
+      width: 100%;
+      color: var(--text);
+      background: #121417;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      outline: none;
     }
-    select {
-      appearance: none;
-      -webkit-appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.25L6 6.25L11 1.25' stroke='white' stroke-opacity='0.72' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-      background-position: right 10px center;
-      background-repeat: no-repeat;
-      background-size: 12px 8px;
-      padding-right: 30px;
+    textarea { min-height: 120px; resize: vertical; }
+    textarea:focus, input:focus, select:focus { border-color: var(--accent); }
+    input[type="file"] { width: 100%; color: var(--muted); }
+    label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-columns: 184px minmax(420px, 1fr) 380px;
+      gap: 0;
     }
-    select option,
-    select optgroup {
-      background: oklch(0.18 0.006 260);
-      color: rgba(255, 255, 255, 0.92);
+    .rail {
+      background: var(--rail);
+      border-right: 1px solid var(--line);
+      padding: 16px 12px;
+      overflow: auto;
     }
-    textarea:focus, input:focus, select:focus { border-color: rgba(255, 255, 255, 0.18); }
-    textarea:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid rgba(255, 255, 255, 0.08); outline-offset: 1px; }
-    textarea::placeholder, input::placeholder { color: var(--text-faint); }
-    textarea { resize: none; }
-
-    #description-input { height: 76px; font-size: 14px; }
-    .prompt-hint { margin-top: 6px; font-size: 11px; color: var(--text-faint); }
-
-    /* ── Controls row ─────────────────────────────────────────────────────── */
-    .controls-row { display: flex; gap: 6px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
-
-    .pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 6px 10px; white-space: nowrap;
-      transition: border-color 0.15s;
+    .brand { font-weight: 750; letter-spacing: 0; font-size: 18px; margin-bottom: 2px; }
+    .subbrand { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+    .nav { display: grid; gap: 5px; }
+    .nav button {
+      height: 34px;
+      text-align: left;
+      border: 1px solid transparent;
+      color: var(--muted);
+      background: transparent;
+      border-radius: 6px;
+      padding: 0 10px;
     }
-    .pill:hover { border-color: rgba(255, 255, 255, 0.12); }
-    .pill input[type="checkbox"] { width: 12px; height: 12px; accent-color: var(--accent); cursor: pointer; }
-    .pill:has(input:checked) span { color: var(--text); }
-    .pill select {
-      background-color: transparent; border: none; color: var(--text); font-size: 12px;
-      padding: 0 16px 0 0; min-width: 56px; background-position: right 0 center;
+    .nav button:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+    .nav button.active { color: #09110d; background: var(--accent); }
+    .status {
+      margin-top: 16px;
+      min-height: 44px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      background: rgba(255, 255, 255, 0.02);
     }
-
-    .seed-input { width: 72px !important; font-size: 12px !important; padding: 6px 8px !important; }
-    .spacer { flex: 1; }
-
-    /* ── Generate button ──────────────────────────────────────────────────── */
-    .generate-btn {
-      width: 100%; background: var(--accent); border: none;
-      border-radius: var(--radius); color: oklch(0.13 0.006 260); font-family: var(--font);
-      font-size: 14px; font-weight: 600; padding: 11px; cursor: pointer;
-      transition: opacity 0.15s, transform 0.1s; letter-spacing: -0.01em;
+    .status.error { color: var(--danger); border-color: rgba(238, 123, 112, 0.45); }
+    .status.ok { color: var(--ok); border-color: rgba(127, 210, 155, 0.45); }
+    .workspace {
+      overflow: auto;
+      padding: 18px;
     }
-    .generate-btn:hover:not(:disabled) { opacity: 0.88; }
-    .generate-btn:active:not(:disabled) { transform: scale(0.99); }
-    .generate-btn:disabled { background: var(--accent-dim); cursor: not-allowed; opacity: 0.5; }
-    .generate-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .generate-btn.loading { animation: btn-pulse 2s ease-in-out infinite; }
-    @keyframes btn-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) 130px 116px 116px;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 14px;
     }
-
-    /* ── Status ───────────────────────────────────────────────────────────── */
-    .status-bar { font-size: 11.5px; color: var(--text-muted); text-align: center; padding: 0; min-height: 0; display: none; }
-    .status-bar.error { display: block; color: var(--error); padding: 6px 0; }
-    .status-bar.success { display: none; }
-
-    /* ── Output card ──────────────────────────────────────────────────────── */
-    .output-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-lg); padding: 14px; margin-bottom: 10px;
-      animation: fade-in 0.25s ease;
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      box-shadow: 0 12px 24px var(--shadow);
+      margin-bottom: 12px;
     }
-    @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-
-    #waveform {
-      display: flex; align-items: end; gap: 1px; height: 56px;
-      background: var(--surface-2); border-radius: var(--radius);
-      padding: 8px 10px; cursor: pointer; margin-bottom: 10px;
+    .panel h2, .panel h3 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      letter-spacing: 0;
     }
-    #waveform .bar {
-      flex: 1; background: var(--text-faint); border-radius: 1px;
-      transition: background 0.15s;
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+    .check {
+      display: inline-flex;
+      gap: 7px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0;
+      white-space: nowrap;
     }
-    .playback-controls { display: flex; align-items: center; gap: 10px; }
-    .play-btn {
-      width: 30px; height: 30px; background: var(--accent); border: none;
-      border-radius: 50%; color: oklch(0.13 0.006 260); font-size: 12px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-      transition: opacity 0.15s;
+    .check input { accent-color: var(--accent); }
+    .primary, .secondary, .danger {
+      border: 0;
+      border-radius: 6px;
+      height: 34px;
+      padding: 0 13px;
+      font-weight: 650;
     }
-    .play-btn:hover { opacity: 0.85; }
-    .play-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .time-display { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; flex: 1; }
-    .download-btn {
-      display: inline-flex; align-items: center; gap: 4px; background: #fff;
-      border: none; border-radius: 6px; color: #111;
-      font-family: var(--font); font-size: 11px;
-      font-weight: 600; padding: 5px 10px; cursor: pointer;
-      transition: opacity 0.15s;
+    .primary { background: var(--accent); color: #09110d; }
+    .secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+    .danger { background: transparent; color: var(--danger); border: 1px solid rgba(238, 123, 112, 0.45); }
+    .primary:disabled, .secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+    .mode-panel[hidden] { display: none; }
+    .capability {
+      color: var(--accent-2);
+      font-size: 12px;
+      min-height: 18px;
+      margin-top: 6px;
     }
-    .download-btn:hover { opacity: 0.85; }
-    .download-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .download-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-    .share-icon-btn {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 16px; height: 16px; background: #fff; border: none; border-radius: 3px;
-      color: #111; font-size: 10px; cursor: pointer; flex-shrink: 0; margin-left: 4px;
-      transition: opacity 0.15s;
+    .track-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 6px;
     }
-    .share-icon-btn:hover { opacity: 0.85; }
-    .share-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .share-icon-btn svg { width: 9px; height: 9px; }
-
-    /* Video generation overlay */
-    .video-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.85);
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      z-index: 100; gap: 12px;
+    .upload-note, .tiny { color: var(--faint); font-size: 11px; line-height: 1.35; }
+    .results {
+      background: #141619;
+      border-left: 1px solid var(--line);
+      overflow: auto;
+      padding: 18px 14px;
     }
-    .video-overlay .label { font-size: 13px; color: var(--text-muted); }
-    .video-overlay .pct { font-size: 28px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-    .video-overlay .bar-track { width: 200px; height: 3px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden; }
-    .video-overlay .bar-fill { height: 100%; background: #fff; border-radius: 2px; transition: width 0.3s; }
-
-    /* ── Community feed ───────────────────────────────────────────────────── */
-    .feed-header {
-      font-size: 11px; font-weight: 600; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 0.06em;
+    .results h2 { margin: 0 0 12px; font-size: 14px; }
+    .result-card, .song-card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 12px;
       margin-bottom: 10px;
     }
-    .feed-empty { font-size: 12px; color: var(--text-faint); text-align: center; padding: 32px 0; }
-
-    .song-card {
-      background: transparent; border: 1px solid transparent;
-      border-radius: var(--radius); padding: 8px 10px; margin-bottom: 6px;
-      cursor: pointer; transition: background 0.15s;
+    .result-title { font-weight: 700; margin-bottom: 3px; }
+    .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    audio { width: 100%; height: 34px; margin: 7px 0; }
+    details { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+    summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+    pre {
+      white-space: pre-wrap;
+      overflow: auto;
+      max-height: 240px;
+      color: var(--text);
+      background: #111316;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .song-card:hover { background: var(--surface); }
-    .song-card.playing { background: var(--surface); }
-
-    .song-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
-    .song-play-btn {
-      width: 26px; height: 26px; background: var(--surface-3); border: 1px solid var(--border);
-      border-radius: 50%; color: var(--text-muted); font-size: 10px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    .library-list { max-height: 66vh; overflow: auto; }
+    .album-log {
+      min-height: 160px;
+      max-height: 300px;
+      overflow: auto;
+      background: #111316;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      color: var(--muted);
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
     }
-    .song-play-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-    .song-card:hover .song-play-btn { background: rgba(255, 255, 255, 0.08); color: var(--text); border-color: rgba(255, 255, 255, 0.12); }
-    .song-card.playing .song-play-btn { background: var(--accent); color: oklch(0.13 0.006 260); border-color: var(--accent); }
-    .song-title { font-size: 13px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .song-tags { font-size: 11px; color: var(--text-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
-    .song-duration { font-size: 11px; color: var(--text-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; margin-left: 8px; }
-
-    /* ── Placeholder (loading state) ──────────────────────────────────────── */
-    .placeholder-card {
-      background: var(--surface); border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: var(--radius-lg); padding: 14px;
-      margin-bottom: 10px; animation: fade-in 0.25s ease;
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #121417;
+      max-height: 280px;
     }
-    .placeholder-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
-    .placeholder-sub { font-size: 11px; color: var(--text-muted); margin-bottom: 10px; }
-
-    .fake-waveform {
-      display: flex; align-items: end; gap: 2px; height: 44px;
-      background: var(--surface-2); border-radius: var(--radius); padding: 8px 10px;
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 7px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; font-weight: 650; background: #181b1f; position: sticky; top: 0; z-index: 1; }
+    td input, td textarea { min-height: 34px; padding: 7px; font-size: 12px; }
+    td textarea { min-height: 58px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 0 7px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.03);
     }
-    .fake-waveform .bar {
-      flex: 1; background: var(--accent); border-radius: 1px; opacity: 0.3;
-      animation: wave-pulse 1.2s ease-in-out infinite;
+    .badge.ok { color: var(--ok); border-color: rgba(127, 210, 155, 0.45); }
+    .badge.warn { color: var(--accent-2); border-color: rgba(242, 198, 109, 0.45); }
+    .trainer-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    @media (max-width: 1120px) {
+      body { overflow: auto; }
+      .app { min-height: 100%; grid-template-columns: 150px minmax(0, 1fr); }
+      .results { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
     }
-    @keyframes wave-pulse {
-      0%, 100% { transform: scaleY(0.3); opacity: 0.15; }
-      50% { transform: scaleY(1); opacity: 0.4; }
-    }
-
-    /* ── Mini waveform ────────────────────────────────────────────────────── */
-    .mini-waveform {
-      display: flex; align-items: end; gap: 1px; height: 22px; margin-top: 5px;
-      cursor: pointer;
-    }
-    .mini-waveform .bar {
-      flex: 1; background: var(--text-faint); border-radius: 1px;
-      transition: background 0.2s;
-    }
-    .song-card.playing .mini-waveform .bar { background: var(--accent); }
-    .song-card:hover .mini-waveform .bar { background: rgba(255, 255, 255, 0.22); }
-
-    /* ── Spinner ──────────────────────────────────────────────────────────── */
-    .spinner {
-      display: inline-block; width: 12px; height: 12px;
-      border: 2px solid rgba(0, 0, 0, 0.12); border-top-color: oklch(0.13 0.006 260);
-      border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Footer ───────────────────────────────────────────────────────────── */
-    footer { padding: 20px; text-align: center; font-size: 11px; color: var(--text-faint); }
-    footer a { color: var(--text-muted); text-decoration: none; }
-    footer a:hover { color: var(--text); }
-
-    /* ── Mobile ───────────────────────────────────────────────────────────── */
-    .share-label-short { display: none; }
-    @media (max-width: 800px) {
-      .page { flex-direction: column; padding: 20px 16px 0; gap: 16px; }
-      .col-left, .col-right { max-width: none; width: 100%; }
-      .song-card-top .song-tags { display: none; }
-      .controls-row { gap: 5px; }
-      .seed-input { width: 60px !important; }
-      .share-label-full { display: none; }
-      .share-label-short { display: inline; }
+    @media (max-width: 760px) {
+      .app { display: block; }
+      body { overflow: auto; }
+      .rail { border-right: 0; border-bottom: 1px solid var(--line); }
+      .nav { grid-template-columns: repeat(2, 1fr); }
+      .topbar, .grid-2, .grid-3 { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand">AceJAM Studio</div>
+      <div class="subbrand">ACE-Step 1.5</div>
+      <nav class="nav" id="nav"></nav>
+      <div class="status" id="status">Loading studio...</div>
+    </aside>
 
-  <div class="page">
-
-    <!-- ════ LEFT: Create ════ -->
-    <div class="col-left">
-
-      <header>
-        <div class="wordmark">
-          <svg class="wordmark-logo" viewBox="0 0 1357 390" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M429.554 121.056c25.685-2.701 56.59 8.361 65.05 35.015 6.4 20.237-1.839 45.271-23.479 51.909-10.535 3.243-26.295 1.729-29.56-10.892-1.465-7.657 4.81-15.286 7.43-22.246 2.915-7.759 2.54-20.084-5.83-24.234-12.865-6.234-25.751 10.698-30.446 20.741-11.515 24.623-18.194 66.318-9.654 92.045 15.96 48.099 79.485 21.441 93.715-13.469 1.85-4.537.905-13.069 1.885-18.054 4.24-45.958 30.43-90.954 75.74-106.514 34.455-11.835 78.87-.084 91.26 37.146 4.43 13.542 2.515 29.945-3.84 42.61-14.065 26.676-46.055 36.676-72.945 45.039-6.48 2.225-18.736 5.131-24.076 7.796q.107 1.334.326 2.656c5.275 31.502 38.935 36.362 64.115 25.899 23.91-9.935 38.415-24.933 53.5-45.365 5.055-5.088 11.455-3.266 11.695 4.253.285 5.284-2.34 10.701-4.915 15.32-17.715 31.762-47.551 61.527-83.131 71.447-37.425 10.435-79.034-3.97-97.779-38.678-1.09-2.018-3.645-8.147-5.085-9.36-3.25 2.494-10.835 11.736-14.61 15.398-18.56 17.995-38.876 31.53-64.996 34.715a81.2 81.2 0 0 1-60.209-16.81c-17.921-14.293-27.46-36.077-29.707-58.502-6.195-61.85 28.272-131.158 95.546-137.865m181.456 70.616c5.125-13.489 7.57-43.481-14.165-42.209-24.88 6.91-34.32 59.526-33.31 81.763 5.11-1.34 8.85-2.705 13.775-4.704 15.59-7.135 27.52-18.594 33.7-34.85"></path><path fill="currentColor" d="M252.566 31.328c13.489.15 28.638-1.107 40.747 5.829 14.378 8.235 13.358 26.043 14.32 40.355l2.323 33.361 7.744 101.628c1.854 26.297 3.277 52.889 7.327 78.938 1.466 9.43 5.535 20.237 13.799 25.7 2.658 1.75 6.034 4.031 6.681 7.386 2.157 11.18-15.813 8.85-23.014 8.805l-27.869-.166q-14.718-.014-29.435.166c-5.378.055-19.803 1.139-23.314-1.986-6.732-6 9.234-15.974 10.313-24.989 2.273-19.001.231-40.745-1.328-59.509-7.726-2.792-16.639-4.369-24.684-6.138-13.149-2.89-26.221-5.506-39.576-7.317-26.129 49.575-50.203 122.044-116.567 125.219-30.024-.73-51.661-17.32-43.553-49.833 2.48-9.949 16.708-26.894 26.499-15.203 3.194 3.815.678 17.184 3.565 22.031 5.484 10.919 20.75 10.089 29.943 5.274 26.071-13.664 41.425-42.9 54.985-67.806 3.709-6.846 8.069-15.671 10.602-22.698q-2.555-.012-5.109.052c-19.691.564-40.684 9.808-55.07 23.351-4.01 3.776-11.3 15.404-16.445 15.651-6.447.31-8.223-6.662-8.054-12.163.398-13.022 6.724-26.658 16.043-35.764 23.204-21.692 54.274-24.541 84.477-24.073 13.373-27.212 25.61-57.864 37.877-85.805 6.466-14.728 13.866-31.519 18.076-47.027 1.006-3.702.114-6.804-.832-10.394-4.37-4.675-25.115-13.02-5.264-19.847 6.059-2.084 17.892-2.365 24.562-2.782 3.149-.28 7.046-.282 10.231-.246m-11.933 74.358c-2.056 2.836-4.866 10.582-6.357 14.227l-12.001 29.498c-7.084 17.143-15.606 35.261-22.304 52.253 4.745.982 9.285 1.633 14.067 2.339 10.719 1.694 23.779 4.18 34.381 4.855-.456-12.059-4.748-99.339-7.786-103.172M751.392 71.823c-.34-9.52 19.635-7.66 25.921-7.67l26.78-.04c12.231-.03 25.492-.374 37.717.53 1.879.316 5.482 1.365 6.766 2.88 6.272 7.415-6.264 12.926-9.123 19.746-2.577 6.15-3.914 8.925-4.523 15.455-1.488 15.925-1.144 31.855-1.169 47.79l-.324 68.059c-.121 34.375 1.189 67.59-24.984 94.135-36.711 37.23-117.356 35.785-141.56-15.145-4.124-8.675-4.715-18.09-4.655-27.495a47.1 47.1 0 0 1 10.969-26.95c12.532-14.62 37.444-18.11 52.064-4.965a27.12 27.12 0 0 1 8.988 19.43c.401 14.01-6.404 17.145-14.45 25.775-12.126 13.465 3.685 27.82 18.108 25.8 34.753-4.875 30.803-53.81 30.832-79.675l.022-51.27-.083-45.14c-.062-14.645 1.538-35.665-6.982-47.905-2.659-3.745-10.142-8.515-10.314-13.345m195.843-9.245c12.179.095 24.785 2.39 33.048 12.225 8.54 10.165 15.095 43.36 18.885 57.315a4784 4784 0 0 0 33.182 114.901c4.95 16.344 9.74 35.189 16.79 50.634 2.01 4.405 6.36 8.5 10.52 11.01 10.66-9.845 9.61-34.86 9.84-48.38.27-16.265.11-32.69.37-48.98.38-21.295.57-42.59.58-63.89.14-16.01 1.85-34.3-1.62-50.005-1.39-6.29-3.63-11.715-8.4-16.22-1.79-1.68-3.86-3.26-5.09-5.405-.93-1.605-1.16-3.165-.56-4.955.73-2.195 2.16-3.65 4.24-4.62 2.31-1.075 4.81-1.395 7.32-1.61 9.48-.82 64.09-1.63 70.82 1.13 3.59 1.476 7.11 3.465 9.04 6.985 4.07 7.45 7.19 22.705 9.93 31.675 6.89 22.14 13.89 44.245 21.01 66.305 1.7 5.266 9.36 32.903 12.28 34.155 3.93-2.421 13.66-31.838 16.01-38.289l22.7-63.086c2.97-8.45 8.02-25.404 12.63-32.664 6.54-10.29 38.43-5.77 50.05-6.66 7.74-.595 17.31.319 25.1.439 1.84.03 5.8 1.49 7.28 2.775 6.32 6.505-8.06 15.936-10.21 24.03-4.25 16.02-4 33.681-4.07 50.001-.21 46.014-.95 91.855.43 137.839.23 7.98.77 17.025 3.85 24.4 1.8 5.35 11.31 10.78 11.29 16.415-.04 8.814-19.17 6.56-23.92 6.53l-24.93-.05c-11.57.01-23.48.55-34.81.225-13.23-.37-10.68-8.34-3.9-15.13 6.19-6.2 7.38-12.235 8.82-20.59 1.49-12.225 1.48-27.015 1.52-39.31l.08-43.34c.01-4.711.82-35.563-1.29-36.875-3.11 1.92-5.99 12.945-7.48 16.735-2.81 7.115-5.56 14.42-8.26 21.59l-28.89 77.345c-3.79 10.19-7.2 20.715-11.81 30.535-4.6 9.945-21.68 7.62-26.25-.93-6.24-11.665-10.05-27.12-14.24-39.845l-25.75-78.195c-1.55-4.689-8.26-28.116-11.64-28.965-1.32 1.15-1.96 4.495-1.99 6.17-.75 34.63-.79 69.4-.67 104.045.03 11.2 1.09 22.405 9.76 30.435 1.59 1.63 5.91 5.895 6.31 8.04 2.11 11.404-22.14 8.28-29.52 8.205l-35.05-.27-61.452-.04c-7.77.02-15.615.57-23.372.37-2.238-.06-6.194.01-8.107-1.214-1.381-.885-2.384-2.471-2.7-4.071-.959-4.86 5.28-9.225 7.673-12.98 6.088-9.545.193-28.165-2.33-38.38-.971-3.935-2.246-9.53-6.087-11.63-6.617-3.62-51.072-4.499-59.105-2.185-2.513.725-3.717 2.395-4.872 4.63-4.31 8.35-10.534 31.55-9.323 40.77.252 1.92 1.094 3.74 2.121 5.365 2.362 3.735 7.774 6.501 8.939 10.775.49 1.8.036 3.635-.991 5.16-1.309 1.939-2.962 2.64-5.191 3.11-7.781 1.635-27.562.18-36.554.245-6.542.045-13.637 1.1-20.092.515-2.462-.225-5.183-.915-7.202-2.4-1.51-1.11-2.693-2.71-2.759-4.645-.174-5.1 6.625-9.225 9.585-12.93 3.854-4.82 6.477-10.545 8.774-16.23 13.148-32.555 23.034-66.76 34.557-99.94l20.711-60.995c3.423-10.25 7.955-21.985 9.888-32.605 3.471-8.28-9.124-18.955-9.128-22.945-.009-9.225 38.877-11.295 43.682-11.575m-9.769 79.41c-2.886 3.83-24.901 73.496-24.944 78.31 3.007 2.44 15.374 1.64 19.785 1.575 4.813 0 21.568 1.005 24.674-1.604.802-.676.618-3.005.565-3.965-.305-5.51-15.823-71.054-17.593-72.785-.732-.715-1.577-1.106-2.487-1.531"></path></svg>
+    <main class="workspace">
+      <div class="topbar">
+        <div>
+          <label for="song-model">ACE-Step model</label>
+          <select id="song-model"></select>
+          <div class="capability" id="capability"></div>
         </div>
-        <p>Describe any song. Local AI writes it, ACE-Step produces it.</p>
-      </header>
-
-      <div class="compose-box">
-        <textarea id="description-input"
-          placeholder="A chill lo-fi track for studying, ninja battle anthem, love song about AI..."
-        ></textarea>
-        <div class="compose-controls">
-          <label class="pill">
-            <select id="duration-select">
-              <option value="30">30s</option>
-              <option value="60" selected>1 min</option>
-              <option value="120">2 min</option>
-            </select>
-          </label>
-          <label class="pill">
-            <select id="composer-select">
-              <option value="auto" selected>Auto</option>
-              <option value="tiny">Tiny</option>
-              <option value="balanced">Balanced</option>
-              <option value="quality">Quality</option>
-            </select>
-          </label>
-          <label class="pill">
-            <select id="song-model-select">
-              <option value="auto" selected>Song Model</option>
-            </select>
-          </label>
-          <label class="pill"><input type="checkbox" id="instrumental-check" /><span>Instrumental</span></label>
-          <label class="pill"><input type="checkbox" id="community-check" checked /><span class="share-label-full">Save to local feed</span><span class="share-label-short">Save</span></label>
-          <span class="spacer"></span>
-          <button class="generate-btn" id="generate-btn">Generate</button>
+        <div>
+          <label for="duration">Duration</label>
+          <input id="duration" type="number" min="10" max="600" value="60" />
         </div>
-        <div class="model-note" id="model-note">Loading model settings…</div>
-      </div>
-      <div class="status-bar" id="status-bar"></div>
-
-      <!-- Output -->
-      <div id="output-section" style="display:none">
-        <div class="output-card">
-          <div style="display:flex;gap:10px;margin-bottom:8px;">
-            <img id="song-thumb" style="width:48px;height:48px;border-radius:6px;object-fit:cover;display:none;" />
-            <div style="min-width:0;flex:1;">
-              <div id="song-title" style="font-size:13px;font-weight:600;margin-bottom:3px;"></div>
-              <div id="song-tags" style="font-size:11px;color:var(--text-muted);"></div>
-            </div>
-          </div>
-          <div id="waveform"></div>
-          <div class="playback-controls">
-            <button class="play-btn" id="play-btn" title="Play / Pause"><svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"><path d="M0 0l10 6-10 6z"/></svg></button>
-            <span class="time-display" id="time-display">0:00 / 0:00</span>
-            <button class="download-btn" id="download-btn">⬇ Download</button>
-          </div>
+        <div>
+          <label for="batch-size">Batch</label>
+          <input id="batch-size" type="number" min="1" max="8" value="1" />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <label class="check"><input type="checkbox" id="save-library" checked /> Save</label>
         </div>
       </div>
 
-    </div>
+      <section class="panel mode-panel" data-mode="simple">
+        <h2>Simple</h2>
+        <div class="field">
+          <label for="simple-description">Song idea</label>
+          <textarea id="simple-description" placeholder="A Dutch melodic rap song about late-night Rotterdam, warm keys, 808 bass, emotional hook"></textarea>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label for="ollama-model">Ollama songwriter</label>
+            <select id="ollama-model"></select>
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <label class="check"><input type="checkbox" id="instrumental" /> Instrumental</label>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button class="secondary" id="compose-btn">Compose</button>
+          <button class="primary" data-generate>Generate</button>
+        </div>
+      </section>
 
-    <!-- ════ RIGHT: Local feed ════ -->
-    <div class="col-right">
-      <div class="feed-header">Local Songs</div>
-      <div id="feed"></div>
-    </div>
+      <section class="panel mode-panel" data-mode="custom">
+        <h2>Custom</h2>
+        <div class="grid-2">
+          <div class="field">
+            <label for="title">Title</label>
+            <input id="title" type="text" value="Untitled" />
+          </div>
+          <div class="field">
+            <label for="language">Vocal language</label>
+            <select id="language"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="caption">Caption / tags</label>
+          <textarea id="caption" placeholder="genre, instruments, mood, vocal character, production style"></textarea>
+        </div>
+        <div class="field">
+          <label for="lyrics">Lyrics</label>
+          <textarea id="lyrics" placeholder="[Verse]&#10;...&#10;&#10;[Chorus]&#10;..."></textarea>
+        </div>
+        <div class="field">
+          <label for="reference-file">Reference audio</label>
+          <input id="reference-file" type="file" accept="audio/*" />
+          <div class="upload-note" id="reference-note">No reference selected.</div>
+        </div>
+        <div class="row">
+          <button class="secondary" id="format-btn">Format</button>
+          <button class="primary" data-generate>Generate</button>
+        </div>
+      </section>
 
+      <section class="panel mode-panel" data-mode="cover">
+        <h2>Cover / Remix</h2>
+        <div class="field">
+          <label for="source-file">Source audio</label>
+          <input id="source-file" type="file" accept="audio/*" />
+          <div class="upload-note" id="source-note">No source selected.</div>
+        </div>
+        <div class="field">
+          <label for="cover-strength">Remix strength</label>
+          <input id="cover-strength" type="number" min="0" max="1" step="0.05" value="0.8" />
+        </div>
+        <div class="field">
+          <label for="cover-caption">Target style</label>
+          <textarea id="cover-caption" placeholder="jazz piano version, intimate vocals, brushed drums"></textarea>
+        </div>
+        <button class="primary" data-generate>Generate</button>
+      </section>
+
+      <section class="panel mode-panel" data-mode="repaint">
+        <h2>Repaint</h2>
+        <div class="field">
+          <label for="repaint-file">Source audio</label>
+          <input id="repaint-file" type="file" accept="audio/*" />
+          <div class="upload-note" id="repaint-note">No source selected.</div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label for="repaint-start">Start seconds</label>
+            <input id="repaint-start" type="number" value="0" />
+          </div>
+          <div>
+            <label for="repaint-end">End seconds</label>
+            <input id="repaint-end" type="number" value="-1" />
+          </div>
+        </div>
+        <div class="field" style="margin-top:10px;">
+          <label for="repaint-caption">Replacement</label>
+          <textarea id="repaint-caption" placeholder="smooth transition into a piano solo"></textarea>
+        </div>
+        <button class="primary" data-generate>Generate</button>
+      </section>
+
+      <section class="panel mode-panel" data-mode="extract">
+        <h2>Extract</h2>
+        <div class="field">
+          <label for="extract-file">Source mix</label>
+          <input id="extract-file" type="file" accept="audio/*" />
+          <div class="upload-note" id="extract-note">No source selected.</div>
+        </div>
+        <div class="field">
+          <label for="extract-track">Track</label>
+          <select id="extract-track"></select>
+        </div>
+        <button class="primary" data-generate>Extract</button>
+      </section>
+
+      <section class="panel mode-panel" data-mode="lego">
+        <h2>Lego</h2>
+        <div class="field">
+          <label for="lego-file">Backing audio</label>
+          <input id="lego-file" type="file" accept="audio/*" />
+          <div class="upload-note" id="lego-note">No source selected.</div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label for="lego-track">Layer</label>
+            <select id="lego-track"></select>
+          </div>
+          <div>
+            <label for="lego-caption">Layer style</label>
+            <input id="lego-caption" type="text" placeholder="tight funk bass, warm, pocket groove" />
+          </div>
+        </div>
+        <button class="primary" data-generate style="margin-top:10px;">Add Layer</button>
+      </section>
+
+      <section class="panel mode-panel" data-mode="complete">
+        <h2>Complete</h2>
+        <div class="field">
+          <label for="complete-file">Partial track</label>
+          <input id="complete-file" type="file" accept="audio/*" />
+          <div class="upload-note" id="complete-note">No source selected.</div>
+        </div>
+        <div class="field">
+          <label>Tracks to add</label>
+          <div class="track-grid" id="complete-tracks"></div>
+        </div>
+        <div class="field">
+          <label for="complete-caption">Arrangement style</label>
+          <input id="complete-caption" type="text" placeholder="modern rock arrangement, wide chorus" />
+        </div>
+        <button class="primary" data-generate>Complete</button>
+      </section>
+
+      <section class="panel mode-panel" data-mode="album">
+        <h2>Album</h2>
+        <div class="field">
+          <label for="album-concept">Concept</label>
+          <textarea id="album-concept" placeholder="A seven-track Dutch rap album about ambition, family, night shifts and winning quietly"></textarea>
+        </div>
+        <div class="grid-3">
+          <div>
+            <label for="album-tracks">Tracks</label>
+            <input id="album-tracks" type="number" min="1" max="20" value="5" />
+          </div>
+          <div>
+            <label for="album-duration">Track seconds</label>
+            <input id="album-duration" type="number" min="10" max="600" value="120" />
+          </div>
+          <div>
+            <label for="album-language">Language</label>
+            <select id="album-language"></select>
+          </div>
+        </div>
+        <div class="grid-2" style="margin-top:10px;">
+          <div>
+            <label for="album-ollama">Ollama</label>
+            <select id="album-ollama"></select>
+          </div>
+          <div>
+            <label for="album-embed">Embedding</label>
+            <select id="album-embed"></select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button class="primary" id="album-btn">Generate Album</button>
+          <button class="secondary" id="refresh-ollama">Refresh Ollama</button>
+        </div>
+        <pre class="album-log" id="album-log"></pre>
+      </section>
+
+      <section class="panel mode-panel" data-mode="lora">
+        <h2>Trainer Studio</h2>
+        <div class="row" style="margin-bottom:10px;">
+          <span class="badge" id="trainer-ready">Checking trainer</span>
+          <button class="secondary" id="lora-refresh">Refresh</button>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="lora-path">Adapter path</label>
+            <input id="lora-path" type="text" placeholder="/path/to/adapter/final" />
+          </div>
+          <div class="field">
+            <label for="lora-adapter-select">Known adapters</label>
+            <select id="lora-adapter-select"></select>
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:12px;">
+          <button class="secondary" id="lora-load">Load</button>
+          <button class="secondary" id="lora-unload">Unload</button>
+          <label class="check"><input type="checkbox" id="lora-use" checked /> Use adapter</label>
+        </div>
+
+        <div class="field" style="margin-top:12px;">
+          <label for="dataset-path">Training dataset folder</label>
+          <input id="dataset-path" type="text" placeholder="/path/to/audio/folder" />
+        </div>
+        <div class="trainer-actions">
+          <button class="secondary" id="dataset-scan">Scan</button>
+          <button class="secondary" id="dataset-label">Auto-label</button>
+          <button class="secondary" id="dataset-save">Save JSON</button>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="dataset-tag">Trigger tag</label>
+            <input id="dataset-tag" type="text" placeholder="artist/style tag" />
+          </div>
+          <div>
+            <label for="dataset-tag-position">Tag position</label>
+            <select id="dataset-tag-position">
+              <option value="prepend">Prepend</option>
+              <option value="append">Append</option>
+              <option value="replace">Replace caption</option>
+            </select>
+          </div>
+          <div>
+            <label for="dataset-genre-ratio">Genre ratio</label>
+            <input id="dataset-genre-ratio" type="number" min="0" max="100" value="0" />
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Caption</th>
+                <th>Lyrics</th>
+                <th>BPM</th>
+                <th>Key</th>
+                <th>Lang</th>
+              </tr>
+            </thead>
+            <tbody id="dataset-table">
+              <tr><td colspan="6" class="tiny">Scan a dataset folder.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2" style="margin-top:12px;">
+          <div>
+            <label for="lora-dataset-json">Dataset JSON</label>
+            <input id="lora-dataset-json" type="text" placeholder="Saved dataset JSON" />
+          </div>
+          <div>
+            <label for="tensor-dir">Tensor dataset</label>
+            <input id="tensor-dir" type="text" placeholder="Preprocessed tensor directory" />
+          </div>
+        </div>
+        <div class="trainer-actions" style="margin-top:10px;">
+          <button class="secondary" id="lora-preprocess">Preprocess</button>
+          <button class="secondary" id="lora-estimate">Estimate</button>
+          <button class="danger" id="lora-stop">Stop job</button>
+        </div>
+
+        <div class="grid-3" style="margin-top:12px;">
+          <div>
+            <label for="adapter-type">Adapter</label>
+            <select id="adapter-type">
+              <option value="lora">LoRA</option>
+              <option value="lokr">LoKr</option>
+            </select>
+          </div>
+          <div>
+            <label for="train-epochs">Epochs</label>
+            <input id="train-epochs" type="number" min="1" value="10" />
+          </div>
+          <div>
+            <label for="train-batch">Batch</label>
+            <input id="train-batch" type="number" min="1" value="1" />
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="grad-accum">Grad accum</label>
+            <input id="grad-accum" type="number" min="1" value="4" />
+          </div>
+          <div>
+            <label for="learning-rate">Learning rate</label>
+            <input id="learning-rate" type="text" value="0.0001" />
+          </div>
+          <div>
+            <label for="save-every">Save every</label>
+            <input id="save-every" type="number" min="1" value="5" />
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="lora-rank">LoRA rank</label>
+            <input id="lora-rank" type="number" min="1" value="64" />
+          </div>
+          <div>
+            <label for="lora-alpha">LoRA alpha</label>
+            <input id="lora-alpha" type="number" min="1" value="128" />
+          </div>
+          <div>
+            <label for="lora-dropout">LoRA dropout</label>
+            <input id="lora-dropout" type="text" value="0.1" />
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="lokr-dim">LoKr dim</label>
+            <input id="lokr-dim" type="number" min="1" value="64" />
+          </div>
+          <div>
+            <label for="lokr-alpha">LoKr alpha</label>
+            <input id="lokr-alpha" type="number" min="1" value="128" />
+          </div>
+          <div>
+            <label for="train-seed">Train seed</label>
+            <input id="train-seed" type="number" min="0" value="42" />
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <label class="check"><input type="checkbox" id="grad-checkpoint" checked /> Gradient checkpointing</label>
+          <label class="check"><input type="checkbox" id="offload-encoder" /> Offload encoder</label>
+          <label class="check"><input type="checkbox" id="lokr-weight" checked /> LoKr weight decompose</label>
+        </div>
+        <div class="trainer-actions" style="margin-top:10px;">
+          <button class="primary" id="lora-train">Train adapter</button>
+        </div>
+        <pre id="lora-log">Trainer logs appear here.</pre>
+      </section>
+
+      <section class="panel mode-panel" data-mode="library">
+        <h2>Library</h2>
+        <div class="row" style="margin-bottom:10px;">
+          <button class="secondary" id="library-refresh">Refresh</button>
+        </div>
+        <div class="library-list" id="library-list"></div>
+      </section>
+
+      <section class="panel mode-panel" data-mode="settings">
+        <h2>Settings</h2>
+        <div class="grid-3">
+          <div>
+            <label for="seed">Seed(s)</label>
+            <input id="seed" type="text" value="-1" />
+          </div>
+          <div>
+            <label for="steps">Steps</label>
+            <input id="steps" type="number" min="1" max="200" value="8" />
+          </div>
+          <div>
+            <label for="guidance">Guidance</label>
+            <input id="guidance" type="number" min="1" max="15" step="0.1" value="7" />
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="bpm">BPM</label>
+            <input id="bpm" type="number" min="30" max="300" placeholder="auto" />
+          </div>
+          <div>
+            <label for="key-scale">Key</label>
+            <input id="key-scale" type="text" placeholder="C major" />
+          </div>
+          <div>
+            <label for="time-signature">Time</label>
+            <select id="time-signature"><option value="">Auto</option><option>2</option><option>3</option><option selected>4</option><option>6</option></select>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="shift">Shift</label>
+            <input id="shift" type="number" min="1" max="5" step="0.1" value="3" />
+          </div>
+          <div>
+            <label for="infer-method">Method</label>
+            <select id="infer-method"><option value="ode">ode</option><option value="sde">sde</option></select>
+          </div>
+          <div>
+            <label for="audio-format">Format</label>
+            <select id="audio-format"><option>wav</option><option>flac</option><option>ogg</option></select>
+          </div>
+        </div>
+        <div class="grid-2" style="margin-top:10px;">
+          <div>
+            <label for="cfg-start">CFG start</label>
+            <input id="cfg-start" type="number" min="0" max="1" step="0.05" value="0" />
+          </div>
+          <div>
+            <label for="cfg-end">CFG end</label>
+            <input id="cfg-end" type="number" min="0" max="1" step="0.05" value="1" />
+          </div>
+        </div>
+        <div class="field" style="margin-top:10px;">
+          <label for="timesteps">Custom timesteps</label>
+          <input id="timesteps" type="text" placeholder="0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0" />
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="use-adg" /> ADG</label>
+          <label class="check"><input type="checkbox" id="auto-score" /> Auto score</label>
+          <label class="check"><input type="checkbox" id="auto-lrc" /> Auto LRC</label>
+          <label class="check"><input type="checkbox" id="return-codes" /> Audio codes</label>
+        </div>
+      </section>
+    </main>
+
+    <aside class="results">
+      <h2>Results</h2>
+      <div id="results-list">
+        <div class="tiny">Generated takes appear here.</div>
+      </div>
+    </aside>
   </div>
 
-  <footer>
-    Powered by <a href="https://github.com/ace-step/ACE-Step" target="_blank">ACE-Step</a> ·
-    <a href="https://github.com/abetlen/llama-cpp-python" target="_blank">llama.cpp runtime</a>
-  </footer>
-
-  <script type="module">
-    import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.15.2/dist/index.min.js";
-    // WaveSurfer removed — using lightweight bar waveform with real audio peaks
-
-    // ── DOM ──────────────────────────────────────────────────────────────────
-    const descInput       = document.getElementById("description-input");
-    const durationSelect  = document.getElementById("duration-select");
-    const composerSelect  = document.getElementById("composer-select");
-    const songModelSelect = document.getElementById("song-model-select");
-    const instrumentalChk = document.getElementById("instrumental-check");
-    const communityChk    = document.getElementById("community-check");
-    const generateBtn     = document.getElementById("generate-btn");
-    const statusBar       = document.getElementById("status-bar");
-    const modelNote       = document.getElementById("model-note");
-    const outputSection   = document.getElementById("output-section");
-    const songTitleEl     = document.getElementById("song-title");
-    const songTagsEl      = document.getElementById("song-tags");
-    const playBtn         = document.getElementById("play-btn");
-    const timeDisplay     = document.getElementById("time-display");
-    const downloadBtn     = document.getElementById("download-btn");
-    const feedEl          = document.getElementById("feed");
-
-    downloadBtn.addEventListener("click", () => {
-      if (currentSong) generateShareVideo(currentSong, downloadBtn);
-    });
-
-    const runtimeConfig = {
-      active_song_model: "acestep-v15-turbo",
-      default_song_model: "acestep-v15-turbo",
-      available_song_models: ["acestep-v15-turbo", "acestep-v15-xl-turbo"],
+  <script>
+    const modes = ["simple", "custom", "cover", "repaint", "extract", "lego", "complete", "album", "lora", "library", "settings"];
+    const taskForMode = { simple: "text2music", custom: "text2music", cover: "cover", repaint: "repaint", extract: "extract", lego: "lego", complete: "complete" };
+    const state = {
+      mode: "simple",
+      config: null,
+      sourceAudioId: null,
+      sourceResultId: null,
+      referenceAudioId: null,
+      referenceResultId: null,
+      uploads: {},
+      lastPayload: null,
+      datasetFiles: [],
+      datasetId: null,
+      datasetJson: "",
+      tensorDir: "",
+      activeLoraJob: null,
+      loraTimer: null
     };
 
-    function songModelLabel(value) {
-      if (value === "auto") return "Auto";
-      if (value === "acestep-v15-turbo") return "Turbo";
-      if (value === "acestep-v15-xl-turbo") return "XL Turbo";
-      return value || "Unknown";
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    function setStatus(text, type = "") {
+      const el = $("status");
+      el.textContent = text || "";
+      el.className = `status ${type}`;
     }
 
-    function populateSongModelSelect(config) {
-      const previousValue = songModelSelect.value || "auto";
-      const frag = document.createDocumentFragment();
-      const autoOption = document.createElement("option");
-      autoOption.value = "auto";
-      autoOption.textContent = `Auto (${songModelLabel(config.default_song_model)})`;
-      frag.appendChild(autoOption);
-      for (const model of config.available_song_models || []) {
-        const option = document.createElement("option");
-        option.value = model;
-        option.textContent = songModelLabel(model);
-        frag.appendChild(option);
-      }
-      songModelSelect.innerHTML = "";
-      songModelSelect.appendChild(frag);
-      const hasPrevious = previousValue === "auto" || (config.available_song_models || []).includes(previousValue);
-      songModelSelect.value = hasPrevious ? previousValue : "auto";
+    async function api(path, payload = null, options = {}) {
+      const response = await fetch(path, {
+        method: payload ? "POST" : "GET",
+        headers: payload instanceof FormData ? undefined : (payload ? { "Content-Type": "application/json" } : undefined),
+        body: payload instanceof FormData ? payload : (payload ? JSON.stringify(payload) : undefined),
+        ...options
+      });
+      const text = await response.text();
+      let data;
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { success: false, error: text }; }
+      if (!response.ok) throw new Error(data.error || data.detail || response.statusText);
+      return data;
     }
 
-    function renderSongModelNote() {
-      const selectedModel = songModelSelect.value || "auto";
-      const targetModel = selectedModel === "auto" ? runtimeConfig.default_song_model : selectedModel;
-      const activeModel = runtimeConfig.active_song_model || runtimeConfig.default_song_model;
-      let text = `Active song model: ${songModelLabel(activeModel)}.`;
-      if (selectedModel === "auto") {
-        text += ` Auto uses ${songModelLabel(targetModel)} on this machine.`;
-      } else if (targetModel !== activeModel) {
-        text += ` Next generate will switch to ${songModelLabel(targetModel)}.`;
-      } else {
-        text += " Selected model is already active.";
+    function setBusy(isBusy) {
+      document.querySelectorAll("button").forEach((button) => button.disabled = isBusy && !button.classList.contains("danger"));
+      if (!isBusy && state.config) updateCapability();
+    }
+
+    function buildNav() {
+      const nav = $("nav");
+      nav.innerHTML = modes.map((mode) => `<button data-mode="${mode}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join("");
+      nav.querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => setMode(button.dataset.mode));
+      });
+    }
+
+    function setMode(mode) {
+      state.mode = mode;
+      document.querySelectorAll(".mode-panel").forEach((panel) => panel.hidden = panel.dataset.mode !== mode);
+      document.querySelectorAll(".nav button").forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
+      updateCapability();
+      if (mode === "library") loadLibrary();
+      if (mode === "album") loadOllama();
+      if (mode === "lora") loadLoraStatus();
+    }
+
+    function updateCapability() {
+      const task = taskForMode[state.mode];
+      const model = $("song-model").value || "auto";
+      if (!state.config || !task) {
+        $("capability").textContent = "";
+        return;
       }
-      modelNote.textContent = text;
+      const actual = model === "auto" ? state.config.default_song_model : model;
+      const caps = state.config.model_capabilities?.[actual]?.tasks || [];
+      const ok = caps.includes(task);
+      $("capability").textContent = ok ? `${state.config.model_labels?.[actual] || actual}: ${caps.join(", ")}` : `${state.config.model_labels?.[actual] || actual} cannot run ${task}`;
+      document.querySelectorAll("[data-generate]").forEach((button) => button.disabled = Boolean(task && !ok));
     }
 
     async function loadConfig() {
-      const client = await getClient();
-      const res = await client.predict("/config");
-      const raw = res?.data?.[0] ?? res?.data ?? res;
-      const config = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-      Object.assign(runtimeConfig, config);
-      populateSongModelSelect(runtimeConfig);
-      renderSongModelNote();
+      state.config = await api("/api/config");
+      const modelSelect = $("song-model");
+      modelSelect.innerHTML = `<option value="auto">Auto (${state.config.model_labels?.[state.config.default_song_model] || state.config.default_song_model})</option>` +
+        state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(state.config.model_labels?.[name] || name)}</option>`).join("");
+      const languages = state.config.valid_languages || ["unknown", "en"];
+      for (const id of ["language", "album-language"]) {
+        $(id).innerHTML = languages.map((lang) => `<option value="${esc(lang)}"${lang === "en" ? " selected" : ""}>${esc(lang)}</option>`).join("");
+      }
+      for (const id of ["extract-track", "lego-track"]) {
+        $(id).innerHTML = state.config.track_names.map((track) => `<option value="${esc(track)}">${esc(track)}</option>`).join("");
+      }
+      $("complete-tracks").innerHTML = state.config.track_names.map((track) =>
+        `<label class="check"><input type="checkbox" value="${esc(track)}" /> ${esc(track)}</label>`
+      ).join("");
+      updateCapability();
+      setStatus("Studio ready.", "ok");
     }
 
-    songModelSelect.addEventListener("change", () => {
-      renderSongModelNote();
-    });
-
-    // ── Main player (plain Audio + bar waveform) ─────────────────────────────
-    const mainAudio = new Audio();
-    const waveformEl = document.getElementById("waveform");
-
-    function fmt(s) { return `${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`; }
-    function updateTime() {
-      const c = mainAudio.currentTime || 0, d = mainAudio.duration || 0;
-      timeDisplay.textContent = `${fmt(c)} / ${fmt(d)}`;
+    async function loadOllama() {
+      try {
+        const current = $("ollama-model").value;
+        const result = await api("/api/ollama_models");
+        let models = result.models || [];
+        if (!models.length) models = ["llama3.2"];
+        const embed = models.filter((m) => /embed|bge|e5|gte|nomic/i.test(m));
+        const llm = models.filter((m) => !/embed|bge|e5|gte|nomic/i.test(m));
+        $("ollama-model").innerHTML = llm.map((m) => `<option>${esc(m)}</option>`).join("");
+        $("album-ollama").innerHTML = llm.map((m) => `<option>${esc(m)}</option>`).join("");
+        $("album-embed").innerHTML = (embed.length ? embed : ["nomic-embed-text"]).map((m) => `<option>${esc(m)}</option>`).join("");
+        if (current) $("ollama-model").value = current;
+      } catch (err) {
+        $("ollama-model").innerHTML = `<option>llama3.2</option>`;
+        $("album-ollama").innerHTML = `<option>llama3.2</option>`;
+        $("album-embed").innerHTML = `<option>nomic-embed-text</option>`;
+      }
     }
-    function updateMainProgress() {
-      if (mainAudio.paused && mainAudio.currentTime === 0) return;
-      const pct = mainAudio.duration ? mainAudio.currentTime / mainAudio.duration : 0;
-      waveformEl.querySelectorAll(".bar").forEach((b, i, arr) => {
-        b.style.background = (i / arr.length) <= pct ? "var(--accent)" : "";
+
+    async function upload(input, note, key) {
+      const file = input.files?.[0];
+      if (!file) return;
+      const form = new FormData();
+      form.append("file", file);
+      note.textContent = "Uploading...";
+      const data = await api("/api/uploads", form);
+      state.uploads[key] = data.id;
+      if (key.includes("source")) {
+        state.sourceAudioId = data.id;
+        state.sourceResultId = null;
+      }
+      if (key.includes("reference")) {
+        state.referenceAudioId = data.id;
+        state.referenceResultId = null;
+      }
+      note.textContent = data.filename;
+      setStatus("Audio ready.", "ok");
+    }
+
+    function bindUploads() {
+      const pairs = [
+        ["reference-file", "reference-note", "reference-custom"],
+        ["source-file", "source-note", "source-cover"],
+        ["repaint-file", "repaint-note", "source-repaint"],
+        ["extract-file", "extract-note", "source-extract"],
+        ["lego-file", "lego-note", "source-lego"],
+        ["complete-file", "complete-note", "source-complete"]
+      ];
+      pairs.forEach(([inputId, noteId, key]) => {
+        $(inputId).addEventListener("change", (event) => upload(event.target, $(noteId), key).catch((err) => setStatus(err.message, "error")));
       });
-      updateTime();
-      if (!mainAudio.paused) requestAnimationFrame(updateMainProgress);
     }
-    const playIcon = '<svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"><path d="M0 0l10 6-10 6z"/></svg>';
-    const pauseIcon = '<svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor"><rect x="0" y="0" width="3" height="12"/><rect x="7" y="0" width="3" height="12"/></svg>';
-    mainAudio.addEventListener("play", () => { playBtn.innerHTML = pauseIcon; requestAnimationFrame(updateMainProgress); });
-    mainAudio.addEventListener("pause", () => { playBtn.innerHTML = playIcon; });
-    mainAudio.addEventListener("ended", () => { playBtn.innerHTML = playIcon; waveformEl.querySelectorAll(".bar").forEach(b => b.style.background = ""); });
-    mainAudio.addEventListener("timeupdate", updateTime);
 
-    playBtn.addEventListener("click", () => { stopFeedAudio(); mainAudio.paused ? mainAudio.play() : mainAudio.pause(); });
-
-    waveformEl.addEventListener("click", (e) => {
-      const rect = waveformEl.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      if (mainAudio.duration) {
-        stopFeedAudio();
-        mainAudio.currentTime = mainAudio.duration * ratio;
-        if (mainAudio.paused) mainAudio.play();
-        requestAnimationFrame(updateMainProgress);
-      }
-    });
-
-    // ── Current song state (for video generation) ────────────────────────────
-    let currentSong = null;
-
-    // ── Fast video generation (WebCodecs + MP4 muxer) ─────────────────────
-    const { Muxer: Mp4MuxerClass, ArrayBufferTarget } = Mp4Muxer;
-
-    async function generateShareVideo(song, btn) {
-      const origHTML = btn.innerHTML;
-      btn.disabled = true;
-      btn.textContent = "…";
-      stopFeedAudio();
-      mainAudio.pause();
-
-      const overlay = document.createElement("div");
-      overlay.className = "video-overlay";
-      overlay.innerHTML = `
-        <div class="label">Generating video…</div>
-        <div class="pct" id="vid-pct">0%</div>
-        <div class="bar-track"><div class="bar-fill" id="vid-bar" style="width:0%"></div></div>
-      `;
-      document.body.appendChild(overlay);
-      const pctEl = overlay.querySelector("#vid-pct");
-      const barEl = overlay.querySelector("#vid-bar");
-
+    async function compose() {
+      setBusy(true);
+      setStatus("Composing...");
       try {
-        await document.fonts.ready;
-
-        const audioResp = await fetch(song.audio_url);
-        const audioArrayBuf = await audioResp.arrayBuffer();
-        const offCtx = new OfflineAudioContext(2, 1, 44100);
-        const decoded = await offCtx.decodeAudioData(audioArrayBuf);
-
-        const sampleRate = decoded.sampleRate;
-        const numChannels = decoded.numberOfChannels;
-        const audioLength = decoded.length;
-
-        const raw = decoded.getChannelData(0);
-        const numBars = 60;
-        const blockSize = Math.floor(raw.length / numBars);
-        const peaks = [];
-        for (let i = 0; i < numBars; i++) {
-          let sum = 0;
-          for (let j = 0; j < blockSize; j++) sum += Math.abs(raw[i * blockSize + j]);
-          peaks.push(sum / blockSize);
-        }
-        const mx = Math.max(...peaks);
-        const normPeaks = peaks.map(p => mx > 0 ? p / mx : 0.5);
-
-        let thumbImg = null;
-        if (song.thumb_url) {
-          thumbImg = new Image();
-          thumbImg.crossOrigin = "anonymous";
-          await new Promise(r => { thumbImg.onload = r; thumbImg.onerror = r; thumbImg.src = song.thumb_url; });
-        }
-
-        const W = 1080, H = 1080;
-        const canvas = document.createElement("canvas");
-        canvas.width = W; canvas.height = H;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
-        const duration = decoded.duration;
-        const FPS = 15;
-        const totalFrames = Math.ceil(duration * FPS);
-
-        function drawFrame(progress) {
-          ctx.fillStyle = "#111111";
-          ctx.fillRect(0, 0, W, H);
-
-          const topY = 120;
-          if (thumbImg && thumbImg.naturalWidth > 0) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.roundRect(90, topY, 120, 120, 14);
-            ctx.clip();
-            ctx.drawImage(thumbImg, 90, topY, 120, 120);
-            ctx.restore();
-          }
-
-          const textX = thumbImg && thumbImg.naturalWidth > 0 ? 230 : 90;
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "600 36px 'Hanken Grotesk', sans-serif";
-          ctx.textAlign = "left";
-          ctx.textBaseline = "middle";
-          let title = song.title || "Untitled";
-          while (ctx.measureText(title).width > W - textX - 90 && title.length > 3) title = title.slice(0, -1);
-          if (title !== song.title) title += "…";
-          ctx.fillText(title, textX, topY + 45);
-
-          ctx.fillStyle = "rgba(255,255,255,0.45)";
-          ctx.font = "400 22px 'Hanken Grotesk', sans-serif";
-          let tags = song.tags || "";
-          while (ctx.measureText(tags).width > W - textX - 90 && tags.length > 3) tags = tags.slice(0, -1);
-          if (tags !== song.tags) tags += "…";
-          ctx.fillText(tags, textX, topY + 90);
-
-          const waveY = 440, waveH = 220, pad = 80;
-          const totalW = W - pad * 2;
-          const gap = 3;
-          const barW = (totalW - (numBars - 1) * gap) / numBars;
-          for (let i = 0; i < numBars; i++) {
-            const x = pad + i * (barW + gap);
-            const h = Math.max(4, normPeaks[i] * waveH);
-            ctx.fillStyle = (i / numBars) <= progress ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.15)";
-            ctx.beginPath();
-            ctx.roundRect(x, waveY + (waveH - h) / 2, barW, h, Math.min(barW / 2, 3));
-            ctx.fill();
-          }
-
-          ctx.textAlign = "center";
-          ctx.fillStyle = "rgba(255,255,255,0.40)";
-          ctx.font = "400 36px 'Hanken Grotesk', sans-serif";
-          ctx.fillText("Run locally with Pinokio:", W / 2, 880);
-          ctx.fillStyle = "rgba(255,255,255,0.55)";
-          ctx.font = "500 33px 'Hanken Grotesk', sans-serif";
-          ctx.fillText("AceJAM · local composer", W / 2, 930);
-          ctx.textAlign = "left";
-        }
-
-        // ── Encode with WebCodecs + MP4 muxer ──
-        const target = new ArrayBufferTarget();
-        const muxer = new Mp4MuxerClass({
-          target,
-          video: { codec: "avc", width: W, height: H },
-          audio: { codec: "aac", sampleRate, numberOfChannels: numChannels },
-          firstTimestampBehavior: "offset",
-          fastStart: "in-memory",
+        const data = await api("/api/create_sample", {
+          description: $("simple-description").value,
+          duration: Number($("duration").value),
+          instrumental: $("instrumental").checked,
+          ollama_model: $("ollama-model").value
         });
-
-        const audioEncoder = new AudioEncoder({
-          output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-          error: e => console.error("AudioEncoder error:", e),
-        });
-        audioEncoder.configure({ codec: "mp4a.40.2", sampleRate, numberOfChannels: numChannels, bitrate: 128_000 });
-
-        const audioChunkSize = 4096;
-        for (let offset = 0; offset < audioLength; offset += audioChunkSize) {
-          const len = Math.min(audioChunkSize, audioLength - offset);
-          const audioData = new AudioData({
-            format: "f32-planar", sampleRate, numberOfFrames: len, numberOfChannels: numChannels,
-            timestamp: (offset / sampleRate) * 1_000_000,
-            data: (() => {
-              const buf = new Float32Array(len * numChannels);
-              for (let ch = 0; ch < numChannels; ch++) {
-                buf.set(decoded.getChannelData(ch).subarray(offset, offset + len), ch * len);
-              }
-              return buf;
-            })(),
-          });
-          audioEncoder.encode(audioData);
-          audioData.close();
-        }
-        await audioEncoder.flush();
-
-        const videoEncoder = new VideoEncoder({
-          output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-          error: e => console.error("VideoEncoder error:", e),
-        });
-        videoEncoder.configure({ codec: "avc1.640028", width: W, height: H, bitrate: 2_000_000, framerate: FPS });
-
-        let frameIdx = 0;
-        const batchSize = 5;
-        await new Promise((resolve) => {
-          function processBatch() {
-            const end = Math.min(frameIdx + batchSize, totalFrames);
-            for (; frameIdx < end; frameIdx++) {
-              const progress = frameIdx / totalFrames;
-              drawFrame(progress);
-              const frame = new VideoFrame(canvas, { timestamp: (frameIdx / FPS) * 1_000_000 });
-              videoEncoder.encode(frame, { keyFrame: frameIdx % (FPS * 2) === 0 });
-              frame.close();
-            }
-            pctEl.textContent = `${Math.round((frameIdx / totalFrames) * 100)}%`;
-            barEl.style.width = `${Math.round((frameIdx / totalFrames) * 100)}%`;
-            if (frameIdx < totalFrames) setTimeout(processBatch, 0);
-            else {
-              videoEncoder.flush().then(() => {
-                muxer.finalize();
-                const blob = new Blob([target.buffer], { type: "video/mp4" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                const safeName = (song.title || "song").replace(/[^a-zA-Z0-9 -]/g, "").trim().replace(/\s+/g, "-") || "song";
-                a.download = `${safeName}.mp4`;
-                a.click();
-                URL.revokeObjectURL(url);
-                resolve();
-              });
-            }
-          }
-          processBatch();
-        });
-      } catch (e) {
-        console.error("Video generation failed:", e);
+        $("title").value = data.title || "Untitled";
+        $("caption").value = Array.isArray(data.tags) ? data.tags.join(", ") : (data.tags || "");
+        $("lyrics").value = data.lyrics || "";
+        $("bpm").value = data.bpm || "";
+        $("key-scale").value = data.key_scale || "";
+        $("time-signature").value = data.time_signature || "4";
+        $("language").value = data.language || "en";
+        setMode("custom");
+        setStatus("Composition ready.", "ok");
+      } catch (err) {
+        setStatus(err.message, "error");
       } finally {
-        overlay.remove();
-        btn.disabled = false;
-        btn.innerHTML = origHTML;
+        setBusy(false);
       }
     }
 
-    // ── Gradio client ───────────────────────────────────────────────────────
-    let gradioClient = null;
-    async function getClient() {
-      if (!gradioClient) gradioClient = await Client.connect(window.location.origin);
-      return gradioClient;
-    }
-
-    // ── UI helpers ──────────────────────────────────────────────────────────
-    function setLoading(on) {
-      generateBtn.disabled = on;
-      if (on) { generateBtn.innerHTML = '<span class="spinner"></span> Creating…'; generateBtn.classList.add("loading"); }
-      else    { generateBtn.textContent = "Generate"; generateBtn.classList.remove("loading"); }
-    }
-    function setStatus(msg, type = "") {
-      statusBar.textContent = msg;
-      statusBar.className = "status-bar" + (type ? ` ${type}` : "");
-    }
-
-    async function loadAudio(dataUrl) {
-      const res = await fetch(dataUrl);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-
-      // Extract real peaks for bar waveform
-      const numBars = 80;
+    async function formatSample() {
+      setBusy(true);
+      setStatus("Formatting...");
       try {
-        const buf = await blob.arrayBuffer();
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const decoded = await ctx.decodeAudioData(buf);
-        const raw = decoded.getChannelData(0);
-        const block = Math.floor(raw.length / numBars);
-        const peaks = [];
-        for (let i = 0; i < numBars; i++) {
-          let sum = 0;
-          for (let j = 0; j < block; j++) sum += Math.abs(raw[i * block + j]);
-          peaks.push(sum / block);
-        }
-        const mx = Math.max(...peaks);
-        waveformEl.innerHTML = peaks.map(p => {
-          const h = mx > 0 ? 15 + (p / mx) * 85 : 50;
-          return `<div class="bar" style="height:${h}%"></div>`;
-        }).join("");
-      } catch {
-        waveformEl.innerHTML = Array.from({length: numBars}, () =>
-          `<div class="bar" style="height:${15 + Math.random() * 85}%"></div>`
-        ).join("");
-      }
-
-      mainAudio.src = url;
-      currentSong = { ...currentSong, audio_url: url };
-      outputSection.style.display = "block";
-      stopFeedAudio();
-      mainAudio.play();
-    }
-
-    // ── Community feed player ───────────────────────────────────────────────
-    let feedAudio = null;
-    let playingCard = null;
-
-    function stopFeedAudio() {
-      if (feedAudio) { feedAudio.pause(); feedAudio = null; }
-      if (playingCard) {
-        playingCard.querySelectorAll(".mini-waveform .bar").forEach(b => b.style.background = "");
-        playingCard.classList.remove("playing");
-        playingCard.querySelector(".song-play-btn").innerHTML = '<svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor"><path d="M0 0l10 6-10 6z"/></svg>';
-        playingCard = null;
+        const data = await api("/api/format_sample", {
+          caption: $("caption").value,
+          lyrics: $("lyrics").value,
+          duration: Number($("duration").value),
+          ollama_model: $("ollama-model").value
+        });
+        $("caption").value = Array.isArray(data.tags) ? data.tags.join(", ") : (data.tags || $("caption").value);
+        $("lyrics").value = data.lyrics || $("lyrics").value;
+        $("bpm").value = data.bpm || $("bpm").value;
+        $("key-scale").value = data.key_scale || $("key-scale").value;
+        $("time-signature").value = data.time_signature || $("time-signature").value;
+        setStatus("Formatted.", "ok");
+      } catch (err) {
+        setStatus(err.message, "error");
+      } finally {
+        setBusy(false);
       }
     }
 
-    function playFeedSong(card, audioUrl, seekRatio) {
-      // If same card and already playing, just seek (or pause if clicking play btn)
-      if (playingCard === card && feedAudio) {
-        if (seekRatio != null) {
-          feedAudio.currentTime = feedAudio.duration * seekRatio;
-          if (feedAudio.paused) feedAudio.play();
-        } else {
-          // Toggle play/pause (clicked the play button)
-          if (feedAudio.paused) { feedAudio.play(); }
-          else { feedAudio.pause(); }
-        }
+    function completeTracks() {
+      return Array.from($("complete-tracks").querySelectorAll("input:checked")).map((input) => input.value);
+    }
+
+    function payloadForMode(mode) {
+      const base = {
+        task_type: taskForMode[mode],
+        title: $("title").value || "Untitled",
+        duration: Number($("duration").value),
+        batch_size: Number($("batch-size").value),
+        song_model: $("song-model").value,
+        seed: $("seed").value,
+        bpm: $("bpm").value,
+        key_scale: $("key-scale").value,
+        time_signature: $("time-signature").value,
+        vocal_language: $("language").value,
+        inference_steps: Number($("steps").value),
+        guidance_scale: Number($("guidance").value),
+        shift: Number($("shift").value),
+        infer_method: $("infer-method").value,
+        use_adg: $("use-adg").checked,
+        cfg_interval_start: Number($("cfg-start").value),
+        cfg_interval_end: Number($("cfg-end").value),
+        timesteps: $("timesteps").value,
+        audio_format: $("audio-format").value,
+        auto_score: $("auto-score").checked,
+        auto_lrc: $("auto-lrc").checked,
+        return_audio_codes: $("return-codes").checked,
+        save_to_library: $("save-library").checked,
+        src_audio_id: state.sourceAudioId,
+        src_result_id: state.sourceResultId,
+        reference_audio_id: state.referenceAudioId,
+        reference_result_id: state.referenceResultId
+      };
+      if (mode === "simple") {
+        base.description = $("simple-description").value;
+        base.caption = $("caption").value || $("simple-description").value;
+        base.lyrics = $("instrumental").checked ? "[Instrumental]" : $("lyrics").value;
+      } else if (mode === "custom") {
+        base.caption = $("caption").value;
+        base.lyrics = $("lyrics").value;
+      } else if (mode === "cover") {
+        base.caption = $("cover-caption").value;
+        base.lyrics = $("lyrics").value;
+        base.audio_cover_strength = Number($("cover-strength").value);
+      } else if (mode === "repaint") {
+        base.caption = $("repaint-caption").value;
+        base.lyrics = $("lyrics").value;
+        base.repainting_start = Number($("repaint-start").value);
+        base.repainting_end = Number($("repaint-end").value);
+      } else if (mode === "extract") {
+        base.caption = `extract ${$("extract-track").value}`;
+        base.lyrics = "";
+        base.track_name = $("extract-track").value;
+      } else if (mode === "lego") {
+        base.caption = $("lego-caption").value;
+        base.lyrics = "";
+        base.track_name = $("lego-track").value;
+      } else if (mode === "complete") {
+        base.caption = $("complete-caption").value;
+        base.lyrics = "";
+        base.track_names = completeTracks();
+      }
+      state.lastPayload = { ...base };
+      return base;
+    }
+
+    async function generate(mode = state.mode, override = null) {
+      const payload = override || payloadForMode(mode);
+      setBusy(true);
+      setStatus("Generating...");
+      try {
+        const data = await api("/api/generate_advanced", payload);
+        if (!data.success) throw new Error(data.error || "Generation failed");
+        renderResults(data);
+        setStatus(`Generated ${data.audios.length} take(s).`, "ok");
+        if (payload.save_to_library) loadLibrary();
+      } catch (err) {
+        setStatus(err.message, "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function renderResults(data) {
+      const list = $("results-list");
+      list.innerHTML = data.audios.map((audio) => `
+        <div class="result-card" data-result="${esc(data.result_id)}" data-audio="${esc(audio.id)}">
+          <div class="result-title">${esc(audio.title)}</div>
+          <div class="meta">${esc(data.active_song_model)} · seed ${esc(audio.seed)}</div>
+          <audio controls src="${esc(audio.audio_url)}"></audio>
+          <div class="row">
+            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;" href="${esc(audio.download_url)}" download>Download</a>
+            <button class="secondary" data-source>Source</button>
+            <button class="secondary" data-reference>Reference</button>
+            <button class="secondary" data-codes>Codes</button>
+            <button class="secondary" data-score>Score</button>
+            <button class="secondary" data-lrc>LRC</button>
+            <button class="secondary" data-retry>Retry</button>
+          </div>
+          <details ${audio.lrc || audio.score || audio.audio_codes ? "open" : ""}>
+            <summary>Details</summary>
+            <pre>${esc(JSON.stringify({ score: audio.score, lrc: audio.lrc, audio_codes: audio.audio_codes }, null, 2))}</pre>
+          </details>
+        </div>
+      `).join("");
+      list.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", setResultAsSource));
+      list.querySelectorAll("[data-reference]").forEach((button) => button.addEventListener("click", setResultAsReference));
+      list.querySelectorAll("[data-codes]").forEach((button) => button.addEventListener("click", fetchCodes));
+      list.querySelectorAll("[data-score]").forEach((button) => button.addEventListener("click", fetchScore));
+      list.querySelectorAll("[data-lrc]").forEach((button) => button.addEventListener("click", fetchLrc));
+      list.querySelectorAll("[data-retry]").forEach((button) => button.addEventListener("click", () => {
+        const retry = { ...state.lastPayload, seed: "-1" };
+        generate(state.mode, retry);
+      }));
+    }
+
+    function resultCard(button) {
+      return button.closest(".result-card");
+    }
+
+    function setResultAsSource(event) {
+      const card = resultCard(event.currentTarget);
+      state.sourceResultId = card.dataset.result;
+      state.sourceAudioId = null;
+      setStatus("Result set as source.", "ok");
+    }
+
+    function setResultAsReference(event) {
+      const card = resultCard(event.currentTarget);
+      state.referenceResultId = card.dataset.result;
+      state.referenceAudioId = null;
+      setStatus("Result set as reference.", "ok");
+    }
+
+    async function updateCardDetails(card, value) {
+      const pre = card.querySelector("pre");
+      const current = JSON.parse(pre.textContent || "{}");
+      Object.assign(current, value);
+      pre.textContent = JSON.stringify(current, null, 2);
+      card.querySelector("details").open = true;
+    }
+
+    async function fetchCodes(event) {
+      const card = resultCard(event.currentTarget);
+      const data = await api("/api/audio-codes", { result_id: card.dataset.result, audio_id: card.dataset.audio, song_model: $("song-model").value });
+      updateCardDetails(card, { audio_codes: data.audio_codes });
+    }
+
+    async function fetchScore(event) {
+      const card = resultCard(event.currentTarget);
+      const data = await api("/api/score", { result_id: card.dataset.result, audio_id: card.dataset.audio });
+      updateCardDetails(card, { score: data });
+    }
+
+    async function fetchLrc(event) {
+      const card = resultCard(event.currentTarget);
+      const data = await api("/api/lrc", { result_id: card.dataset.result, audio_id: card.dataset.audio });
+      updateCardDetails(card, { lrc: data });
+    }
+
+    async function loadLibrary() {
+      const songs = await api("/api/community");
+      const list = $("library-list");
+      if (!songs.length) {
+        list.innerHTML = `<div class="tiny">No saved songs.</div>`;
         return;
       }
-      stopFeedAudio();
-      mainAudio.pause();
-      feedAudio = new Audio(audioUrl);
-      playingCard = card;
-      card.classList.add("playing");
-      card.querySelector(".song-play-btn").innerHTML = '<svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor"><rect x="0" y="0" width="3" height="12"/><rect x="7" y="0" width="3" height="12"/></svg>';
-      feedAudio.play();
-      if (seekRatio != null) {
-        feedAudio.addEventListener("loadedmetadata", () => {
-          feedAudio.currentTime = feedAudio.duration * seekRatio;
-        }, { once: true });
-      }
-      // Update waveform progress during playback
-      const waveEl = card.querySelector(".mini-waveform");
-      const bars = waveEl ? waveEl.querySelectorAll(".bar") : [];
-      function updateProgress() {
-        if (playingCard !== card || !feedAudio || feedAudio.paused) return;
-        const pct = feedAudio.currentTime / feedAudio.duration;
-        bars.forEach((b, i) => {
-          b.style.background = (i / bars.length) <= pct ? "var(--accent)" : "var(--text-faint)";
-        });
-        requestAnimationFrame(updateProgress);
-      }
-      if (bars.length) requestAnimationFrame(updateProgress);
-      feedAudio.addEventListener("ended", () => {
-        bars.forEach(b => b.style.background = "");
-        stopFeedAudio();
-      });
-      feedAudio.addEventListener("error", () => stopFeedAudio());
-      feedAudio.addEventListener("pause", () => {
-        if (playingCard === card) card.querySelector(".song-play-btn").innerHTML = '<svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor"><path d="M0 0l10 6-10 6z"/></svg>';
-      });
-      feedAudio.addEventListener("play", () => {
-        if (playingCard === card) {
-          card.querySelector(".song-play-btn").innerHTML = '<svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor"><rect x="0" y="0" width="3" height="12"/><rect x="7" y="0" width="3" height="12"/></svg>';
-          requestAnimationFrame(updateProgress);
-        }
-      });
+      list.innerHTML = songs.map((song) => `
+        <div class="song-card">
+          <div class="result-title">${esc(song.title || "Untitled")}</div>
+          <div class="meta">${esc(song.task_type || "text2music")} · ${esc(song.song_model || "")} · ${esc(song.created_at || "")}</div>
+          <audio controls src="${esc(song.audio_url)}"></audio>
+          <div class="row">
+            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;" href="${esc(song.audio_url)}" download>Download</a>
+            <button class="danger" data-delete="${esc(song.id)}">Delete</button>
+          </div>
+          <details><summary>Metadata</summary><pre>${esc(JSON.stringify(song, null, 2))}</pre></details>
+        </div>
+      `).join("");
+      list.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
+        await api("/api/delete_song", { song_id: button.dataset.delete });
+        loadLibrary();
+      }));
     }
 
-    // ── Load community feed ─────────────────────────────────────────────────
-    async function loadFeed() {
+    async function generateAlbum() {
+      setBusy(true);
+      $("album-log").textContent = "Starting album generation...";
       try {
-        const client = await getClient();
-        const res = await client.predict("/community");
-        // Gradio JS client may return {data: [...]} or the value directly
-        const raw = res?.data?.[0] ?? res?.data ?? res;
-        const songs = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw) || "[]");
-        if (songs.length === 0) {
-          feedEl.innerHTML = '<div class="feed-empty">No saved songs yet.<br>Check "Save" and generate one.</div>';
-          return;
-        }
-        feedEl.innerHTML = "";
-        for (const song of songs) {
-          const card = document.createElement("div");
-          card.className = "song-card";
-          const dur = song.duration ? `${Math.round(song.duration)}s` : "";
-          // Generate random mini waveform bars (seeded from title for consistency)
-          const miniBars = Array.from({length: 80}, () =>
-            `<div class="bar" style="height:${15 + Math.random() * 85}%"></div>`
-          ).join("");
-          const thumbHtml = song.thumb_url
-            ? `<img src="${esc(song.thumb_url)}" style="width:24px;height:24px;border-radius:4px;object-fit:cover;flex-shrink:0;" loading="lazy" onerror="this.style.display='none'" />`
-            : '';
-          card.innerHTML = `
-            <div class="song-card-top">
-              <button class="song-play-btn"><svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor"><path d="M0 0l10 6-10 6z"/></svg></button>
-              ${thumbHtml}
-              <div class="song-title">${esc(song.title || "Untitled")}</div>
-              <div class="song-tags">${esc(song.tags || "")}</div>
-              <div class="song-duration">${dur}</div>
-              <button class="share-icon-btn" title="Download video"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 13V8.5h1V12h7V8.5h1V13a.5.5 0 01-.5.5H4a.5.5 0 01-.5-.5zM8 10.25L4.75 7h2V2.5h2.5V7h2L8 10.25z"/></svg></button>
-            </div>
-            <div class="mini-waveform">${miniBars}</div>
-          `;
-          card.querySelector(".song-play-btn").addEventListener("click", (e) => {
-            e.stopPropagation();
-            playFeedSong(card, song.audio_url);
-          });
-          card.querySelector(".mini-waveform").addEventListener("click", (e) => {
-            e.stopPropagation();
-            const rect = e.currentTarget.getBoundingClientRect();
-            const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            playFeedSong(card, song.audio_url, ratio);
-          });
-          card.querySelector(".share-icon-btn").addEventListener("click", (e) => {
-            e.stopPropagation();
-            generateShareVideo(song, e.currentTarget);
-          });
-          feedEl.appendChild(card);
-        }
-      } catch (e) {
-        console.error("Feed load error:", e);
-        feedEl.innerHTML = '<div class="feed-empty">Could not load saved songs</div>';
-      }
-    }
-
-    function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
-
-    // ── Generate ─────────────────────────────────────────────────────────────
-    generateBtn.addEventListener("click", async () => {
-      const desc = descInput.value.trim();
-      if (!desc) { setStatus("Describe the song you want to create", "error"); descInput.focus(); return; }
-
-      stopFeedAudio();
-      setLoading(true);
-      setStatus("");
-
-      // Show animated placeholder on the left, above output
-      outputSection.style.display = "none";
-      const placeholder = document.createElement("div");
-      placeholder.className = "placeholder-card";
-      placeholder.id = "gen-placeholder";
-      const bars = Array.from({length: 40}, (_, i) =>
-        `<div class="bar" style="height:100%;animation-delay:${(i * 0.06).toFixed(2)}s"></div>`
-      ).join("");
-      placeholder.innerHTML = `
-        <div class="placeholder-title">${esc(desc.slice(0, 80))}</div>
-        <div class="placeholder-sub">Composing locally &amp; generating…</div>
-        <div class="fake-waveform">${bars}</div>
-      `;
-      outputSection.parentNode.insertBefore(placeholder, outputSection);
-
-      try {
-        const client = await getClient();
-        const targetSongModel = songModelSelect.value === "auto" ? runtimeConfig.default_song_model : songModelSelect.value;
-        if (targetSongModel !== runtimeConfig.active_song_model) {
-          setStatus(`Switching ACE-Step model to ${songModelLabel(targetSongModel)}…`);
-        }
-        const job = client.submit("/create", {
-          description: desc,
-          audio_duration: parseFloat(durationSelect.value),
-          seed: -1,
-          community: communityChk.checked,
-          composer_profile: composerSelect.value,
-          song_model: songModelSelect.value,
-          instrumental: instrumentalChk.checked,
+        const data = await api("/api/generate_album", {
+          concept: $("album-concept").value,
+          num_tracks: Number($("album-tracks").value),
+          track_duration: Number($("album-duration").value),
+          ollama_model: $("album-ollama").value,
+          embedding_model: $("album-embed").value,
+          language: $("album-language").value,
+          song_model: $("song-model").value
         });
-
-        for await (const msg of job) {
-          if (msg.type === "status") {
-            if (msg.queue_size > 0) {
-              const eta = msg.eta != null ? ` · ~${Math.round(msg.eta)}s` : "";
-              setStatus(`Queue ${msg.position}/${msg.queue_size}${eta}`);
-            }
-          } else if (msg.type === "data") {
-            const raw = msg.data?.[0];
-            if (!raw) throw new Error("No data returned");
-            const result = JSON.parse(raw);
-            if (result.song_model) {
-              runtimeConfig.active_song_model = result.song_model;
-              renderSongModelNote();
-            }
-            songTitleEl.textContent = result.title || "";
-            songTagsEl.textContent = result.tags || "";
-            const thumbEl = document.getElementById("song-thumb");
-            if (result.thumbnail) { thumbEl.src = result.thumbnail; thumbEl.style.display = "block"; }
-            else { thumbEl.style.display = "none"; }
-            currentSong = {
-              title: result.title || "Untitled",
-              tags: result.tags || "",
-              thumb_url: result.thumbnail || null,
-            };
-            await loadAudio(result.audio);
-            // Refresh feed if shared
-            if (communityChk.checked) loadFeed();
-          }
-        }
+        $("album-log").textContent = (data.logs || []).join("\\n");
+        if (!data.success) throw new Error(data.error || "Album failed");
+        loadLibrary();
+        setStatus("Album generated.", "ok");
       } catch (err) {
-        console.error(err);
-        setStatus(`Error: ${err.message}`, "error");
+        $("album-log").textContent += `\\n${err.message}`;
+        setStatus(err.message, "error");
       } finally {
-        placeholder.remove();
-        setLoading(false);
+        setBusy(false);
       }
-    });
+    }
 
-    descInput.addEventListener("keydown", (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); generateBtn.click(); }
-    });
+    async function lora(action) {
+      try {
+        let data;
+        if (action === "load") data = await api("/api/lora/load", { path: $("lora-path").value });
+        if (action === "unload") data = await api("/api/lora/unload", {});
+        if (action === "use") data = await api("/api/lora/use", { use: $("lora-use").checked });
+        $("lora-log").textContent = JSON.stringify(data, null, 2);
+        await loadLoraStatus();
+      } catch (err) {
+        $("lora-log").textContent = err.message;
+      }
+    }
 
-    // ── Init ─────────────────────────────────────────────────────────────────
-    getClient().then(async () => {
-      await Promise.allSettled([loadConfig(), loadFeed()]);
-    }).catch(console.error);
+    function renderDatasetTable(files) {
+      const tbody = $("dataset-table");
+      if (!files.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="tiny">No supported audio files found.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = files.map((item, index) => `
+        <tr data-row="${index}">
+          <td>
+            <div>${esc(item.filename || item.path)}</div>
+            <div class="tiny">${esc(item.duration || 0)}s</div>
+            <input data-field="path" type="hidden" value="${esc(item.path || "")}" />
+          </td>
+          <td><textarea data-field="caption">${esc(item.caption || "")}</textarea></td>
+          <td><textarea data-field="lyrics">${esc(item.lyrics || "[Instrumental]")}</textarea></td>
+          <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(item.bpm || "")}" /></td>
+          <td><input data-field="keyscale" type="text" value="${esc(item.keyscale || item.key_scale || "")}" /></td>
+          <td><input data-field="language" type="text" value="${esc(item.language || "unknown")}" /></td>
+        </tr>
+      `).join("");
+    }
+
+    function collectDatasetEntries() {
+      return Array.from($("dataset-table").querySelectorAll("tr[data-row]")).map((row) => {
+        const item = { ...(state.datasetFiles[Number(row.dataset.row)] || {}) };
+        row.querySelectorAll("[data-field]").forEach((input) => {
+          item[input.dataset.field] = input.value;
+        });
+        item.timesignature = item.timesignature || "4";
+        return item;
+      }).filter((item) => item.path);
+    }
+
+    function renderTrainerReady(data) {
+      const trainer = data.trainer || {};
+      const ready = Boolean(trainer.ready);
+      const badge = $("trainer-ready");
+      badge.className = `badge ${ready ? "ok" : "warn"}`;
+      badge.textContent = ready ? "Trainer ready" : "Install trainer deps";
+      const adapters = data.adapters || [];
+      $("lora-adapter-select").innerHTML = `<option value="">Select adapter</option>` + adapters.map((adapter) =>
+        `<option value="${esc(adapter.path)}">${esc(adapter.name)} (${esc(adapter.adapter_type)})</option>`
+      ).join("");
+      if (!ready) {
+        $("lora-log").textContent = JSON.stringify({
+          trainer_ready: trainer.ready,
+          vendor_path: trainer.vendor_path,
+          missing_dependencies: trainer.missing_dependencies
+        }, null, 2);
+      }
+      if (trainer.active_job) {
+        state.activeLoraJob = trainer.active_job.id;
+        scheduleLoraPoll();
+      }
+    }
+
+    async function loadLoraStatus() {
+      const data = await api("/api/lora/status");
+      renderTrainerReady(data);
+      return data;
+    }
+
+    async function scanDataset() {
+      const data = await api("/api/lora/dataset/scan", { path: $("dataset-path").value });
+      state.datasetFiles = data.files || [];
+      state.datasetId = data.dataset_id;
+      renderDatasetTable(state.datasetFiles);
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function labelDataset() {
+      const data = await api("/api/lora/dataset/autolabel", { files: state.datasetFiles });
+      state.datasetFiles = data.labels || [];
+      renderDatasetTable(state.datasetFiles);
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function saveDataset() {
+      const data = await api("/api/lora/dataset/save", {
+        dataset_id: state.datasetId,
+        entries: collectDatasetEntries(),
+        metadata: {
+          custom_tag: $("dataset-tag").value,
+          tag_position: $("dataset-tag-position").value,
+          genre_ratio: Number($("dataset-genre-ratio").value)
+        }
+      });
+      state.datasetId = data.dataset_id;
+      state.datasetJson = data.dataset_path;
+      $("lora-dataset-json").value = data.dataset_path;
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function preprocessLora() {
+      const data = await api("/api/lora/preprocess", {
+        dataset_json: $("lora-dataset-json").value,
+        dataset_id: state.datasetId,
+        audio_dir: $("dataset-path").value,
+        song_model: $("song-model").value,
+        max_duration: 240
+      });
+      state.activeLoraJob = data.job.id;
+      $("tensor-dir").value = data.job.paths?.tensor_output || "";
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+      scheduleLoraPoll();
+    }
+
+    function loraTrainPayload() {
+      return {
+        tensor_dir: $("tensor-dir").value,
+        song_model: $("song-model").value,
+        adapter_type: $("adapter-type").value,
+        train_epochs: Number($("train-epochs").value),
+        train_batch_size: Number($("train-batch").value),
+        gradient_accumulation: Number($("grad-accum").value),
+        learning_rate: $("learning-rate").value,
+        save_every_n_epochs: Number($("save-every").value),
+        rank: Number($("lora-rank").value),
+        alpha: Number($("lora-alpha").value),
+        dropout: $("lora-dropout").value,
+        lokr_linear_dim: Number($("lokr-dim").value),
+        lokr_linear_alpha: Number($("lokr-alpha").value),
+        lokr_weight_decompose: $("lokr-weight").checked,
+        training_seed: Number($("train-seed").value),
+        gradient_checkpointing: $("grad-checkpoint").checked,
+        offload_encoder: $("offload-encoder").checked
+      };
+    }
+
+    async function trainLora() {
+      try {
+        const data = await api("/api/lora/train", loraTrainPayload());
+        state.activeLoraJob = data.job.id;
+        $("lora-log").textContent = JSON.stringify(data, null, 2);
+        scheduleLoraPoll();
+      } catch (err) {
+        $("lora-log").textContent = err.message;
+      }
+    }
+
+    async function estimateLora() {
+      const data = await api("/api/lora/estimate", {
+        tensor_dir: $("tensor-dir").value,
+        song_model: $("song-model").value,
+        batch_size: Number($("train-batch").value),
+        estimate_batches: 5,
+        top_k: 16,
+        granularity: "module"
+      });
+      state.activeLoraJob = data.job.id;
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+      scheduleLoraPoll();
+    }
+
+    async function stopLoraJob() {
+      if (!state.activeLoraJob) return;
+      const data = await api(`/api/lora/jobs/${state.activeLoraJob}/stop`, {});
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+      scheduleLoraPoll();
+    }
+
+    async function pollLoraJob() {
+      if (!state.activeLoraJob) return;
+      const data = await api(`/api/lora/jobs/${state.activeLoraJob}`);
+      const log = await api(`/api/lora/jobs/${state.activeLoraJob}/log`);
+      const job = data.job;
+      $("lora-log").textContent = `${job.kind} ${job.state}\\n\\n${log.log || ""}`;
+      if (job.kind === "preprocess" && job.result?.tensor_output) {
+        $("tensor-dir").value = job.result.tensor_output;
+      }
+      if (job.kind === "train" && job.result?.final_adapter) {
+        $("lora-path").value = job.result.final_adapter;
+      }
+      if (["queued", "running", "stopping"].includes(job.state)) {
+        scheduleLoraPoll();
+      } else {
+        state.activeLoraJob = null;
+        await loadLoraStatus();
+      }
+    }
+
+    function scheduleLoraPoll() {
+      if (state.loraTimer) clearTimeout(state.loraTimer);
+      state.loraTimer = setTimeout(() => pollLoraJob().catch((err) => $("lora-log").textContent = err.message), 1500);
+    }
+
+    function bindEvents() {
+      $("song-model").addEventListener("change", updateCapability);
+      $("compose-btn").addEventListener("click", compose);
+      $("format-btn").addEventListener("click", formatSample);
+      document.querySelectorAll("[data-generate]").forEach((button) => button.addEventListener("click", () => generate()));
+      $("album-btn").addEventListener("click", generateAlbum);
+      $("refresh-ollama").addEventListener("click", loadOllama);
+      $("library-refresh").addEventListener("click", loadLibrary);
+      $("lora-load").addEventListener("click", () => lora("load"));
+      $("lora-unload").addEventListener("click", () => lora("unload"));
+      $("lora-use").addEventListener("change", () => lora("use"));
+      $("lora-refresh").addEventListener("click", () => loadLoraStatus().catch((err) => $("lora-log").textContent = err.message));
+      $("lora-adapter-select").addEventListener("change", () => {
+        if ($("lora-adapter-select").value) $("lora-path").value = $("lora-adapter-select").value;
+      });
+      $("dataset-scan").addEventListener("click", () => scanDataset().catch((err) => $("lora-log").textContent = err.message));
+      $("dataset-label").addEventListener("click", () => labelDataset().catch((err) => $("lora-log").textContent = err.message));
+      $("dataset-save").addEventListener("click", () => saveDataset().catch((err) => $("lora-log").textContent = err.message));
+      $("lora-preprocess").addEventListener("click", () => preprocessLora().catch((err) => $("lora-log").textContent = err.message));
+      $("lora-estimate").addEventListener("click", () => estimateLora().catch((err) => $("lora-log").textContent = err.message));
+      $("lora-stop").addEventListener("click", () => stopLoraJob().catch((err) => $("lora-log").textContent = err.message));
+      $("lora-train").addEventListener("click", trainLora);
+      bindUploads();
+    }
+
+    buildNav();
+    bindEvents();
+    Promise.all([loadConfig(), loadOllama(), loadLibrary(), loadLoraStatus()]).then(() => setMode("simple")).catch((err) => setStatus(err.message, "error"));
   </script>
-
 </body>
 </html>

@@ -12,8 +12,7 @@ module.exports = {
           XDG_CACHE_HOME: "{{path.resolve(cwd, 'cache')}}",
           HF_HOME: "{{path.resolve(cwd, 'cache', 'huggingface')}}",
           HF_MODULES_CACHE: "{{path.resolve(cwd, 'cache', 'hf_modules')}}",
-          MPLCONFIGDIR: "{{path.resolve(cwd, 'cache', 'matplotlib')}}",
-          LLAMA_CACHE: "{{path.resolve(cwd, 'cache', 'llama')}}"
+          MPLCONFIGDIR: "{{path.resolve(cwd, 'cache', 'matplotlib')}}"
         },
         path: "app",
         message: [
