@@ -258,7 +258,7 @@
     .result-card.new-result { animation: slideIn 0.3s ease, flashHighlight 1s ease 0.3s; }
     .result-title { font-weight: 700; margin-bottom: 3px; }
     .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-    audio { display: none; }
+    .audio-player audio { display: none; }
     .audio-player {
       display: flex; align-items: center; gap: 8px;
       background: #121417; border: 1px solid var(--line); border-radius: 6px;
@@ -1486,7 +1486,7 @@
       });
     }
 
-    /* ─�� Confirmation modal ── */
+    /* -- Confirmation modal -- */
     let _confirmResolve = null;
     function confirmAction(title, message, actionLabel = "Delete") {
       return new Promise((resolve) => {
@@ -1888,7 +1888,10 @@
     }
 
     function setBusy(isBusy, triggerBtn = null) {
-      document.querySelectorAll("button").forEach((button) => button.disabled = isBusy && !button.classList.contains("danger"));
+      document.querySelectorAll("button").forEach((button) => {
+        if (button.classList.contains("danger") || button.classList.contains("play-btn")) return;
+        button.disabled = isBusy;
+      });
       document.querySelectorAll(".btn-loading").forEach((el) => el.classList.remove("btn-loading"));
       if (isBusy && triggerBtn) triggerBtn.classList.add("btn-loading");
       if (!isBusy && state.config) updateCapability();
