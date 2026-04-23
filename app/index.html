@@ -2768,6 +2768,17 @@
       $("song-model").addEventListener("change", () => {
         updateCapability();
         maybeDownloadSelectedSongModel();
+        const model = selectedActualSongModel() || "";
+        const isTurbo = model.includes("turbo");
+        const isSft = model.includes("sft") && !isTurbo;
+        const isBase = model.includes("base") && !isTurbo;
+        if ($("steps").value === "8" || $("steps").value === "32" || $("steps").value === "50") {
+          $("steps").value = isTurbo ? "8" : (isSft ? "50" : (isBase ? "32" : "8"));
+        }
+        if ($("shift").value === "1" || $("shift").value === "3") {
+          $("shift").value = isTurbo ? "3" : "1";
+        }
+        updateAdvancedSummaries();
       });
       $("ace-lm-model").addEventListener("change", () => {
         updateLmAdvice("ace-lm-model", "lm-advice");

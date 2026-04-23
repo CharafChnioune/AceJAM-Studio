@@ -429,6 +429,12 @@ def _run_inference(
     use_random_seed = seed < 0
     with handler_lock:
         active_song_model = _ensure_song_model(song_model)
+        is_turbo = "turbo" in active_song_model
+        is_sft = "sft" in active_song_model and not is_turbo
+        is_base = "base" in active_song_model and not is_turbo
+        model_shift = 3.0 if is_turbo else 1.0
+        if infer_steps <= 8 and not is_turbo:
+            infer_steps = 50 if is_sft else (32 if is_base else infer_steps)
         result = handler.generate_music(
             captions=prompt,
             lyrics=lyrics,
@@ -441,10 +447,9 @@ def _run_inference(
             use_random_seed=use_random_seed,
             seed=None if use_random_seed else seed,
             infer_method="ode",
-            shift=1.0,
+            shift=model_shift,
             use_adg=False,
             vocal_language=_language_for_generation(language),
-            # The UI returns a single track, so avoid generating an unused second sample.
             batch_size=1,
         )
 
@@ -816,9 +821,17 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"{song_model} is not installed and is not in the known ACE-Step download list.")
     batch_size = clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE)
     duration = clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX)
-    inference_steps = clamp_int(payload.get("inference_steps", payload.get("infer_step")), 8, 1, 200)
-    if "turbo" in song_model and inference_steps > 20:
-        inference_steps = 20
+    is_turbo = "turbo" in song_model
+    is_sft = "sft" in song_model and not is_turbo
+    is_base = "base" in song_model and not is_turbo
+    raw_steps = payload.get("inference_steps", payload.get("infer_step"))
+    if raw_steps in [None, "", "auto"]:
+        default_steps = 8 if is_turbo else (50 if is_sft else (32 if is_base else 8))
+    else:
+        default_steps = int(raw_steps)
+    inference_steps = clamp_int(default_steps, default_steps, 1, 200)
+    if is_turbo and inference_steps > 20:
+        inference_steps = min(inference_steps, 20)
 
     bpm_value = payload.get("bpm")
     bpm = None if bpm_value in [None, "", "auto", "Auto"] else clamp_int(bpm_value, 120, BPM_MIN, BPM_MAX)
@@ -1755,7 +1768,7 @@ def generate_album(
                     "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
                     "song_model": track_model,
                     "ace_lm_model": ace_lm_model,
-                    "inference_steps": clamp_int(request_payload.get("inference_steps"), 8, 1, 200),
+                    "inference_steps": clamp_int(request_payload.get("inference_steps"), 8 if "turbo" in track_model else (50 if "sft" in track_model else 32), 1, 200),
                     "guidance_scale": clamp_float(request_payload.get("guidance_scale"), 7.0, 1.0, 15.0),
                     "shift": clamp_float(request_payload.get("shift"), 3.0 if "turbo" in track_model else 1.0, 1.0, 5.0),
                     "infer_method": str(request_payload.get("infer_method") or "ode"),
