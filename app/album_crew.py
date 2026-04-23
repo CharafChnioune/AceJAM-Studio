@@ -1,11 +1,9 @@
 """
-Album generation using CrewAI agents with Ollama LLM.
+Album generation using CrewAI agents with Ollama plus AceJAM songwriting tools.
 
-Features:
-- Unified Memory (Ollama embeddings, persists across sessions)
-- Custom tools: web search for trends/news, hit song analysis
-- Knowledge sources for songwriting craft
-- think=False to prevent <think> tags
+The CrewAI layer is backed by deterministic post-processing tools. If an LLM
+returns weak or malformed JSON, the same toolbelt repairs the plan so album
+generation still has usable tags, lyrics, metadata, and model advice.
 """
 
 from __future__ import annotations
@@ -13,18 +11,43 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.request
 import urllib.parse
+import urllib.request
 from typing import Any
 
+from songwriting_toolkit import (
+    build_album_plan,
+    choose_song_model,
+    lyric_length_plan,
+    make_crewai_tools,
+    normalize_album_tracks,
+    sanitize_artist_references,
+    toolkit_payload,
+)
 
-# ── Ollama helpers ───────────────────────────────────────────────────────
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+LANG_NAMES = {
+    "en": "English", "ar": "Arabic", "az": "Azerbaijani", "bg": "Bulgarian",
+    "bn": "Bengali", "ca": "Catalan", "cs": "Czech", "da": "Danish",
+    "de": "German", "el": "Greek", "es": "Spanish", "fa": "Persian",
+    "fi": "Finnish", "fr": "French", "he": "Hebrew", "hi": "Hindi",
+    "hr": "Croatian", "hu": "Hungarian", "id": "Indonesian", "is": "Icelandic",
+    "it": "Italian", "ja": "Japanese", "ko": "Korean", "la": "Latin",
+    "lt": "Lithuanian", "ms": "Malay", "ne": "Nepali", "nl": "Dutch",
+    "no": "Norwegian", "pa": "Punjabi", "pl": "Polish", "pt": "Portuguese",
+    "ro": "Romanian", "ru": "Russian", "sk": "Slovak", "sr": "Serbian",
+    "sv": "Swedish", "sw": "Swahili", "ta": "Tamil", "te": "Telugu",
+    "th": "Thai", "tl": "Tagalog", "tr": "Turkish", "uk": "Ukrainian",
+    "ur": "Urdu", "vi": "Vietnamese", "yue": "Cantonese", "zh": "Chinese",
+    "instrumental": "Instrumental",
+}
 
 
 def _get_ollama_client():
     import ollama
+
     return ollama.Client(host=OLLAMA_BASE_URL)
 
 
@@ -55,101 +78,28 @@ def test_ollama_model(model_name: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
-# ── Reference data ──────────────────────────────────────────────────────
-
-LANG_NAMES = {
-    "en": "English", "ar": "Arabic", "az": "Azerbaijani", "bg": "Bulgarian",
-    "bn": "Bengali", "ca": "Catalan", "cs": "Czech", "da": "Danish",
-    "de": "German", "el": "Greek", "es": "Spanish", "fa": "Persian",
-    "fi": "Finnish", "fr": "French", "he": "Hebrew", "hi": "Hindi",
-    "hr": "Croatian", "hu": "Hungarian", "id": "Indonesian", "is": "Icelandic",
-    "it": "Italian", "ja": "Japanese", "ko": "Korean", "la": "Latin",
-    "lt": "Lithuanian", "ms": "Malay", "ne": "Nepali", "nl": "Dutch",
-    "no": "Norwegian", "pa": "Punjabi", "pl": "Polish", "pt": "Portuguese",
-    "ro": "Romanian", "ru": "Russian", "sk": "Slovak", "sr": "Serbian",
-    "sv": "Swedish", "sw": "Swahili", "ta": "Tamil", "te": "Telugu",
-    "th": "Thai", "tl": "Tagalog", "tr": "Turkish", "uk": "Ukrainian",
-    "ur": "Urdu", "vi": "Vietnamese", "yue": "Cantonese", "zh": "Chinese",
-    "instrumental": "Instrumental",
-}
-
-
-def _section_plan(duration: float) -> dict[str, Any]:
-    dur = int(duration)
-    target_words = int(dur * 1.3)
-    word_min = int(dur * 0.9)
-    word_max = int(dur * 1.8)
-    target_lines = max(4, int(target_words / 5.5))
-
-    if dur <= 45:
-        num_verses, structure = 1, "[Verse], [Chorus]"
-    elif dur <= 90:
-        num_verses, structure = 2, "[Verse], [Chorus], [Verse], [Chorus]"
-    elif dur <= 150:
-        num_verses, structure = 2, "[Verse], [Chorus], [Verse], [Chorus], [Bridge], [Chorus]"
-    elif dur <= 210:
-        num_verses, structure = 3, "[Verse], [Chorus], [Verse], [Chorus], [Bridge], [Verse], [Chorus]"
-    elif dur <= 270:
-        num_verses, structure = 3, "[Intro], [Verse], [Chorus], [Verse], [Chorus], [Bridge], [Verse], [Chorus], [Outro]"
-    else:
-        num_verses, structure = 4, "[Intro], [Verse], [Chorus], [Verse], [Chorus], [Bridge], [Verse], [Chorus], [Verse], [Chorus], [Outro]"
-
-    return {
-        "structure": structure, "num_verses": num_verses,
-        "target_words": target_words, "word_range": f"{word_min}-{word_max}",
-        "target_lines": target_lines,
-    }
-
-
-# ── Custom tools (plain functions, wrapped lazily) ──────────────────────
-
 def _search_web(query: str) -> str:
-    """Search the web using DuckDuckGo (no API key needed)."""
     try:
         encoded = urllib.parse.quote(query)
         url = f"https://html.duckduckgo.com/html/?q={encoded}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
-        # Extract result snippets
         results = []
         for match in re.finditer(r'class="result__snippet">(.*?)</a>', html, re.DOTALL):
-            text = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+            text = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            text = re.sub(r"\s+", " ", text)
             if text and len(text) > 20:
                 results.append(text)
             if len(results) >= 5:
                 break
-        if not results:
-            # Fallback: extract any readable text
-            text = re.sub(r'<[^>]+>', ' ', html)
-            text = re.sub(r'\s+', ' ', text).strip()
-            return text[:1000]
-        return "\n\n".join(results)
+        if results:
+            return "\n\n".join(results)
+        text = re.sub(r"<[^>]+>", " ", html)
+        return re.sub(r"\s+", " ", text).strip()[:1000]
     except Exception as exc:
         return f"Search failed: {exc}"
 
-
-def _get_trending_topics(category: str) -> str:
-    """Get current trending topics for songwriting inspiration."""
-    queries = {
-        "news": "breaking news today world events",
-        "culture": "trending culture music movies 2026",
-        "social": "viral social media trends today",
-        "politics": "world politics current events today",
-        "emotions": "most relatable human emotions struggles 2026",
-        "love": "modern love relationships dating culture",
-        "street": "street culture urban life nightlife",
-    }
-    query = queries.get(category.lower(), f"trending {category} today 2026")
-    return _search_web(query)
-
-
-def _analyze_hit_songs(genre: str) -> str:
-    """Search for current #1 hit songs in a genre for structure/style reference."""
-    return _search_web(f"number 1 hit song {genre} 2026 lyrics analysis what makes it great")
-
-
-# ── Crew builder ─────────────────────────────────────────────────────────
 
 def _make_llm(model_name: str):
     from crewai import LLM
@@ -157,24 +107,80 @@ def _make_llm(model_name: str):
     llm = LLM(
         model=f"ollama/{model_name}",
         base_url=OLLAMA_BASE_URL,
-        temperature=0.7,
+        temperature=0.72,
         max_tokens=131072,
         timeout=7200,
     )
-
-    # Monkey-patch the call method to strip <think> tags from responses.
-    # Some fine-tuned models have thinking baked into their weights and
-    # ignore think=false. This strips the tags at the source.
-    _original_call = llm.call
+    original_call = llm.call
 
     def _patched_call(*args, **kwargs):
-        result = _original_call(*args, **kwargs)
-        if isinstance(result, str) and '<think>' in result:
-            result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL).strip()
+        result = original_call(*args, **kwargs)
+        if isinstance(result, str) and "<think>" in result:
+            result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL).strip()
         return result
 
     llm.call = _patched_call
     return llm
+
+
+def _json_from_text(raw: str) -> list[dict[str, Any]]:
+    text = re.sub(r"<think>.*?</think>", "", str(raw or ""), flags=re.DOTALL).strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict) and isinstance(parsed.get("tracks"), list):
+            return [item for item in parsed["tracks"] if isinstance(item, dict)]
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\[[\s\S]*\]", text)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            pass
+    raise ValueError("Crew result did not contain a valid JSON track array")
+
+
+def _coerce_options(
+    concept: str,
+    num_tracks: int,
+    track_duration: float,
+    language: str,
+    options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    opts = dict(options or {})
+    sanitized, artist_notes = sanitize_artist_references(concept)
+    opts.setdefault("song_model_strategy", "best_installed")
+    opts.setdefault("quality_target", "hit")
+    opts.setdefault("lyric_density", "dense")
+    opts.setdefault("rhyme_density", 0.8)
+    opts.setdefault("metaphor_density", 0.7)
+    opts.setdefault("hook_intensity", 0.85)
+    opts.setdefault("structure_preset", "auto")
+    opts.setdefault("bpm_strategy", "varied")
+    opts.setdefault("key_strategy", "related")
+    opts.setdefault("use_web_inspiration", False)
+    opts.setdefault("track_variants", 1)
+    opts.update(
+        {
+            "concept": concept,
+            "sanitized_concept": sanitized,
+            "artist_reference_notes": artist_notes,
+            "num_tracks": int(num_tracks),
+            "track_duration": float(track_duration),
+            "language": language,
+        }
+    )
+    return opts
+
+
+def songwriting_toolkit(installed_models: set[str] | list[str] | None = None) -> dict[str, Any]:
+    return toolkit_payload(installed_models)
 
 
 def create_album_crew(
@@ -184,251 +190,233 @@ def create_album_crew(
     ollama_model: str,
     language: str = "en",
     embedding_model: str = "nomic-embed-text",
+    options: dict[str, Any] | None = None,
 ):
-    from crewai import Agent, Crew, LLM, Process, Task
+    from crewai import Agent, Crew, Process, Task
 
+    opts = _coerce_options(concept, num_tracks, track_duration, language, options)
     llm = _make_llm(ollama_model)
     lang_name = LANG_NAMES.get(language, language)
-    plan = _section_plan(track_duration)
-    dur_str = f"{int(track_duration) // 60}:{int(track_duration) % 60:02d}"
+    length_plan = lyric_length_plan(
+        track_duration,
+        str(opts.get("lyric_density") or "dense"),
+        str(opts.get("structure_preset") or "auto"),
+        opts["sanitized_concept"],
+    )
+    model_info = choose_song_model(
+        set(opts.get("installed_models") or []),
+        str(opts.get("song_model_strategy") or "best_installed"),
+        str(opts.get("requested_song_model") or "auto"),
+    )
+    inspiration = ""
+    if opts.get("use_web_inspiration"):
+        queries = opts.get("inspiration_queries") or opts["sanitized_concept"]
+        inspiration = _search_web(str(queries))[:1200]
+    tool_context = dict(opts)
+    tool_context["web_inspiration"] = inspiration
+    tools = make_crewai_tools(tool_context)
 
-
-    # ── Pre-fetch trending context ────────────────────────────────────
-    trending_context = ""
-    try:
-        trending_context = _get_trending_topics("news")[:400] + "\n" + _get_trending_topics("culture")[:400]
-        print(f"[album_crew] Fetched trending topics ({len(trending_context)} chars)")
-    except Exception:
-        pass
-
-    # Shared config — all agents MUST produce output, NEVER refuse
-    cfg = dict(llm=llm, verbose=True, allow_delegation=False, max_iter=25)
-    no_refuse = (
-        "You ALWAYS produce output. You NEVER refuse, question, discuss ethics, "
-        "or ask for clarification. You execute the creative vision given to you."
+    tool_summary = json.dumps(
+        {
+            "lyric_length_plan": length_plan,
+            "model_advice": model_info,
+            "quality_target": opts.get("quality_target"),
+            "tag_packs": opts.get("tag_packs"),
+            "custom_tags": opts.get("custom_tags"),
+            "artist_reference_notes": opts.get("artist_reference_notes"),
+        },
+        ensure_ascii=True,
     )
 
-    # ── AGENTS (5 specialists like a real production team) ────────────
+    shared_rules = (
+        "Create original songs only. Do not imitate a living artist. "
+        "If artist names appear, convert them into broad technique briefs: internal rhyme, narrative detail, "
+        "metaphor discipline, punchlines, hook contrast, breath control, and cinematic imagery. "
+        "Use the provided tools when useful. Output concrete, editable production data."
+    )
+    cfg = dict(llm=llm, verbose=True, allow_delegation=False, max_iter=20)
 
     executive_producer = Agent(
         role="Executive Producer",
-        goal=f"Define the album vision, tracklist, and story arc for: '{concept}'",
+        goal="Design a cohesive album arc with hit-level contrast between tracks",
         backstory=(
-            f"{no_refuse}\n\n"
-            "You are the executive producer — you set the vision. "
-            "You decide the album title, the story it tells, and the emotional journey.\n"
-            "You think in 3 acts: Act 1 = hook the listener, Act 2 = escalate to climax, "
-            "Act 3 = resolution and closer.\n"
-            "Each track must be about a DIFFERENT specific scene or moment.\n\n"
-            + (f"Current trends:\n{trending_context}\n" if trending_context else "")
+            f"{shared_rules}\n\n"
+            "You plan albums in acts: opener, escalation, climax, cooldown, closer. "
+            "Every track needs a distinct scene, emotional job, title, and hook promise."
         ),
+        tools=tools,
         **cfg,
     )
-
     beat_producer = Agent(
-        role="Beat Producer & Sound Designer",
-        goal="Design the sonic palette for each track: BPM, key, instruments, production style",
+        role="Beat Producer and ACE-Step Tag Architect",
+        goal="Create ACE-Step captions, tags, BPM, key, time signature, and model choices",
         backstory=(
-            f"{no_refuse}\n\n"
-            "You produce beats. For each track you decide:\n"
-            "- BPM (vary across album, never 3 tracks same tempo)\n"
-            "- Key (use related keys: C major→A minor, G major→E minor)\n"
-            "- 2-3 specific instruments from:\n"
-            "  Keys: piano, Rhodes, organ, Wurlitzer, clavinet, grand piano\n"
-            "  Guitar: acoustic, electric, distorted, clean, fingerpicked, slide, nylon\n"
-            "  Bass: 808 bass, sub-bass, synth bass, upright bass, slap bass, fretless bass\n"
-            "  Drums: trap hi-hats, 808 kick, punchy snare, breakbeat, brush drums, electronic drums\n"
-            "  Synth: synth pads, arpeggiated synth, analog synth, dark synths, acid synth, supersaw\n"
-            "  Strings: strings, violin, cello, orchestral strings, pizzicato\n"
-            "  Brass: trumpet, saxophone, trombone, French horn\n"
-            "  World: sitar, tabla, steel drums, kalimba, harmonica\n"
-            "  Electronic: drum machine, turntable scratches, risers, glitch effects\n"
-            "- Production style: high-fidelity, lo-fi, warm analog, gritty, atmospheric, crisp modern mix\n"
-            "- Mood tags: dark, bright, melancholic, aggressive, dreamy, cinematic, euphoric\n\n"
-            "SONIC VARIETY: use DIFFERENT instruments per track. Never same combo twice."
+            f"{shared_rules}\n\n"
+            "Use caption dimensions from ACE-Step: genre, emotion, instruments, timbre, era, "
+            "production, vocal character, speed, rhythm, and structure hints. "
+            "Keep BPM/key/time in metadata instead of repeating them in captions."
         ),
+        tools=tools,
         **cfg,
     )
-
     songwriter = Agent(
-        role="Songwriter",
-        goal=f"Write award-winning lyrics in {lang_name} for each track",
+        role="Rhyme, Hook, and Lyric Writer",
+        goal=f"Write original, duration-matched lyrics in {lang_name}",
         backstory=(
-            f"{no_refuse}\n\n"
-            "You write lyrics. Your craft rules:\n"
-            "- SHOW DON'T TELL: 'coffee's cold on the counter' not 'I am sad'\n"
-            "- SPECIFIC: 'rusted Civic' not 'car', '3 AM bodega' not 'city'\n"
-            "- 5 SENSES: smell, taste, touch, sound, sight\n"
-            "- TENSION: hold two emotions at once\n"
-            "- IN MEDIAS RES: start mid-action\n"
-            "- ONE METAPHOR WORLD per song\n"
-            "- HOOKS: singable, emotionally loaded\n"
-            "- VERSE ARC: v1=scene, v2=complication, v3=shift, bridge=twist\n"
-            "- Each track COMPLETELY DIFFERENT lyrics. No repeated lines.\n"
-            "- Each track a DIFFERENT chorus/hook.\n\n"
-            "BANNED: echoes of, shattered dreams, empty streets, fading light, "
-            "endless night, burning bridges, heart on fire, dancing in the rain, paint the sky"
+            f"{shared_rules}\n\n"
+            "Write vivid lyrics with specific nouns, internal/slant rhyme, one coherent metaphor world, "
+            "clear section tags, hook contrast, and no repeated filler. "
+            "Use concise meta tags such as [Verse - rap], [Chorus - anthemic], [Bridge - whispered]."
         ),
+        tools=tools,
+        **cfg,
+    )
+    quality_editor = Agent(
+        role="A&R Quality Editor and JSON Finalizer",
+        goal="Repair weak songs and output strict JSON for AceJAM generation",
+        backstory=(
+            f"{shared_rules}\n\n"
+            "You reject generic lyrics, cliches, repeated hooks, tag conflicts, and under-length songs. "
+            "Final output must be a JSON array only."
+        ),
+        tools=tools,
         **cfg,
     )
 
-    vocal_director = Agent(
-        role="Vocal Director",
-        goal="Add vocal delivery markers, energy dynamics, and performance notes to each track",
-        backstory=(
-            f"{no_refuse}\n\n"
-            "You direct the vocal performance. For each track you add:\n"
-            "- Section markers: [Intro], [Verse - rap], [Chorus - anthemic], [Bridge - whispered], [Outro]\n"
-            "- Vocal delivery: [Verse - rap], [Verse - whispered], [Chorus - anthemic], "
-            "[Verse - melodic rap], [Verse - shouted], [Verse - spoken]\n"
-            "- Energy markers: [building energy], [explosive drop], [calm], [intense]\n"
-            "- Text formatting: UPPERCASE for emphasis, (parentheses) for backing vocals\n"
-            "- Vocal type tags: male rap vocal, female vocal, autotune vocal, etc.\n"
-            "For rap: ALWAYS use [Verse - rap] and [Chorus - rap]."
-        ),
-        **cfg,
-    )
-
-    mix_engineer = Agent(
-        role="Mix Engineer & JSON Finalizer",
-        goal="Combine everything into a valid JSON array with all parameters",
-        backstory=(
-            f"{no_refuse}\n\n"
-            "You finalize the album into a JSON array. Each track object:\n"
-            '{{"track_number": N, "title": "...", '
-            '"tags": "genre, instrument1, instrument2, mood, vocal, production", '
-            '"lyrics": "[Verse - rap]\\nline1\\n...", '
-            '"bpm": N, "key_scale": "X minor", "time_signature": "4", '
-            f'"language": "{language}", "duration": {track_duration}, '
-            '"description": "..."}}\n\n'
-            "Tags: 4-6 per track = genre + instruments + mood + vocal + production.\n"
-            "VALID KEYS: C/C#/D/Eb/E/F/F#/G/Ab/A/Bb/B + major or minor.\n"
-            "Output ONLY the JSON array."
-        ),
-        **cfg,
-    )
-
-    # ── TASKS (7 separate steps like a real production pipeline) ──────
-
-    # Task 1: Album concept & tracklist
     task_concept = Task(
         description=(
-            f"Define the album concept and plan exactly {num_tracks} tracks.\n\n"
-            f"Concept: {concept}\n"
-            f"Language: {lang_name}\n\n"
-            "For EACH track:\n"
-            "1. Title (unique)\n"
-            "2. What the track is about (specific scene/story)\n"
-            "3. Where it sits in the album arc\n\n"
-            "EVERY track = DIFFERENT topic. Stay true to the concept genre.\n"
-            "Output the numbered list only."
+            f"Plan exactly {num_tracks} tracks for this album.\n"
+            f"Concept: {opts['sanitized_concept']}\n"
+            f"Language: {lang_name}\n"
+            f"Tool context: {tool_summary}\n"
+            + (f"Current inspiration snippets:\n{inspiration}\n" if inspiration else "")
+            + "Return track titles, role in album arc, unique scene, and hook promise."
         ),
-        expected_output=f"Numbered list of {num_tracks} tracks with titles and descriptions.",
+        expected_output=f"Numbered plan for {num_tracks} distinct tracks.",
         agent=executive_producer,
     )
-
-    # Task 2: Beat production for each track
-    task_beats = Task(
+    task_sonic = Task(
         description=(
-            f"Design the sonic palette for each of the {num_tracks} tracks.\n\n"
-            "For EACH track output:\n"
-            "- BPM (vary across album)\n"
-            "- Key (use related keys for flow)\n"
-            "- 2-3 specific instruments\n"
-            "- Mood/energy description\n"
-            "- Production style\n\n"
-            "Use DIFFERENT instruments per track. Match the concept genre."
+            "For each planned track, assign ACE-Step-ready caption tags, BPM, key_scale, time_signature, "
+            "vocal character, and the chosen installed song_model. Use ModelAdvisorTool and TagLibraryTool. "
+            "Every track must have different tags and a clear production reason."
         ),
-        expected_output=f"Sonic design for {num_tracks} tracks with BPM, key, instruments, mood.",
+        expected_output="Sonic specification for every track.",
         agent=beat_producer,
         context=[task_concept],
     )
-
-    # Task 3: Write lyrics for tracks 1 to half
-    half = (num_tracks + 1) // 2
-    task_lyrics_1 = Task(
+    task_lyrics = Task(
         description=(
-            f"Write UNIQUE lyrics for tracks 1 to {half} in {lang_name}.\n\n"
-            f"STRUCTURE per track ({dur_str}):\n"
-            f"  {plan['structure']}\n"
-            f"  {plan['num_verses']} verses, ~{plan['target_words']} words\n\n"
-            "RULES:\n"
-            "- Match genre from the concept (rap = [Verse - rap])\n"
-            "- Each track COMPLETELY DIFFERENT lyrics and hook\n"
-            "- 4-8 words per line, specific nouns, sensory details\n"
-            "- UPPERCASE = emphasis, (parentheses) = backing vocals\n\n"
-            f"Write tracks 1 through {half}. Label each clearly."
+            f"Write complete lyrics for all tracks in {lang_name}.\n"
+            f"Duration per track: {int(track_duration)} seconds.\n"
+            f"Required plan: {length_plan['structure']}; target {length_plan['target_words']} words, "
+            f"minimum {length_plan['min_words']} words and {length_plan['min_lines']} lyric lines.\n"
+            "Use enough lyrics for the duration. Keep each hook unique. Do not include placeholder lines."
         ),
-        expected_output=f"Complete lyrics for tracks 1-{half}.",
+        expected_output="Complete duration-matched lyrics for every track.",
         agent=songwriter,
-        context=[task_concept, task_beats],
+        context=[task_concept, task_sonic],
     )
-
-    # Task 4: Write lyrics for remaining tracks
-    task_lyrics_2 = Task(
-        description=(
-            f"Write UNIQUE lyrics for tracks {half+1} to {num_tracks} in {lang_name}.\n\n"
-            f"STRUCTURE per track ({dur_str}):\n"
-            f"  {plan['structure']}\n"
-            f"  {plan['num_verses']} verses, ~{plan['target_words']} words\n\n"
-            "RULES:\n"
-            "- Match genre from the concept\n"
-            "- COMPLETELY DIFFERENT from tracks 1-{half}. No reused lines or hooks.\n"
-            "- 4-8 words per line, specific nouns, sensory details\n"
-            "- UPPERCASE = emphasis, (parentheses) = backing vocals\n\n"
-            f"Write tracks {half+1} through {num_tracks}. Label each clearly."
-        ),
-        expected_output=f"Complete lyrics for tracks {half+1}-{num_tracks}.",
-        agent=songwriter,
-        context=[task_concept, task_beats, task_lyrics_1],
-    )
-
-    # Task 5: Add vocal direction & performance markers
-    task_vocal = Task(
-        description=(
-            f"Add vocal delivery markers to ALL {num_tracks} tracks.\n\n"
-            "For each track, ensure the lyrics have:\n"
-            "- Correct section markers: [Intro], [Verse - rap], [Chorus - anthemic], etc.\n"
-            "- Energy dynamics: [building energy], [explosive drop] where appropriate\n"
-            "- UPPERCASE on key words for emphasis\n"
-            "- (parentheses) for backing vocals/echoes\n"
-            "- Vocal style matching the genre (rap = [Verse - rap], rock = [Verse], etc.)\n\n"
-            "Output ALL tracks with markers added. Keep all existing lyrics intact."
-        ),
-        expected_output=f"All {num_tracks} tracks with complete vocal direction markers.",
-        agent=vocal_director,
-        context=[task_concept, task_lyrics_1, task_lyrics_2],
-    )
-
-    # Task 6: Final JSON assembly
     task_json = Task(
         description=(
-            f"Combine everything into a valid JSON array of exactly {num_tracks} tracks.\n\n"
-            "Use the beat design for BPM/key/instruments/tags.\n"
-            "Use the vocal-directed lyrics.\n"
-            "Each track object must have ALL fields:\n"
-            "track_number, title, tags, lyrics, bpm, key_scale, time_signature, "
-            f"language (\"{language}\"), duration ({track_duration}), description.\n\n"
-            "Tags = genre + 2-3 instruments + mood + vocal type + production.\n"
-            "EVERY track different tags. Match concept genre.\n"
-            "Output ONLY the JSON array. No markdown. No explanation."
+            "Combine the album plan, sonic specs, and lyrics into a strict JSON array only. "
+            "Each object must include: track_number, title, description, tags, lyrics, bpm, key_scale, "
+            "time_signature, language, duration, song_model. "
+            "Also include tool_notes when you changed an artist reference into technique language."
         ),
-        expected_output=f"Valid JSON array of {num_tracks} tracks.",
-        agent=mix_engineer,
-        context=[task_concept, task_beats, task_vocal],
+        expected_output="Valid JSON array of album tracks only.",
+        agent=quality_editor,
+        context=[task_concept, task_sonic, task_lyrics],
     )
 
-    # ── Crew ──────────────────────────────────────────────────────────
-
     return Crew(
-        agents=[executive_producer, beat_producer, songwriter, vocal_director, mix_engineer],
-        tasks=[task_concept, task_beats, task_lyrics_1, task_lyrics_2, task_vocal, task_json],
+        agents=[executive_producer, beat_producer, songwriter, quality_editor],
+        tasks=[task_concept, task_sonic, task_lyrics, task_json],
         process=Process.sequential,
         verbose=True,
     )
 
 
-# ── Main entry point ────────────────────────────────────────────────────
+def plan_album(
+    concept: str,
+    num_tracks: int = 5,
+    track_duration: float = 180.0,
+    ollama_model: str = "llama3.2",
+    language: str = "en",
+    embedding_model: str = "nomic-embed-text",
+    options: dict[str, Any] | None = None,
+    use_crewai: bool = True,
+    input_tracks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    logs: list[str] = []
+    opts = _coerce_options(concept, num_tracks, track_duration, language, options)
+    lang_name = LANG_NAMES.get(language, language)
+    logs.append(f"Concept: {opts['sanitized_concept']}")
+    logs.append(f"Language: {lang_name}")
+    logs.append(f"Tracks: {num_tracks} x {int(track_duration)}s")
+    logs.append(f"Song model strategy: {opts.get('song_model_strategy')}")
+    if opts.get("artist_reference_notes"):
+        logs.extend(str(note) for note in opts["artist_reference_notes"])
+
+    model_info = choose_song_model(
+        set(opts.get("installed_models") or []),
+        str(opts.get("song_model_strategy") or "best_installed"),
+        str(opts.get("requested_song_model") or "auto"),
+    )
+    if not model_info.get("ok"):
+        logs.append(f"ERROR: {model_info.get('error')}")
+        return {"tracks": [], "logs": logs, "success": False, "error": model_info.get("error"), "toolkit": toolkit_payload(opts.get("installed_models"))}
+
+    if input_tracks:
+        tracks = normalize_album_tracks(input_tracks, opts)
+        logs.append(f"Using editable album plan with {len(tracks)} tracks.")
+        return {
+            "tracks": tracks,
+            "logs": logs,
+            "success": True,
+            "toolkit": toolkit_payload(opts.get("installed_models")),
+            "toolkit_report": {"model_advice": model_info, "artist_reference_notes": opts.get("artist_reference_notes", [])},
+        }
+
+    if use_crewai:
+        try:
+            logs.append(f"Planning with CrewAI and Ollama model {ollama_model}...")
+            crew = create_album_crew(concept, num_tracks, track_duration, ollama_model, language, embedding_model, opts)
+
+            def _task_callback(output):
+                desc = getattr(output, "description", "")[:90]
+                raw = getattr(output, "raw", "")
+                agent = getattr(output, "agent", "")
+                logs.append(f"[{agent or 'agent'}] {desc}")
+                if raw:
+                    logs.append("  " + raw[:240].replace("\n", " ") + "...")
+
+            for task in crew.tasks:
+                task.callback = _task_callback
+            result = crew.kickoff()
+            parsed = _json_from_text(str(result))
+            tracks = normalize_album_tracks(parsed[:num_tracks], opts)
+            logs.append(f"CrewAI planned {len(tracks)} tracks.")
+            return {
+                "tracks": tracks,
+                "logs": logs,
+                "success": True,
+                "toolkit": toolkit_payload(opts.get("installed_models")),
+                "toolkit_report": {"model_advice": model_info, "artist_reference_notes": opts.get("artist_reference_notes", [])},
+            }
+        except Exception as exc:
+            logs.append(f"CrewAI planning fell back to deterministic toolbelt: {exc}")
+
+    fallback = build_album_plan(concept, num_tracks, track_duration, opts)
+    logs.append(f"Toolbelt fallback planned {len(fallback['tracks'])} tracks.")
+    return {
+        "tracks": fallback["tracks"],
+        "logs": logs,
+        "success": True,
+        "toolkit": toolkit_payload(opts.get("installed_models")),
+        "toolkit_report": fallback.get("toolkit_report", {}),
+    }
+
 
 def generate_album(
     concept: str,
@@ -437,57 +425,15 @@ def generate_album(
     ollama_model: str = "llama3.2",
     language: str = "en",
     embedding_model: str = "nomic-embed-text",
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    logs: list[str] = []
-
-    def _task_callback(output):
-        desc = getattr(output, "description", "")[:80]
-        raw = getattr(output, "raw", "")
-        agent = getattr(output, "agent", "")
-        log_entry = f"[{agent or 'agent'}] {desc}"
-        logs.append(log_entry)
-        preview = raw[:300].replace("\n", " ") if raw else ""
-        if preview:
-            logs.append(f"  → {preview}...")
-        print(f"[album_crew] {log_entry}")
-
-    lang_name = LANG_NAMES.get(language, language)
-    print(f"[album_crew] Starting: concept='{concept}' tracks={num_tracks} "
-          f"duration={track_duration}s model={ollama_model} language={lang_name}")
-
-    crew = create_album_crew(concept, num_tracks, track_duration, ollama_model, language, embedding_model)
-    for task in crew.tasks:
-        task.callback = _task_callback
-
-    logs.append(f"Starting with {ollama_model}")
-    logs.append(f"Concept: {concept}")
-    logs.append(f"Language: {lang_name}")
-    logs.append(f"Tracks: {num_tracks} × {int(track_duration)}s")
-    logs.append("Features: web search, trending topics, hit analysis, memory, knowledge")
-    logs.append("---")
-
-    result = crew.kickoff()
-
-    raw = str(result)
-    raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
-
-    try:
-        tracks = json.loads(raw)
-        if isinstance(tracks, list):
-            logs.append(f"Successfully generated {len(tracks)} tracks!")
-            return {"tracks": tracks, "logs": logs}
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r'\[.*\]', raw, re.DOTALL)
-    if match:
-        try:
-            tracks = json.loads(match.group(0))
-            if isinstance(tracks, list):
-                logs.append(f"Extracted {len(tracks)} tracks")
-                return {"tracks": tracks, "logs": logs}
-        except json.JSONDecodeError:
-            pass
-
-    logs.append("WARNING: Could not parse crew result")
-    return {"tracks": [{"error": "Failed to parse", "raw": raw[:1000]}], "logs": logs}
+    return plan_album(
+        concept=concept,
+        num_tracks=num_tracks,
+        track_duration=track_duration,
+        ollama_model=ollama_model,
+        language=language,
+        embedding_model=embedding_model,
+        options=options,
+        use_crewai=True,
+    )

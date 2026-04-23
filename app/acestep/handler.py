@@ -208,12 +208,15 @@ class AceStepHandler:
     # Model name to HuggingFace repository mapping
     # Models in the same repo will be downloaded together
     MODEL_REPO_MAPPING = {
-        # Main unified repository (contains acestep-v15-turbo, LM models, VAE, text encoder)
+        # Main unified repository (contains acestep-v15-turbo, 1.7B LM, VAE, text encoder)
         "acestep-v15-turbo": "ACE-Step/Ace-Step1.5",
-        "acestep-5Hz-lm-0.6B": "ACE-Step/Ace-Step1.5",
         "acestep-5Hz-lm-1.7B": "ACE-Step/Ace-Step1.5",
         "vae": "ACE-Step/Ace-Step1.5",
         "Qwen3-Embedding-0.6B": "ACE-Step/Ace-Step1.5",
+
+        # Optional LM repositories
+        "acestep-5Hz-lm-0.6B": "ACE-Step/acestep-5Hz-lm-0.6B",
+        "acestep-5Hz-lm-4B": "ACE-Step/acestep-5Hz-lm-4B",
         
         # Separate model repositories
         "acestep-v15-base": "ACE-Step/acestep-v15-base",
@@ -227,6 +230,33 @@ class AceStepHandler:
     
     # Default fallback repository for unknown models
     DEFAULT_REPO_ID = "ACE-Step/Ace-Step1.5"
+
+    def _is_download_complete(self, model_path: str) -> bool:
+        """Return True only when a checkpoint directory has usable model weights."""
+        if not os.path.isdir(model_path):
+            return False
+        if not os.path.isfile(os.path.join(model_path, "config.json")):
+            return False
+        index_path = os.path.join(model_path, "model.safetensors.index.json")
+        if os.path.isfile(index_path):
+            try:
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index = json.load(f)
+                weight_map = index.get("weight_map", {}) if isinstance(index, dict) else {}
+                shards = sorted({str(name) for name in weight_map.values()}) if isinstance(weight_map, dict) else []
+                if shards:
+                    return all(
+                        os.path.isfile(os.path.join(model_path, shard)) and os.path.getsize(os.path.join(model_path, shard)) > 0
+                        for shard in shards
+                    )
+            except Exception:
+                return False
+        for filename in os.listdir(model_path):
+            if filename.endswith((".safetensors", ".bin", ".pt")):
+                file_path = os.path.join(model_path, filename)
+                if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                    return True
+        return False
 
     def _ensure_model_downloaded(self, model_name: str, checkpoint_dir: str) -> str:
         """
@@ -251,10 +281,12 @@ class AceStepHandler:
 
         model_path = os.path.join(checkpoint_dir, model_name)
 
-        # Check if model already exists
-        if os.path.exists(model_path) and os.listdir(model_path):
+        # Check if model already exists and has all required weight files.
+        if self._is_download_complete(model_path):
             logger.info(f"Model {model_name} already exists at {model_path}")
             return model_path
+        if os.path.exists(model_path) and os.listdir(model_path):
+            logger.warning(f"Model {model_name} at {model_path} is incomplete; resuming download")
 
         # Get repository ID for this model
         repo_id = self.MODEL_REPO_MAPPING.get(model_name, self.DEFAULT_REPO_ID)

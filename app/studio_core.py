@@ -228,8 +228,127 @@ LM_MODEL_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 SUPPORTED_AUDIO_FORMATS = {"wav", "flac", "ogg"}
+OFFICIAL_AUDIO_FORMATS = {"flac", "mp3", "opus", "aac", "wav", "wav32"}
 ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".m4a"}
 MAX_BATCH_SIZE = 8
+
+FAST_HANDLER_FIELDS = {
+    "audio_code_string",
+    "audio_cover_strength",
+    "auto_lrc",
+    "auto_score",
+    "batch_size",
+    "bpm",
+    "caption",
+    "cfg_interval_end",
+    "cfg_interval_start",
+    "duration",
+    "guidance_scale",
+    "infer_method",
+    "inference_steps",
+    "key_scale",
+    "lyrics",
+    "repainting_end",
+    "repainting_start",
+    "return_audio_codes",
+    "seed",
+    "seeds",
+    "shift",
+    "task_type",
+    "time_signature",
+    "timesteps",
+    "track_name",
+    "track_names",
+    "use_adg",
+    "vocal_language",
+}
+
+OFFICIAL_ONLY_FIELDS = {
+    "allow_lm_batch",
+    "chunk_mask_mode",
+    "constrained_decoding_debug",
+    "cover_noise_strength",
+    "enable_normalization",
+    "fade_in_duration",
+    "fade_out_duration",
+    "global_caption",
+    "latent_rescale",
+    "latent_shift",
+    "lm_batch_chunk_size",
+    "lm_backend",
+    "lm_cfg_scale",
+    "lm_negative_prompt",
+    "lm_temperature",
+    "lm_top_k",
+    "lm_top_p",
+    "repaint_latent_crossfade_frames",
+    "repaint_mode",
+    "repaint_strength",
+    "repaint_wav_crossfade_sec",
+    "sample_mode",
+    "sample_query",
+    "sampler_mode",
+    "thinking",
+    "use_constrained_decoding",
+    "use_cot_caption",
+    "use_cot_language",
+    "use_cot_lyrics",
+    "use_cot_metas",
+    "use_format",
+    "velocity_ema_factor",
+    "velocity_norm_threshold",
+}
+
+OFFICIAL_FIELD_DEFAULTS: dict[str, Any] = {
+    "allow_lm_batch": False,
+    "chunk_mask_mode": "auto",
+    "constrained_decoding_debug": False,
+    "cover_noise_strength": 0.0,
+    "enable_normalization": True,
+    "fade_in_duration": 0.0,
+    "fade_out_duration": 0.0,
+    "global_caption": "",
+    "instrumental": False,
+    "latent_rescale": 1.0,
+    "latent_shift": 0.0,
+    "lm_batch_chunk_size": 8,
+    "lm_backend": "auto",
+    "lm_cfg_scale": 2.0,
+    "lm_negative_prompt": "NO USER INPUT",
+    "lm_temperature": 0.85,
+    "lm_top_k": 0,
+    "lm_top_p": 0.9,
+    "mp3_bitrate": "128k",
+    "mp3_sample_rate": 48000,
+    "repaint_latent_crossfade_frames": 10,
+    "repaint_mode": "balanced",
+    "repaint_strength": 0.5,
+    "repaint_wav_crossfade_sec": 0.0,
+    "sample_mode": False,
+    "sample_query": "",
+    "sampler_mode": "euler",
+    "thinking": False,
+    "use_constrained_decoding": True,
+    "use_cot_caption": True,
+    "use_cot_language": True,
+    "use_cot_lyrics": False,
+    "use_cot_metas": True,
+    "use_format": False,
+    "velocity_ema_factor": 0.0,
+    "velocity_norm_threshold": 0.0,
+}
+
+PARAM_ALIASES: dict[str, list[str]] = {
+    "audio_code_string": ["audio_code_string", "audioCodeString", "audio_codes"],
+    "audio_cover_strength": ["audio_cover_strength", "audioCoverStrength", "cover_strength", "coverStrength"],
+    "duration": ["duration", "audio_duration", "audioDuration", "target_duration", "targetDuration"],
+    "key_scale": ["key_scale", "keyscale", "keyScale", "key"],
+    "sample_query": ["sample_query", "sampleQuery", "description", "desc"],
+    "song_model": ["song_model", "model", "model_name", "modelName", "dit_model", "ditModel"],
+    "time_signature": ["time_signature", "timesignature", "timeSignature"],
+    "use_format": ["use_format", "useFormat", "format"],
+    "vocal_language": ["vocal_language", "vocalLanguage", "language"],
+}
 
 
 def safe_id(value: str) -> str:
@@ -401,10 +520,43 @@ def parse_timesteps(value: Any) -> list[float] | None:
     return parsed or None
 
 
-def normalize_audio_format(value: str | None) -> str:
+def get_param(payload: dict[str, Any], canonical: str, default: Any = None) -> Any:
+    names = PARAM_ALIASES.get(canonical, [canonical])
+    for name in names:
+        if name in payload:
+            return payload.get(name)
+    return default
+
+
+def _is_default_value(value: Any, default: Any) -> bool:
+    if isinstance(default, bool):
+        return parse_bool(value, default) == default
+    if isinstance(default, int) and not isinstance(default, bool):
+        return clamp_int(value, default, -1000000, 1000000) == default
+    if isinstance(default, float):
+        return abs(clamp_float(value, default, -1000000.0, 1000000.0) - default) < 1e-9
+    return str(value or "").strip() == str(default or "").strip()
+
+
+def official_fields_used(payload: dict[str, Any]) -> list[str]:
+    used: list[str] = []
+    for field in sorted(OFFICIAL_ONLY_FIELDS):
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if not _is_default_value(value, OFFICIAL_FIELD_DEFAULTS.get(field, "")):
+            used.append(field)
+    fmt = str(get_param(payload, "audio_format", payload.get("audio_format") or "wav")).strip().lower().lstrip(".")
+    if fmt and fmt not in SUPPORTED_AUDIO_FORMATS:
+        used.append("audio_format")
+    return used
+
+
+def normalize_audio_format(value: str | None, allow_official: bool = False) -> str:
     fmt = (value or "wav").strip().lower().lstrip(".")
-    if fmt not in SUPPORTED_AUDIO_FORMATS:
-        return "wav"
+    valid = OFFICIAL_AUDIO_FORMATS if allow_official else SUPPORTED_AUDIO_FORMATS
+    if fmt not in valid:
+        return "flac" if allow_official else "wav"
     return fmt
 
 
@@ -447,3 +599,85 @@ def ordered_models(discovered: list[str]) -> list[str]:
     merged = {name for name in discovered if name.startswith("acestep-v15-")}
     merged.update(KNOWN_ACE_STEP_MODELS)
     return sorted(merged, key=lambda name: (known_order.get(name, len(known_order)), name))
+
+
+def studio_ui_schema() -> dict[str, Any]:
+    return {
+        "sources": ACE_STEP_MODEL_SOURCES,
+        "audio_formats": sorted(OFFICIAL_AUDIO_FORMATS),
+        "fast_audio_formats": sorted(SUPPORTED_AUDIO_FORMATS),
+        "task_lm_usage": {
+            "uses_lm": ["text2music", "lego", "complete"],
+            "skips_lm": ["cover", "repaint", "extract"],
+        },
+        "custom_sections": {
+            "song": ["title", "duration", "instrumental", "vocal_language", "caption", "lyrics", "reference_audio"],
+            "music_metadata": ["bpm", "key_scale", "time_signature", "global_caption"],
+            "generation": [
+                "batch_size",
+                "seed",
+                "inference_steps",
+                "guidance_scale",
+                "shift",
+                "infer_method",
+                "sampler_mode",
+                "timesteps",
+                "use_adg",
+                "cfg_interval_start",
+                "cfg_interval_end",
+            ],
+            "ace_step_lm": [
+                "ace_lm_model",
+                "thinking",
+                "sample_mode",
+                "sample_query",
+                "use_format",
+                "lm_temperature",
+                "lm_cfg_scale",
+                "lm_top_k",
+                "lm_top_p",
+                "lm_negative_prompt",
+                "lm_backend",
+                "use_cot_metas",
+                "use_cot_caption",
+                "use_cot_lyrics",
+                "use_cot_language",
+                "allow_lm_batch",
+                "use_constrained_decoding",
+                "constrained_decoding_debug",
+            ],
+            "output": ["audio_format", "mp3_bitrate", "mp3_sample_rate", "auto_score", "auto_lrc", "return_audio_codes", "save_to_library"],
+            "post_processing": ["enable_normalization", "normalization_db", "fade_in_duration", "fade_out_duration", "latent_shift", "latent_rescale"],
+            "repaint_cover": [
+                "audio_cover_strength",
+                "cover_noise_strength",
+                "chunk_mask_mode",
+                "repaint_latent_crossfade_frames",
+                "repaint_wav_crossfade_sec",
+                "repaint_mode",
+                "repaint_strength",
+            ],
+        },
+        "ranges": {
+            "bpm": [30, 300],
+            "duration": [10, 600],
+            "inference_steps": [1, 200],
+            "guidance_scale": [1.0, 15.0],
+            "shift": [1.0, 5.0],
+            "lm_temperature": [0.0, 2.0],
+            "lm_cfg_scale": [0.0, 10.0],
+            "lm_top_k": [0, 200],
+            "lm_top_p": [0.0, 1.0],
+            "audio_cover_strength": [0.0, 1.0],
+            "cover_noise_strength": [0.0, 1.0],
+            "repaint_strength": [0.0, 1.0],
+            "normalization_db": [-24.0, 0.0],
+            "fade_in_duration": [0.0, 20.0],
+            "fade_out_duration": [0.0, 20.0],
+            "latent_shift": [-2.0, 2.0],
+            "latent_rescale": [0.1, 3.0],
+        },
+        "defaults": dict(OFFICIAL_FIELD_DEFAULTS),
+        "official_only_fields": sorted(OFFICIAL_ONLY_FIELDS),
+        "fast_handler_fields": sorted(FAST_HANDLER_FIELDS),
+    }

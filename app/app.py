@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -31,6 +32,8 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
+OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
+OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SONGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,6 +67,7 @@ from acestep.constants import (
 from acestep.handler import AceStepHandler
 from lora_trainer import AceTrainingManager
 from local_composer import LocalComposer
+from songwriting_toolkit import MODEL_STRATEGIES, choose_song_model, normalize_album_tracks, split_terms, toolkit_payload
 from studio_core import (
     ACE_STEP_LM_MODELS,
     ALLOWED_AUDIO_EXTENSIONS,
@@ -73,12 +77,14 @@ from studio_core import (
     clamp_float,
     clamp_int,
     ensure_task_supported,
+    get_param,
     lm_model_profiles_for_models,
     model_label,
     model_profiles_for_models,
     normalize_audio_format,
     normalize_task_type,
     normalize_track_names,
+    official_fields_used,
     ordered_models,
     parse_bool,
     parse_timesteps,
@@ -86,6 +92,7 @@ from studio_core import (
     recommended_song_model,
     safe_filename,
     safe_id,
+    studio_ui_schema,
     supported_tasks_for_model,
 )
 
@@ -114,6 +121,33 @@ def _song_model_label(name: str) -> str:
     return model_label(name)
 
 
+def _download_job_active(model_name: str) -> bool:
+    jobs = globals().get("_model_download_jobs", {})
+    job = jobs.get(model_name) if isinstance(jobs, dict) else None
+    return bool(job and job.get("state") in {"queued", "running"})
+
+
+def _checkpoint_dir_ready(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if not (path / "config.json").is_file():
+        return False
+    index_path = path / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            weight_map = index.get("weight_map") if isinstance(index, dict) else {}
+            shards = sorted({str(name) for name in weight_map.values()}) if isinstance(weight_map, dict) else []
+            if shards:
+                return all((path / shard).is_file() and (path / shard).stat().st_size > 0 for shard in shards)
+        except Exception:
+            return False
+    return any(
+        child.is_file() and child.stat().st_size > 0 and child.suffix in {".safetensors", ".bin", ".pt"}
+        for child in path.iterdir()
+    )
+
+
 def _available_acestep_models() -> list[str]:
     checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
     available = set(KNOWN_ACE_STEP_MODELS)
@@ -131,7 +165,7 @@ def _installed_acestep_models() -> set[str]:
     return {
         child.name
         for child in checkpoint_dir.iterdir()
-        if child.is_dir() and child.name.startswith("acestep-v15-")
+        if child.name.startswith("acestep-v15-") and not _download_job_active(child.name) and _checkpoint_dir_ready(child)
     }
 
 
@@ -142,7 +176,7 @@ def _installed_lm_models() -> set[str]:
         installed.update(
             child.name
             for child in checkpoint_dir.iterdir()
-            if child.is_dir() and child.name.startswith("acestep-5Hz-lm-")
+            if child.name.startswith("acestep-5Hz-lm-") and not _download_job_active(child.name) and _checkpoint_dir_ready(child)
         )
     return installed
 
@@ -459,6 +493,173 @@ def _load_feed_from_disk() -> list[dict]:
 
 _feed_songs = _load_feed_from_disk()
 _result_extra_cache: dict[str, dict[str, Any]] = {}
+_model_download_jobs: dict[str, dict[str, Any]] = {}
+_model_download_lock = threading.Lock()
+_model_download_runner_lock = threading.Lock()
+
+
+class ModelDownloadStarted(RuntimeError):
+    def __init__(self, model_name: str, job: dict[str, Any], message: str):
+        super().__init__(message)
+        self.model_name = model_name
+        self.job = job
+        self.message = message
+
+
+def _downloadable_model_names() -> set[str]:
+    return set(KNOWN_ACE_STEP_MODELS) | {name for name in ACE_STEP_LM_MODELS if name not in {"auto", "none"}}
+
+
+def _is_model_installed(model_name: str, ignore_active_job: bool = False) -> bool:
+    if not ignore_active_job and _download_job_active(model_name):
+        return False
+    checkpoint_path = MODEL_CACHE_DIR / "checkpoints" / model_name
+    if model_name.startswith("acestep-v15-"):
+        return _checkpoint_dir_ready(checkpoint_path)
+    if model_name.startswith("acestep-5Hz-lm-"):
+        return model_name in {"auto", "none"} or _checkpoint_dir_ready(checkpoint_path)
+    return False
+
+
+def _model_download_job(model_name: str) -> dict[str, Any]:
+    job = _model_download_jobs.get(model_name)
+    if job:
+        return dict(job)
+    return {
+        "id": "",
+        "model_name": model_name,
+        "state": "installed" if _is_model_installed(model_name) else "missing",
+        "message": "Already installed" if _is_model_installed(model_name) else "Not installed",
+        "started_at": None,
+        "finished_at": None,
+        "error": "",
+    }
+
+
+def _set_model_download_job(model_name: str, **updates: Any) -> dict[str, Any]:
+    with _model_download_lock:
+        job = _model_download_jobs.setdefault(
+            model_name,
+            {
+                "id": uuid.uuid4().hex[:12],
+                "model_name": model_name,
+                "state": "queued",
+                "message": "Queued",
+                "started_at": None,
+                "finished_at": None,
+                "error": "",
+            },
+        )
+        job.update(_jsonable(updates))
+        return dict(job)
+
+
+def _download_model_worker(model_name: str) -> None:
+    with _model_download_runner_lock:
+        _set_model_download_job(
+            model_name,
+            state="running",
+            message=f"Downloading {model_name}...",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            finished_at=None,
+            error="",
+        )
+        try:
+            checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            handler._ensure_model_downloaded(model_name, str(checkpoint_dir))
+            if model_name.startswith("acestep-v15-") and model_name != "acestep-v15-turbo":
+                if not (checkpoint_dir / "acestep-v15-turbo").exists():
+                    _set_model_download_job(model_name, message="Downloading shared ACE-Step components...")
+                    handler._ensure_model_downloaded("acestep-v15-turbo", str(checkpoint_dir))
+            if not _is_model_installed(model_name, ignore_active_job=True):
+                raise RuntimeError(f"{model_name} download finished but the checkpoint folder was not found.")
+            _set_model_download_job(
+                model_name,
+                state="succeeded",
+                message=f"{model_name} installed",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                error="",
+            )
+        except Exception as exc:
+            _set_model_download_job(
+                model_name,
+                state="failed",
+                message=f"{model_name} download failed",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                error=str(exc),
+            )
+
+
+def _start_model_download(model_name: str) -> dict[str, Any]:
+    model_name = str(model_name or "").strip()
+    if model_name not in _downloadable_model_names():
+        raise ValueError(f"{model_name or 'model'} is not a known downloadable ACE-Step model.")
+    if _is_model_installed(model_name):
+        return _set_model_download_job(
+            model_name,
+            state="succeeded",
+            message=f"{model_name} already installed",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error="",
+        )
+    existing = _model_download_jobs.get(model_name)
+    if existing and existing.get("state") in {"queued", "running"}:
+        return dict(existing)
+    job = _set_model_download_job(
+        model_name,
+        id=uuid.uuid4().hex[:12],
+        state="queued",
+        message=f"Queued download for {model_name}",
+        started_at=None,
+        finished_at=None,
+        error="",
+    )
+    thread = threading.Thread(target=_download_model_worker, args=(model_name,), daemon=True)
+    thread.start()
+    return job
+
+
+def _start_model_download_or_raise(model_name: str, context: str = "generation") -> None:
+    job = _start_model_download(model_name)
+    raise ModelDownloadStarted(
+        model_name,
+        job,
+        f"{model_name} is not installed yet. AceJAM started the download for {context}. "
+        "Wait until the model is installed, then press Generate again.",
+    )
+
+
+def _download_started_payload(model_name: str, job: dict[str, Any], logs: list[str] | None = None, **extra: Any) -> dict[str, Any]:
+    message = (
+        f"{model_name} is not installed yet. AceJAM started downloading it. "
+        "Generate will be available when the download finishes."
+    )
+    payload = {
+        "success": False,
+        "download_started": True,
+        "download_model": model_name,
+        "download_job": _jsonable(job),
+        "message": message,
+        "error": "",
+        "logs": list(logs or []) + [message],
+    }
+    payload.update(_jsonable(extra))
+    return payload
+
+
+def _album_download_candidate(model_info: dict[str, Any], album_options: dict[str, Any]) -> str:
+    requested = str(album_options.get("requested_song_model") or "").strip()
+    if requested and requested != "auto" and requested in _downloadable_model_names():
+        return requested
+    model = str(model_info.get("model") or "").strip()
+    if model in _downloadable_model_names():
+        return model
+    strategy = str(album_options.get("song_model_strategy") or "best_installed")
+    for candidate in MODEL_STRATEGIES.get(strategy, MODEL_STRATEGIES["best_installed"]).get("order", []):
+        if candidate in _downloadable_model_names():
+            return candidate
+    return ""
 
 
 def _resolve_child(root: Path, *parts: str) -> Path:
@@ -527,19 +728,101 @@ def _model_capabilities() -> dict[str, Any]:
     }
 
 
+def _official_runner_status() -> dict[str, Any]:
+    missing = []
+    if not OFFICIAL_ACE_STEP_DIR.exists():
+        missing.append("app/vendor/ACE-Step-1.5")
+    if not OFFICIAL_RUNNER_SCRIPT.exists():
+        missing.append("app/official_runner.py")
+    return {
+        "available": not missing,
+        "vendor_path": str(OFFICIAL_ACE_STEP_DIR),
+        "runner_path": str(OFFICIAL_RUNNER_SCRIPT),
+        "missing": missing,
+        "routing_note": "Used when Custom enables official-only ACE-Step 1.5 controls.",
+    }
+
+
+def _songwriting_toolkit_payload() -> dict[str, Any]:
+    return toolkit_payload(_installed_acestep_models())
+
+
+def _json_list(value: Any) -> list[Any]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            return split_terms(stripped)
+    return [value]
+
+
+def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
+    strategy = str(payload.get("song_model_strategy") or "best_installed")
+    requested_song_model = song_model if strategy == "selected" else "auto"
+    return {
+        "requested_song_model": requested_song_model,
+        "song_model_strategy": strategy,
+        "quality_target": str(payload.get("quality_target") or "hit"),
+        "tag_packs": _json_list(payload.get("tag_packs")),
+        "custom_tags": payload.get("custom_tags") or "",
+        "negative_tags": payload.get("negative_tags") or "",
+        "lyric_density": str(payload.get("lyric_density") or "dense"),
+        "rhyme_density": clamp_float(payload.get("rhyme_density"), 0.8, 0.0, 1.0),
+        "metaphor_density": clamp_float(payload.get("metaphor_density"), 0.7, 0.0, 1.0),
+        "hook_intensity": clamp_float(payload.get("hook_intensity"), 0.85, 0.0, 1.0),
+        "structure_preset": str(payload.get("structure_preset") or "auto"),
+        "bpm_strategy": str(payload.get("bpm_strategy") or "varied"),
+        "key_strategy": str(payload.get("key_strategy") or "related"),
+        "inspiration_queries": payload.get("inspiration_queries") or "",
+        "use_web_inspiration": parse_bool(payload.get("use_web_inspiration"), False),
+        "track_variants": clamp_int(payload.get("track_variants"), 1, 1, MAX_BATCH_SIZE),
+        "installed_models": sorted(_installed_acestep_models()),
+        "global_caption": str(payload.get("global_caption") or ""),
+    }
+
+
+def _merge_song_album_metadata(song_id: str, extra: dict[str, Any]) -> None:
+    if not song_id:
+        return
+    song_dir = SONGS_DIR / safe_id(song_id)
+    meta_path = song_dir / "meta.json"
+    if not meta_path.is_file():
+        return
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update(_jsonable(extra))
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    for index, song in enumerate(_feed_songs):
+        if song.get("id") == song_id:
+            _feed_songs[index] = _decorate_song(meta)
+            break
+
+
 def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     task_type = normalize_task_type(payload.get("task_type"))
-    song_model = _normalize_song_model(payload.get("song_model"))
+    song_model = _normalize_song_model(get_param(payload, "song_model", payload.get("song_model")))
     ensure_task_supported(song_model, task_type)
+    if song_model not in _installed_acestep_models():
+        if song_model in _downloadable_model_names():
+            _start_model_download_or_raise(song_model, context=f"{task_type} generation")
+        raise ValueError(f"{song_model} is not installed and is not in the known ACE-Step download list.")
     batch_size = clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE)
-    duration = clamp_float(payload.get("duration", payload.get("audio_duration")), 60.0, DURATION_MIN, DURATION_MAX)
+    duration = clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX)
     inference_steps = clamp_int(payload.get("inference_steps", payload.get("infer_step")), 8, 1, 200)
     if "turbo" in song_model and inference_steps > 20:
         inference_steps = 20
 
     bpm_value = payload.get("bpm")
     bpm = None if bpm_value in [None, "", "auto", "Auto"] else clamp_int(bpm_value, 120, BPM_MIN, BPM_MAX)
-    time_signature = str(payload.get("time_signature") or "").strip()
+    time_signature = str(get_param(payload, "time_signature", "") or "").strip()
     if time_signature:
         try:
             if int(float(time_signature)) not in VALID_TIME_SIGNATURES:
@@ -547,7 +830,12 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             time_signature = ""
 
-    vocal_language = _language_for_generation(str(payload.get("vocal_language") or payload.get("language") or "unknown"))
+    official_used = official_fields_used(payload)
+    use_official = bool(official_used)
+    requested_format = str(payload.get("audio_format") or "wav").strip().lower().lstrip(".")
+    if use_official and requested_format == "ogg":
+        raise ValueError("OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
+    vocal_language = _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown"))
     track_names = normalize_track_names(payload.get("track_names") or payload.get("track_name"))
     instruction = str(payload.get("instruction") or "").strip() or build_task_instruction(task_type, track_names)
 
@@ -563,10 +851,12 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "task_type": task_type,
         "caption": str(payload.get("caption") or payload.get("prompt") or ""),
+        "global_caption": str(payload.get("global_caption") or ""),
         "lyrics": str(payload.get("lyrics") or ""),
+        "instrumental": parse_bool(payload.get("instrumental"), False),
         "duration": duration,
         "bpm": bpm,
-        "key_scale": str(payload.get("key_scale") or "").strip(),
+        "key_scale": str(get_param(payload, "key_scale", "") or "").strip(),
         "time_signature": time_signature,
         "vocal_language": vocal_language,
         "batch_size": batch_size,
@@ -575,27 +865,69 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "ace_lm_model": str(payload.get("ace_lm_model") or "auto").strip() or "auto",
         "reference_audio": _resolve_audio_reference(payload, "reference_audio_id", "reference_result_id"),
         "src_audio": _resolve_audio_reference(payload, "src_audio_id", "src_result_id"),
-        "audio_code_string": str(payload.get("audio_code_string") or ""),
+        "audio_code_string": str(get_param(payload, "audio_code_string", "") or ""),
         "repainting_start": clamp_float(payload.get("repainting_start"), 0.0, -DURATION_MAX, DURATION_MAX),
         "repainting_end": None if payload.get("repainting_end") in [None, "", "end"] else clamp_float(payload.get("repainting_end"), -1.0, -1.0, DURATION_MAX),
         "instruction": instruction,
-        "audio_cover_strength": clamp_float(payload.get("audio_cover_strength"), 1.0, 0.0, 1.0),
+        "audio_cover_strength": clamp_float(get_param(payload, "audio_cover_strength", 1.0), 1.0, 0.0, 1.0),
+        "cover_noise_strength": clamp_float(payload.get("cover_noise_strength"), 0.0, 0.0, 1.0),
         "inference_steps": inference_steps,
         "guidance_scale": clamp_float(payload.get("guidance_scale"), 7.0, 1.0, 15.0),
         "shift": clamp_float(payload.get("shift"), 3.0 if "turbo" in song_model else 1.0, 1.0, 5.0),
         "infer_method": "sde" if str(payload.get("infer_method")).lower() == "sde" else "ode",
+        "sampler_mode": "heun" if str(payload.get("sampler_mode")).lower() == "heun" else "euler",
+        "velocity_norm_threshold": clamp_float(payload.get("velocity_norm_threshold"), 0.0, 0.0, 20.0),
+        "velocity_ema_factor": clamp_float(payload.get("velocity_ema_factor"), 0.0, 0.0, 1.0),
         "use_adg": parse_bool(payload.get("use_adg"), False),
         "cfg_interval_start": clamp_float(payload.get("cfg_interval_start"), 0.0, 0.0, 1.0),
         "cfg_interval_end": clamp_float(payload.get("cfg_interval_end"), 1.0, 0.0, 1.0),
         "timesteps": parse_timesteps(payload.get("timesteps")),
-        "audio_format": normalize_audio_format(payload.get("audio_format")),
+        "audio_format": normalize_audio_format(payload.get("audio_format"), allow_official=use_official),
+        "mp3_bitrate": str(payload.get("mp3_bitrate") or "128k").strip() or "128k",
+        "mp3_sample_rate": clamp_int(payload.get("mp3_sample_rate"), 48000, 16000, 48000),
         "auto_score": parse_bool(payload.get("auto_score"), False),
         "auto_lrc": parse_bool(payload.get("auto_lrc"), False),
         "return_audio_codes": parse_bool(payload.get("return_audio_codes"), False),
         "save_to_library": parse_bool(payload.get("save_to_library"), False),
         "title": str(payload.get("title") or "").strip() or "Untitled",
         "description": str(payload.get("description") or "").strip(),
+        "album_metadata": payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {},
         "track_names": track_names,
+        "thinking": parse_bool(payload.get("thinking"), False),
+        "sample_mode": parse_bool(payload.get("sample_mode"), False),
+        "sample_query": str(get_param(payload, "sample_query", "") or "").strip(),
+        "use_format": parse_bool(get_param(payload, "use_format"), False),
+        "lm_temperature": clamp_float(payload.get("lm_temperature"), 0.85, 0.0, 2.0),
+        "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), 2.0, 0.0, 10.0),
+        "lm_top_k": clamp_int(payload.get("lm_top_k"), 0, 0, 200),
+        "lm_top_p": clamp_float(payload.get("lm_top_p"), 0.9, 0.0, 1.0),
+        "lm_negative_prompt": str(payload.get("lm_negative_prompt") or "NO USER INPUT"),
+        "lm_backend": str(payload.get("lm_backend") or "auto").strip().lower()
+        if str(payload.get("lm_backend") or "auto").strip().lower() in {"auto", "vllm", "pt", "mlx"}
+        else "auto",
+        "use_cot_metas": parse_bool(payload.get("use_cot_metas"), True),
+        "use_cot_caption": parse_bool(payload.get("use_cot_caption"), True),
+        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), False),
+        "use_cot_language": parse_bool(payload.get("use_cot_language"), True),
+        "allow_lm_batch": parse_bool(payload.get("allow_lm_batch"), False),
+        "lm_batch_chunk_size": clamp_int(payload.get("lm_batch_chunk_size"), 8, 1, 64),
+        "use_constrained_decoding": parse_bool(payload.get("use_constrained_decoding"), True),
+        "constrained_decoding_debug": parse_bool(payload.get("constrained_decoding_debug"), False),
+        "chunk_mask_mode": "explicit" if str(payload.get("chunk_mask_mode")).lower() == "explicit" else "auto",
+        "repaint_latent_crossfade_frames": clamp_int(payload.get("repaint_latent_crossfade_frames"), 10, 0, 250),
+        "repaint_wav_crossfade_sec": clamp_float(payload.get("repaint_wav_crossfade_sec"), 0.0, 0.0, 20.0),
+        "repaint_mode": str(payload.get("repaint_mode") or "balanced").strip().lower()
+        if str(payload.get("repaint_mode") or "balanced").strip().lower() in {"conservative", "balanced", "aggressive"}
+        else "balanced",
+        "repaint_strength": clamp_float(payload.get("repaint_strength"), 0.5, 0.0, 1.0),
+        "enable_normalization": parse_bool(payload.get("enable_normalization"), True),
+        "normalization_db": clamp_float(payload.get("normalization_db"), -1.0, -24.0, 0.0),
+        "fade_in_duration": clamp_float(payload.get("fade_in_duration"), 0.0, 0.0, 20.0),
+        "fade_out_duration": clamp_float(payload.get("fade_out_duration"), 0.0, 0.0, 20.0),
+        "latent_shift": clamp_float(payload.get("latent_shift"), 0.0, -2.0, 2.0),
+        "latent_rescale": clamp_float(payload.get("latent_rescale"), 1.0, 0.1, 3.0),
+        "official_fields": official_used,
+        "requires_official_runner": use_official,
     }
 
 
@@ -644,15 +976,290 @@ def _calculate_score(extra: dict[str, Any], language: str, inference_steps: int,
         )
 
 
+def _concrete_lm_model(requested: str) -> str | None:
+    value = (requested or "auto").strip()
+    if value == "none":
+        return None
+    installed = _installed_lm_models()
+    if value == "auto":
+        for candidate in ["acestep-5Hz-lm-1.7B", "acestep-5Hz-lm-0.6B", "acestep-5Hz-lm-4B"]:
+            if candidate in installed:
+                return candidate
+        return None
+    return value if value in installed else None
+
+
+def _requires_lm(params: dict[str, Any]) -> bool:
+    if params["task_type"] in {"cover", "repaint", "extract"}:
+        return False
+    lm_control_fields = {
+        "allow_lm_batch",
+        "constrained_decoding_debug",
+        "lm_batch_chunk_size",
+        "lm_backend",
+        "lm_cfg_scale",
+        "lm_negative_prompt",
+        "lm_temperature",
+        "lm_top_k",
+        "lm_top_p",
+        "use_constrained_decoding",
+        "use_cot_caption",
+        "use_cot_language",
+        "use_cot_lyrics",
+        "use_cot_metas",
+    }
+    return any(
+        [
+            params["thinking"],
+            params["sample_mode"],
+            bool(params["sample_query"]),
+            params["use_format"],
+            params["use_cot_lyrics"],
+            bool(lm_control_fields.intersection(params.get("official_fields", []))),
+        ]
+    )
+
+
+def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
+    needs_lm = _requires_lm(params)
+    lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
+    if needs_lm and not lm_model:
+        requested_lm = params["ace_lm_model"]
+        download_target = recommended_lm_model(set()) if requested_lm == "auto" else requested_lm
+        if download_target in _downloadable_model_names():
+            _start_model_download_or_raise(download_target, context="official ACE-Step LM controls")
+        raise RuntimeError(
+            "Official ACE-Step LM controls require a locally installed 5Hz LM model. "
+            "Choose an installed LM or install acestep-5Hz-lm-0.6B/1.7B/4B first."
+        )
+    if params["auto_lrc"] or params["auto_score"]:
+        raise RuntimeError(
+            "Auto score and Auto LRC need AceJAM's in-process tensor cache. "
+            "Disable official-only controls or turn off Auto score/LRC for this run."
+        )
+
+    return {
+        "base_dir": str(BASE_DIR),
+        "vendor_dir": str(OFFICIAL_ACE_STEP_DIR),
+        "model_cache_dir": str(MODEL_CACHE_DIR),
+        "checkpoint_dir": str(MODEL_CACHE_DIR / "checkpoints"),
+        "save_dir": str(save_dir),
+        "song_model": params["song_model"],
+        "lm_model": lm_model,
+        "requires_lm": needs_lm,
+        "params": {
+            "task_type": params["task_type"],
+            "instruction": params["instruction"],
+            "reference_audio": str(params["reference_audio"]) if params["reference_audio"] else None,
+            "src_audio": str(params["src_audio"]) if params["src_audio"] else None,
+            "audio_codes": params["audio_code_string"],
+            "caption": params["caption"],
+            "global_caption": params["global_caption"],
+            "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+            "instrumental": params["instrumental"],
+            "vocal_language": params["vocal_language"],
+            "bpm": params["bpm"],
+            "keyscale": params["key_scale"],
+            "timesignature": params["time_signature"],
+            "duration": params["duration"],
+            "enable_normalization": params["enable_normalization"],
+            "normalization_db": params["normalization_db"],
+            "fade_in_duration": params["fade_in_duration"],
+            "fade_out_duration": params["fade_out_duration"],
+            "latent_shift": params["latent_shift"],
+            "latent_rescale": params["latent_rescale"],
+            "inference_steps": params["inference_steps"],
+            "seed": -1,
+            "guidance_scale": params["guidance_scale"],
+            "use_adg": params["use_adg"],
+            "cfg_interval_start": params["cfg_interval_start"],
+            "cfg_interval_end": params["cfg_interval_end"],
+            "shift": params["shift"],
+            "infer_method": params["infer_method"],
+            "sampler_mode": params["sampler_mode"],
+            "velocity_norm_threshold": params["velocity_norm_threshold"],
+            "velocity_ema_factor": params["velocity_ema_factor"],
+            "timesteps": params["timesteps"],
+            "repainting_start": params["repainting_start"],
+            "repainting_end": params["repainting_end"],
+            "chunk_mask_mode": params["chunk_mask_mode"],
+            "repaint_latent_crossfade_frames": params["repaint_latent_crossfade_frames"],
+            "repaint_wav_crossfade_sec": params["repaint_wav_crossfade_sec"],
+            "repaint_mode": params["repaint_mode"],
+            "repaint_strength": params["repaint_strength"],
+            "audio_cover_strength": params["audio_cover_strength"],
+            "cover_noise_strength": params["cover_noise_strength"],
+            "thinking": params["thinking"],
+            "lm_temperature": params["lm_temperature"],
+            "lm_cfg_scale": params["lm_cfg_scale"],
+            "lm_top_k": params["lm_top_k"],
+            "lm_top_p": params["lm_top_p"],
+            "lm_negative_prompt": params["lm_negative_prompt"],
+            "use_cot_metas": params["use_cot_metas"],
+            "use_cot_caption": params["use_cot_caption"],
+            "use_cot_lyrics": params["use_cot_lyrics"],
+            "use_cot_language": params["use_cot_language"],
+            "use_constrained_decoding": params["use_constrained_decoding"],
+            "sample_mode": params["sample_mode"],
+            "sample_query": params["sample_query"],
+            "use_format": params["use_format"],
+        },
+        "lm_backend": params["lm_backend"],
+        "config": {
+            "batch_size": params["batch_size"],
+            "allow_lm_batch": params["allow_lm_batch"],
+            "use_random_seed": params["seed"].strip() in {"", "-1"},
+            "seeds": None if params["seed"].strip() in {"", "-1"} else params["seed"],
+            "lm_batch_chunk_size": params["lm_batch_chunk_size"],
+            "constrained_decoding_debug": params["constrained_decoding_debug"],
+            "audio_format": params["audio_format"],
+            "mp3_bitrate": params["mp3_bitrate"],
+            "mp3_sample_rate": params["mp3_sample_rate"],
+        },
+    }
+
+
+def _copy_official_audio(result_dir: Path, audio: dict[str, Any], index: int, requested_format: str) -> tuple[Path, str]:
+    source = Path(str(audio.get("path") or ""))
+    if not source.is_file():
+        raise RuntimeError("Official ACE-Step runner did not return an audio file")
+    ext = source.suffix.lstrip(".") or ("wav" if requested_format == "wav32" else requested_format)
+    filename = f"take-{index + 1}.{ext}"
+    target = result_dir / filename
+    if source.resolve() != target.resolve():
+        shutil.copyfile(source, target)
+    return target, filename
+
+
+def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
+    if not OFFICIAL_ACE_STEP_DIR.exists():
+        raise RuntimeError("Official ACE-Step runner requires app/vendor/ACE-Step-1.5. Run Install/Update first.")
+    if not OFFICIAL_RUNNER_SCRIPT.exists():
+        raise RuntimeError("Official ACE-Step runner script is missing.")
+
+    result_id = uuid.uuid4().hex[:12]
+    result_dir = RESULTS_DIR / result_id
+    official_dir = result_dir / "official"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    official_dir.mkdir(parents=True, exist_ok=True)
+    request_path = result_dir / "official_request.json"
+    response_path = result_dir / "official_response.json"
+    request_path.write_text(json.dumps(_official_request_payload(params, official_dir), indent=2), encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(OFFICIAL_ACE_STEP_DIR)
+    env["HF_HOME"] = str(MODEL_CACHE_DIR / "huggingface")
+    env["HF_MODULES_CACHE"] = str(MODEL_CACHE_DIR / "hf_modules")
+    env["XDG_CACHE_HOME"] = str(MODEL_CACHE_DIR / "xdg")
+    env["ACESTEP_DISABLE_TQDM"] = "1"
+
+    with handler_lock:
+        _release_handler_state()
+
+    completed = subprocess.run(
+        [sys.executable, str(OFFICIAL_RUNNER_SCRIPT), str(request_path), str(response_path)],
+        cwd=str(OFFICIAL_ACE_STEP_DIR),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=3600,
+        check=False,
+    )
+    (result_dir / "official_stdout.log").write_text(completed.stdout or "", encoding="utf-8")
+    (result_dir / "official_stderr.log").write_text(completed.stderr or "", encoding="utf-8")
+    if completed.returncode != 0:
+        tail = "\n".join((completed.stderr or completed.stdout or "").splitlines()[-20:])
+        raise RuntimeError(f"Official ACE-Step runner failed: {tail or completed.returncode}")
+    if not response_path.is_file():
+        raise RuntimeError("Official ACE-Step runner did not write a response file")
+
+    official = json.loads(response_path.read_text(encoding="utf-8"))
+    if not official.get("success"):
+        raise RuntimeError(official.get("error") or "Official ACE-Step generation failed")
+
+    audios: list[dict[str, Any]] = []
+    for index, audio in enumerate(official.get("audios", [])):
+        path, filename = _copy_official_audio(result_dir, audio, index, params["audio_format"])
+        audio_id = f"take-{index + 1}"
+        audio_params = audio.get("params") or {}
+        seed_text = str(audio_params.get("seed") or params["seed"] or "-1")
+        item = {
+            "id": audio_id,
+            "filename": filename,
+            "audio_url": _result_public_url(result_id, filename),
+            "download_url": _result_public_url(result_id, filename),
+            "title": params["title"] if len(official.get("audios", [])) == 1 else f"{params['title']} {index + 1}",
+            "seed": seed_text,
+            "sample_rate": int(audio.get("sample_rate") or 48000),
+        }
+        if params["return_audio_codes"] and audio_params.get("audio_codes"):
+            item["audio_codes"] = audio_params["audio_codes"]
+        if params["save_to_library"]:
+            entry = _save_song_entry(
+                {
+                    "title": item["title"],
+                    "description": params["description"],
+                    "tags": params["caption"],
+                    "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+                    "bpm": params["bpm"],
+                    "key_scale": params["key_scale"],
+                    "time_signature": params["time_signature"],
+                    "language": params["vocal_language"],
+                    "duration": params["duration"],
+                    "task_type": params["task_type"],
+                    "song_model": params["song_model"],
+                    "ace_lm_model": params["ace_lm_model"],
+                    "seed": seed_text,
+                    "parameters": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+                    "album": _jsonable(params["album_metadata"]),
+                    "album_concept": params["album_metadata"].get("album_concept"),
+                    "album_id": params["album_metadata"].get("album_id"),
+                    "track_number": params["album_metadata"].get("track_number"),
+                    "track_variant": params["album_metadata"].get("track_variant"),
+                    "result_id": result_id,
+                    "runner": "official",
+                },
+                path,
+            )
+            item["song_id"] = entry["id"]
+            item["library_url"] = entry["audio_url"]
+        audios.append(item)
+
+    meta = {
+        "id": result_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "active_song_model": params["song_model"],
+        "runner": "official",
+        "official_features": params["official_fields"],
+        "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+        "time_costs": _jsonable(official.get("time_costs", {})),
+        "lm_metadata": _jsonable(official.get("lm_metadata")),
+        "audios": audios,
+    }
+    (result_dir / "result.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {
+        "success": True,
+        "result_id": result_id,
+        "active_song_model": params["song_model"],
+        "runner": "official",
+        "official_features": params["official_fields"],
+        "audios": audios,
+    }
+
+
 def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_training_idle()
     params = _parse_generation_payload(raw_payload)
+    if params["instrumental"] and not params["lyrics"].strip():
+        params["lyrics"] = "[Instrumental]"
+    if params["requires_official_runner"]:
+        return _run_official_generation(params)
     use_random_seed = params["seed"].strip() in {"", "-1"}
     with handler_lock:
         active_song_model = _ensure_song_model(params["song_model"])
         result = handler.generate_music(
             captions=params["caption"],
-            lyrics=params["lyrics"],
+            lyrics="[Instrumental]" if params["instrumental"] else params["lyrics"],
             bpm=params["bpm"],
             key_scale=params["key_scale"],
             time_signature=params["time_signature"],
@@ -733,6 +1340,11 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
                     "song_model": active_song_model,
                     "seed": seed_text,
                     "parameters": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+                    "album": _jsonable(params["album_metadata"]),
+                    "album_concept": params["album_metadata"].get("album_concept"),
+                    "album_id": params["album_metadata"].get("album_id"),
+                    "track_number": params["album_metadata"].get("track_number"),
+                    "track_variant": params["album_metadata"].get("track_variant"),
                     "score": item.get("score"),
                     "lrc": item.get("lrc"),
                     "result_id": result_id,
@@ -1004,6 +1616,10 @@ def config() -> str:
             "model_profiles": model_profiles,
             "lm_model_profiles": lm_profiles,
             "model_capabilities": _model_capabilities(),
+            "model_downloads": {name: _model_download_job(name) for name in sorted(_downloadable_model_names())},
+            "official_runner": _official_runner_status(),
+            "ui_schema": studio_ui_schema(),
+            "songwriting_toolkit": _songwriting_toolkit_payload(),
             "task_types": TASK_TYPES,
             "track_names": TRACK_NAMES,
             "valid_languages": VALID_LANGUAGES,
@@ -1043,90 +1659,155 @@ def generate_album(
     song_model: str = "auto",
     embedding_model: str = "nomic-embed-text",
     ace_lm_model: str = "auto",
+    request_json: str = "",
 ) -> str:
-    """Plan album with CrewAI agents, then generate ALL tracks with ACE-Step."""
+    """Plan album with tools/CrewAI, then generate through the advanced engine."""
     logs: list[str] = []
     try:
-        # ── Step 1: Plan album with CrewAI agents ────────────────────
-        from album_crew import generate_album as _generate_album
-        logs.append("Phase 1: Planning album with CrewAI agents...")
-        result = _generate_album(
+        request_payload = json.loads(request_json or "{}")
+        album_options = _album_options_from_payload(request_payload, song_model=song_model)
+        planned_tracks = _json_list(request_payload.get("tracks") or request_payload.get("planned_tracks"))
+        model_info = choose_song_model(
+            _installed_acestep_models(),
+            str(album_options.get("song_model_strategy") or "best_installed"),
+            str(album_options.get("requested_song_model") or "auto"),
+        )
+        if not model_info.get("ok"):
+            download_model = _album_download_candidate(model_info, album_options)
+            if download_model:
+                job = _start_model_download(download_model)
+                logs.append(str(model_info.get("error") or "Album model is not installed."))
+                return json.dumps(
+                    _download_started_payload(
+                        download_model,
+                        job,
+                        logs,
+                        tracks=planned_tracks,
+                        album_model_strategy=album_options.get("song_model_strategy"),
+                    )
+                )
+            raise RuntimeError(str(model_info.get("error") or "No installed album model available"))
+
+        from album_crew import plan_album as _plan_album
+
+        logs.append("Phase 1: Planning album with Hit Album Agent tools...")
+        result = _plan_album(
             concept=concept,
             num_tracks=num_tracks,
             track_duration=track_duration,
             ollama_model=ollama_model,
             language=language,
             embedding_model=embedding_model,
+            options=album_options,
+            use_crewai=not planned_tracks,
+            input_tracks=planned_tracks if planned_tracks else None,
         )
-        tracks = result["tracks"]
+        tracks = result.get("tracks", [])
         logs.extend(result.get("logs", []))
 
-        if not tracks or "error" in tracks[0]:
+        if not result.get("success", True) or not tracks or "error" in tracks[0]:
             logs.append("ERROR: Album planning failed")
-            return json.dumps({"tracks": tracks, "logs": logs, "success": False, "error": "Planning failed"})
+            return json.dumps({"tracks": tracks, "logs": logs, "success": False, "error": result.get("error") or "Planning failed"})
 
         logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
         logs.append(f"ACE-Step LM profile: {ace_lm_model}")
+        logs.append(f"Model strategy: {album_options.get('song_model_strategy')} -> {model_info.get('model')}")
         logs.append("---")
-        logs.append("Phase 2: Generating music for each track with ACE-Step...")
+        logs.append("Phase 2: Generating music for each track with /generate_advanced...")
 
-        # ── Step 2: Generate music for each track ────────────────────
+        album_id = uuid.uuid4().hex[:12]
+        generated_audios: list[dict[str, Any]] = []
+        variants = clamp_int(album_options.get("track_variants"), 1, 1, MAX_BATCH_SIZE)
         for i, track in enumerate(tracks):
             track_title = track.get("title", f"Track {i+1}")
-            logs.append(f"Generating track {i+1}/{len(tracks)}: {track_title}...")
+            track_model = str(track.get("song_model") or model_info.get("model") or song_model)
+            if track_model not in _installed_acestep_models():
+                if track_model in _downloadable_model_names():
+                    job = _start_model_download(track_model)
+                    logs.append(f"Track {i+1} needs {track_model}. Starting download instead of failing.")
+                    return json.dumps(
+                        _download_started_payload(
+                            track_model,
+                            job,
+                            logs,
+                            tracks=tracks,
+                            album_model_strategy=album_options.get("song_model_strategy"),
+                        )
+                    )
+                raise RuntimeError(f"{track_model} is not installed and is not in the known ACE-Step download list.")
+            logs.append(f"Generating track {i+1}/{len(tracks)}: {track_title} ({variants} variant{'s' if variants != 1 else ''})...")
             print(f"[generate_album] Generating track {i+1}/{len(tracks)}: {track_title}")
 
             try:
                 _cleanup_accelerator_memory()
-                wav_path, active_model = _run_inference(
-                    prompt=track.get("tags", ""),
-                    lyrics=track.get("lyrics", ""),
-                    audio_duration=track.get("duration", track_duration),
-                    infer_steps=8,
-                    seed=-1,
-                    language=track.get("language", language),
-                    song_model=song_model,
-                    bpm=track.get("bpm"),
-                    key_scale=track.get("key_scale", ""),
-                    time_signature=track.get("time_signature", "4"),
-                )
-
-                # Save to disk
-                song_id = uuid.uuid4().hex[:12]
-                song_dir = SONGS_DIR / song_id
-                song_dir.mkdir(parents=True, exist_ok=True)
-                audio_file = f"{song_id}.wav"
-                wav_bytes = Path(wav_path).read_bytes()
-                (song_dir / audio_file).write_bytes(wav_bytes)
-
-                meta = {
-                    "id": song_id,
+                generation_payload = {
+                    "task_type": "text2music",
                     "title": track_title,
                     "description": track.get("description", ""),
-                    "tags": track.get("tags", ""),
+                    "caption": track.get("tags", ""),
                     "lyrics": track.get("lyrics", ""),
+                    "duration": track.get("duration", track_duration),
                     "bpm": track.get("bpm"),
                     "key_scale": track.get("key_scale", ""),
-                    "time_signature": track.get("time_signature", ""),
-                    "language": track.get("language", language),
-                    "duration": track.get("duration", track_duration),
-                    "audio_file": audio_file,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "album_concept": concept,
+                    "time_signature": track.get("time_signature", "4"),
+                    "vocal_language": track.get("language", language),
+                    "batch_size": variants,
+                    "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
+                    "song_model": track_model,
                     "ace_lm_model": ace_lm_model,
-                    "track_number": track.get("track_number", i + 1),
+                    "inference_steps": clamp_int(request_payload.get("inference_steps"), 8, 1, 200),
+                    "guidance_scale": clamp_float(request_payload.get("guidance_scale"), 7.0, 1.0, 15.0),
+                    "shift": clamp_float(request_payload.get("shift"), 3.0 if "turbo" in track_model else 1.0, 1.0, 5.0),
+                    "infer_method": str(request_payload.get("infer_method") or "ode"),
+                    "use_adg": parse_bool(request_payload.get("use_adg"), False),
+                    "cfg_interval_start": clamp_float(request_payload.get("cfg_interval_start"), 0.0, 0.0, 1.0),
+                    "cfg_interval_end": clamp_float(request_payload.get("cfg_interval_end"), 1.0, 0.0, 1.0),
+                    "audio_format": str(request_payload.get("audio_format") or "wav"),
+                    "auto_score": parse_bool(request_payload.get("auto_score"), False),
+                    "auto_lrc": parse_bool(request_payload.get("auto_lrc"), False),
+                    "return_audio_codes": parse_bool(request_payload.get("return_audio_codes"), False),
+                    "save_to_library": parse_bool(request_payload.get("save_to_library"), True),
+                    "album_metadata": {
+                        "album_id": album_id,
+                        "album_concept": concept,
+                        "album_options": _jsonable(album_options),
+                        "album_toolkit_report": _jsonable(result.get("toolkit_report", {})),
+                        "track_number": track.get("track_number", i + 1),
+                        "track_variant": "batch",
+                        "tool_report": _jsonable(track.get("tool_report", {})),
+                        "tag_list": track.get("tag_list", []),
+                    },
                 }
-                (song_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-                entry = _decorate_song(meta)
-                _feed_songs.insert(0, entry)
+                generation_result = _run_advanced_generation(generation_payload)
+                if not generation_result.get("success"):
+                    raise RuntimeError(generation_result.get("error") or "Track generation failed")
 
-                # Add audio URL to track data
-                track["song_id"] = song_id
-                track["audio_url"] = entry.get("audio_url", "")
+                track["result_id"] = generation_result.get("result_id")
+                track["active_song_model"] = generation_result.get("active_song_model")
+                track["audios"] = generation_result.get("audios", [])
+                if track["audios"]:
+                    first_audio = track["audios"][0]
+                    track["song_id"] = first_audio.get("song_id")
+                    track["audio_url"] = first_audio.get("audio_url") or first_audio.get("library_url")
+                for audio_index, audio in enumerate(track["audios"]):
+                    if audio.get("song_id"):
+                        _merge_song_album_metadata(
+                            audio["song_id"],
+                            {
+                                "album_concept": concept,
+                                "album_id": album_id,
+                                "track_number": track.get("track_number", i + 1),
+                                "track_variant": audio_index + 1,
+                                "album_toolkit_report": result.get("toolkit_report", {}),
+                                "tool_report": track.get("tool_report", {}),
+                                "tag_list": track.get("tag_list", []),
+                            },
+                        )
+                generated_audios.extend(track["audios"])
                 track["generated"] = True
 
                 logs.append(f"  Track {i+1} done: {track_title}")
-                print(f"[generate_album] Track {i+1} saved: {song_id}")
+                print(f"[generate_album] Track {i+1} generated: {track.get('result_id')}")
 
             except Exception as track_exc:
                 track["generated"] = False
@@ -1142,9 +1823,17 @@ def generate_album(
 
         return json.dumps({
             "tracks": tracks,
+            "audios": generated_audios,
+            "album_id": album_id,
+            "toolkit": result.get("toolkit", _songwriting_toolkit_payload()),
+            "toolkit_report": result.get("toolkit_report", {}),
             "logs": logs,
             "success": True,
         })
+    except ModelDownloadStarted as exc:
+        print(f"[generate_album DOWNLOAD] {exc.message}")
+        logs.append(exc.message)
+        return json.dumps(_download_started_payload(exc.model_name, exc.job, logs))
     except Exception as exc:
         print(f"[generate_album ERROR] {type(exc).__name__}: {exc}")
         print(traceback.format_exc())
@@ -1157,6 +1846,9 @@ def generate_advanced(request_json: str) -> str:
     try:
         payload = json.loads(request_json or "{}")
         return json.dumps(_run_advanced_generation(payload))
+    except ModelDownloadStarted as exc:
+        print(f"[generate_advanced DOWNLOAD] {exc.message}")
+        return json.dumps(_download_started_payload(exc.model_name, exc.job))
     except Exception as exc:
         print(f"[generate_advanced ERROR] {type(exc).__name__}: {exc}")
         print(traceback.format_exc())
@@ -1173,6 +1865,59 @@ async def api_config():
 @app.get("/api/config")
 async def api_config_get():
     return JSONResponse(json.loads(config()))
+
+
+@app.get("/api/songwriting_toolkit")
+async def api_songwriting_toolkit():
+    return JSONResponse(_songwriting_toolkit_payload())
+
+
+@app.get("/api/models/downloads")
+async def api_model_downloads():
+    return JSONResponse({name: _model_download_job(name) for name in sorted(_downloadable_model_names())})
+
+
+@app.get("/api/models/download/{model_name}")
+async def api_model_download_status(model_name: str):
+    if model_name not in _downloadable_model_names():
+        return JSONResponse({"success": False, "error": f"{model_name} is not downloadable"}, status_code=404)
+    return JSONResponse({"success": True, "job": _model_download_job(model_name), "installed": _is_model_installed(model_name)})
+
+
+@app.post("/api/models/download")
+async def api_model_download(request: Request):
+    try:
+        body = await request.json()
+        model_name = str(body.get("model_name") or body.get("model") or "").strip()
+        job = _start_model_download(model_name)
+        return JSONResponse({"success": True, "job": job, "installed": _is_model_installed(model_name)})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/album/plan")
+async def api_album_plan(request: Request):
+    body = await request.json()
+    concept = str(body.get("concept") or "")
+    num_tracks = int(body.get("num_tracks") or 5)
+    track_duration = float(body.get("track_duration") or body.get("duration") or 180.0)
+    language = str(body.get("language") or "en")
+    song_model = str(body.get("song_model") or "auto")
+    options = _album_options_from_payload(body, song_model=song_model)
+    from album_crew import plan_album as _plan_album
+
+    result = _plan_album(
+        concept=concept,
+        num_tracks=num_tracks,
+        track_duration=track_duration,
+        ollama_model=str(body.get("ollama_model") or "llama3.2"),
+        language=language,
+        embedding_model=str(body.get("embedding_model") or "nomic-embed-text"),
+        options=options,
+        use_crewai=not parse_bool(body.get("toolbelt_only"), False),
+        input_tracks=_json_list(body.get("tracks")) or None,
+    )
+    return JSONResponse(result, status_code=200 if result.get("success", True) else 400)
 
 
 @app.get("/api/community")
@@ -1557,6 +2302,7 @@ async def api_generate_album(request: Request):
         song_model=str(body.get("song_model") or "auto"),
         embedding_model=str(body.get("embedding_model") or "nomic-embed-text"),
         ace_lm_model=str(body.get("ace_lm_model") or "auto"),
+        request_json=json.dumps(body),
     )
     return JSONResponse(json.loads(raw))
 

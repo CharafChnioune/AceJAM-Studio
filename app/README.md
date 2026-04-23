@@ -7,11 +7,17 @@ This folder contains the self-contained AceJAM web app runtime. Pinokio launcher
 - `app.py`: FastAPI/Gradio server and public API routes.
 - `index.html`: Studio UI.
 - `studio_core.py`: shared validation, task/model compatibility, and request helpers.
+- `songwriting_toolkit.py`: album agent toolbelt for model advice, tags, lyric length, rhyme/flow, hooks, metaphors, cliche checks, and fallback album planning.
+- `official_runner.py`: isolated official ACE-Step 1.5 inference bridge for LM/CoT, output formats, and post-processing controls.
 - `lora_trainer.py`: official ACE-Step trainer job manager.
 - `acestep/`: local ACE-Step inference runtime used by AceJAM generation.
 - `vendor/ACE-Step-1.5/`: official ACE-Step 1.5 trainer clone created by Pinokio install.
 - `data/`: uploads, generated results, local library, LoRA datasets, tensor outputs, training jobs, and adapters.
 - `model_cache/checkpoints/`: ACE-Step DiT, VAE, text encoder, and LM checkpoints.
+
+## Clean Studio UI
+
+`index.html` keeps the main workflow visible and hides advanced controls by default. Custom shows song, lyrics, reference audio, BPM, key, and time first; Album shows concept, track count, duration, language, model strategy, and planning/generation actions first; Trainer shows dataset flow first. Advanced inference, LM/CoT, output, post-processing, album craft/tooling, and training hyperparameters stay in closed disclosure panels with modified badges when values differ from defaults.
 
 ## Model Advice Runtime
 
@@ -19,10 +25,32 @@ This folder contains the self-contained AceJAM web app runtime. Pinokio launcher
 
 - `MODEL_PROFILES` covers all known ACE-Step 1.5 DiT checkpoints.
 - `LM_MODEL_PROFILES` covers `auto`, `none`, and the 0.6B/1.7B/4B 5Hz LM choices.
-- `/api/config` returns `model_profiles`, `lm_model_profiles`, `recommended_song_model`, `recommended_lm_model`, installed model lists, and per-model capabilities.
+- `/api/config` returns `model_profiles`, `lm_model_profiles`, `recommended_song_model`, `recommended_lm_model`, installed model lists, per-model capabilities, official runner status, and the Custom `ui_schema`.
 - Unknown local `acestep-v15-*` folders get a fallback profile inferred from the model name, so locally discovered checkpoints still render safely.
 
-The UI renders this metadata in the model dropdown, model advice panel, Simple LM selector, and Album LM selector. Unsupported task/model combinations remain disabled through the same compatibility matrix used by the generation API.
+The UI renders this metadata in the model dropdown, workspace model guide, Custom model advice panel, Simple LM selector, Custom LM selector, and Album LM selector. Unsupported task/model combinations remain disabled through the same compatibility matrix used by the generation API. Selecting a missing known model automatically calls `/api/models/download`, shows queued/running/failed/installed state in the advice panel, and reloads config after the checkpoint lands in `model_cache/checkpoints`.
+
+## Custom Generation Runtime
+
+`/api/generate_advanced` keeps the fast local handler for standard runs. It routes to `official_runner.py` only when a request uses official-only controls:
+
+- LM/CoT: `thinking`, `sample_mode`, `use_format`, LM temperature/CFG/top-k/top-p, CoT toggles, constrained decoding.
+- Output/post: `mp3`, `opus`, `aac`, `wav32`, MP3 options, normalization, fades, latent shift/rescale.
+- Edit extras: cover noise, repaint crossfades, chunk mask mode, repaint mode/strength, sampler mode, velocity controls.
+
+The official bridge runs in a subprocess with `PYTHONPATH` pointed at `vendor/ACE-Step-1.5`, avoiding namespace conflicts with local `app/acestep`. Missing vendor files, missing models, missing LM checkpoints, and unsupported output combinations return explicit errors.
+
+## Album Agent Runtime
+
+Album mode is now a two-stage agent studio:
+
+1. `GET /api/songwriting_toolkit` returns the available craft tools, ACE-Step-style tag taxonomy, lyric meta tags, density presets, model strategies, installed model list, and artist-reference policy.
+2. `POST /api/album/plan` builds an editable track plan with title, caption/tags, full lyrics, BPM, key, time signature, model, and tool reports.
+3. `POST /api/generate_album` accepts the edited plan and sends each track through `_run_advanced_generation` with `task_type=text2music`, model choice, lyrics, BPM/key/time metadata, inference controls, variants, score/LRC/audio-code flags, and rich library metadata.
+
+The model advisor never silently swaps to a different checkpoint. `best_installed` prefers installed XL Turbo, then installed Turbo. `maximum_detail` prefers installed SFT models. `selected` uses the exact global model and returns a clear error if it is not installed.
+
+The CrewAI path receives real tools from `songwriting_toolkit.py`: model advisor, tag library, lyric length planner, rhyme/flow brief, metaphor world builder, hook checker, cliche guard, album arc, inspiration radar, caption polisher, and conflict checker. If CrewAI or Ollama fails, the deterministic toolbelt still returns a usable plan.
 
 ## Trainer Flow
 
@@ -55,10 +83,56 @@ curl -X POST http://127.0.0.1:7860/api/generate_advanced \
     "caption":"club rap, bright synth hook, punchy drums",
     "lyrics":"[Verse]\nWe move fast...\n\n[Chorus]\nLight it up...",
     "duration":60,
+    "bpm":128,
+    "key_scale":"C minor",
+    "time_signature":"4",
     "batch_size":2,
     "song_model":"acestep-v15-turbo",
     "save_to_library":true
   }'
+```
+
+Official LM/output example:
+
+```bash
+curl -X POST http://127.0.0.1:7860/api/generate_advanced \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "task_type":"text2music",
+    "caption":"warm cinematic pop, detailed drums, intimate vocal",
+    "lyrics":"[Verse]\n...",
+    "duration":90,
+    "thinking":true,
+    "ace_lm_model":"acestep-5Hz-lm-1.7B",
+    "lm_temperature":0.85,
+    "audio_format":"mp3",
+    "mp3_bitrate":"192k"
+  }'
+```
+
+Plan and generate an album:
+
+```python
+import requests
+
+base = "http://127.0.0.1:7860"
+album_request = {
+    "concept": "Dutch club rap album with cinematic hooks",
+    "num_tracks": 2,
+    "track_duration": 90,
+    "song_model_strategy": "best_installed",
+    "tag_packs": ["genre_style", "production_style", "vocal_character"],
+    "custom_tags": "male rap vocal, radio ready, punchy drums",
+    "lyric_density": "rap_dense",
+    "rhyme_density": 0.9,
+    "hook_intensity": 0.9,
+}
+plan = requests.post(f"{base}/api/album/plan", json=album_request, timeout=300).json()
+album = requests.post(
+    f"{base}/api/generate_album",
+    json={**album_request, "tracks": plan["tracks"], "track_variants": 2, "save_to_library": True},
+    timeout=3600,
+).json()
 ```
 
 Start LoRA training:

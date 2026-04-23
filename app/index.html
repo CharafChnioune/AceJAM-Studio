@@ -17,16 +17,18 @@
       --muted: #9aa3aa;
       --faint: #69727a;
       --accent: #8bd7b5;
+      --accent-glow: rgba(139, 215, 181, 0.15);
       --accent-2: #f2c66d;
       --danger: #ee7b70;
       --ok: #7fd29b;
       --shadow: rgba(0, 0, 0, 0.24);
       --radius: 8px;
+      --transition: 0.15s ease;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
     body { overflow: hidden; }
-    button, input, textarea, select { font: inherit; }
+    button, input, textarea, select { font: inherit; transition: border-color var(--transition), background var(--transition), box-shadow var(--transition), opacity var(--transition); }
     button { cursor: pointer; }
     textarea, input[type="text"], input[type="number"], select {
       width: 100%;
@@ -38,14 +40,17 @@
       outline: none;
     }
     textarea { min-height: 120px; resize: vertical; }
-    textarea:focus, input:focus, select:focus { border-color: var(--accent); }
+    textarea:focus, input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
     input[type="file"] { width: 100%; color: var(--muted); }
+    select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%239aa3aa'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
     label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
     .app {
       height: 100%;
       display: grid;
       grid-template-columns: 184px minmax(420px, 1fr) 380px;
       gap: 0;
+      max-width: 1920px;
+      margin: 0 auto;
     }
     .rail {
       background: var(--rail);
@@ -55,7 +60,7 @@
     }
     .brand { font-weight: 750; letter-spacing: 0; font-size: 18px; margin-bottom: 2px; }
     .subbrand { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
-    .nav { display: grid; gap: 5px; }
+    .nav { display: grid; gap: 6px; }
     .nav button {
       height: 34px;
       text-align: left;
@@ -64,9 +69,12 @@
       background: transparent;
       border-radius: 6px;
       padding: 0 10px;
+      font-size: 13px;
+      transition: all var(--transition);
     }
-    .nav button:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
-    .nav button.active { color: #09110d; background: var(--accent); }
+    .nav button:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); transform: translateX(2px); }
+    .nav button:active { transform: translateX(0); }
+    .nav button.active { color: #09110d; background: var(--accent); font-weight: 600; }
     .status {
       margin-top: 16px;
       min-height: 44px;
@@ -77,16 +85,24 @@
       font-size: 12px;
       line-height: 1.35;
       background: rgba(255, 255, 255, 0.02);
+      transition: all 0.3s ease;
     }
-    .status.error { color: var(--danger); border-color: rgba(238, 123, 112, 0.45); }
-    .status.ok { color: var(--ok); border-color: rgba(127, 210, 155, 0.45); }
+    .status.error { color: var(--danger); border-color: rgba(238, 123, 112, 0.45); background: rgba(238, 123, 112, 0.05); }
+    .status.ok { color: var(--ok); border-color: rgba(127, 210, 155, 0.45); background: rgba(127, 210, 155, 0.05); }
+    .status.busy { color: var(--accent-2); border-color: rgba(242, 198, 109, 0.35); background: rgba(242, 198, 109, 0.05); }
+    .status .status-spinner {
+      display: inline-block; width: 12px; height: 12px;
+      border: 2px solid currentColor; border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+      vertical-align: middle; margin-right: 6px;
+    }
     .workspace {
       overflow: auto;
       padding: 18px;
     }
     .topbar {
       display: grid;
-      grid-template-columns: minmax(180px, 1fr) 130px 116px 116px;
+      grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 0.9fr) 118px 104px 84px;
       gap: 10px;
       align-items: end;
       margin-bottom: 14px;
@@ -99,11 +115,43 @@
       box-shadow: 0 12px 24px var(--shadow);
       margin-bottom: 12px;
     }
-    .panel h2, .panel h3 {
+    .panel h2 {
       margin: 0 0 12px;
-      font-size: 14px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .panel h3 {
+      margin: 0 0 12px;
+      font-size: 13px;
+      font-weight: 650;
       letter-spacing: 0;
     }
+    .section-block {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+    .section-block:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
+    }
+    .section-block.clean-primary {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
+    }
+    .section-head {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .section-head h3 { margin: 0; }
+    .control-note { color: var(--accent-2); font-size: 12px; line-height: 1.35; }
+    .muted-line { color: var(--muted); font-size: 12px; line-height: 1.4; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -125,12 +173,38 @@
       height: 34px;
       padding: 0 13px;
       font-weight: 650;
+      transition: all var(--transition);
+      position: relative;
     }
     .primary { background: var(--accent); color: #09110d; }
+    .primary:hover:not(:disabled) { background: #9ee3c5; box-shadow: 0 2px 12px var(--accent-glow); }
+    .primary:active:not(:disabled) { background: #7acca8; transform: scale(0.97); }
     .secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+    .secondary:hover:not(:disabled) { background: #2a2f36; border-color: rgba(255,255,255,0.15); }
+    .secondary:active:not(:disabled) { background: #1e2228; transform: scale(0.97); }
     .danger { background: transparent; color: var(--danger); border: 1px solid rgba(238, 123, 112, 0.45); }
-    .primary:disabled, .secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+    .danger:hover:not(:disabled) { background: rgba(238, 123, 112, 0.08); border-color: var(--danger); }
+    .danger:active:not(:disabled) { background: rgba(238, 123, 112, 0.15); transform: scale(0.97); }
+    .primary:disabled, .secondary:disabled, .danger:disabled { opacity: 0.4; cursor: not-allowed; filter: grayscale(0.3); }
+    .btn-loading { pointer-events: none; opacity: 0.7; }
+    .btn-loading::before {
+      content: "";
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes flashHighlight { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
     .mode-panel[hidden] { display: none; }
+    .mode-panel:not([hidden]) { animation: fadeIn 0.2s ease; }
     .capability {
       color: var(--accent-2);
       font-size: 12px;
@@ -157,12 +231,12 @@
       margin-bottom: 5px;
     }
     .model-advice-summary, .lm-advice-summary { color: var(--muted); margin-bottom: 7px; }
-    .model-badges { display: flex; gap: 5px; flex-wrap: wrap; }
+    .model-badges { display: flex; gap: 6px; flex-wrap: wrap; }
     .model-warning { color: var(--accent-2); margin-top: 7px; }
     .track-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      gap: 6px;
+      gap: 8px;
     }
     .upload-note, .tiny { color: var(--faint); font-size: 11px; line-height: 1.35; }
     .results {
@@ -178,12 +252,81 @@
       border-radius: var(--radius);
       padding: 12px;
       margin-bottom: 10px;
+      transition: border-color var(--transition), box-shadow var(--transition);
     }
+    .result-card:hover, .song-card:hover { border-color: rgba(255,255,255,0.12); box-shadow: 0 4px 16px var(--shadow); }
+    .result-card.new-result { animation: slideIn 0.3s ease, flashHighlight 1s ease 0.3s; }
     .result-title { font-weight: 700; margin-bottom: 3px; }
     .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-    audio { width: 100%; height: 34px; margin: 7px 0; }
-    details { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
-    summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+    audio { display: none; }
+    .audio-player {
+      display: flex; align-items: center; gap: 8px;
+      background: #121417; border: 1px solid var(--line); border-radius: 6px;
+      padding: 6px 10px; margin: 8px 0; transition: border-color var(--transition);
+    }
+    .audio-player:hover { border-color: rgba(255,255,255,0.12); }
+    .audio-player .play-btn {
+      width: 28px; height: 28px; border: 0; border-radius: 50%;
+      background: var(--accent); color: #09110d; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; padding: 0; transition: all var(--transition);
+    }
+    .audio-player .play-btn:hover { background: #9ee3c5; box-shadow: 0 0 10px var(--accent-glow); }
+    .audio-player .play-btn:active { transform: scale(0.9); }
+    .audio-player .play-btn svg { width: 14px; height: 14px; }
+    .audio-player .progress-wrap {
+      flex: 1; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px;
+      cursor: pointer; position: relative; overflow: hidden;
+    }
+    .audio-player .progress-fill {
+      height: 100%; background: var(--accent); border-radius: 3px;
+      width: 0%; transition: width 0.1s linear;
+    }
+    .audio-player .progress-wrap:hover .progress-fill { background: #9ee3c5; }
+    .audio-player .time {
+      color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums;
+      min-width: 36px; text-align: right; flex-shrink: 0;
+    }
+    details {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin-top: 10px;
+      background: rgba(255, 255, 255, 0.02);
+      overflow: hidden;
+    }
+    summary {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 42px;
+      padding: 10px 12px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+      content: "+";
+      color: var(--accent);
+      font-weight: 800;
+      flex: 0 0 auto;
+      transition: transform 0.2s ease;
+    }
+    details[open] > summary::after { transform: rotate(45deg); }
+    details[open] > summary {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.025);
+    }
+    details[open] > summary::after { content: "-"; transform: none; }
+    .disclosure { padding: 0; border-top: 1px solid var(--line); }
+    .disclosure-title { display: grid; gap: 2px; min-width: 0; }
+    .disclosure-title strong { color: var(--text); font-size: 13px; font-weight: 750; }
+    .disclosure-title small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .disclosure-actions { display: inline-flex; gap: 6px; align-items: center; margin-left: auto; }
+    .advanced-content { padding: 12px; }
+    .advanced-grid { display: grid; gap: 10px; }
+    .badge[hidden], [hidden] { display: none !important; }
     pre {
       white-space: pre-wrap;
       overflow: auto;
@@ -196,6 +339,13 @@
       font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     .library-list { max-height: 66vh; overflow: auto; }
+    .album-saved-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 10px;
+      max-height: 46vh;
+      overflow: auto;
+    }
     .album-log {
       min-height: 160px;
       max-height: 300px;
@@ -207,6 +357,58 @@
       color: var(--muted);
       font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
       white-space: pre-wrap;
+    }
+    .album-toolkit {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .tag-pack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .album-plan-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 10px 0;
+    }
+    .album-plan-table textarea {
+      min-width: 220px;
+    }
+    .album-report {
+      max-width: 280px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: pre-wrap;
+    }
+    .album-plan-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+      margin: 10px 0;
+    }
+    .album-plan-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.025);
+      padding: 11px;
+      min-height: 128px;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+    .album-plan-card:hover { border-color: rgba(255,255,255,0.12); box-shadow: 0 4px 12px var(--shadow); }
+    .album-plan-card h3 { margin: 0 0 5px; font-size: 13px; }
+    .album-plan-card .meta { margin-bottom: 7px; line-height: 1.35; }
+    .album-plan-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
     }
     .table-wrap {
       overflow: auto;
@@ -223,19 +425,50 @@
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 3px;
+      gap: 4px;
       min-height: 22px;
-      padding: 0 7px;
+      padding: 0 8px;
       border-radius: 999px;
       border: 1px solid var(--line);
       color: var(--muted);
       font-size: 11px;
       background: rgba(255, 255, 255, 0.03);
+      transition: all var(--transition);
     }
     .badge strong { color: var(--text); font-weight: 650; }
     .badge.ok { color: var(--ok); border-color: rgba(127, 210, 155, 0.45); }
     .badge.warn { color: var(--accent-2); border-color: rgba(242, 198, 109, 0.45); }
     .trainer-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    /* Tooltips */
+    [data-tooltip] { position: relative; }
+    [data-tooltip]:hover::after {
+      content: attr(data-tooltip);
+      position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+      background: #2a2f36; color: var(--text); font-size: 11px; line-height: 1.35;
+      padding: 5px 8px; border-radius: 4px; white-space: nowrap; z-index: 100;
+      pointer-events: none; animation: fadeIn 0.15s ease;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4); border: 1px solid var(--line);
+      max-width: 260px; white-space: normal;
+    }
+    [data-tooltip]:hover::before {
+      content: ""; position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%);
+      border: 4px solid transparent; border-top-color: #2a2f36; z-index: 101;
+    }
+    /* Confirmation Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 1000;
+      display: flex; align-items: center; justify-content: center;
+      animation: fadeIn 0.15s ease; backdrop-filter: blur(2px);
+    }
+    .modal-overlay[hidden] { display: none; }
+    .modal-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 20px; min-width: 320px; max-width: 420px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5); animation: slideIn 0.2s ease;
+    }
+    .modal-card h3 { margin: 0 0 8px; font-size: 15px; }
+    .modal-card p { color: var(--muted); font-size: 13px; margin: 0 0 16px; line-height: 1.45; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
     @media (max-width: 1120px) {
       body { overflow: auto; }
       .app { min-height: 100%; grid-template-columns: 150px minmax(0, 1fr); }
@@ -247,6 +480,8 @@
       .rail { border-right: 0; border-bottom: 1px solid var(--line); }
       .nav { grid-template-columns: repeat(2, 1fr); }
       .topbar, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      summary { align-items: flex-start; }
+      .disclosure-actions { flex-wrap: wrap; justify-content: flex-end; }
     }
   </style>
 </head>
@@ -266,6 +501,10 @@
           <select id="song-model"></select>
           <div class="capability" id="capability"></div>
           <div class="model-advice" id="model-advice"></div>
+        </div>
+        <div id="global-ollama-field">
+          <label for="ollama-model">Ollama songwriter</label>
+          <select id="ollama-model"></select>
         </div>
         <div>
           <label for="duration">Duration</label>
@@ -287,11 +526,7 @@
           <label for="simple-description">Song idea</label>
           <textarea id="simple-description" placeholder="A Dutch melodic rap song about late-night Rotterdam, warm keys, 808 bass, emotional hook"></textarea>
         </div>
-        <div class="grid-3">
-          <div>
-            <label for="ollama-model">Ollama songwriter</label>
-            <select id="ollama-model"></select>
-          </div>
+        <div class="grid-2">
           <div>
             <label for="ace-lm-model">ACE-Step LM</label>
             <select id="ace-lm-model"></select>
@@ -310,30 +545,316 @@
 
       <section class="panel mode-panel" data-mode="custom">
         <h2>Custom</h2>
-        <div class="grid-2">
-          <div class="field">
-            <label for="title">Title</label>
-            <input id="title" type="text" value="Untitled" />
+
+        <div class="section-block clean-primary">
+          <div class="section-head"><h3>Song</h3><span class="badge">Text2Music</span></div>
+          <div class="grid-3">
+            <div class="field">
+              <label for="title">Title</label>
+              <input id="title" type="text" value="Untitled" />
+            </div>
+            <div class="field">
+              <label for="language">Vocal language</label>
+              <select id="language"></select>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <label class="check"><input type="checkbox" id="custom-instrumental" /> Instrumental</label>
+            </div>
           </div>
           <div class="field">
-            <label for="language">Vocal language</label>
-            <select id="language"></select>
+            <label for="caption">Caption / tags</label>
+            <textarea id="caption" placeholder="genre, instruments, mood, vocal character, production style"></textarea>
+          </div>
+          <div class="field">
+            <label for="lyrics">Lyrics</label>
+            <textarea id="lyrics" placeholder="[Verse]&#10;...&#10;&#10;[Chorus]&#10;..."></textarea>
+          </div>
+          <div class="field">
+            <label for="reference-file">Reference audio</label>
+            <input id="reference-file" type="file" accept="audio/*" />
+            <div class="upload-note" id="reference-note">No reference selected.</div>
           </div>
         </div>
-        <div class="field">
-          <label for="caption">Caption / tags</label>
-          <textarea id="caption" placeholder="genre, instruments, mood, vocal character, production style"></textarea>
+
+        <div class="section-block">
+          <div class="section-head"><h3>Music Metadata</h3><span class="control-note">Manual values override LM inference.</span></div>
+          <div class="grid-3">
+            <div>
+              <label for="bpm">BPM</label>
+              <input id="bpm" type="number" min="30" max="300" placeholder="auto" />
+            </div>
+            <div>
+              <label for="key-scale">Key</label>
+              <input id="key-scale" type="text" placeholder="C major" />
+            </div>
+            <div>
+              <label for="time-signature">Time</label>
+              <select id="time-signature"><option value="">Auto</option><option>2</option><option>3</option><option selected>4</option><option>6</option></select>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label for="lyrics">Lyrics</label>
-          <textarea id="lyrics" placeholder="[Verse]&#10;...&#10;&#10;[Chorus]&#10;..."></textarea>
-        </div>
-        <div class="field">
-          <label for="reference-file">Reference audio</label>
-          <input id="reference-file" type="file" accept="audio/*" />
-          <div class="upload-note" id="reference-note">No reference selected.</div>
-        </div>
-        <div class="row">
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="custom-generation">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Generation</strong>
+              <small id="summary-custom-generation">Default: seed auto, 8 steps</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="custom-generation" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="field">
+            <label for="global-caption">Global caption</label>
+            <input id="global-caption" type="text" placeholder="whole-song context for lego/complete or stem-aware work" />
+          </div>
+          <div class="grid-3">
+            <div>
+              <label for="seed" data-tooltip="Random seed for reproducibility. Use -1 for random, or a number to get the same result again.">Seed(s)</label>
+              <input id="seed" type="text" value="-1" />
+            </div>
+            <div>
+              <label for="steps" data-tooltip="Diffusion steps. More steps = higher quality but slower. 8 is fast, 50+ for maximum detail.">Steps</label>
+              <input id="steps" type="number" min="1" max="200" value="8" />
+            </div>
+            <div>
+              <label for="guidance" data-tooltip="How closely to follow the prompt. Higher = more literal, lower = more creative. 5-9 is typical.">Guidance</label>
+              <input id="guidance" type="number" min="1" max="15" step="0.1" value="7" />
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="shift" data-tooltip="Noise schedule shift. 3.0 works for turbo models. Lower for SFT/base models.">Shift</label>
+              <input id="shift" type="number" min="1" max="5" step="0.1" value="3" />
+            </div>
+            <div>
+              <label for="infer-method">Method</label>
+              <select id="infer-method"><option value="ode">ode</option><option value="sde">sde</option></select>
+            </div>
+            <div>
+              <label for="sampler-mode">Sampler</label>
+              <select id="sampler-mode"><option value="euler">euler</option><option value="heun">heun</option></select>
+            </div>
+          </div>
+          <div class="grid-2" style="margin-top:10px;">
+            <div>
+              <label for="cfg-start" data-tooltip="When CFG guidance begins (0=start, 1=end). Delay the start for more natural openings.">CFG start</label>
+              <input id="cfg-start" type="number" min="0" max="1" step="0.05" value="0" />
+            </div>
+            <div>
+              <label for="cfg-end" data-tooltip="When CFG guidance ends (0=start, 1=end). End early to let the model finish freely.">CFG end</label>
+              <input id="cfg-end" type="number" min="0" max="1" step="0.05" value="1" />
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="velocity-norm" data-tooltip="Velocity field normalization strength. 0=off. Higher values stabilize but may reduce detail.">Velocity norm</label>
+              <input id="velocity-norm" type="number" min="0" max="20" step="0.1" value="0" />
+            </div>
+            <div>
+              <label for="velocity-ema" data-tooltip="Exponential moving average for velocity smoothing. 0=off. Subtle effect on coherence.">Velocity EMA</label>
+              <input id="velocity-ema" type="number" min="0" max="1" step="0.05" value="0" />
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <label class="check"><input type="checkbox" id="use-adg" /> ADG</label>
+            </div>
+          </div>
+          <div class="field" style="margin-top:10px;">
+            <label for="timesteps">Custom timesteps</label>
+            <input id="timesteps" type="text" placeholder="0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0" />
+          </div>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="custom-lm">
+          <summary>
+            <span class="disclosure-title">
+              <strong>ACE-Step LM</strong>
+              <small id="summary-custom-lm">LM: auto planning, thinking off</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="custom-lm" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="control-note" id="lm-mode-note">LM is used for Text2Music, Lego, and Complete.</div>
+          <div class="grid-3">
+            <div>
+              <label for="custom-ace-lm-model">ACE-Step LM</label>
+              <select id="custom-ace-lm-model"></select>
+            </div>
+            <div>
+              <label for="lm-backend">Backend</label>
+              <select id="lm-backend"><option value="auto">auto</option><option value="pt">pt</option><option value="vllm">vllm</option><option value="mlx">mlx</option></select>
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <label class="check"><input type="checkbox" id="thinking" /> Thinking</label>
+            </div>
+          </div>
+          <div class="lm-advice" id="custom-lm-advice"></div>
+          <div class="grid-2" style="margin-top:10px;">
+            <div>
+              <label for="sample-query">Sample query</label>
+              <input id="sample-query" type="text" placeholder="let ACE-Step LM create caption, lyrics, metas" />
+            </div>
+            <div>
+              <label for="lm-negative">LM negative prompt</label>
+              <input id="lm-negative" type="text" value="NO USER INPUT" />
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="lm-temp" data-tooltip="Randomness of LM output. Higher = more creative, lower = more predictable.">LM temperature</label>
+              <input id="lm-temp" type="number" min="0" max="2" step="0.05" value="0.85" />
+            </div>
+            <div>
+              <label for="lm-cfg" data-tooltip="Classifier-free guidance for the language model. Higher = stricter adherence to prompt.">LM CFG</label>
+              <input id="lm-cfg" type="number" min="0" max="10" step="0.1" value="2" />
+            </div>
+            <div>
+              <label for="lm-top-p">Top-p</label>
+              <input id="lm-top-p" type="number" min="0" max="1" step="0.05" value="0.9" />
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="lm-top-k">Top-k</label>
+              <input id="lm-top-k" type="number" min="0" max="200" value="0" />
+            </div>
+            <div>
+              <label for="lm-batch-chunk">LM chunk</label>
+              <input id="lm-batch-chunk" type="number" min="1" max="64" value="8" />
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <label class="check"><input type="checkbox" id="allow-lm-batch" /> Parallel LM</label>
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <label class="check"><input type="checkbox" id="sample-mode" /> Sample mode</label>
+            <label class="check"><input type="checkbox" id="use-format" /> Format caption</label>
+            <label class="check"><input type="checkbox" id="use-cot-metas" checked /> CoT metas</label>
+            <label class="check"><input type="checkbox" id="use-cot-caption" checked /> CoT caption</label>
+            <label class="check"><input type="checkbox" id="use-cot-lyrics" /> CoT lyrics</label>
+            <label class="check"><input type="checkbox" id="use-cot-language" checked /> CoT language</label>
+            <label class="check"><input type="checkbox" id="constrained-decoding" checked /> Constrained</label>
+            <label class="check"><input type="checkbox" id="constrained-debug" /> Debug</label>
+          </div>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="custom-output">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Output</strong>
+              <small id="summary-custom-output">Output: wav, library save follows topbar</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="custom-output" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="grid-3">
+            <div>
+              <label for="audio-format">Format</label>
+              <select id="audio-format"><option>wav</option><option>flac</option><option>ogg</option><option>mp3</option><option>opus</option><option>aac</option><option>wav32</option></select>
+            </div>
+            <div>
+              <label for="mp3-bitrate">MP3 bitrate</label>
+              <select id="mp3-bitrate"><option>128k</option><option>192k</option><option>256k</option><option>320k</option></select>
+            </div>
+            <div>
+              <label for="mp3-sample-rate">MP3 sample rate</label>
+              <input id="mp3-sample-rate" type="number" min="16000" max="48000" value="48000" />
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <label class="check"><input type="checkbox" id="auto-score" /> Auto score</label>
+            <label class="check"><input type="checkbox" id="auto-lrc" /> Auto LRC</label>
+            <label class="check"><input type="checkbox" id="return-codes" /> Audio codes</label>
+          </div>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="custom-post">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Post Processing</strong>
+              <small id="summary-custom-post">Normalize: on, no fades</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="custom-post" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="grid-3">
+            <div>
+              <label for="normalization-db" data-tooltip="Target loudness in dB. -1 dB is standard mastering level. Lower = quieter.">Normalize dB</label>
+              <input id="normalization-db" type="number" min="-24" max="0" step="0.5" value="-1" />
+            </div>
+            <div>
+              <label for="fade-in">Fade in</label>
+              <input id="fade-in" type="number" min="0" max="20" step="0.1" value="0" />
+            </div>
+            <div>
+              <label for="fade-out">Fade out</label>
+              <input id="fade-out" type="number" min="0" max="20" step="0.1" value="0" />
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label>&nbsp;</label>
+              <label class="check"><input type="checkbox" id="enable-normalization" checked /> Normalize</label>
+            </div>
+            <div>
+              <label for="latent-shift" data-tooltip="Shifts the latent space. Subtle tonal changes. Keep at 0 unless experimenting.">Latent shift</label>
+              <input id="latent-shift" type="number" min="-2" max="2" step="0.05" value="0" />
+            </div>
+            <div>
+              <label for="latent-rescale" data-tooltip="Rescales the latent magnitude. 1.0 = no change. Higher = louder/brighter, lower = softer.">Latent rescale</label>
+              <input id="latent-rescale" type="number" min="0.1" max="3" step="0.05" value="1" />
+            </div>
+          </div>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="custom-edit">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Cover/Repaint Extras</strong>
+              <small id="summary-custom-edit">Default edit controls</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="custom-edit" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="grid-3">
+            <div>
+              <label for="cover-noise-strength" data-tooltip="Added noise for cover generation. Higher = more divergent from source. 0 = closest to original.">Cover noise</label>
+              <input id="cover-noise-strength" type="number" min="0" max="1" step="0.05" value="0" />
+            </div>
+            <div>
+              <label for="chunk-mask-mode">Chunk mask</label>
+              <select id="chunk-mask-mode"><option value="auto">auto</option><option value="explicit">explicit</option></select>
+            </div>
+            <div>
+              <label for="repaint-mode">Repaint mode</label>
+              <select id="repaint-mode"><option value="balanced">balanced</option><option value="conservative">conservative</option><option value="aggressive">aggressive</option></select>
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="repaint-strength" data-tooltip="How much to change the repainted section. 0 = minimal change, 1 = full replacement.">Repaint strength</label>
+              <input id="repaint-strength" type="number" min="0" max="1" step="0.05" value="0.5" />
+            </div>
+            <div>
+              <label for="repaint-latent-crossfade">Latent crossfade</label>
+              <input id="repaint-latent-crossfade" type="number" min="0" max="250" value="10" />
+            </div>
+            <div>
+              <label for="repaint-wav-crossfade">Wave crossfade</label>
+              <input id="repaint-wav-crossfade" type="number" min="0" max="20" step="0.1" value="0" />
+            </div>
+          </div>
+          </div>
+        </details>
+
+        <div class="row" style="margin-top:14px;">
           <button class="secondary" id="format-btn">Format</button>
           <button class="primary" data-generate>Generate</button>
         </div>
@@ -435,6 +956,7 @@
 
       <section class="panel mode-panel" data-mode="album">
         <h2>Album</h2>
+        <div class="section-block clean-primary">
         <div class="field">
           <label for="album-concept">Concept</label>
           <textarea id="album-concept" placeholder="A seven-track Dutch rap album about ambition, family, night shifts and winning quietly"></textarea>
@@ -455,9 +977,65 @@
         </div>
         <div class="grid-3" style="margin-top:10px;">
           <div>
-            <label for="album-ollama">Ollama</label>
+            <label for="album-ollama">Album agent Ollama</label>
             <select id="album-ollama"></select>
           </div>
+          <div>
+            <label for="album-model-strategy">Model strategy</label>
+            <select id="album-model-strategy">
+              <option value="best_installed">Best installed</option>
+              <option value="fast_installed">Fast installed</option>
+              <option value="maximum_detail">Maximum detail</option>
+              <option value="selected">Selected model</option>
+            </select>
+          </div>
+          <div>
+            <label for="album-quality">Quality target</label>
+            <select id="album-quality">
+              <option value="hit">Hit single standard</option>
+              <option value="cohesive">Cohesive album</option>
+              <option value="experimental">Experimental</option>
+            </select>
+          </div>
+        </div>
+        <div class="album-plan-actions">
+          <button class="secondary" id="album-plan-btn">Plan Album</button>
+          <button class="primary" id="album-btn">Generate Album</button>
+          <button class="secondary" id="refresh-ollama">Refresh Ollama</button>
+        </div>
+        </div>
+        <div class="album-plan-cards" id="album-plan-cards" hidden></div>
+        <details class="disclosure" id="album-plan-editor" hidden>
+          <summary>
+            <span class="disclosure-title">
+              <strong>Detailed Track Editor</strong>
+              <small>Edit captions, lyrics, BPM, key, time, model and reports.</small>
+            </span>
+          </summary>
+          <div class="advanced-content">
+          <div class="table-wrap album-plan-table" id="album-plan-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th><th>Title</th><th>Caption / tags</th><th>Lyrics</th><th>BPM</th><th>Key</th><th>Time</th><th>Model</th><th>Report</th>
+                </tr>
+              </thead>
+              <tbody id="album-plan-body"></tbody>
+            </table>
+          </div>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="album-runtime">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Agent Runtime</strong>
+              <small id="summary-album-runtime">Embedding and ACE-Step LM defaults</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="album-runtime" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="grid-2">
           <div>
             <label for="album-embed">Embedding</label>
             <select id="album-embed"></select>
@@ -468,9 +1046,160 @@
           </div>
         </div>
         <div class="lm-advice" id="album-lm-advice"></div>
-        <div class="row" style="margin-top:10px;">
-          <button class="primary" id="album-btn">Generate Album</button>
-          <button class="secondary" id="refresh-ollama">Refresh Ollama</button>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="album-tools">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Agent Tools</strong>
+              <small id="summary-album-tools">Tag packs, custom tags and inspiration</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="album-tools" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="album-toolkit" id="album-toolkit">Loading songwriting tools...</div>
+          <div class="field" style="margin-top:10px;">
+            <label>Tag packs</label>
+            <div class="tag-pack-grid" id="album-tag-packs"></div>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label for="album-custom-tags">Custom tags</label>
+              <textarea id="album-custom-tags" placeholder="Dutch rap, orchestral strings, gritty vocal, luxury night drive"></textarea>
+            </div>
+            <div class="field">
+              <label for="album-negative-tags">Negative tags</label>
+              <textarea id="album-negative-tags" placeholder="muddy mix, generic lyrics, acoustic ballad"></textarea>
+            </div>
+          </div>
+          <div class="field">
+            <label for="album-inspiration">Inspiration queries</label>
+            <textarea id="album-inspiration" placeholder="Rotterdam nightlife, pressure into victory, family legacy, luxury but hungry"></textarea>
+          </div>
+          <label class="check"><input type="checkbox" id="album-web-inspiration" /> Web inspiration</label>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="album-craft">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Lyrics Craft</strong>
+              <small id="summary-album-craft">Dense lyrics, varied BPM, related keys</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="album-craft" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="grid-3">
+            <div>
+              <label for="album-structure">Structure</label>
+              <select id="album-structure">
+                <option value="auto">Auto by duration</option>
+                <option value="short_hook">Short hook</option>
+                <option value="club">Club build/drop</option>
+                <option value="cinematic">Cinematic arc</option>
+              </select>
+            </div>
+            <div>
+              <label for="album-lyric-density">Lyric density</label>
+              <select id="album-lyric-density">
+                <option value="dense">Dense</option>
+                <option value="balanced">Balanced</option>
+                <option value="rap_dense">Rap dense</option>
+                <option value="sparse">Sparse</option>
+              </select>
+            </div>
+            <div>
+              <label for="album-bpm-strategy">BPM strategy</label>
+              <select id="album-bpm-strategy">
+                <option value="varied">Varied</option>
+                <option value="rap">Rap pocket</option>
+                <option value="club">Club</option>
+                <option value="slow">Slow</option>
+              </select>
+            </div>
+            <div>
+              <label for="album-key-strategy">Key strategy</label>
+              <select id="album-key-strategy">
+                <option value="related">Related keys</option>
+                <option value="free">Free</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="album-rhyme-density" data-tooltip="How much rhyming to aim for. 0 = free verse, 1 = every line rhymes.">Rhyme density</label>
+              <input id="album-rhyme-density" type="number" min="0" max="1" step="0.05" value="0.8" />
+            </div>
+            <div>
+              <label for="album-metaphor-density" data-tooltip="How many metaphors/imagery in the lyrics. Higher = more poetic, lower = more literal.">Metaphor density</label>
+              <input id="album-metaphor-density" type="number" min="0" max="1" step="0.05" value="0.7" />
+            </div>
+            <div>
+              <label for="album-hook-intensity" data-tooltip="How catchy/memorable the hooks should be. Higher = punchier choruses and earworm hooks.">Hook intensity</label>
+              <input id="album-hook-intensity" type="number" min="0" max="1" step="0.05" value="0.85" />
+            </div>
+          </div>
+          </div>
+        </details>
+
+        <details class="section-block disclosure advanced-group" data-advanced-group="album-generation">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Generation</strong>
+              <small id="summary-album-generation">1 variant per track, wav, 8 steps</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="album-generation" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+          <div class="grid-3">
+            <div>
+              <label for="album-variants">Variants per track</label>
+              <input id="album-variants" type="number" min="1" max="8" value="1" />
+            </div>
+            <div>
+              <label for="album-seed">Seed/seeds</label>
+              <input id="album-seed" type="text" value="-1" />
+            </div>
+            <div>
+              <label for="album-audio-format">Audio format</label>
+              <select id="album-audio-format">
+                <option value="wav">wav</option>
+                <option value="flac">flac</option>
+                <option value="ogg">ogg</option>
+                <option value="mp3">mp3</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="album-inference-steps">Steps</label>
+              <input id="album-inference-steps" type="number" min="1" max="200" value="8" />
+            </div>
+            <div>
+              <label for="album-guidance">Guidance</label>
+              <input id="album-guidance" type="number" min="1" max="15" step="0.1" value="7" />
+            </div>
+            <div>
+              <label for="album-shift">Shift</label>
+              <input id="album-shift" type="number" min="1" max="5" step="0.1" value="3" />
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <label class="check"><input type="checkbox" id="album-auto-score" /> Score</label>
+            <label class="check"><input type="checkbox" id="album-auto-lrc" /> LRC</label>
+            <label class="check"><input type="checkbox" id="album-audio-codes" /> Audio codes</label>
+            <label class="check"><input type="checkbox" id="album-save-library" checked /> Save to library</label>
+          </div>
+          </div>
+        </details>
+        <div class="section-block">
+          <div class="section-head">
+            <h3>Saved Album Tracks</h3>
+            <button class="secondary" id="album-saved-refresh">Refresh</button>
+          </div>
+          <div class="muted-line" id="album-saved-note">Saved album tracks appear here after generation.</div>
+          <div class="album-saved-list" id="album-saved-list"></div>
         </div>
         <pre class="album-log" id="album-log"></pre>
       </section>
@@ -558,7 +1287,16 @@
           <button class="danger" id="lora-stop">Stop job</button>
         </div>
 
-        <div class="grid-3" style="margin-top:12px;">
+        <details class="section-block disclosure advanced-group" data-advanced-group="trainer-training">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Training Parameters</strong>
+              <small id="summary-trainer-training">LoRA, 10 epochs, batch 1, grad accum 4</small>
+            </span>
+            <span class="disclosure-actions"><span class="badge warn" data-modified-for="trainer-training" hidden>modified</span></span>
+          </summary>
+          <div class="advanced-content">
+        <div class="grid-3">
           <div>
             <label for="adapter-type">Adapter</label>
             <select id="adapter-type">
@@ -577,11 +1315,11 @@
         </div>
         <div class="grid-3" style="margin-top:10px;">
           <div>
-            <label for="grad-accum">Grad accum</label>
+            <label for="grad-accum" data-tooltip="Gradient accumulation steps. Simulates larger batch without more VRAM. 4 is a good default.">Grad accum</label>
             <input id="grad-accum" type="number" min="1" value="4" />
           </div>
           <div>
-            <label for="learning-rate">Learning rate</label>
+            <label for="learning-rate" data-tooltip="How fast the model learns. Too high = unstable, too low = slow. 1e-4 is a safe default.">Learning rate</label>
             <input id="learning-rate" type="text" value="0.0001" />
           </div>
           <div>
@@ -591,15 +1329,15 @@
         </div>
         <div class="grid-3" style="margin-top:10px;">
           <div>
-            <label for="lora-rank">LoRA rank</label>
+            <label for="lora-rank" data-tooltip="LoRA matrix rank. Higher = more capacity but more VRAM. 32-128 typical.">LoRA rank</label>
             <input id="lora-rank" type="number" min="1" value="64" />
           </div>
           <div>
-            <label for="lora-alpha">LoRA alpha</label>
+            <label for="lora-alpha" data-tooltip="LoRA scaling factor. Usually 2x rank. Controls how much the adapter affects the model.">LoRA alpha</label>
             <input id="lora-alpha" type="number" min="1" value="128" />
           </div>
           <div>
-            <label for="lora-dropout">LoRA dropout</label>
+            <label for="lora-dropout" data-tooltip="Dropout for regularization. 0.05-0.15 typical. Prevents overfitting on small datasets.">LoRA dropout</label>
             <input id="lora-dropout" type="text" value="0.1" />
           </div>
         </div>
@@ -625,6 +1363,8 @@
         <div class="trainer-actions" style="margin-top:10px;">
           <button class="primary" id="lora-train">Train adapter</button>
         </div>
+          </div>
+        </details>
         <pre id="lora-log">Trainer logs appear here.</pre>
       </section>
 
@@ -638,67 +1378,18 @@
 
       <section class="panel mode-panel" data-mode="settings">
         <h2>Settings</h2>
-        <div class="grid-3">
-          <div>
-            <label for="seed">Seed(s)</label>
-            <input id="seed" type="text" value="-1" />
-          </div>
-          <div>
-            <label for="steps">Steps</label>
-            <input id="steps" type="number" min="1" max="200" value="8" />
-          </div>
-          <div>
-            <label for="guidance">Guidance</label>
-            <input id="guidance" type="number" min="1" max="15" step="0.1" value="7" />
-          </div>
-        </div>
-        <div class="grid-3" style="margin-top:10px;">
-          <div>
-            <label for="bpm">BPM</label>
-            <input id="bpm" type="number" min="30" max="300" placeholder="auto" />
-          </div>
-          <div>
-            <label for="key-scale">Key</label>
-            <input id="key-scale" type="text" placeholder="C major" />
-          </div>
-          <div>
-            <label for="time-signature">Time</label>
-            <select id="time-signature"><option value="">Auto</option><option>2</option><option>3</option><option selected>4</option><option>6</option></select>
-          </div>
-        </div>
-        <div class="grid-3" style="margin-top:10px;">
-          <div>
-            <label for="shift">Shift</label>
-            <input id="shift" type="number" min="1" max="5" step="0.1" value="3" />
-          </div>
-          <div>
-            <label for="infer-method">Method</label>
-            <select id="infer-method"><option value="ode">ode</option><option value="sde">sde</option></select>
-          </div>
-          <div>
-            <label for="audio-format">Format</label>
-            <select id="audio-format"><option>wav</option><option>flac</option><option>ogg</option></select>
-          </div>
-        </div>
-        <div class="grid-2" style="margin-top:10px;">
-          <div>
-            <label for="cfg-start">CFG start</label>
-            <input id="cfg-start" type="number" min="0" max="1" step="0.05" value="0" />
-          </div>
-          <div>
-            <label for="cfg-end">CFG end</label>
-            <input id="cfg-end" type="number" min="0" max="1" step="0.05" value="1" />
-          </div>
-        </div>
-        <div class="field" style="margin-top:10px;">
-          <label for="timesteps">Custom timesteps</label>
-          <input id="timesteps" type="text" placeholder="0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0" />
-        </div>
-        <div class="row">
-          <label class="check"><input type="checkbox" id="use-adg" /> ADG</label>
-          <label class="check"><input type="checkbox" id="auto-score" /> Auto score</label>
-          <label class="check"><input type="checkbox" id="auto-lrc" /> Auto LRC</label>
-          <label class="check"><input type="checkbox" id="return-codes" /> Audio codes</label>
+        <div class="section-block clean-primary">
+          <div class="section-head"><h3>Runtime</h3><span class="badge" id="official-runner-badge">Checking</span></div>
+          <div class="muted-line" id="settings-summary">Loading runtime summary...</div>
+          <details>
+            <summary>
+              <span class="disclosure-title">
+                <strong>Full Runtime JSON</strong>
+                <small>Model lists, runner status, UI schema and toolkit metadata.</small>
+              </span>
+            </summary>
+            <div class="advanced-content"><pre id="settings-config">Loading config...</pre></div>
+          </details>
         </div>
       </section>
     </main>
@@ -711,9 +1402,20 @@
     </aside>
   </div>
 
+  <div class="modal-overlay" id="confirm-modal" hidden>
+    <div class="modal-card">
+      <h3 id="confirm-title">Confirm</h3>
+      <p id="confirm-message">Are you sure?</p>
+      <div class="modal-actions">
+        <button class="secondary" id="confirm-cancel">Cancel</button>
+        <button class="danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const modes = ["simple", "custom", "cover", "repaint", "extract", "lego", "complete", "album", "lora", "library", "settings"];
-    const taskForMode = { simple: "text2music", custom: "text2music", cover: "cover", repaint: "repaint", extract: "extract", lego: "lego", complete: "complete" };
+    const taskForMode = { simple: "text2music", custom: "text2music", cover: "cover", repaint: "repaint", extract: "extract", lego: "lego", complete: "complete", album: "text2music" };
     const state = {
       mode: "simple",
       config: null,
@@ -728,16 +1430,192 @@
       datasetJson: "",
       tensorDir: "",
       activeLoraJob: null,
-      loraTimer: null
+      loraTimer: null,
+      albumPlan: [],
+      lastAlbumId: null,
+      modelDownloads: {},
+      modelDownloadTimers: {}
     };
 
     const $ = (id) => document.getElementById(id);
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+    /* ── Custom audio player ── */
+    let _activePlayer = null;
+    function fmtTime(s) { const m = Math.floor(s / 60); return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`; }
+    function createPlayerHtml(src) {
+      return `<div class="audio-player" data-src="${esc(src)}">
+        <audio preload="metadata" src="${esc(src)}"></audio>
+        <button class="play-btn" type="button" aria-label="Play">
+          <svg viewBox="0 0 16 16" fill="currentColor"><polygon class="play-icon" points="4,2 14,8 4,14"/></svg>
+        </button>
+        <div class="progress-wrap"><div class="progress-fill"></div></div>
+        <span class="time">0:00</span>
+      </div>`;
+    }
+    function initPlayers(root) {
+      root.querySelectorAll(".audio-player:not([data-init])").forEach((player) => {
+        player.setAttribute("data-init", "1");
+        const audio = player.querySelector("audio");
+        const playBtn = player.querySelector(".play-btn");
+        const fill = player.querySelector(".progress-fill");
+        const timeEl = player.querySelector(".time");
+        const wrap = player.querySelector(".progress-wrap");
+        const pauseSvg = '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg>';
+        const playSvg = '<svg viewBox="0 0 16 16" fill="currentColor"><polygon points="4,2 14,8 4,14"/></svg>';
+        playBtn.addEventListener("click", () => {
+          if (audio.paused) {
+            if (_activePlayer && _activePlayer !== audio) { _activePlayer.pause(); }
+            _activePlayer = audio;
+            audio.play();
+          } else { audio.pause(); }
+        });
+        audio.addEventListener("play", () => { playBtn.innerHTML = pauseSvg; });
+        audio.addEventListener("pause", () => { playBtn.innerHTML = playSvg; });
+        audio.addEventListener("ended", () => { playBtn.innerHTML = playSvg; fill.style.width = "0%"; });
+        audio.addEventListener("timeupdate", () => {
+          if (!audio.duration) return;
+          fill.style.width = (audio.currentTime / audio.duration * 100) + "%";
+          timeEl.textContent = fmtTime(audio.currentTime);
+        });
+        audio.addEventListener("loadedmetadata", () => { timeEl.textContent = fmtTime(audio.duration); });
+        wrap.addEventListener("click", (e) => {
+          if (!audio.duration) return;
+          audio.currentTime = (e.offsetX / wrap.offsetWidth) * audio.duration;
+        });
+      });
+    }
+
+    /* ─�� Confirmation modal ── */
+    let _confirmResolve = null;
+    function confirmAction(title, message, actionLabel = "Delete") {
+      return new Promise((resolve) => {
+        _confirmResolve = resolve;
+        $("confirm-title").textContent = title;
+        $("confirm-message").textContent = message;
+        $("confirm-ok").textContent = actionLabel;
+        $("confirm-modal").hidden = false;
+      });
+    }
+    document.addEventListener("DOMContentLoaded", () => {
+      $("confirm-cancel")?.addEventListener("click", () => { $("confirm-modal").hidden = true; _confirmResolve?.(false); });
+      $("confirm-ok")?.addEventListener("click", () => { $("confirm-modal").hidden = true; _confirmResolve?.(true); });
+      $("confirm-modal")?.addEventListener("click", (e) => { if (e.target === $("confirm-modal")) { $("confirm-modal").hidden = true; _confirmResolve?.(false); } });
+    });
+
+    function controlValue(id) {
+      const el = $(id);
+      if (!el) return "";
+      if (el.type === "checkbox") return el.checked;
+      return String(el.value ?? "");
+    }
+
+    function defaultsChanged(defaults) {
+      return Object.entries(defaults).some(([id, expected]) => controlValue(id) !== expected);
+    }
+
+    function setSummary(group, text, modified) {
+      const summary = $(`summary-${group}`);
+      const badge = document.querySelector(`[data-modified-for="${group}"]`);
+      if (summary) summary.textContent = text;
+      if (badge) badge.hidden = !modified;
+    }
+
+    function selectedAlbumTagPacks() {
+      return Array.from(document.querySelectorAll("#album-tag-packs input:checked")).map((input) => input.value);
+    }
+
+    function updateAdvancedSummaries() {
+      setSummary(
+        "custom-generation",
+        `Seed ${controlValue("seed") || "-1"}, ${controlValue("steps") || 8} steps, ${controlValue("infer-method") || "ode"}/${controlValue("sampler-mode") || "euler"}`,
+        defaultsChanged({
+          "global-caption": "", seed: "-1", steps: "8", guidance: "7", shift: "3", "infer-method": "ode", "sampler-mode": "euler",
+          "cfg-start": "0", "cfg-end": "1", "velocity-norm": "0", "velocity-ema": "0", "use-adg": false, timesteps: ""
+        })
+      );
+      const recommendedLm = state.config?.recommended_lm_model || "auto";
+      setSummary(
+        "custom-lm",
+        `LM ${controlValue("custom-ace-lm-model") || recommendedLm}, thinking ${controlValue("thinking") ? "on" : "off"}`,
+        defaultsChanged({
+          "custom-ace-lm-model": recommendedLm, "lm-backend": "auto", thinking: false, "sample-query": "", "lm-negative": "NO USER INPUT",
+          "lm-temp": "0.85", "lm-cfg": "2", "lm-top-p": "0.9", "lm-top-k": "0", "lm-batch-chunk": "8",
+          "allow-lm-batch": false, "sample-mode": false, "use-format": false, "use-cot-metas": true,
+          "use-cot-caption": true, "use-cot-lyrics": false, "use-cot-language": true, "constrained-decoding": true, "constrained-debug": false
+        })
+      );
+      setSummary(
+        "custom-output",
+        `Output: ${controlValue("audio-format") || "wav"}${controlValue("auto-score") ? ", score" : ""}${controlValue("auto-lrc") ? ", LRC" : ""}${controlValue("return-codes") ? ", codes" : ""}`,
+        defaultsChanged({ "audio-format": "wav", "mp3-bitrate": "128k", "mp3-sample-rate": "48000", "auto-score": false, "auto-lrc": false, "return-codes": false })
+      );
+      setSummary(
+        "custom-post",
+        `Normalize ${controlValue("enable-normalization") ? "on" : "off"}, fades ${controlValue("fade-in") || 0}s/${controlValue("fade-out") || 0}s`,
+        defaultsChanged({ "enable-normalization": true, "normalization-db": "-1", "fade-in": "0", "fade-out": "0", "latent-shift": "0", "latent-rescale": "1" })
+      );
+      setSummary(
+        "custom-edit",
+        `Cover noise ${controlValue("cover-noise-strength") || 0}, repaint ${controlValue("repaint-mode") || "balanced"}`,
+        defaultsChanged({
+          "cover-noise-strength": "0", "chunk-mask-mode": "auto", "repaint-mode": "balanced", "repaint-strength": "0.5",
+          "repaint-latent-crossfade": "10", "repaint-wav-crossfade": "0"
+        })
+      );
+      setSummary(
+        "album-runtime",
+        `Embedding ${controlValue("album-embed") || "default"}, LM ${controlValue("album-ace-lm-model") || recommendedLm}`,
+        controlValue("album-ace-lm-model") !== "" && controlValue("album-ace-lm-model") !== recommendedLm
+      );
+      const defaultPacks = Object.keys(state.config?.songwriting_toolkit?.tag_taxonomy || {}).slice(0, 4);
+      const packs = selectedAlbumTagPacks();
+      const packsModified = defaultPacks.length > 0 && (packs.length !== defaultPacks.length || packs.some((pack, index) => pack !== defaultPacks[index]));
+      setSummary(
+        "album-tools",
+        `${packs.length || 0} tag packs${controlValue("album-custom-tags") ? ", custom tags" : ""}${controlValue("album-web-inspiration") ? ", web inspiration" : ""}`,
+        packsModified || Boolean(controlValue("album-custom-tags") || controlValue("album-negative-tags") || controlValue("album-inspiration") || controlValue("album-web-inspiration"))
+      );
+      setSummary(
+        "album-craft",
+        `${controlValue("album-lyric-density") || "dense"} lyrics, ${controlValue("album-bpm-strategy") || "varied"} BPM, ${controlValue("album-key-strategy") || "related"} keys`,
+        defaultsChanged({
+          "album-structure": "auto", "album-lyric-density": "dense", "album-bpm-strategy": "varied", "album-key-strategy": "related",
+          "album-rhyme-density": "0.8", "album-metaphor-density": "0.7", "album-hook-intensity": "0.85"
+        })
+      );
+      setSummary(
+        "album-generation",
+        `${controlValue("album-variants") || 1} variant(s), ${controlValue("album-audio-format") || "wav"}, ${controlValue("album-inference-steps") || 8} steps`,
+        defaultsChanged({
+          "album-variants": "1", "album-seed": "-1", "album-audio-format": "wav", "album-inference-steps": "8",
+          "album-guidance": "7", "album-shift": "3", "album-auto-score": false, "album-auto-lrc": false,
+          "album-audio-codes": false, "album-save-library": true
+        })
+      );
+      setSummary(
+        "trainer-training",
+        `${controlValue("adapter-type") || "lora"}, ${controlValue("train-epochs") || 10} epochs, batch ${controlValue("train-batch") || 1}`,
+        defaultsChanged({
+          "adapter-type": "lora", "train-epochs": "10", "train-batch": "1", "grad-accum": "4",
+          "learning-rate": "0.0001", "save-every": "5", "lora-rank": "64", "lora-alpha": "128",
+          "lora-dropout": "0.1", "lokr-dim": "64", "lokr-alpha": "128", "train-seed": "42",
+          "grad-checkpoint": true, "offload-encoder": false, "lokr-weight": true
+        })
+      );
+    }
+
+    let _statusFadeTimer = null;
     function setStatus(text, type = "") {
       const el = $("status");
-      el.textContent = text || "";
+      if (_statusFadeTimer) { clearTimeout(_statusFadeTimer); _statusFadeTimer = null; }
+      const icon = type === "error" ? "\u2715 " : type === "ok" ? "\u2713 " : "";
+      const spinner = type === "busy" ? '<span class="status-spinner"></span>' : "";
+      el.innerHTML = spinner + esc(icon + (text || ""));
       el.className = `status ${type}`;
+      if (type === "ok") {
+        _statusFadeTimer = setTimeout(() => { el.innerHTML = esc("\u2713 Studio ready."); el.className = "status ok"; }, 5000);
+      }
     }
 
     async function api(path, payload = null, options = {}) {
@@ -771,6 +1649,103 @@
       return profile && !profile.installed ? `${base} (not installed)` : base;
     }
 
+    function downloadJobFor(name) {
+      return state.modelDownloads?.[name] || state.config?.model_downloads?.[name] || null;
+    }
+
+    function isDownloadRunning(name) {
+      const job = downloadJobFor(name);
+      return job && ["queued", "running"].includes(job.state);
+    }
+
+    function downloadStateText(name) {
+      const job = downloadJobFor(name);
+      if (!job) return "";
+      if (job.state === "queued") return "Download queued";
+      if (job.state === "running") return job.message || "Downloading...";
+      if (job.state === "succeeded") return "Installed";
+      if (job.state === "failed") return job.error || "Download failed";
+      return "";
+    }
+
+    async function startModelDownload(modelName, reason = "selection") {
+      if (!modelName || modelName === "auto" || modelName === "none") return;
+      const songProfile = state.config?.model_profiles?.[modelName];
+      const lmProfile = state.config?.lm_model_profiles?.[modelName];
+      const profile = songProfile || lmProfile;
+      if (!profile || profile.installed || isDownloadRunning(modelName)) return;
+      setStatus(`Downloading ${modelName}...`, "ok");
+      try {
+        const data = await api("/api/models/download", { model_name: modelName, reason });
+        state.modelDownloads[modelName] = data.job;
+        updateCapability();
+        updateAllLmAdvice();
+        pollModelDownload(modelName);
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    }
+
+    async function pollModelDownload(modelName) {
+      if (state.modelDownloadTimers[modelName]) clearTimeout(state.modelDownloadTimers[modelName]);
+      try {
+        const data = await api(`/api/models/download/${encodeURIComponent(modelName)}`);
+        state.modelDownloads[modelName] = data.job;
+        updateCapability();
+        updateAllLmAdvice();
+        if (["queued", "running"].includes(data.job?.state)) {
+          state.modelDownloadTimers[modelName] = setTimeout(() => pollModelDownload(modelName), 2000);
+        } else if (data.job?.state === "succeeded") {
+          setStatus(`${modelName} installed. Refreshing studio config...`, "ok");
+          await loadConfig();
+          preserveSelectedModel(modelName);
+          updateCapability();
+        } else if (data.job?.state === "failed") {
+          setStatus(`${modelName} download failed: ${data.job.error || "unknown error"}`, "error");
+        }
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    }
+
+    function handleDownloadStarted(data, context = "generation") {
+      const modelName = data.download_model;
+      if (!data?.download_started || !modelName) return false;
+      if (data.download_job) state.modelDownloads[modelName] = data.download_job;
+      updateCapability();
+      updateAllLmAdvice();
+      pollModelDownload(modelName);
+      const message = data.message || `${modelName} is downloading. Generate again when it is installed.`;
+      setStatus(message, "ok");
+      if (context === "album" && $("album-log")) {
+        $("album-log").textContent = (data.logs || [message]).join("\\n");
+      }
+      return true;
+    }
+
+    function preserveSelectedModel(modelName) {
+      if ([...$("song-model").options].some((option) => option.value === modelName)) {
+        $("song-model").value = modelName;
+      }
+    }
+
+    function selectedActualSongModel() {
+      const selected = $("song-model").value || "auto";
+      return selected === "auto" ? state.config?.default_song_model : selected;
+    }
+
+    function maybeDownloadSelectedSongModel() {
+      const actual = selectedActualSongModel();
+      const profile = state.config?.model_profiles?.[actual];
+      if (profile && !profile.installed) startModelDownload(actual, "song-model-selected");
+    }
+
+    function maybeDownloadSelectedLm(selectId) {
+      const name = $(selectId)?.value;
+      const profile = state.config?.lm_model_profiles?.[name];
+      if (profile && !profile.installed) startModelDownload(name, `${selectId}-selected`);
+    }
+
     function modeRecommendation(mode, profile, ok) {
       const task = taskForMode[mode];
       if (["extract", "lego", "complete"].includes(task)) {
@@ -790,33 +1765,47 @@
 
     function renderModelAdvice(actual, ok, task) {
       const target = $("model-advice");
+      if (!target) return;
       const profile = state.config?.model_profiles?.[actual];
-      if (!target || !profile) {
-        if (target) target.innerHTML = "";
+      if (!profile) {
+        target.innerHTML = "";
         return;
       }
       const installClass = profile.installed ? "ok" : "warn";
-      const installText = profile.installed ? "Installed" : "Download required";
+      const running = isDownloadRunning(actual);
+      const downloadText = downloadStateText(actual);
+      const installText = profile.installed ? "Installed" : (running ? "Downloading" : "Download required");
       const warning = ok
         ? modeRecommendation(state.mode, profile, ok)
         : `${modeRecommendation(state.mode, profile, ok)} Current task: ${task}.`;
-      target.innerHTML = `
+      const html = `
         <div class="model-advice-title">
           <span>${esc(profile.label || actual)}</span>
           <span class="badge ${installClass}">${esc(installText)}</span>
         </div>
-        <div class="model-advice-summary">${esc(profile.summary || "")}</div>
-        <div class="model-badges">
-          ${badge("Best for", asList(profile.best_for))}
-          ${badge("Quality", profile.quality)}
-          ${badge("Speed", profile.speed)}
-          ${badge("VRAM", profile.vram)}
-          ${badge("Steps", profile.steps)}
-          ${badge("CFG", profile.cfg)}
-          ${badge("Tasks", asList(profile.tasks))}
-        </div>
-        <div class="model-warning">${esc(warning)}</div>
+        <div class="model-warning">${esc(downloadText || warning)}</div>
+        ${!profile.installed ? `<div class="row" style="margin-top:8px;"><button class="secondary model-download-btn" data-model-download="${esc(actual)}" ${running ? "disabled" : ""}>${running ? "Downloading..." : "Download model"}</button></div>` : ""}
+        <details>
+          <summary>
+            <span class="disclosure-title">
+              <strong>Model details</strong>
+              <small>${esc(profile.summary || "")}</small>
+            </span>
+          </summary>
+          <div class="advanced-content">
+            <div class="model-badges">
+              ${badge("Best for", asList(profile.best_for))}
+              ${badge("Quality", profile.quality)}
+              ${badge("Speed", profile.speed)}
+              ${badge("VRAM", profile.vram)}
+              ${badge("Steps", profile.steps)}
+              ${badge("CFG", profile.cfg)}
+              ${badge("Tasks", asList(profile.tasks))}
+            </div>
+          </div>
+        </details>
       `;
+      target.innerHTML = html;
     }
 
     function updateLmAdvice(selectId = "ace-lm-model", targetId = "lm-advice") {
@@ -830,29 +1819,78 @@
         return;
       }
       const installClass = profile.installed ? "ok" : "warn";
-      const installText = profile.installed ? "Installed" : "Download required";
+      const running = isDownloadRunning(name);
+      const downloadText = downloadStateText(name);
+      const installText = profile.installed ? "Installed" : (running ? "Downloading" : "Download required");
       target.innerHTML = `
         <div class="lm-advice-title">
           <span>${esc(profile.label || name)}</span>
           <span class="badge ${installClass}">${esc(installText)}</span>
         </div>
-        <div class="lm-advice-summary">${esc(profile.summary || "")}</div>
-        <div class="model-badges">
-          ${badge("Best for", asList(profile.best_for))}
-          ${badge("Quality", profile.quality)}
-          ${badge("Speed", profile.speed)}
-          ${badge("VRAM", profile.vram)}
-        </div>
+        <div class="lm-advice-summary">${esc(downloadText || profile.summary || "")}</div>
+        ${!profile.installed && name !== "auto" && name !== "none" ? `<div class="row" style="margin-top:8px;"><button class="secondary model-download-btn" data-model-download="${esc(name)}" ${running ? "disabled" : ""}>${running ? "Downloading..." : "Download LM"}</button></div>` : ""}
+        <details>
+          <summary>
+            <span class="disclosure-title">
+              <strong>LM details</strong>
+              <small>${esc(asList(profile.best_for) || "planning and metadata")}</small>
+            </span>
+          </summary>
+          <div class="advanced-content">
+            <div class="model-badges">
+              ${badge("Best for", asList(profile.best_for))}
+              ${badge("Quality", profile.quality)}
+              ${badge("Speed", profile.speed)}
+              ${badge("VRAM", profile.vram)}
+            </div>
+          </div>
+        </details>
       `;
     }
 
     function updateAllLmAdvice() {
       updateLmAdvice("ace-lm-model", "lm-advice");
+      updateLmAdvice("custom-ace-lm-model", "custom-lm-advice");
       updateLmAdvice("album-ace-lm-model", "album-lm-advice");
     }
 
-    function setBusy(isBusy) {
+    function renderAlbumToolkit() {
+      const toolkit = state.config?.songwriting_toolkit;
+      if (!toolkit) return;
+      const panel = $("album-toolkit");
+      const tools = (toolkit.craft_tools || []).map((tool) => `<span class="badge"><strong>${esc(tool.name)}</strong>${esc(tool.summary)}</span>`).join("");
+      const strategies = Object.entries(toolkit.model_strategies || {}).map(([key, value]) => `<span class="badge"><strong>${esc(value.label || key)}</strong>${esc(value.summary || "")}</span>`).join("");
+      panel.innerHTML = `
+        <div class="model-badges">${tools}</div>
+        <div class="model-badges">${strategies}</div>
+        <div class="control-note">${esc(toolkit.tag_policy || "")}</div>
+        <div class="control-note">${esc(toolkit.artist_reference_policy || "")}</div>
+      `;
+      const packRoot = $("album-tag-packs");
+      const packs = Object.keys(toolkit.tag_taxonomy || {});
+      packRoot.innerHTML = packs.map((pack, index) => `
+        <label class="check">
+          <input type="checkbox" value="${esc(pack)}" ${index < 4 ? "checked" : ""} />
+          ${esc(pack.replaceAll("_", " "))}
+        </label>
+      `).join("");
+      packRoot.querySelectorAll("input").forEach((input) => input.addEventListener("change", updateAdvancedSummaries));
+      updateAdvancedSummaries();
+    }
+
+    function updateLmModeNote() {
+      const note = $("lm-mode-note");
+      if (!note) return;
+      const task = taskForMode[state.mode] || "text2music";
+      note.textContent = ["cover", "repaint", "extract"].includes(task)
+        ? "ACE-Step skips LM planning for this task."
+        : "ACE-Step LM can plan metadata, caption, language, and codes here.";
+    }
+
+    function setBusy(isBusy, triggerBtn = null) {
       document.querySelectorAll("button").forEach((button) => button.disabled = isBusy && !button.classList.contains("danger"));
+      document.querySelectorAll(".btn-loading").forEach((el) => el.classList.remove("btn-loading"));
+      if (isBusy && triggerBtn) triggerBtn.classList.add("btn-loading");
       if (!isBusy && state.config) updateCapability();
     }
 
@@ -868,9 +1906,14 @@
       state.mode = mode;
       document.querySelectorAll(".mode-panel").forEach((panel) => panel.hidden = panel.dataset.mode !== mode);
       document.querySelectorAll(".nav button").forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
+      if ($("global-ollama-field")) $("global-ollama-field").hidden = !["simple", "custom"].includes(mode);
       updateCapability();
+      updateLmModeNote();
       if (mode === "library") loadLibrary();
-      if (mode === "album") loadOllama();
+      if (mode === "album") {
+        loadOllama();
+        loadAlbumSaves();
+      }
       if (mode === "lora") loadLoraStatus();
     }
 
@@ -884,22 +1927,35 @@
       }
       const actual = model === "auto" ? state.config.default_song_model : model;
       const caps = state.config.model_capabilities?.[actual]?.tasks || [];
-      const ok = caps.includes(task);
-      const label = state.config.model_profiles?.[actual]?.label || state.config.model_labels?.[actual] || actual;
-      $("capability").textContent = ok ? `${label}: ${modeRecommendation(state.mode, state.config.model_profiles?.[actual], ok)}` : `${label} cannot run ${task}`;
+      const profile = state.config.model_profiles?.[actual];
+      const installed = profile?.installed !== false;
+      const ok = caps.includes(task) && installed;
+      const label = profile?.label || state.config.model_labels?.[actual] || actual;
+      $("capability").textContent = ok
+        ? `${label}: ${modeRecommendation(state.mode, profile, ok)}`
+        : (!installed ? `${label} ${isDownloadRunning(actual) ? "is downloading" : "is not installed"}` : `${label} cannot run ${task}`);
       renderModelAdvice(actual, ok, task);
       document.querySelectorAll("[data-generate]").forEach((button) => button.disabled = Boolean(task && !ok));
     }
 
     async function loadConfig() {
+      const selectedSongModel = $("song-model")?.value || "auto";
+      const selectedLmValues = {};
+      for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
+        selectedLmValues[id] = $(id)?.value || "";
+      }
       state.config = await api("/api/config");
+      state.modelDownloads = { ...(state.modelDownloads || {}), ...(state.config.model_downloads || {}) };
       const modelSelect = $("song-model");
       modelSelect.innerHTML = `<option value="auto">Auto (${esc(modelOptionLabel(state.config.default_song_model))})</option>` +
         state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(modelOptionLabel(name))}</option>`).join("");
+      if ([...modelSelect.options].some((option) => option.value === selectedSongModel)) modelSelect.value = selectedSongModel;
       const lmOptions = (state.config.lm_models || ["auto", "none"]).map((name) => `<option value="${esc(name)}">${esc(lmOptionLabel(name))}</option>`).join("");
-      for (const id of ["ace-lm-model", "album-ace-lm-model"]) {
+      for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
         $(id).innerHTML = lmOptions;
-        $(id).value = state.config.recommended_lm_model || "auto";
+        $(id).value = selectedLmValues[id] && [...$(id).options].some((option) => option.value === selectedLmValues[id])
+          ? selectedLmValues[id]
+          : state.config.recommended_lm_model || "auto";
       }
       const languages = state.config.valid_languages || ["unknown", "en"];
       for (const id of ["language", "album-language"]) {
@@ -911,27 +1967,57 @@
       $("complete-tracks").innerHTML = state.config.track_names.map((track) =>
         `<label class="check"><input type="checkbox" value="${esc(track)}" /> ${esc(track)}</label>`
       ).join("");
+      const runner = state.config.official_runner || {};
+      if ($("official-runner-badge")) {
+        $("official-runner-badge").className = `badge ${runner.available ? "ok" : "warn"}`;
+        $("official-runner-badge").textContent = runner.available ? "Official runner ready" : "Official runner missing";
+      }
+      if ($("settings-config")) {
+        $("settings-config").textContent = JSON.stringify({
+          official_runner: runner,
+          installed_song_models: state.config.installed_song_models,
+          installed_lm_models: state.config.installed_lm_models,
+          ui_schema: state.config.ui_schema,
+          songwriting_toolkit: state.config.songwriting_toolkit
+        }, null, 2);
+      }
+      if ($("settings-summary")) {
+        $("settings-summary").textContent = `${state.config.installed_song_models?.length || 0} song model(s), ${state.config.installed_lm_models?.length || 0} LM model(s). ${runner.available ? "Official runner ready." : "Official runner missing."}`;
+      }
+      renderAlbumToolkit();
       updateCapability();
       updateAllLmAdvice();
+      updateLmModeNote();
+      updateAdvancedSummaries();
       setStatus("Studio ready.", "ok");
     }
 
     async function loadOllama() {
       try {
         const current = $("ollama-model").value;
+        const currentAlbum = $("album-ollama").value;
+        const currentEmbed = $("album-embed").value;
         const result = await api("/api/ollama_models");
         let models = result.models || [];
         if (!models.length) models = ["llama3.2"];
         const embed = models.filter((m) => /embed|bge|e5|gte|nomic/i.test(m));
         const llm = models.filter((m) => !/embed|bge|e5|gte|nomic/i.test(m));
-        $("ollama-model").innerHTML = llm.map((m) => `<option>${esc(m)}</option>`).join("");
-        $("album-ollama").innerHTML = llm.map((m) => `<option>${esc(m)}</option>`).join("");
-        $("album-embed").innerHTML = (embed.length ? embed : ["nomic-embed-text"]).map((m) => `<option>${esc(m)}</option>`).join("");
-        if (current) $("ollama-model").value = current;
+        const writerModels = llm.length ? llm : ["llama3.2"];
+        const embedModels = embed.length ? embed : ["nomic-embed-text"];
+        const fillSelect = (id, options, previous) => {
+          const select = $(id);
+          select.innerHTML = options.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+          if (previous && [...select.options].some((option) => option.value === previous)) select.value = previous;
+        };
+        fillSelect("ollama-model", writerModels, current);
+        fillSelect("album-ollama", writerModels, currentAlbum);
+        fillSelect("album-embed", embedModels, currentEmbed);
+        updateAdvancedSummaries();
       } catch (err) {
         $("ollama-model").innerHTML = `<option>llama3.2</option>`;
         $("album-ollama").innerHTML = `<option>llama3.2</option>`;
         $("album-embed").innerHTML = `<option>nomic-embed-text</option>`;
+        updateAdvancedSummaries();
       }
     }
 
@@ -970,8 +2056,8 @@
     }
 
     async function compose() {
-      setBusy(true);
-      setStatus("Composing...");
+      setBusy(true, $("compose-btn"));
+      setStatus("Composing...", "busy");
       try {
         const data = await api("/api/create_sample", {
           description: $("simple-description").value,
@@ -986,6 +2072,8 @@
         $("key-scale").value = data.key_scale || "";
         $("time-signature").value = data.time_signature || "4";
         $("language").value = data.language || "en";
+        $("custom-instrumental").checked = $("instrumental").checked;
+        updateAdvancedSummaries();
         setMode("custom");
         setStatus("Composition ready.", "ok");
       } catch (err) {
@@ -996,8 +2084,8 @@
     }
 
     async function formatSample() {
-      setBusy(true);
-      setStatus("Formatting...");
+      setBusy(true, $("format-btn"));
+      setStatus("Formatting...", "busy");
       try {
         const data = await api("/api/format_sample", {
           caption: $("caption").value,
@@ -1010,6 +2098,7 @@
         $("bpm").value = data.bpm || $("bpm").value;
         $("key-scale").value = data.key_scale || $("key-scale").value;
         $("time-signature").value = data.time_signature || $("time-signature").value;
+        updateAdvancedSummaries();
         setStatus("Formatted.", "ok");
       } catch (err) {
         setStatus(err.message, "error");
@@ -1022,6 +2111,12 @@
       return Array.from($("complete-tracks").querySelectorAll("input:checked")).map((input) => input.value);
     }
 
+    function activeLmModelFor(mode) {
+      if (mode === "simple") return $("ace-lm-model").value;
+      if (mode === "album") return $("album-ace-lm-model").value;
+      return $("custom-ace-lm-model").value || $("ace-lm-model").value;
+    }
+
     function payloadForMode(mode) {
       const base = {
         task_type: taskForMode[mode],
@@ -1029,25 +2124,62 @@
         duration: Number($("duration").value),
         batch_size: Number($("batch-size").value),
         song_model: $("song-model").value,
-        ace_lm_model: $("ace-lm-model").value,
+        ace_lm_model: activeLmModelFor(mode),
         seed: $("seed").value,
         bpm: $("bpm").value,
         key_scale: $("key-scale").value,
         time_signature: $("time-signature").value,
         vocal_language: $("language").value,
+        global_caption: $("global-caption").value,
+        instrumental: mode === "simple" ? $("instrumental").checked : $("custom-instrumental").checked,
         inference_steps: Number($("steps").value),
         guidance_scale: Number($("guidance").value),
         shift: Number($("shift").value),
         infer_method: $("infer-method").value,
+        sampler_mode: $("sampler-mode").value,
+        velocity_norm_threshold: Number($("velocity-norm").value),
+        velocity_ema_factor: Number($("velocity-ema").value),
         use_adg: $("use-adg").checked,
         cfg_interval_start: Number($("cfg-start").value),
         cfg_interval_end: Number($("cfg-end").value),
         timesteps: $("timesteps").value,
         audio_format: $("audio-format").value,
+        mp3_bitrate: $("mp3-bitrate").value,
+        mp3_sample_rate: Number($("mp3-sample-rate").value),
         auto_score: $("auto-score").checked,
         auto_lrc: $("auto-lrc").checked,
         return_audio_codes: $("return-codes").checked,
         save_to_library: $("save-library").checked,
+        thinking: $("thinking").checked,
+        sample_mode: $("sample-mode").checked,
+        sample_query: $("sample-query").value,
+        use_format: $("use-format").checked,
+        lm_temperature: Number($("lm-temp").value),
+        lm_cfg_scale: Number($("lm-cfg").value),
+        lm_top_k: Number($("lm-top-k").value),
+        lm_top_p: Number($("lm-top-p").value),
+        lm_negative_prompt: $("lm-negative").value,
+        lm_backend: $("lm-backend").value,
+        use_cot_metas: $("use-cot-metas").checked,
+        use_cot_caption: $("use-cot-caption").checked,
+        use_cot_lyrics: $("use-cot-lyrics").checked,
+        use_cot_language: $("use-cot-language").checked,
+        allow_lm_batch: $("allow-lm-batch").checked,
+        lm_batch_chunk_size: Number($("lm-batch-chunk").value),
+        use_constrained_decoding: $("constrained-decoding").checked,
+        constrained_decoding_debug: $("constrained-debug").checked,
+        enable_normalization: $("enable-normalization").checked,
+        normalization_db: Number($("normalization-db").value),
+        fade_in_duration: Number($("fade-in").value),
+        fade_out_duration: Number($("fade-out").value),
+        latent_shift: Number($("latent-shift").value),
+        latent_rescale: Number($("latent-rescale").value),
+        cover_noise_strength: Number($("cover-noise-strength").value),
+        chunk_mask_mode: $("chunk-mask-mode").value,
+        repaint_latent_crossfade_frames: Number($("repaint-latent-crossfade").value),
+        repaint_wav_crossfade_sec: Number($("repaint-wav-crossfade").value),
+        repaint_mode: $("repaint-mode").value,
+        repaint_strength: Number($("repaint-strength").value),
         src_audio_id: state.sourceAudioId,
         src_result_id: state.sourceResultId,
         reference_audio_id: state.referenceAudioId,
@@ -1059,7 +2191,7 @@
         base.lyrics = $("instrumental").checked ? "[Instrumental]" : $("lyrics").value;
       } else if (mode === "custom") {
         base.caption = $("caption").value;
-        base.lyrics = $("lyrics").value;
+        base.lyrics = $("custom-instrumental").checked ? "[Instrumental]" : $("lyrics").value;
       } else if (mode === "cover") {
         base.caption = $("cover-caption").value;
         base.lyrics = $("lyrics").value;
@@ -1088,10 +2220,12 @@
 
     async function generate(mode = state.mode, override = null) {
       const payload = override || payloadForMode(mode);
-      setBusy(true);
-      setStatus("Generating...");
+      const btn = document.querySelector(`.mode-panel[data-mode="${mode}"] [data-generate]`);
+      setBusy(true, btn);
+      setStatus("Generating...", "busy");
       try {
         const data = await api("/api/generate_advanced", payload);
+        if (handleDownloadStarted(data)) return;
         if (!data.success) throw new Error(data.error || "Generation failed");
         renderResults(data);
         setStatus(`Generated ${data.audios.length} take(s).`, "ok");
@@ -1106,12 +2240,12 @@
     function renderResults(data) {
       const list = $("results-list");
       list.innerHTML = data.audios.map((audio) => `
-        <div class="result-card" data-result="${esc(data.result_id)}" data-audio="${esc(audio.id)}">
+        <div class="result-card new-result" data-result="${esc(data.result_id)}" data-audio="${esc(audio.id)}">
           <div class="result-title">${esc(audio.title)}</div>
-          <div class="meta">${esc(data.active_song_model)} · seed ${esc(audio.seed)}</div>
-          <audio controls src="${esc(audio.audio_url)}"></audio>
+          <div class="meta">${esc(data.active_song_model)} \u00b7 seed ${esc(audio.seed)}</div>
+          ${createPlayerHtml(audio.audio_url)}
           <div class="row">
-            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;" href="${esc(audio.download_url)}" download>Download</a>
+            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:34px;padding:0 13px;border-radius:6px;font-weight:650;font-size:inherit;border:1px solid var(--line);background:var(--panel-2);color:var(--text);transition:all var(--transition);" href="${esc(audio.download_url)}" download>Download</a>
             <button class="secondary" data-source>Source</button>
             <button class="secondary" data-reference>Reference</button>
             <button class="secondary" data-codes>Codes</button>
@@ -1125,6 +2259,7 @@
           </details>
         </div>
       `).join("");
+      initPlayers(list);
       list.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", setResultAsSource));
       list.querySelectorAll("[data-reference]").forEach((button) => button.addEventListener("click", setResultAsReference));
       list.querySelectorAll("[data-codes]").forEach((button) => button.addEventListener("click", fetchCodes));
@@ -1134,6 +2269,8 @@
         const retry = { ...state.lastPayload, seed: "-1" };
         generate(state.mode, retry);
       }));
+      list.scrollTo({ top: 0, behavior: "smooth" });
+      setTimeout(() => list.querySelectorAll(".new-result").forEach((c) => c.classList.remove("new-result")), 1500);
     }
 
     function resultCard(button) {
@@ -1180,6 +2317,52 @@
       updateCardDetails(card, { lrc: data });
     }
 
+    function songCardHtml(song, compact = false) {
+      const albumMeta = song.album_id
+        ? ` \u00b7 album ${esc(song.album_id)}${song.track_number ? ` \u00b7 track ${esc(song.track_number)}` : ""}`
+        : "";
+      return `
+        <div class="song-card">
+          <div class="result-title">${esc(song.title || "Untitled")}</div>
+          <div class="meta">${esc(song.task_type || "text2music")} \u00b7 ${esc(song.song_model || "")}${albumMeta} \u00b7 ${esc(song.created_at || "")}</div>
+          ${createPlayerHtml(song.audio_url)}
+          <div class="row">
+            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:34px;padding:0 13px;border-radius:6px;font-weight:650;font-size:inherit;border:1px solid var(--line);background:var(--panel-2);color:var(--text);transition:all var(--transition);" href="${esc(song.audio_url)}" download>Download</a>
+            ${compact ? "" : `<button class="danger" data-delete="${esc(song.id)}" data-title="${esc(song.title || "Untitled")}">Delete</button>`}
+          </div>
+          ${compact ? "" : `<details><summary>Metadata</summary><pre>${esc(JSON.stringify(song, null, 2))}</pre></details>`}
+        </div>
+      `;
+    }
+
+    async function loadAlbumSaves() {
+      const list = $("album-saved-list");
+      const note = $("album-saved-note");
+      if (!list || !note) return;
+      try {
+        const songs = await api("/api/community");
+        const albumSongs = songs.filter((song) => song.album_id);
+        if (!albumSongs.length) {
+          list.innerHTML = "";
+          note.textContent = "No saved album tracks yet.";
+          return;
+        }
+        let albumId = state.lastAlbumId;
+        if (!albumId || !albumSongs.some((song) => song.album_id === albumId)) {
+          albumId = albumSongs[0].album_id;
+        }
+        state.lastAlbumId = albumId;
+        const tracks = albumSongs
+          .filter((song) => song.album_id === albumId)
+          .sort((a, b) => Number(a.track_number || 0) - Number(b.track_number || 0));
+        note.textContent = `Album ${albumId}: ${tracks.length} saved track(s).`;
+        list.innerHTML = tracks.map((song) => songCardHtml(song, true)).join("");
+        initPlayers(list);
+      } catch (err) {
+        note.textContent = err.message;
+      }
+    }
+
     async function loadLibrary() {
       const songs = await api("/api/community");
       const list = $("library-list");
@@ -1187,41 +2370,189 @@
         list.innerHTML = `<div class="tiny">No saved songs.</div>`;
         return;
       }
-      list.innerHTML = songs.map((song) => `
-        <div class="song-card">
-          <div class="result-title">${esc(song.title || "Untitled")}</div>
-          <div class="meta">${esc(song.task_type || "text2music")} · ${esc(song.song_model || "")} · ${esc(song.created_at || "")}</div>
-          <audio controls src="${esc(song.audio_url)}"></audio>
-          <div class="row">
-            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;" href="${esc(song.audio_url)}" download>Download</a>
-            <button class="danger" data-delete="${esc(song.id)}">Delete</button>
-          </div>
-          <details><summary>Metadata</summary><pre>${esc(JSON.stringify(song, null, 2))}</pre></details>
-        </div>
-      `).join("");
+      list.innerHTML = songs.map((song) => songCardHtml(song)).join("");
+      initPlayers(list);
       list.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
+        const title = button.dataset.title || "this song";
+        const confirmed = await confirmAction("Delete song", `Delete "${title}"? This cannot be undone.`);
+        if (!confirmed) return;
         await api("/api/delete_song", { song_id: button.dataset.delete });
         loadLibrary();
+        loadAlbumSaves();
       }));
     }
 
+    function albumPayload(includeTracks = false) {
+      const payload = {
+        concept: $("album-concept").value,
+        num_tracks: Number($("album-tracks").value),
+        track_duration: Number($("album-duration").value),
+        ollama_model: $("album-ollama").value,
+        embedding_model: $("album-embed").value,
+        language: $("album-language").value,
+        song_model: $("song-model").value,
+        ace_lm_model: $("album-ace-lm-model").value,
+        song_model_strategy: $("album-model-strategy").value,
+        quality_target: $("album-quality").value,
+        structure_preset: $("album-structure").value,
+        tag_packs: selectedAlbumTagPacks(),
+        custom_tags: $("album-custom-tags").value,
+        negative_tags: $("album-negative-tags").value,
+        inspiration_queries: $("album-inspiration").value,
+        use_web_inspiration: $("album-web-inspiration").checked,
+        lyric_density: $("album-lyric-density").value,
+        bpm_strategy: $("album-bpm-strategy").value,
+        key_strategy: $("album-key-strategy").value,
+        rhyme_density: Number($("album-rhyme-density").value),
+        metaphor_density: Number($("album-metaphor-density").value),
+        hook_intensity: Number($("album-hook-intensity").value),
+        track_variants: Number($("album-variants").value),
+        seed: $("album-seed").value,
+        audio_format: $("album-audio-format").value,
+        inference_steps: Number($("album-inference-steps").value),
+        guidance_scale: Number($("album-guidance").value),
+        shift: Number($("album-shift").value),
+        auto_score: $("album-auto-score").checked,
+        auto_lrc: $("album-auto-lrc").checked,
+        return_audio_codes: $("album-audio-codes").checked,
+        save_to_library: $("album-save-library").checked
+      };
+      if (includeTracks && state.albumPlan.length) payload.tracks = albumPlanFromTable();
+      return payload;
+    }
+
+    function reportText(track) {
+      const report = track.tool_report || {};
+      const stats = report.lyric_stats || {};
+      const issues = []
+        .concat(report.cliches || [])
+        .concat(report.repeated_lines || [])
+        .concat(report.conflicts || []);
+      return [
+        `length ${report.length_score ?? "?"}`,
+        `${stats.word_count || 0} words`,
+        `${stats.line_count || 0} lines`,
+        issues.length ? `issues: ${issues.slice(0, 3).join("; ")}` : "clean"
+      ].join("\\n");
+    }
+
+    function albumCardSummary(track) {
+      const report = track.tool_report || {};
+      const stats = report.lyric_stats || {};
+      const issues = []
+        .concat(report.cliches || [])
+        .concat(report.repeated_lines || [])
+        .concat(report.conflicts || []);
+      return {
+        length: report.length_score ?? "?",
+        words: stats.word_count || 0,
+        issues: issues.length ? issues.slice(0, 2).join("; ") : "clean"
+      };
+    }
+
+    function renderAlbumCards() {
+      const cards = $("album-plan-cards");
+      if (!cards) return;
+      cards.hidden = !state.albumPlan.length;
+      cards.innerHTML = state.albumPlan.map((track, index) => {
+        const report = albumCardSummary(track);
+        const tags = String(track.tags || "").split(",").slice(0, 4).join(", ");
+        return `
+          <div class="album-plan-card">
+            <div class="row" style="justify-content:space-between;margin-bottom:6px;">
+              <span class="badge">#${esc(track.track_number || index + 1)}</span>
+              <span class="badge">${esc(track.song_model || "model auto")}</span>
+            </div>
+            <h3>${esc(track.title || `Track ${index + 1}`)}</h3>
+            <div class="meta">${esc(track.bpm || "auto")} BPM · ${esc(track.key_scale || "auto key")} · ${esc(track.time_signature || "4")}/4</div>
+            <p>${esc(tags || track.description || "No caption yet.")}</p>
+            <details>
+              <summary>
+                <span class="disclosure-title">
+                  <strong>Report</strong>
+                  <small>length ${esc(report.length)}, ${esc(report.words)} words, ${esc(report.issues)}</small>
+                </span>
+              </summary>
+              <div class="advanced-content"><pre>${esc(JSON.stringify(track.tool_report || {}, null, 2))}</pre></div>
+            </details>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderAlbumPlan(tracks) {
+      state.albumPlan = tracks || [];
+      const wrap = $("album-plan-wrap");
+      const editor = $("album-plan-editor");
+      const body = $("album-plan-body");
+      wrap.hidden = !state.albumPlan.length;
+      if (editor) editor.hidden = !state.albumPlan.length;
+      renderAlbumCards();
+      body.innerHTML = state.albumPlan.map((track, index) => `
+        <tr data-index="${index}">
+          <td>${esc(track.track_number || index + 1)}</td>
+          <td><input data-field="title" value="${esc(track.title || "")}" /></td>
+          <td><textarea data-field="tags">${esc(track.tags || "")}</textarea></td>
+          <td><textarea data-field="lyrics">${esc(track.lyrics || "")}</textarea></td>
+          <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(track.bpm || "")}" /></td>
+          <td><input data-field="key_scale" value="${esc(track.key_scale || "")}" /></td>
+          <td><input data-field="time_signature" value="${esc(track.time_signature || "4")}" /></td>
+          <td><input data-field="song_model" value="${esc(track.song_model || "")}" /></td>
+          <td><div class="album-report">${esc(reportText(track))}</div></td>
+        </tr>
+      `).join("");
+      body.querySelectorAll("[data-field]").forEach((input) => {
+        input.addEventListener("input", () => {
+          const row = input.closest("tr");
+          const item = state.albumPlan[Number(row.dataset.index)];
+          item[input.dataset.field] = input.value;
+          renderAlbumCards();
+        });
+      });
+    }
+
+    function albumPlanFromTable() {
+      document.querySelectorAll("#album-plan-body tr").forEach((row) => {
+        const item = state.albumPlan[Number(row.dataset.index)];
+        row.querySelectorAll("[data-field]").forEach((input) => {
+          item[input.dataset.field] = input.value;
+        });
+      });
+      return state.albumPlan;
+    }
+
+    async function planAlbum() {
+      setBusy(true, $("album-plan-btn"));
+      setStatus("Planning album...", "busy");
+      $("album-log").textContent = "Planning album with agent tools...";
+      try {
+        const data = await api("/api/album/plan", albumPayload(false));
+        $("album-log").textContent = (data.logs || []).join("\\n");
+        if (!data.success) throw new Error(data.error || "Album planning failed");
+        renderAlbumPlan(data.tracks || []);
+        setStatus("Album plan ready. Edit tracks, then generate.", "ok");
+      } catch (err) {
+        $("album-log").textContent += `\\n${err.message}`;
+        setStatus(err.message, "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+
     async function generateAlbum() {
-      setBusy(true);
+      setBusy(true, $("album-btn"));
+      setStatus("Generating album...", "busy");
       $("album-log").textContent = "Starting album generation...";
       try {
-        const data = await api("/api/generate_album", {
-          concept: $("album-concept").value,
-          num_tracks: Number($("album-tracks").value),
-          track_duration: Number($("album-duration").value),
-          ollama_model: $("album-ollama").value,
-          embedding_model: $("album-embed").value,
-          language: $("album-language").value,
-          song_model: $("song-model").value,
-          ace_lm_model: $("album-ace-lm-model").value
-        });
+        const data = await api("/api/generate_album", albumPayload(true));
         $("album-log").textContent = (data.logs || []).join("\\n");
+        if (handleDownloadStarted(data, "album")) return;
         if (!data.success) throw new Error(data.error || "Album failed");
+        if (data.album_id) state.lastAlbumId = data.album_id;
+        renderAlbumPlan(data.tracks || state.albumPlan);
+        if (data.audios?.length) renderResults({ ...data, active_song_model: data.tracks?.[0]?.active_song_model || $("song-model").value });
         loadLibrary();
+        loadAlbumSaves();
         setStatus("Album generated.", "ok");
       } catch (err) {
         $("album-log").textContent += `\\n${err.message}`;
@@ -1431,13 +2762,29 @@
     }
 
     function bindEvents() {
-      $("song-model").addEventListener("change", updateCapability);
-      $("ace-lm-model").addEventListener("change", () => updateLmAdvice("ace-lm-model", "lm-advice"));
-      $("album-ace-lm-model").addEventListener("change", () => updateLmAdvice("album-ace-lm-model", "album-lm-advice"));
+      $("song-model").addEventListener("change", () => {
+        updateCapability();
+        maybeDownloadSelectedSongModel();
+      });
+      $("ace-lm-model").addEventListener("change", () => {
+        updateLmAdvice("ace-lm-model", "lm-advice");
+        maybeDownloadSelectedLm("ace-lm-model");
+      });
+      $("custom-ace-lm-model").addEventListener("change", () => {
+        updateLmAdvice("custom-ace-lm-model", "custom-lm-advice");
+        maybeDownloadSelectedLm("custom-ace-lm-model");
+      });
+      $("album-ace-lm-model").addEventListener("change", () => {
+        updateLmAdvice("album-ace-lm-model", "album-lm-advice");
+        maybeDownloadSelectedLm("album-ace-lm-model");
+      });
+      $("album-model-strategy").addEventListener("change", updateCapability);
       $("compose-btn").addEventListener("click", compose);
       $("format-btn").addEventListener("click", formatSample);
       document.querySelectorAll("[data-generate]").forEach((button) => button.addEventListener("click", () => generate()));
+      $("album-plan-btn").addEventListener("click", planAlbum);
       $("album-btn").addEventListener("click", generateAlbum);
+      $("album-saved-refresh").addEventListener("click", loadAlbumSaves);
       $("refresh-ollama").addEventListener("click", loadOllama);
       $("library-refresh").addEventListener("click", loadLibrary);
       $("lora-load").addEventListener("click", () => lora("load"));
@@ -1454,6 +2801,15 @@
       $("lora-estimate").addEventListener("click", () => estimateLora().catch((err) => $("lora-log").textContent = err.message));
       $("lora-stop").addEventListener("click", () => stopLoraJob().catch((err) => $("lora-log").textContent = err.message));
       $("lora-train").addEventListener("click", trainLora);
+      document.querySelectorAll("input, select, textarea").forEach((input) => {
+        input.addEventListener("input", updateAdvancedSummaries);
+        input.addEventListener("change", updateAdvancedSummaries);
+      });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-model-download]");
+        if (!button) return;
+        startModelDownload(button.dataset.modelDownload, "manual-download-button");
+      });
       bindUploads();
     }
 

@@ -12,11 +12,13 @@ from studio_core import (
     model_profile,
     model_profiles_for_models,
     normalize_task_type,
+    official_fields_used,
     normalize_track_names,
     parse_timesteps,
     recommended_lm_model,
     recommended_song_model,
     safe_id,
+    studio_ui_schema,
     supported_tasks_for_model,
 )
 
@@ -78,6 +80,19 @@ class StudioCoreTest(unittest.TestCase):
     def test_timesteps(self):
         self.assertEqual(parse_timesteps("1, 0.5, 0"), [1.0, 0.5, 0.0])
         self.assertIsNone(parse_timesteps(""))
+
+    def test_official_field_detection(self):
+        self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": False}), [])
+        self.assertIn("thinking", official_fields_used({"thinking": True}))
+        self.assertIn("audio_format", official_fields_used({"audio_format": "mp3"}))
+        self.assertIn("lm_temperature", official_fields_used({"lm_temperature": 1.1}))
+
+    def test_ui_schema_includes_custom_controls(self):
+        schema = studio_ui_schema()
+        self.assertIn("bpm", schema["custom_sections"]["music_metadata"])
+        self.assertIn("thinking", schema["custom_sections"]["ace_step_lm"])
+        self.assertIn("mp3", schema["audio_formats"])
+        self.assertIn("thinking", schema["official_only_fields"])
 
     def test_safe_id(self):
         self.assertEqual(safe_id("abc123_DEF-9"), "abc123_DEF-9")
