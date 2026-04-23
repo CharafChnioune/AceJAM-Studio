@@ -2678,7 +2678,7 @@ class AceStepHandler:
             "audio_cover_strength": audio_cover_strength,
             "infer_method": infer_method,
             "infer_steps": infer_steps,
-            "diffusion_guidance_sale": guidance_scale,
+            "diffusion_guidance_scale": guidance_scale,
             "use_adg": use_adg,
             "cfg_interval_start": cfg_interval_start,
             "cfg_interval_end": cfg_interval_end,
