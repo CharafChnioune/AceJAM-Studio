@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import gc
+import hashlib
+import ast
 import json
 import os
 import re
@@ -13,6 +15,7 @@ import threading
 import time
 import traceback
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,15 +33,37 @@ DATA_DIR = BASE_DIR / "data"
 SONGS_DIR = DATA_DIR / "songs"
 UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
+ALBUMS_DIR = DATA_DIR / "albums"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
+PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
+APP_UI_VERSION = "acejam-docs-best-4b-2026-04-25"
+PAYLOAD_CONTRACT_VERSION = "2026-04-25"
+OLLAMA_DEFAULT_HOST = "http://localhost:11434"
+DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
+DEFAULT_ALBUM_EMBEDDING_MODEL = "nomic-embed-text:latest"
+ALBUM_EMBEDDING_FALLBACK_MODELS = [
+    DEFAULT_ALBUM_EMBEDDING_MODEL,
+    "mxbai-embed-large:latest",
+    "charaf/qwen3-vl-embedding-8b:latest",
+]
+ALBUM_JOB_KEEP_LIMIT = 50
+ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
+ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
+ACE_LM_BACKEND_DEFAULT = "pt"
+ACE_LM_PRIVATE_UPLOAD_CONFIRM = "PRIVATE_HF_UPLOAD"
+ACE_LM_CLEANUP_CONFIRM = "DELETE_ORIGINAL_ACE_LM_AFTER_SMOKE"
+ACE_LM_SMOKE_CONFIRM = "ACE_LM_SMOKE_PASSED"
+OBLITERATUS_REPO_URL = "https://github.com/elder-plinius/OBLITERATUS"
 
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+ACE_LM_ABLITERATED_DIR.mkdir(parents=True, exist_ok=True)
 SONGS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -54,6 +79,17 @@ from fastapi import File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from gradio import Server
 
+from local_llm import (
+    chat_completion as local_llm_chat_completion,
+    lmstudio_download_model,
+    lmstudio_download_status,
+    lmstudio_load_model,
+    lmstudio_model_catalog,
+    lmstudio_unload_model,
+    normalize_provider,
+    provider_label,
+    test_model as local_llm_test_model,
+)
 from acestep.constants import (
     BPM_MAX,
     BPM_MIN,
@@ -67,24 +103,50 @@ from acestep.constants import (
 from acestep.handler import AceStepHandler
 from lora_trainer import AceTrainingManager
 from local_composer import LocalComposer
-from songwriting_toolkit import MODEL_STRATEGIES, choose_song_model, normalize_album_tracks, split_terms, toolkit_payload
+from songwriting_toolkit import (
+    ALBUM_FINAL_MODEL,
+    ALBUM_MODEL_PORTFOLIO,
+    ALBUM_MODEL_PORTFOLIO_MODELS,
+    MODEL_STRATEGIES,
+    album_model_portfolio,
+    album_models_for_strategy,
+    choose_song_model,
+    derive_artist_name,
+    normalize_album_tracks,
+    normalize_artist_name,
+    parse_duration_seconds,
+    split_terms,
+    toolkit_payload,
+)
 from studio_core import (
     ACE_STEP_LM_MODELS,
     ALLOWED_AUDIO_EXTENSIONS,
+    DOCS_BEST_AUDIO_FORMAT,
+    DOCS_BEST_DEFAULT_LM_MODEL,
+    DOCS_BEST_LM_DEFAULTS,
+    DOCS_BEST_SOURCE_TASK_LM_SKIPS,
+    DOCS_BEST_TURBO_HIGH_CAP_STEPS,
     KNOWN_ACE_STEP_MODELS,
     MAX_BATCH_SIZE,
+    OFFICIAL_ACE_STEP_MANIFEST,
+    OFFICIAL_UNRELEASED_MODELS,
     build_task_instruction,
     clamp_float,
     clamp_int,
+    docs_best_model_settings,
+    docs_best_quality_policy,
     ensure_task_supported,
     get_param,
     lm_model_profiles_for_models,
     model_label,
     model_profiles_for_models,
+    normalize_generation_text_fields,
     normalize_audio_format,
     normalize_task_type,
     normalize_track_names,
+    needs_vocal_lyrics,
     official_fields_used,
+    official_manifest,
     ordered_models,
     parse_bool,
     parse_timesteps,
@@ -119,6 +181,568 @@ def _default_acestep_checkpoint() -> str:
 
 def _song_model_label(name: str) -> str:
     return model_label(name)
+
+
+def _app_ui_hash() -> str:
+    try:
+        return hashlib.sha256((BASE_DIR / "index.html").read_bytes()).hexdigest()[:16]
+    except Exception:
+        return "unknown"
+
+
+def _backend_code_hash() -> str:
+    digest = hashlib.sha256()
+    for filename in ["app.py", "studio_core.py", "official_runner.py", "songwriting_toolkit.py", "album_crew.py", "lora_trainer.py"]:
+        path = BASE_DIR / filename
+        if path.is_file():
+            digest.update(filename.encode("utf-8"))
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+ACE_LM_DISABLED_DEFAULTS: dict[str, Any] = {
+    "ace_lm_model": "none",
+    "lm_model": "none",
+    "lm_model_path": "none",
+    "thinking": False,
+    "sample_mode": False,
+    "sample_query": "",
+    "use_format": False,
+    "allow_lm_batch": False,
+    "lm_batch_chunk_size": 8,
+    "lm_backend": ACE_LM_BACKEND_DEFAULT,
+    "lm_cfg_scale": 2.0,
+    "lm_negative_prompt": "NO USER INPUT",
+    "lm_repetition_penalty": 1.0,
+    "lm_temperature": 0.85,
+    "lm_top_k": 0,
+    "lm_top_p": 0.9,
+    "use_cot_caption": True,
+    "use_cot_language": True,
+    "use_cot_lyrics": False,
+    "use_cot_metas": True,
+    "use_constrained_decoding": True,
+    "constrained_decoding_debug": False,
+}
+
+ACE_LM_QUALITY_DEFAULTS: dict[str, Any] = {
+    "ace_lm_model": DOCS_BEST_LM_DEFAULTS["ace_lm_model"],
+    "lm_model": DOCS_BEST_LM_DEFAULTS["ace_lm_model"],
+    "lm_model_path": DOCS_BEST_LM_DEFAULTS["ace_lm_model"],
+    "thinking": DOCS_BEST_LM_DEFAULTS["thinking"],
+    "sample_mode": False,
+    "sample_query": "",
+    "use_format": DOCS_BEST_LM_DEFAULTS["use_format"],
+    "allow_lm_batch": False,
+    "lm_batch_chunk_size": 8,
+    "lm_backend": DOCS_BEST_LM_DEFAULTS["lm_backend"],
+    "lm_cfg_scale": DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"],
+    "lm_negative_prompt": "NO USER INPUT",
+    "lm_repetition_penalty": 1.0,
+    "lm_temperature": DOCS_BEST_LM_DEFAULTS["lm_temperature"],
+    "lm_top_k": DOCS_BEST_LM_DEFAULTS["lm_top_k"],
+    "lm_top_p": DOCS_BEST_LM_DEFAULTS["lm_top_p"],
+    "use_cot_caption": DOCS_BEST_LM_DEFAULTS["use_cot_caption"],
+    "use_cot_language": DOCS_BEST_LM_DEFAULTS["use_cot_language"],
+    "use_cot_lyrics": DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"],
+    "use_cot_metas": DOCS_BEST_LM_DEFAULTS["use_cot_metas"],
+    "use_constrained_decoding": DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"],
+    "constrained_decoding_debug": False,
+}
+
+ACE_LM_TRIGGER_FIELDS = {
+    "allow_lm_batch",
+    "constrained_decoding_debug",
+    "lm_batch_chunk_size",
+    "lm_cfg_scale",
+    "lm_negative_prompt",
+    "lm_repetition_penalty",
+    "lm_temperature",
+    "lm_top_k",
+    "lm_top_p",
+    "sample_mode",
+    "sample_query",
+    "thinking",
+    "use_constrained_decoding",
+    "use_cot_caption",
+    "use_cot_language",
+    "use_cot_lyrics",
+    "use_cot_metas",
+    "use_format",
+}
+
+
+def _requested_ace_lm_model(payload: dict[str, Any]) -> str:
+    value = str(get_param(payload or {}, "ace_lm_model", "") or "").strip()
+    if value:
+        lowered = value.lower()
+        if lowered in {"off", "false", "0", "disabled"}:
+            return "none"
+        if lowered == "auto":
+            return ACE_LM_PREFERRED_MODEL
+        return value
+    return ACE_LM_PREFERRED_MODEL
+
+
+def _normalize_lm_backend(value: Any) -> str:
+    backend = str(value or ACE_LM_BACKEND_DEFAULT).strip().lower()
+    if backend == "auto":
+        return ACE_LM_BACKEND_DEFAULT
+    return backend if backend in {"pt", "vllm"} else ACE_LM_BACKEND_DEFAULT
+
+
+def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
+    def _disabled_mlx_backends(self: Any, *args: Any, **kwargs: Any) -> tuple[str, str]:
+        self.mlx_decoder = None
+        self.use_mlx_dit = False
+        self.mlx_dit_compiled = False
+        self.mlx_vae = None
+        self.use_mlx_vae = False
+        return "Disabled by AceJAM (PyTorch/MPS)", "Disabled by AceJAM (PyTorch/MPS)"
+
+    handler_cls._initialize_mlx_backends = _disabled_mlx_backends
+
+
+def _apply_studio_lm_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep local planner metadata, while allowing explicit ACE-Step LM native controls."""
+    cleaned = dict(payload or {})
+    provider = normalize_provider(cleaned.get("planner_lm_provider") or cleaned.get("planner_provider") or "ollama")
+    cleaned["planner_lm_provider"] = provider
+    if provider == "ollama":
+        cleaned.setdefault("planner_ollama_model", str(cleaned.get("planner_model") or cleaned.get("ollama_model") or "").strip())
+    cleaned.setdefault("planner_model", str(cleaned.get("planner_model") or cleaned.get("planner_ollama_model") or cleaned.get("ollama_model") or "").strip())
+    if "sample_query" not in cleaned:
+        sample_query = str(get_param(cleaned, "sample_query", "") or "").strip()
+        if sample_query:
+            cleaned["sample_query"] = sample_query
+    if "use_format" not in cleaned:
+        use_format = get_param(cleaned, "use_format", None)
+        if use_format not in [None, ""]:
+            cleaned["use_format"] = use_format
+    requested = _requested_ace_lm_model(cleaned)
+    if requested == "none" and _explicit_ace_lm_controls(cleaned):
+        requested = ACE_LM_PREFERRED_MODEL
+    if requested == "none":
+        cleaned["ace_lm_model"] = "none"
+        cleaned["lm_model"] = "none"
+        cleaned["lm_model_path"] = "none"
+        cleaned["use_official_lm"] = False
+        cleaned["lm_backend"] = _normalize_lm_backend(cleaned.get("lm_backend"))
+        return cleaned
+    cleaned["ace_lm_model"] = requested
+    cleaned["lm_model"] = requested
+    cleaned["lm_model_path"] = requested
+    cleaned["lm_backend"] = _normalize_lm_backend(cleaned.get("lm_backend"))
+    cleaned["use_official_lm"] = True
+    return cleaned
+
+
+def _explicit_ace_lm_controls(payload: dict[str, Any]) -> list[str]:
+    used: list[str] = []
+    for field in sorted(ACE_LM_TRIGGER_FIELDS):
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if field in ACE_LM_DISABLED_DEFAULTS:
+            if not _studio_default_value(value, ACE_LM_DISABLED_DEFAULTS[field]):
+                used.append(field)
+        elif str(value or "").strip():
+            used.append(field)
+    return used
+
+
+def _quality_lm_controls_enabled(payload: dict[str, Any], task_type: str) -> bool:
+    if _requested_ace_lm_model(payload) == "none":
+        return False
+    if task_type in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
+        return False
+    return any(
+        [
+            parse_bool(payload.get("thinking"), ACE_LM_QUALITY_DEFAULTS["thinking"]),
+            parse_bool(get_param(payload, "use_format"), ACE_LM_QUALITY_DEFAULTS["use_format"]),
+            parse_bool(payload.get("use_cot_lyrics"), ACE_LM_QUALITY_DEFAULTS["use_cot_lyrics"]),
+            parse_bool(payload.get("sample_mode"), False),
+            bool(str(get_param(payload, "sample_query", "") or "").strip()),
+        ]
+    )
+
+
+def _active_official_fields(payload: dict[str, Any], task_type: str, existing: list[str]) -> list[str]:
+    fields = list(existing)
+    if _quality_lm_controls_enabled(payload, task_type):
+        for field in ["thinking", "use_format", "use_cot_lyrics", "use_cot_caption", "use_cot_language", "use_cot_metas"]:
+            if parse_bool(payload.get(field), ACE_LM_QUALITY_DEFAULTS.get(field, True)) and field not in fields:
+                fields.append(field)
+    return sorted(fields)
+
+
+def _studio_default_value(value: Any, default: Any) -> bool:
+    if isinstance(default, bool):
+        return parse_bool(value, default) == default
+    if isinstance(default, int) and not isinstance(default, bool):
+        return clamp_int(value, default, -1000000, 1000000) == default
+    if isinstance(default, float):
+        return abs(clamp_float(value, default, -1000000.0, 1000000.0) - default) < 1e-9
+    return str(value or "").strip() == str(default or "").strip()
+
+
+def _disable_studio_ace_lm(payload: dict[str, Any]) -> dict[str, Any]:
+    """Explicit opt-out path for users who disable official ACE-Step LM controls."""
+    cleaned = dict(payload or {})
+    cleaned["planner_lm_provider"] = normalize_provider(cleaned.get("planner_lm_provider") or cleaned.get("planner_provider") or "ollama")
+    cleaned["ace_lm_model"] = "none"
+    cleaned["lm_model"] = "none"
+    cleaned["lm_model_path"] = "none"
+    cleaned["use_official_lm"] = False
+    for field, default in ACE_LM_DISABLED_DEFAULTS.items():
+        if field in cleaned:
+            cleaned[field] = default
+    return cleaned
+
+
+def _quality_default_steps(song_model: str) -> int:
+    return int(docs_best_model_settings(song_model)["inference_steps"])
+
+
+PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
+    "simple": {"label": "Simple", "file": "promptsimple.md", "description": "Fast prompt-to-song fields."},
+    "custom": {"label": "Custom", "file": "promptcustom.md", "description": "Full Custom Studio song payload."},
+    "song": {"label": "Song", "file": "promptsong.md", "description": "Backwards-compatible full song prompt."},
+    "cover": {"label": "Cover / Remix", "file": "promptcover.md", "description": "Cover or remix direction from source audio notes."},
+    "repaint": {"label": "Repaint", "file": "promptrepaint.md", "description": "Replace a section of an existing audio result."},
+    "extract": {"label": "Extract", "file": "promptextract.md", "description": "Stem extraction plan."},
+    "lego": {"label": "Lego", "file": "promptlego.md", "description": "Stem/layer reconstruction plan."},
+    "complete": {"label": "Complete", "file": "promptcomplete.md", "description": "Finish an incomplete arrangement."},
+    "album": {"label": "Album", "file": "promptalbum.md", "description": "Production-team album plan."},
+    "news": {"label": "News to Song", "file": "promptnieuws.md", "description": "Turn news into a safe, postable song."},
+    "improve": {"label": "Improve Lyrics", "file": "promptverbeter.md", "description": "Improve lyrics and optionally create AceJAM fields."},
+    "trainer": {"label": "Trainer / LoRA", "file": "prompttrainer.md", "description": "Dataset labels and training metadata."},
+}
+
+PROMPT_ASSISTANT_ALIASES = {
+    "lora": "trainer",
+    "trainer_lora": "trainer",
+    "library": "custom",
+    "news_to_song": "news",
+    "lyrics": "improve",
+    "settings": "custom",
+}
+
+
+def _prompt_assistant_mode(value: str) -> str:
+    mode = str(value or "custom").strip().lower().replace("-", "_")
+    mode = PROMPT_ASSISTANT_ALIASES.get(mode, mode)
+    if mode not in PROMPT_ASSISTANT_MODES:
+        raise ValueError(f"Unknown prompt assistant mode: {value}")
+    return mode
+
+
+def _prompt_assistant_path(mode: str) -> Path:
+    info = PROMPT_ASSISTANT_MODES[_prompt_assistant_mode(mode)]
+    path = (BASE_DIR.parent / info["file"]).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Prompt file not found: {info['file']}")
+    if BASE_DIR.parent.resolve() not in path.parents:
+        raise ValueError("Prompt file path escaped project root")
+    return path
+
+
+def _prompt_assistant_system_prompt(mode: str) -> str:
+    text = _prompt_assistant_path(mode).read_text(encoding="utf-8")
+    match = re.search(r"## System Prompt\s*```(?:text)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"```(?:text)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
+
+
+def _balanced_json_object(raw: str, start: int = 0) -> dict[str, Any]:
+    text = str(raw or "")
+    first = text.find("{", max(0, start))
+    if first < 0:
+        raise ValueError("No JSON object found")
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(first, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return _loads_json_lenient_object(text[first : index + 1])
+    raise ValueError("JSON object was not closed")
+
+
+def _loads_json_lenient_object(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        repaired: list[str] = []
+        in_string = False
+        escape = False
+        for char in text:
+            if in_string:
+                if escape:
+                    repaired.append(char)
+                    escape = False
+                    continue
+                if char == "\\":
+                    repaired.append(char)
+                    escape = True
+                    continue
+                if char == '"':
+                    repaired.append(char)
+                    in_string = False
+                    continue
+                if char == "\n":
+                    repaired.append("\\n")
+                    continue
+                if char == "\r":
+                    continue
+                if char == "\t":
+                    repaired.append("\\t")
+                    continue
+                repaired.append(char)
+                continue
+            repaired.append(char)
+            if char == '"':
+                in_string = True
+        payload = json.loads("".join(repaired))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON payload is not an object")
+    return payload
+
+
+def _extract_prompt_assistant_json(raw: str, mode: str) -> tuple[dict[str, Any], str]:
+    text = re.sub(r"<think>.*?</think>", "", str(raw or ""), flags=re.DOTALL).strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        return _loads_json_lenient_object(text), ""
+    except Exception:
+        pass
+    markers = [
+        "ACEJAM_PAYLOAD_JSON",
+        "ACEJAM_ALBUM_SETTINGS_JSON",
+        "ACEJAM_DATASET_JSON",
+    ]
+    for marker in markers:
+        pos = text.find(marker)
+        if pos >= 0:
+            payload = _balanced_json_object(text, pos + len(marker))
+            return payload, text[:pos].strip()
+    return _balanced_json_object(text), text
+
+
+def _prompt_mode_task_type(mode: str) -> str:
+    if mode in {"cover", "repaint", "extract", "lego", "complete"}:
+        return mode
+    return "text2music"
+
+
+def _prompt_mode_default_model(mode: str) -> str:
+    return "acestep-v15-xl-base" if mode in {"extract", "lego", "complete"} else "acestep-v15-xl-sft"
+
+
+def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    normalized = dict(payload or {})
+    warnings: list[str] = []
+    mode = _prompt_assistant_mode(mode)
+    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or normalized.get("planner_lm_provider") or "ollama")
+    planner_model = str(
+        body.get("planner_model")
+        or body.get("planner_ollama_model")
+        or body.get("ollama_model")
+        or normalized.get("planner_model")
+        or normalized.get("planner_ollama_model")
+        or ""
+    ).strip()
+    normalized["ace_lm_model"] = _requested_ace_lm_model(normalized)
+    normalized["planner_lm_provider"] = planner_provider
+    normalized["planner_model"] = planner_model
+    if planner_provider == "ollama":
+        normalized["planner_ollama_model"] = planner_model
+    else:
+        normalized.pop("planner_ollama_model", None)
+    if normalized["ace_lm_model"] != "none":
+        if parse_bool(normalized.get("auto_score"), False) or parse_bool(normalized.get("auto_lrc"), False):
+            warnings.append("Auto score/LRC were turned off because official ACE-Step LM generation cannot use the in-process tensor cache.")
+        normalized["auto_score"] = False
+        normalized["auto_lrc"] = False
+
+    if mode == "album":
+        normalized.setdefault("song_model_strategy", "all_models_album")
+        normalized.setdefault("final_song_model", "all_models_album")
+        album_defaults = docs_best_model_settings(ALBUM_FINAL_MODEL)
+        normalized["audio_format"] = album_defaults["audio_format"]
+        normalized["inference_steps"] = album_defaults["inference_steps"]
+        normalized["guidance_scale"] = album_defaults["guidance_scale"]
+        normalized["shift"] = album_defaults["shift"]
+        normalized["infer_method"] = album_defaults["infer_method"]
+        normalized["sampler_mode"] = album_defaults["sampler_mode"]
+        for field, value in DOCS_BEST_LM_DEFAULTS.items():
+            if field != "ace_lm_model":
+                normalized[field] = value
+        normalized.setdefault("track_variants", 1)
+        normalized.setdefault("save_to_library", True)
+        tracks = normalized.get("tracks")
+        if not isinstance(tracks, list):
+            normalized["tracks"] = []
+            warnings.append("Album prompt did not return tracks; use Plan Album or ask again with more detail.")
+        for track in normalized.get("tracks") or []:
+            if isinstance(track, dict):
+                track.setdefault(
+                    "artist_name",
+                    derive_artist_name(
+                        track.get("title") or "",
+                        " ".join(str(item or "") for item in [normalized.get("concept"), track.get("description")]),
+                        track.get("tags") or track.get("caption") or "",
+                        int(track.get("track_number") or 1) - 1,
+                    ),
+                )
+                track["ace_lm_model"] = normalized["ace_lm_model"]
+                track["thinking"] = DOCS_BEST_LM_DEFAULTS["thinking"]
+                track["use_format"] = DOCS_BEST_LM_DEFAULTS["use_format"]
+                track["use_cot_lyrics"] = DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]
+                track["audio_format"] = normalized["audio_format"]
+                track["inference_steps"] = normalized["inference_steps"]
+                track["guidance_scale"] = normalized["guidance_scale"]
+                track["shift"] = normalized["shift"]
+                track["sampler_mode"] = normalized["sampler_mode"]
+                track["auto_score"] = False
+                track["auto_lrc"] = False
+        return normalized, warnings
+
+    if mode == "trainer":
+        normalized.setdefault("adapter_type", "lora")
+        normalized.setdefault("generation_reference_defaults", {})
+        if isinstance(normalized["generation_reference_defaults"], dict):
+            normalized["generation_reference_defaults"].setdefault("ace_lm_model", DOCS_BEST_DEFAULT_LM_MODEL)
+            normalized["generation_reference_defaults"].setdefault("planner_lm_provider", planner_provider)
+            normalized["generation_reference_defaults"].setdefault("planner_model", planner_model)
+            if planner_provider == "ollama":
+                normalized["generation_reference_defaults"].setdefault("planner_ollama_model", planner_model)
+            normalized["generation_reference_defaults"].setdefault("thinking", DOCS_BEST_LM_DEFAULTS["thinking"])
+            normalized["generation_reference_defaults"].setdefault("use_format", DOCS_BEST_LM_DEFAULTS["use_format"])
+            normalized["generation_reference_defaults"].setdefault("use_cot_lyrics", DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"])
+        return normalized, warnings
+
+    normalized.setdefault("task_type", _prompt_mode_task_type(mode))
+    normalized.setdefault("song_model", _prompt_mode_default_model(mode))
+    normalized.setdefault("title", "Untitled")
+    normalized["artist_name"] = normalize_artist_name(
+        normalized.get("artist_name") or normalized.get("artist"),
+        derive_artist_name(
+            normalized.get("title") or "",
+            normalized.get("description") or normalized.get("caption") or "",
+            normalized.get("tags") or "",
+        ),
+    )
+    tags = normalized.get("tags")
+    if isinstance(tags, list):
+        tags_text = ", ".join(str(item).strip() for item in tags if str(item).strip())
+        normalized["tags"] = tags_text
+    else:
+        tags_text = str(tags or "").strip()
+    caption = str(normalized.get("caption") or "").strip()
+    if not caption and tags_text:
+        normalized["caption"] = tags_text
+    if not tags_text and caption:
+        normalized["tags"] = caption
+    normalized.setdefault(
+        "negative_tags",
+        "muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, copied artist style",
+    )
+    instrumental = parse_bool(normalized.get("instrumental"), False)
+    normalized["instrumental"] = instrumental
+    if instrumental and not str(normalized.get("lyrics") or "").strip():
+        normalized["lyrics"] = "[Instrumental]"
+    normalized.setdefault("lyrics", "")
+    normalized.setdefault("duration", 180)
+    normalized.setdefault("bpm", 120)
+    normalized.setdefault("key_scale", "C major")
+    normalized.setdefault("time_signature", "4")
+    normalized.setdefault("vocal_language", "en")
+    normalized.setdefault("seed", "-1")
+    normalized.setdefault("use_random_seed", True)
+    mode_defaults = docs_best_model_settings(str(normalized.get("song_model") or ""))
+    normalized["inference_steps"] = mode_defaults["inference_steps"]
+    normalized["guidance_scale"] = mode_defaults["guidance_scale"]
+    normalized["shift"] = mode_defaults["shift"]
+    normalized["infer_method"] = mode_defaults["infer_method"]
+    normalized["sampler_mode"] = mode_defaults["sampler_mode"]
+    normalized["audio_format"] = mode_defaults["audio_format"]
+    for field, value in DOCS_BEST_LM_DEFAULTS.items():
+        if field != "ace_lm_model":
+            normalized[field] = value
+    normalized.setdefault("save_to_library", True)
+    if mode in {"cover", "repaint", "extract", "lego", "complete"} and not (
+        normalized.get("src_audio_id") or normalized.get("src_result_id") or normalized.get("audio_code_string")
+    ):
+        warnings.append(f"{mode} needs source audio selected/uploaded in AceJAM before generation.")
+    return normalized, warnings
+
+
+def _run_prompt_assistant_local(
+    system_prompt: str,
+    user_prompt: str,
+    planner_provider: str,
+    planner_model: str,
+    current_payload: dict[str, Any],
+) -> str:
+    provider = normalize_provider(planner_provider)
+    model = str(planner_model or "").strip()
+    if provider == "ollama":
+        if not model:
+            listed = json.loads(ollama_models())
+            models = listed.get("chat_models") or listed.get("models") or []
+            if models:
+                first = models[0]
+                model = str(first.get("name") or first.get("model") if isinstance(first, dict) else first).strip()
+        if not model:
+            raise RuntimeError("No Ollama model selected or available.")
+        _ensure_ollama_model_or_start_pull(model, context="AI Fill", kind="chat")
+    else:
+        model = _resolve_local_llm_model_selection(provider, model, "chat", "AI Fill")
+    user_content = (
+        f"USER REQUEST:\n{str(user_prompt or '').strip()}\n\n"
+        "CURRENT ACEJAM UI PAYLOAD JSON:\n"
+        f"{json.dumps(_jsonable(current_payload or {}), ensure_ascii=False, indent=2)}\n\n"
+        "Return the exact sections requested by the system prompt. Keep JSON valid."
+    )
+    try:
+        return local_llm_chat_completion(
+            provider,
+            model,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            options={"temperature": 0.55, "top_p": 0.92, "top_k": 40},
+        )
+    except Exception as exc:
+        if provider == "ollama" and _ollama_error_is_missing_model(exc):
+            job = _start_ollama_pull(model, reason="AI Fill", kind="chat")
+            raise OllamaPullStarted(model, job, f"{model} is missing; pull started for AI Fill.") from exc
+        raise
+
+
+def _run_prompt_assistant_ollama(system_prompt: str, user_prompt: str, ollama_model: str, current_payload: dict[str, Any]) -> str:
+    return _run_prompt_assistant_local(system_prompt, user_prompt, "ollama", ollama_model, current_payload)
 
 
 def _download_job_active(model_name: str) -> bool:
@@ -238,6 +862,7 @@ print(f"[startup] Model storage: {STORAGE_PATH}")
 ACE_STEP_CHECKPOINT = _default_acestep_checkpoint()
 print(f"[startup] ACE-Step checkpoint: {ACE_STEP_CHECKPOINT}")
 
+_disable_acestep_mlx_backends(AceStepHandler)
 handler = AceStepHandler(persistent_storage_path=STORAGE_PATH)
 handler_lock = threading.Lock()
 ACTIVE_ACE_STEP_MODEL = ACE_STEP_CHECKPOINT
@@ -326,7 +951,10 @@ def _ensure_song_model(requested: str | None) -> str:
     raise RuntimeError(f"failed to initialize ACE-Step model: {target_model}")
 
 
-status, ready = _initialize_acestep_handler(ACE_STEP_CHECKPOINT)
+if os.environ.get("ACEJAM_SKIP_MODEL_INIT_FOR_TESTS", "").strip() == "1":
+    status, ready = ("Skipped ACE-Step model initialization for tests.", True)
+else:
+    status, ready = _initialize_acestep_handler(ACE_STEP_CHECKPOINT)
 print(f"[startup] Handler ready={ready} status={status}")
 
 composer = LocalComposer()
@@ -389,16 +1017,126 @@ def _result_public_url(result_id: str, filename: str) -> str:
     return f"/media/results/{result_id}/{filename}"
 
 
+def _model_slug(model_name: str) -> str:
+    value = re.sub(r"^acestep-v15-", "", str(model_name or "model")).replace("_", "-")
+    return safe_filename(value, "model")
+
+
+def _artist_name_from_payload(payload: dict[str, Any], *, title: str = "", index: int = 0) -> str:
+    album_meta = payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {}
+    raw = payload.get("artist_name") or payload.get("artist") or album_meta.get("artist_name") or album_meta.get("artist")
+    fallback = derive_artist_name(
+        title or payload.get("title") or album_meta.get("title") or "",
+        " ".join(
+            str(item or "")
+            for item in [
+                payload.get("description"),
+                payload.get("caption"),
+                payload.get("tags"),
+                payload.get("global_caption"),
+                album_meta.get("album_concept"),
+            ]
+        ),
+        " ".join(str(item or "") for item in [payload.get("tag_list"), album_meta.get("tag_list")]),
+        index,
+    )
+    return normalize_artist_name(raw, fallback)
+
+
+def _artist_title_display(artist_name: str, title: str) -> str:
+    artist = normalize_artist_name(artist_name, "AceJAM")
+    clean_title = str(title or "Untitled").strip() or "Untitled"
+    return f"{artist} - {clean_title}"
+
+
+def _numbered_audio_filename(
+    title: str,
+    model_name: str,
+    audio_format: str,
+    *,
+    artist_name: str = "",
+    track_number: Any = None,
+    variant: Any = None,
+) -> str:
+    try:
+        track_no = int(track_number or 0)
+    except (TypeError, ValueError):
+        track_no = 0
+    try:
+        variant_no = int(variant or 1)
+    except (TypeError, ValueError):
+        variant_no = 1
+    prefix = f"{track_no:02d}-" if track_no > 0 else ""
+    artist_slug = safe_filename(normalize_artist_name(artist_name, "AceJAM"), "AceJAM")[:48]
+    title_slug = safe_filename(str(title or "track"), "track")
+    model_slug = _model_slug(model_name)
+    ext = normalize_audio_format(audio_format or "wav")
+    stem = f"{prefix}{artist_slug}--{title_slug}--{model_slug}--v{max(1, variant_no)}"
+    if len(stem) > 180:
+        title_slug = title_slug[: max(20, 180 - len(prefix) - len(artist_slug) - len(model_slug) - 10)].strip("-._") or "track"
+        stem = f"{prefix}{artist_slug}--{title_slug}--{model_slug}--v{max(1, variant_no)}"
+    return f"{stem}.{ext}"
+
+
+def _preferred_audio_filename(params: dict[str, Any], model_name: str, index: int) -> str:
+    album_meta = params.get("album_metadata") if isinstance(params.get("album_metadata"), dict) else {}
+    if album_meta:
+        raw_variant = album_meta.get("track_variant")
+        try:
+            variant = int(raw_variant)
+        except (TypeError, ValueError):
+            variant = index + 1
+        return _numbered_audio_filename(
+            params.get("title") or "track",
+            album_meta.get("album_model") or model_name,
+            params.get("audio_format") or "wav",
+            artist_name=params.get("artist_name") or album_meta.get("artist_name") or "",
+            track_number=album_meta.get("track_number"),
+            variant=variant,
+        )
+    if params.get("preferred_filename"):
+        stem = safe_filename(str(params.get("preferred_filename")), f"take-{index + 1}")
+        return f"{stem}.{normalize_audio_format(params.get('audio_format') or 'wav')}"
+    return _numbered_audio_filename(
+        params.get("title") or "track",
+        model_name,
+        params.get("audio_format") or "wav",
+        artist_name=params.get("artist_name") or "",
+        variant=index + 1,
+    )
+
+
 def _save_song_entry(meta: dict[str, Any], audio_source: Path) -> dict[str, Any]:
     song_id = meta.get("id") or uuid.uuid4().hex[:12]
     song_dir = SONGS_DIR / song_id
     song_dir.mkdir(parents=True, exist_ok=True)
 
     extension = audio_source.suffix or ".wav"
-    audio_file = f"{song_id}{extension}"
+    preferred_file = str(meta.get("preferred_audio_file") or "").strip()
+    artist_name = normalize_artist_name(
+        meta.get("artist_name") or meta.get("artist"),
+        derive_artist_name(meta.get("title") or "", meta.get("description") or "", meta.get("tags") or ""),
+    )
+    if preferred_file:
+        preferred_path = Path(preferred_file)
+        if preferred_path.suffix:
+            audio_file = f"{safe_filename(preferred_path.stem, song_id)}{preferred_path.suffix}"
+        else:
+            audio_file = f"{safe_filename(preferred_file, song_id)}{extension}"
+    else:
+        audio_file = _numbered_audio_filename(
+            str(meta.get("title") or "track"),
+            str(meta.get("song_model") or meta.get("album_model") or "model"),
+            extension.lstrip(".") or "wav",
+            artist_name=artist_name,
+            track_number=meta.get("track_number"),
+            variant=meta.get("track_variant") if str(meta.get("track_variant") or "").isdigit() else 1,
+        )
     shutil.copyfile(audio_source, song_dir / audio_file)
 
     saved_meta = dict(meta)
+    saved_meta.pop("preferred_audio_file", None)
+    saved_meta["artist_name"] = artist_name
     saved_meta.update(
         {
             "id": song_id,
@@ -423,24 +1161,26 @@ def _run_inference(
     bpm: int | None = None,
     key_scale: str = "",
     time_signature: str = "",
-    guidance_scale: float = 7.0,
+    guidance_scale: float | None = None,
 ) -> tuple[str, str]:
     _ensure_training_idle()
     use_random_seed = seed < 0
     with handler_lock:
         active_song_model = _ensure_song_model(song_model)
         is_turbo = "turbo" in active_song_model
-        is_sft = "sft" in active_song_model and not is_turbo
-        is_base = "base" in active_song_model and not is_turbo
-        model_shift = 3.0 if is_turbo else 1.0
-        if infer_steps <= 8 and not is_turbo:
-            infer_steps = 50 if is_sft else (32 if is_base else infer_steps)
+        model_defaults = docs_best_model_settings(active_song_model)
+        model_shift = float(model_defaults["shift"])
+        if infer_steps <= 0:
+            infer_steps = int(model_defaults["inference_steps"])
+        if is_turbo:
+            infer_steps = min(infer_steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
+        effective_guidance = float(guidance_scale if guidance_scale and guidance_scale > 0 else model_defaults["guidance_scale"])
         result = handler.generate_music(
             captions=prompt,
             lyrics=lyrics,
             audio_duration=audio_duration,
             inference_steps=infer_steps,
-            guidance_scale=guidance_scale,
+            guidance_scale=effective_guidance,
             bpm=bpm,
             key_scale=key_scale,
             time_signature=time_signature,
@@ -467,6 +1207,8 @@ def _song_public_url(song_id: str, filename: str) -> str:
 
 def _decorate_song(meta: dict) -> dict:
     entry = dict(meta)
+    if not entry.get("artist_name"):
+        entry["artist_name"] = derive_artist_name(entry.get("title") or "", entry.get("description") or "", entry.get("tags") or "")
     audio_file = entry.get("audio_file")
     if audio_file:
         entry["audio_url"] = _song_public_url(entry["id"], audio_file)
@@ -501,6 +1243,12 @@ _result_extra_cache: dict[str, dict[str, Any]] = {}
 _model_download_jobs: dict[str, dict[str, Any]] = {}
 _model_download_lock = threading.Lock()
 _model_download_runner_lock = threading.Lock()
+_ollama_pull_jobs: dict[str, dict[str, Any]] = {}
+_ollama_pull_lock = threading.Lock()
+_album_jobs: dict[str, dict[str, Any]] = {}
+_album_jobs_lock = threading.Lock()
+_api_generation_tasks: dict[str, dict[str, Any]] = {}
+_api_generation_tasks_lock = threading.Lock()
 
 
 class ModelDownloadStarted(RuntimeError):
@@ -511,8 +1259,223 @@ class ModelDownloadStarted(RuntimeError):
         self.message = message
 
 
+class OllamaPullStarted(RuntimeError):
+    def __init__(self, model_name: str, job: dict[str, Any], message: str):
+        super().__init__(message)
+        self.model_name = model_name
+        self.job = job
+        self.message = message
+
+
 def _downloadable_model_names() -> set[str]:
-    return set(KNOWN_ACE_STEP_MODELS) | {name for name in ACE_STEP_LM_MODELS if name not in {"auto", "none"}}
+    return (set(KNOWN_ACE_STEP_MODELS) - set(OFFICIAL_UNRELEASED_MODELS)) | {
+        name for name in ACE_STEP_LM_MODELS if name not in {"auto", "none"}
+    }
+
+
+def _ace_lm_checkpoint_dir(model_name: str) -> Path:
+    return MODEL_CACHE_DIR / "checkpoints" / model_name
+
+
+def _folder_size(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return total
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _ace_lm_abliterated_candidates() -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for root in [MODEL_CACHE_DIR / "checkpoints", ACE_LM_ABLITERATED_DIR]:
+        if not root.exists():
+            continue
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if "acestep-5hz-lm" not in name.lower() or "abliter" not in name.lower():
+                continue
+            candidates.append(
+                {
+                    "name": name,
+                    "path": str(child),
+                    "ready": _checkpoint_dir_ready(child),
+                    "runner_usable": child.parent == (MODEL_CACHE_DIR / "checkpoints"),
+                    "size_bytes": _folder_size(child),
+                    "smoke_passed": (child / "acejam_smoke_passed.json").is_file(),
+                    "metadata_file": str(child / "acejam_abliteration.json"),
+                }
+            )
+    return sorted(candidates, key=lambda item: (not item["ready"], item["name"]))
+
+
+def _ace_lm_cleanup_preview() -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    for model_name in ACE_STEP_LM_MODELS:
+        if model_name in {"auto", "none"}:
+            continue
+        path = _ace_lm_checkpoint_dir(model_name)
+        if path.is_dir():
+            candidates.append(
+                {
+                    "model": model_name,
+                    "path": str(path),
+                    "size_bytes": _folder_size(path),
+                    "downloadable": model_name in _downloadable_model_names(),
+                }
+            )
+    abliterated = _ace_lm_abliterated_candidates()
+    preferred_ready = any(
+        item["ready"] and item["runner_usable"] and item["smoke_passed"] and ACE_LM_PREFERRED_MODEL.lower() in item["name"].lower()
+        for item in abliterated
+    )
+    return {
+        "safe_to_cleanup": preferred_ready,
+        "requires_confirm": ACE_LM_CLEANUP_CONFIRM,
+        "reason": "Cleanup is locked until an abliterated 4B ACE-Step LM has a passing local smoke marker.",
+        "delete_candidates": candidates,
+        "keep_candidates": abliterated,
+        "total_delete_bytes": sum(int(item["size_bytes"]) for item in candidates),
+    }
+
+
+def _ace_lm_status_payload() -> dict[str, Any]:
+    installed_lms = sorted(_installed_lm_models())
+    original_lms = [name for name in ACE_STEP_LM_MODELS if name not in {"auto", "none"}]
+    abliterated = _ace_lm_abliterated_candidates()
+    selected = next(
+        (
+            item["name"]
+            for item in abliterated
+            if item["ready"] and item["runner_usable"] and ACE_LM_PREFERRED_MODEL.lower() in item["name"].lower()
+        ),
+        "",
+    )
+    return {
+        "policy": "hybrid",
+        "planner": "ollama",
+        "ace_lm_usage": ["sample_mode", "format_sample", "understand_music", "CoT/metas", "official LM controls"],
+        "preferred_model": ACE_LM_PREFERRED_MODEL,
+        "recommended_lm_model": recommended_lm_model(set(installed_lms)),
+        "official_models": [
+            {
+                "model": name,
+                "installed": name in installed_lms,
+                "downloadable": name in _downloadable_model_names(),
+                "path": str(_ace_lm_checkpoint_dir(name)),
+            }
+            for name in original_lms
+        ],
+        "abliterated_models": abliterated,
+        "selected_abliterated_model": selected,
+        "obliteratus": {
+            "repo": OBLITERATUS_REPO_URL,
+            "installed": shutil.which("obliteratus") is not None,
+            "license": "AGPL-3.0",
+            "local_only_until_uploaded_private": True,
+        },
+        "upload": {
+            "policy": "private_gated",
+            "requires_confirm": ACE_LM_PRIVATE_UPLOAD_CONFIRM,
+            "hf_token_present": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")),
+        },
+        "cleanup_preview": _ace_lm_cleanup_preview(),
+        "workflow": [
+            "Install/download official ACE-Step 5Hz LM 4B",
+            "Run OBLITERATUS locally outside git-tracked files",
+            "Copy passing abliterated model into app/model_cache/checkpoints/acestep-5Hz-lm-4B-abliterated",
+            "Run create_sample/format_sample/understand_music smoke tests",
+            "Write acejam_smoke_passed.json",
+            "Optionally private-upload with HF_TOKEN and PRIVATE_HF_UPLOAD",
+            "Only then delete ordinary ACE-Step LM checkpoints if desired",
+        ],
+    }
+
+
+def _ace_lm_cleanup_originals(confirm: str) -> dict[str, Any]:
+    preview = _ace_lm_cleanup_preview()
+    if confirm != ACE_LM_CLEANUP_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {ACE_LM_CLEANUP_CONFIRM}")
+    if not preview["safe_to_cleanup"]:
+        raise HTTPException(status_code=409, detail=preview["reason"])
+    deleted: list[dict[str, Any]] = []
+    for item in preview["delete_candidates"]:
+        path = Path(item["path"])
+        if path.is_dir() and item.get("downloadable"):
+            shutil.rmtree(path, ignore_errors=True)
+            deleted.append(item)
+    return {"success": True, "deleted": deleted, "status": _ace_lm_status_payload()}
+
+
+def _ace_lm_private_upload(body: dict[str, Any]) -> dict[str, Any]:
+    confirm = str(body.get("confirm") or "")
+    repo_id = str(body.get("repo_id") or "").strip()
+    raw_model_path = str(body.get("model_path") or "").strip()
+    model_path = Path(raw_model_path).expanduser()
+    if raw_model_path and not model_path.is_absolute():
+        for candidate in [BASE_DIR / raw_model_path, BASE_DIR.parent / raw_model_path, Path.cwd() / raw_model_path]:
+            if candidate.is_dir():
+                model_path = candidate
+                break
+    if confirm != ACE_LM_PRIVATE_UPLOAD_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {ACE_LM_PRIVATE_UPLOAD_CONFIRM}")
+    if not repo_id or "/" not in repo_id:
+        raise HTTPException(status_code=400, detail="repo_id must be like username/model-name")
+    if not parse_bool(body.get("license_confirmed"), False):
+        raise HTTPException(status_code=400, detail="Confirm license/provenance review before private upload")
+    if not model_path.is_dir():
+        raise HTTPException(status_code=400, detail="model_path must point to a local abliterated ACE-Step LM folder")
+    if "abliter" not in model_path.name.lower():
+        raise HTTPException(status_code=400, detail="Refusing upload: model_path name must clearly indicate abliterated/experimental")
+    if not (model_path / "acejam_smoke_passed.json").is_file():
+        raise HTTPException(status_code=409, detail="Run and record a local compatibility smoke pass before upload")
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if not token:
+        raise HTTPException(status_code=401, detail="Set HF_TOKEN or HUGGINGFACE_TOKEN before private upload")
+    try:
+        from huggingface_hub import HfApi
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"huggingface_hub is not installed: {exc}") from exc
+    api = HfApi(token=token)
+    api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+    api.upload_folder(
+        repo_id=repo_id,
+        repo_type="model",
+        folder_path=str(model_path),
+        commit_message="Upload private AceJAM ACE-Step LM experiment",
+    )
+    return {"success": True, "repo_id": repo_id, "private": True, "model_path": str(model_path)}
+
+
+def _ace_lm_mark_smoke_passed(body: dict[str, Any]) -> dict[str, Any]:
+    confirm = str(body.get("confirm") or "")
+    raw_model_path = str(body.get("model_path") or "").strip()
+    model_path = Path(raw_model_path).expanduser()
+    if raw_model_path and not model_path.is_absolute():
+        for candidate in [BASE_DIR / raw_model_path, BASE_DIR.parent / raw_model_path, Path.cwd() / raw_model_path]:
+            if candidate.is_dir():
+                model_path = candidate
+                break
+    if confirm != ACE_LM_SMOKE_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {ACE_LM_SMOKE_CONFIRM}")
+    if not model_path.is_dir() or not _checkpoint_dir_ready(model_path):
+        raise HTTPException(status_code=400, detail="model_path must be a ready ACE-Step LM checkpoint folder")
+    if "abliter" not in model_path.name.lower() or ACE_LM_PREFERRED_MODEL.lower() not in model_path.name.lower():
+        raise HTTPException(status_code=400, detail="Smoke marker is only allowed for an abliterated ACE-Step 4B LM folder")
+    marker = {
+        "model_path": str(model_path),
+        "marked_at": datetime.now(timezone.utc).isoformat(),
+        "checks": body.get("checks") or ["create_sample", "format_sample", "understand_music"],
+        "source": "AceJAM manual smoke gate",
+    }
+    (model_path / "acejam_smoke_passed.json").write_text(json.dumps(_jsonable(marker), indent=2), encoding="utf-8")
+    return {"success": True, "marker": marker, "status": _ace_lm_status_payload()}
 
 
 def _is_model_installed(model_name: str, ignore_active_job: bool = False) -> bool:
@@ -653,6 +1616,389 @@ def _download_started_payload(model_name: str, job: dict[str, Any], logs: list[s
     return payload
 
 
+def _album_missing_download_payload(models: list[str], logs: list[str], **extra: Any) -> dict[str, Any]:
+    unique_models = [model for index, model in enumerate(models) if model and model not in models[:index]]
+    jobs: dict[str, dict[str, Any]] = {}
+    for model in unique_models:
+        jobs[model] = _start_model_download(model)
+    primary = unique_models[0]
+    payload = _download_started_payload(primary, jobs[primary], logs, **extra)
+    payload.update(
+        {
+            "download_models": unique_models,
+            "download_jobs": _jsonable(jobs),
+            "message": f"AceJAM started downloading {len(unique_models)} missing album model(s). Album generation will resume after install.",
+        }
+    )
+    payload["logs"] = list(payload.get("logs") or []) + [
+        f"Queued album model downloads: {', '.join(unique_models)}"
+    ]
+    return payload
+
+
+def _ollama_host() -> str:
+    return os.environ.get("OLLAMA_BASE_URL", OLLAMA_DEFAULT_HOST).strip() or OLLAMA_DEFAULT_HOST
+
+
+def _ollama_client():
+    import ollama
+
+    return ollama.Client(host=_ollama_host())
+
+
+def _ollama_attr(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _ollama_model_name(value: Any) -> str:
+    return str(_ollama_attr(value, "model", _ollama_attr(value, "name", "")) or "").strip()
+
+
+def _ollama_model_size(value: Any) -> int:
+    try:
+        return int(_ollama_attr(value, "size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _is_embedding_model_name(name: str) -> bool:
+    return bool(re.search(r"(embed|embedding|bge|e5|gte|nomic|jina|snowflake|mxbai|arctic)", name or "", re.IGNORECASE))
+
+
+def _ollama_job_snapshot(job: dict[str, Any] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    if job is not None:
+        return _jsonable(dict(job))
+    with _ollama_pull_lock:
+        return [_jsonable(dict(item)) for item in _ollama_pull_jobs.values()]
+
+
+def _ollama_pull_job(job_id_or_model: str) -> dict[str, Any] | None:
+    token = str(job_id_or_model or "").strip()
+    if not token:
+        return None
+    with _ollama_pull_lock:
+        if token in _ollama_pull_jobs:
+            return dict(_ollama_pull_jobs[token])
+        for job in _ollama_pull_jobs.values():
+            if job.get("id") == token or job.get("model") == token:
+                return dict(job)
+    return None
+
+
+def _ollama_model_catalog() -> dict[str, Any]:
+    host = _ollama_host()
+    try:
+        client = _ollama_client()
+        response = client.list()
+        raw_models = list(_ollama_attr(response, "models", []) or [])
+        details: list[dict[str, Any]] = []
+        for item in raw_models:
+            name = _ollama_model_name(item)
+            if not name:
+                continue
+            size = _ollama_model_size(item)
+            modified_at = _ollama_attr(item, "modified_at", "")
+            digest = _ollama_attr(item, "digest", "")
+            model_details = _ollama_attr(item, "details", {}) or {}
+            details.append(
+                {
+                    "name": name,
+                    "model": name,
+                    "size": size,
+                    "size_gb": round(size / 1e9, 2) if size else 0,
+                    "modified_at": str(modified_at or ""),
+                    "digest": str(digest or ""),
+                    "family": str(_ollama_attr(model_details, "family", "") or (model_details.get("family", "") if isinstance(model_details, dict) else "")),
+                    "parameter_size": str(_ollama_attr(model_details, "parameter_size", "") or (model_details.get("parameter_size", "") if isinstance(model_details, dict) else "")),
+                    "quantization_level": str(_ollama_attr(model_details, "quantization_level", "") or (model_details.get("quantization_level", "") if isinstance(model_details, dict) else "")),
+                    "kind": "embedding" if _is_embedding_model_name(name) else "chat",
+                }
+            )
+        model_names = [item["name"] for item in details]
+        embedding_models = [item["name"] for item in details if item["kind"] == "embedding"]
+        chat_models = [name for name in model_names if name not in set(embedding_models)]
+        running_models: list[str] = []
+        if hasattr(client, "ps"):
+            try:
+                running_response = client.ps()
+                running_raw = list(_ollama_attr(running_response, "models", []) or [])
+                running_models = [
+                    name
+                    for name in (_ollama_model_name(item) for item in running_raw)
+                    if name
+                ]
+            except Exception:
+                running_models = []
+        return {
+            "success": True,
+            "ready": True,
+            "ollama_host": host,
+            "models": model_names,
+            "chat_models": chat_models,
+            "embedding_models": embedding_models,
+            "details": details,
+            "running_models": running_models,
+            "pull_jobs": _ollama_job_snapshot(),
+            "planner_provider": "ollama",
+            "embedding_provider": "ollama",
+            "error": "",
+        }
+    except Exception as exc:
+        print(f"[ollama_models ERROR] {exc}")
+        return {
+            "success": False,
+            "ready": False,
+            "ollama_host": host,
+            "models": [],
+            "chat_models": [],
+            "embedding_models": [],
+            "details": [],
+            "running_models": [],
+            "pull_jobs": _ollama_job_snapshot(),
+            "planner_provider": "ollama",
+            "embedding_provider": "ollama",
+            "error": f"Ollama is not reachable at {host}: {exc}",
+        }
+
+
+def _ollama_model_installed(model_name: str) -> bool:
+    model = str(model_name or "").strip()
+    if not model:
+        return False
+    return model in set(_ollama_model_catalog().get("models") or [])
+
+
+def _ollama_error_is_missing_model(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    text = str(exc).lower()
+    return status_code == 404 or "model" in text and ("not found" in text or "try pulling" in text or "pull model" in text)
+
+
+def _set_ollama_pull_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    with _ollama_pull_lock:
+        job = _ollama_pull_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "model": "",
+                "kind": "chat",
+                "state": "queued",
+                "progress": 0,
+                "status": "Queued",
+                "logs": [],
+                "started_at": None,
+                "finished_at": None,
+                "error": "",
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-60:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-60:]
+        job.update(_jsonable(updates))
+        return dict(job)
+
+
+def _ollama_pull_worker(job_id: str, model_name: str) -> None:
+    _set_ollama_pull_job(
+        job_id,
+        state="running",
+        status=f"Pulling {model_name}",
+        progress=0,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        finished_at=None,
+        error="",
+        logs=[f"Pulling {model_name} from Ollama"],
+    )
+    try:
+        client = _ollama_client()
+        last_status = ""
+        for progress in client.pull(model_name, stream=True):
+            status_text = str(_ollama_attr(progress, "status", "") or "")
+            completed = _ollama_attr(progress, "completed", None)
+            total = _ollama_attr(progress, "total", None)
+            digest = str(_ollama_attr(progress, "digest", "") or "")
+            percent = None
+            try:
+                if completed is not None and total:
+                    percent = max(0, min(100, round(float(completed) / float(total) * 100, 1)))
+            except Exception:
+                percent = None
+            update = {
+                "status": status_text or last_status or f"Pulling {model_name}",
+                "digest": digest,
+            }
+            if percent is not None:
+                update["progress"] = percent
+            log_line = status_text
+            if percent is not None:
+                log_line = f"{status_text} {percent}%".strip()
+            if digest:
+                log_line = f"{log_line} {digest[:12]}".strip()
+            if log_line and log_line != last_status:
+                update["logs"] = [log_line]
+                last_status = log_line
+            _set_ollama_pull_job(job_id, **update)
+        _set_ollama_pull_job(
+            job_id,
+            state="succeeded",
+            progress=100,
+            status=f"{model_name} installed",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error="",
+            logs=[f"{model_name} installed"],
+        )
+    except Exception as exc:
+        _set_ollama_pull_job(
+            job_id,
+            state="failed",
+            status=f"{model_name} pull failed",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error=str(exc),
+            logs=[f"ERROR: {exc}"],
+        )
+
+
+def _start_ollama_pull(model_name: str, reason: str = "", kind: str = "chat") -> dict[str, Any]:
+    model = str(model_name or "").strip()
+    if not model:
+        raise ValueError("Ollama model name is required.")
+    for job in _ollama_job_snapshot():
+        if isinstance(job, dict) and job.get("model") == model and job.get("state") in {"queued", "running"}:
+            return job
+    if _ollama_model_installed(model):
+        job_id = uuid.uuid4().hex[:12]
+        return _set_ollama_pull_job(
+            job_id,
+            model=model,
+            kind=kind,
+            reason=reason,
+            state="succeeded",
+            progress=100,
+            status=f"{model} already installed",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error="",
+            logs=[f"{model} already installed"],
+        )
+    job_id = uuid.uuid4().hex[:12]
+    job = _set_ollama_pull_job(
+        job_id,
+        model=model,
+        kind=kind,
+        reason=reason,
+        state="queued",
+        progress=0,
+        status=f"Queued pull for {model}",
+        started_at=None,
+        finished_at=None,
+        error="",
+        logs=[f"Queued pull for {model}"],
+    )
+    threading.Thread(target=_ollama_pull_worker, args=(job_id, model), daemon=True).start()
+    return job
+
+
+def _ensure_ollama_model_or_start_pull(model_name: str, context: str = "Ollama", kind: str = "chat") -> None:
+    model = str(model_name or "").strip()
+    if not model:
+        return
+    catalog = _ollama_model_catalog()
+    if not catalog.get("ready"):
+        raise RuntimeError(catalog.get("error") or "Ollama is not running.")
+    if model in set(catalog.get("models") or []):
+        return
+    job = _start_ollama_pull(model, reason=context, kind=kind)
+    raise OllamaPullStarted(
+        model,
+        job,
+        f"{model} is not installed in Ollama. AceJAM started pulling it for {context}.",
+    )
+
+
+def _resolve_ollama_model_selection(model_name: str, kind: str, context: str) -> str:
+    model = str(model_name or "").strip()
+    if model:
+        _ensure_ollama_model_or_start_pull(model, context=context, kind=kind)
+        return model
+    catalog = _ollama_model_catalog()
+    if not catalog.get("ready"):
+        raise RuntimeError(catalog.get("error") or "Ollama is not running.")
+    key = "embedding_models" if kind == "embedding" else "chat_models"
+    models = [str(item) for item in (catalog.get(key) or []) if str(item).strip()]
+    preferred_models = ALBUM_EMBEDDING_FALLBACK_MODELS if kind == "embedding" else [DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL]
+    installed = set(models)
+    for preferred in preferred_models:
+        if preferred in installed:
+            return preferred
+    if not models:
+        raise RuntimeError(f"No local Ollama {kind} model installed. Pull one in Settings > Ollama Models.")
+    return models[0]
+
+
+def _resolve_local_llm_model_selection(provider: str, model_name: str, kind: str, context: str) -> str:
+    provider_name = normalize_provider(provider)
+    if provider_name == "ollama":
+        return _resolve_ollama_model_selection(model_name, kind, context)
+    model = str(model_name or "").strip()
+    catalog = lmstudio_model_catalog()
+    if not catalog.get("ready"):
+        raise RuntimeError(catalog.get("error") or "LM Studio is not running. Start LM Studio local server, then refresh.")
+    key = "embedding_models" if kind == "embedding" else "chat_models"
+    models = [str(item) for item in (catalog.get(key) or []) if str(item).strip()]
+    if model:
+        if model not in set(catalog.get("models") or []):
+            raise RuntimeError(f"{model} is not downloaded/available in LM Studio. Download or load it in Settings > Local LLM Models.")
+        return model
+    if not models:
+        raise RuntimeError(f"No local LM Studio {kind} model available. Download/load one in LM Studio, then refresh AceJAM.")
+    return models[0]
+
+
+def _ollama_pull_started_payload(model_name: str, job: dict[str, Any], context: str = "Ollama", **extra: Any) -> dict[str, Any]:
+    message = f"{model_name} is not installed in Ollama. AceJAM started pulling it for {context}."
+    payload = {
+        "success": False,
+        "ollama_pull_started": True,
+        "ollama_model": model_name,
+        "ollama_pull_job": _jsonable(job),
+        "message": message,
+        "error": "",
+        "logs": [message],
+    }
+    payload.update(_jsonable(extra))
+    return payload
+
+
+def _wait_for_model_download(model_name: str, timeout: float = 3600.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = _model_download_job(model_name)
+        if job.get("state") == "succeeded" or _is_model_installed(model_name):
+            return
+        if job.get("state") == "failed":
+            raise RuntimeError(job.get("error") or f"{model_name} download failed")
+        time.sleep(2.0)
+    raise TimeoutError(f"Timed out waiting for {model_name} download")
+
+
+def _run_advanced_generation_with_download_retry(payload: dict[str, Any], attempts: int = 2) -> dict[str, Any]:
+    last_exc: ModelDownloadStarted | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            return _run_advanced_generation(payload)
+        except ModelDownloadStarted as exc:
+            last_exc = exc
+            _wait_for_model_download(exc.model_name)
+    assert last_exc is not None
+    raise RuntimeError(last_exc.message)
+
+
 def _album_download_candidate(model_info: dict[str, Any], album_options: dict[str, Any]) -> str:
     requested = str(album_options.get("requested_song_model") or "").strip()
     if requested and requested != "auto" and requested in _downloadable_model_names():
@@ -714,7 +2060,24 @@ def _resolve_result_audio(result_id: str | None, audio_id: str | None = None) ->
     return _resolve_child(RESULTS_DIR, safe_id(result_id), selected["filename"])
 
 
+def _resolve_direct_audio_path(value: Any) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Audio file not found: {path}")
+    if path.suffix.lower() not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio file: {path.suffix}")
+    return path.resolve()
+
+
 def _resolve_audio_reference(payload: dict[str, Any], upload_key: str, result_key: str) -> Path | None:
+    direct_key = "reference_audio_path" if upload_key.startswith("reference") else "src_audio_path"
+    legacy_key = "reference_audio" if upload_key.startswith("reference") else "src_audio"
+    direct = _resolve_direct_audio_path(get_param(payload, direct_key, payload.get(legacy_key)))
+    if direct is not None:
+        return direct
     upload_path = _resolve_upload_file(payload.get(upload_key))
     if upload_path is not None:
         return upload_path
@@ -771,11 +2134,21 @@ def _json_list(value: Any) -> list[Any]:
 
 
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
-    strategy = str(payload.get("song_model_strategy") or "best_installed")
+    strategy = str(payload.get("song_model_strategy") or "all_models_album")
     requested_song_model = song_model if strategy == "selected" else "auto"
+    installed_models = sorted(_installed_acestep_models())
+    default_model = ALBUM_FINAL_MODEL if strategy != "selected" else (song_model or ALBUM_FINAL_MODEL)
+    model_defaults = docs_best_model_settings(default_model)
     return {
         "requested_song_model": requested_song_model,
         "song_model_strategy": strategy,
+        "final_song_model": ALBUM_FINAL_MODEL,
+        "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
+        "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
+        "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
+        "embedding_lm_provider": normalize_provider(payload.get("embedding_lm_provider") or payload.get("embedding_provider") or payload.get("planner_lm_provider") or "ollama"),
+        "ace_lm_model": _requested_ace_lm_model(payload),
+        "album_model_portfolio": album_model_portfolio(installed_models),
         "quality_target": str(payload.get("quality_target") or "hit"),
         "tag_packs": _json_list(payload.get("tag_packs")),
         "custom_tags": payload.get("custom_tags") or "",
@@ -790,9 +2163,62 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "inspiration_queries": payload.get("inspiration_queries") or "",
         "use_web_inspiration": parse_bool(payload.get("use_web_inspiration"), False),
         "track_variants": clamp_int(payload.get("track_variants"), 1, 1, MAX_BATCH_SIZE),
-        "installed_models": sorted(_installed_acestep_models()),
+        "seed": str(payload.get("seed") or "-1"),
+        "inference_steps": clamp_int(payload.get("inference_steps"), model_defaults["inference_steps"], 1, 200),
+        "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
+        "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
+        "infer_method": str(payload.get("infer_method") or model_defaults["infer_method"]),
+        "sampler_mode": str(payload.get("sampler_mode") or model_defaults["sampler_mode"]),
+        "audio_format": str(payload.get("audio_format") or model_defaults["audio_format"]),
+        "thinking": parse_bool(payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"]),
+        "use_format": parse_bool(payload.get("use_format"), DOCS_BEST_LM_DEFAULTS["use_format"]),
+        "lm_temperature": clamp_float(payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
+        "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"], 0.0, 10.0),
+        "lm_top_k": clamp_int(payload.get("lm_top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"], 0, 200),
+        "lm_top_p": clamp_float(payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"], 0.0, 1.0),
+        "use_cot_metas": parse_bool(payload.get("use_cot_metas"), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
+        "use_cot_caption": parse_bool(payload.get("use_cot_caption"), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
+        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]),
+        "use_cot_language": parse_bool(payload.get("use_cot_language"), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
+        "use_constrained_decoding": parse_bool(payload.get("use_constrained_decoding"), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
+        "auto_score": parse_bool(payload.get("auto_score"), False),
+        "auto_lrc": parse_bool(payload.get("auto_lrc"), False),
+        "return_audio_codes": parse_bool(payload.get("return_audio_codes"), False),
+        "save_to_library": parse_bool(payload.get("save_to_library"), True),
+        "installed_models": installed_models,
         "global_caption": str(payload.get("global_caption") or ""),
     }
+
+
+def _merge_nested_generation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload or {})
+    nested: dict[str, Any] = {}
+    for key in ["metas", "metadata", "user_metadata", "param_obj"]:
+        value = merged.get(key)
+        if isinstance(value, dict):
+            nested.update(value)
+        elif isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    nested.update(parsed)
+            except json.JSONDecodeError:
+                pass
+    for source, target in {
+        "bpm": "bpm",
+        "duration": "duration",
+        "key": "key_scale",
+        "key_scale": "key_scale",
+        "keyscale": "key_scale",
+        "time_signature": "time_signature",
+        "timesignature": "time_signature",
+        "language": "vocal_language",
+        "vocal_language": "vocal_language",
+    }.items():
+        if target not in merged or merged.get(target) in [None, ""]:
+            if nested.get(source) not in [None, ""]:
+                merged[target] = nested[source]
+    return merged
 
 
 def _merge_song_album_metadata(song_id: str, extra: dict[str, Any]) -> None:
@@ -811,27 +2237,266 @@ def _merge_song_album_metadata(song_id: str, extra: dict[str, Any]) -> None:
             break
 
 
+def _album_manifest_path(album_id: str) -> Path:
+    return _resolve_child(ALBUMS_DIR, safe_id(album_id), "album.json")
+
+
+def _write_album_manifest(album_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    album_dir = _resolve_child(ALBUMS_DIR, safe_id(album_id))
+    album_dir.mkdir(parents=True, exist_ok=True)
+    payload = dict(manifest)
+    payload["album_id"] = album_id
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _album_manifest_path(album_id).write_text(json.dumps(_jsonable(payload), indent=2), encoding="utf-8")
+    return payload
+
+
+def _load_album_manifest(album_id: str) -> dict[str, Any]:
+    path = _album_manifest_path(album_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Album not found")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _audio_path_from_item(audio: dict[str, Any]) -> Path | None:
+    result_id = audio.get("result_id")
+    filename = audio.get("filename")
+    if result_id and filename:
+        path = _resolve_child(RESULTS_DIR, safe_id(str(result_id)), str(filename))
+        if path.is_file():
+            return path
+    song_id = audio.get("song_id")
+    library_url = str(audio.get("library_url") or audio.get("audio_url") or "")
+    if song_id and "/media/songs/" in library_url:
+        filename = library_url.rsplit("/", 1)[-1]
+        path = _resolve_child(SONGS_DIR, safe_id(str(song_id)), filename)
+        if path.is_file():
+            return path
+    return None
+
+
+def _add_album_audio_to_zip(zipf: zipfile.ZipFile, track: dict[str, Any], audio: dict[str, Any], prefix: str = "") -> None:
+    path = _audio_path_from_item(audio)
+    if not path:
+        return
+    filename = str(audio.get("filename") or path.name)
+    arcname = f"{prefix}{filename}" if prefix else filename
+    zipf.write(path, arcname)
+
+
+def _build_album_zip(album_id: str) -> Path:
+    manifest = _load_album_manifest(album_id)
+    zip_path = _resolve_child(ALBUMS_DIR, safe_id(album_id), f"{safe_filename(album_id, 'album')}.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+        zipf.writestr("album.json", json.dumps(_jsonable(manifest), indent=2))
+        for track in manifest.get("tracks", []):
+            for audio in track.get("audios", []):
+                _add_album_audio_to_zip(zipf, track, audio)
+    return zip_path
+
+
+def _build_album_family_zip(family_id: str) -> Path:
+    family_manifest = _load_album_manifest(family_id)
+    zip_path = _resolve_child(ALBUMS_DIR, safe_id(family_id), f"{safe_filename(family_id, 'album-family')}.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+        zipf.writestr("album_family.json", json.dumps(_jsonable(family_manifest), indent=2))
+        for model_album in family_manifest.get("model_albums", []):
+            album_id = str(model_album.get("album_id") or "")
+            if not album_id:
+                continue
+            try:
+                manifest = _load_album_manifest(album_id)
+            except Exception:
+                continue
+            folder = safe_filename(str(model_album.get("album_model") or album_id), "album")
+            zipf.writestr(f"{folder}/album.json", json.dumps(_jsonable(manifest), indent=2))
+            for track in manifest.get("tracks", []):
+                for audio in track.get("audios", []):
+                    _add_album_audio_to_zip(zipf, track, audio, prefix=f"{folder}/")
+    return zip_path
+
+
+DELETE_GENERATED_CONFIRM = "DELETE_GENERATED_OUTPUTS"
+DELETE_ALBUM_CONFIRM = "DELETE_ALBUM"
+DELETE_ALBUM_FAMILY_CONFIRM = "DELETE_ALBUM_FAMILY"
+SONG_PORTFOLIO_STRATEGY = "all_models_song"
+
+
+def _count_generated_outputs() -> dict[str, Any]:
+    def count_dirs(root: Path) -> int:
+        return sum(1 for item in root.iterdir() if item.is_dir()) if root.exists() else 0
+
+    def count_audio(root: Path) -> int:
+        if not root.exists():
+            return 0
+        return sum(
+            1
+            for item in root.rglob("*")
+            if item.is_file() and item.suffix.lower().lstrip(".") in {"wav", "flac", "ogg", "mp3", "opus", "aac"}
+        )
+
+    return {
+        "songs": count_dirs(SONGS_DIR),
+        "results": count_dirs(RESULTS_DIR),
+        "albums": count_dirs(ALBUMS_DIR),
+        "audio_files": count_audio(SONGS_DIR) + count_audio(RESULTS_DIR),
+        "scope": ["songs", "results", "albums"],
+        "preserved": ["uploads", "lora_datasets", "loras", "training"],
+        "confirm": DELETE_GENERATED_CONFIRM,
+    }
+
+
+def _delete_result_ids(result_ids: set[str]) -> int:
+    deleted = 0
+    for result_id in {safe_id(str(item)) for item in result_ids if item}:
+        result_dir = _resolve_child(RESULTS_DIR, result_id)
+        if result_dir.is_dir():
+            shutil.rmtree(result_dir, ignore_errors=True)
+            deleted += 1
+            _result_extra_cache.pop(result_id, None)
+    return deleted
+
+
+def _delete_songs_matching(*, album_id: str | None = None, family_id: str | None = None) -> dict[str, Any]:
+    deleted_songs = 0
+    result_ids: set[str] = set()
+    album_id = str(album_id or "")
+    family_id = str(family_id or "")
+    if SONGS_DIR.exists():
+        for song_dir in list(SONGS_DIR.iterdir()):
+            if not song_dir.is_dir():
+                continue
+            meta_path = song_dir / "meta.json"
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+            except Exception:
+                meta = {}
+            matches_album = bool(album_id and str(meta.get("album_id") or "") == album_id)
+            matches_family = bool(family_id and str(meta.get("album_family_id") or "") == family_id)
+            if matches_album or matches_family:
+                if meta.get("result_id"):
+                    result_ids.add(str(meta["result_id"]))
+                shutil.rmtree(song_dir, ignore_errors=True)
+                deleted_songs += 1
+    if album_id:
+        _feed_songs[:] = [song for song in _feed_songs if str(song.get("album_id") or "") != album_id]
+    if family_id:
+        _feed_songs[:] = [song for song in _feed_songs if str(song.get("album_family_id") or "") != family_id]
+    return {"songs": deleted_songs, "results": _delete_result_ids(result_ids)}
+
+
+def _delete_album(album_id: str, confirm: str) -> dict[str, Any]:
+    if confirm != DELETE_ALBUM_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {DELETE_ALBUM_CONFIRM}")
+    album_id = str(album_id or "").strip()
+    if not album_id:
+        raise HTTPException(status_code=400, detail="album_id is required")
+    album_dir = _resolve_child(ALBUMS_DIR, safe_id(album_id))
+    if not album_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Album not found")
+    result_ids: set[str] = set()
+    try:
+        manifest = _load_album_manifest(album_id)
+        for track in manifest.get("tracks", []):
+            for audio in track.get("audios", []):
+                if audio.get("result_id"):
+                    result_ids.add(str(audio["result_id"]))
+    except Exception:
+        pass
+    song_delete = _delete_songs_matching(album_id=album_id)
+    result_ids.update(str(item) for item in song_delete.get("result_ids", []) if item)
+    deleted_results = int(song_delete.get("results") or 0) + _delete_result_ids(result_ids)
+    shutil.rmtree(album_dir, ignore_errors=True)
+    return {
+        "success": True,
+        "album_id": album_id,
+        "deleted": {"albums": 1, "songs": song_delete["songs"], "results": deleted_results},
+        "remaining": _count_generated_outputs(),
+    }
+
+
+def _delete_album_family(family_id: str, confirm: str) -> dict[str, Any]:
+    if confirm != DELETE_ALBUM_FAMILY_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {DELETE_ALBUM_FAMILY_CONFIRM}")
+    family_id = str(family_id or "").strip()
+    if not family_id:
+        raise HTTPException(status_code=400, detail="family_id is required")
+    family_dir = _resolve_child(ALBUMS_DIR, safe_id(family_id))
+    if not family_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Album family not found")
+    album_ids: set[str] = set()
+    result_ids: set[str] = set()
+    try:
+        manifest = _load_album_manifest(family_id)
+        for model_album in manifest.get("model_albums", []):
+            if model_album.get("album_id"):
+                album_ids.add(str(model_album["album_id"]))
+            for track in model_album.get("tracks", []):
+                for audio in track.get("audios", []):
+                    if audio.get("result_id"):
+                        result_ids.add(str(audio["result_id"]))
+    except Exception:
+        pass
+    deleted_album_dirs = 0
+    for album_id in album_ids:
+        album_dir = _resolve_child(ALBUMS_DIR, safe_id(album_id))
+        if album_dir.is_dir():
+            shutil.rmtree(album_dir, ignore_errors=True)
+            deleted_album_dirs += 1
+    song_delete = _delete_songs_matching(family_id=family_id)
+    deleted_results = int(song_delete.get("results") or 0) + _delete_result_ids(result_ids)
+    shutil.rmtree(family_dir, ignore_errors=True)
+    return {
+        "success": True,
+        "album_family_id": family_id,
+        "deleted": {"album_families": 1, "albums": deleted_album_dirs, "songs": song_delete["songs"], "results": deleted_results},
+        "remaining": _count_generated_outputs(),
+    }
+
+
+def _delete_generated_outputs(confirm: str) -> dict[str, Any]:
+    if confirm != DELETE_GENERATED_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {DELETE_GENERATED_CONFIRM}")
+    before = _count_generated_outputs()
+    for root in [SONGS_DIR, RESULTS_DIR, ALBUMS_DIR]:
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+    _feed_songs.clear()
+    _result_extra_cache.clear()
+    with _api_generation_tasks_lock:
+        _api_generation_tasks.clear()
+    return {"success": True, "deleted": before, "remaining": _count_generated_outputs()}
+
+
 def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = _merge_nested_generation_metadata(payload)
     task_type = normalize_task_type(payload.get("task_type"))
+    payload = normalize_generation_text_fields(payload, task_type=task_type)
+    payload = _apply_studio_lm_policy(payload)
     song_model = _normalize_song_model(get_param(payload, "song_model", payload.get("song_model")))
     ensure_task_supported(song_model, task_type)
+    if song_model in OFFICIAL_UNRELEASED_MODELS:
+        raise ValueError(f"{song_model} is official but unreleased; it cannot be downloaded or used yet.")
     if song_model not in _installed_acestep_models():
         if song_model in _downloadable_model_names():
             _start_model_download_or_raise(song_model, context=f"{task_type} generation")
         raise ValueError(f"{song_model} is not installed and is not in the known ACE-Step download list.")
     batch_size = clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE)
     duration = clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX)
+    model_defaults = docs_best_model_settings(song_model)
     is_turbo = "turbo" in song_model
-    is_sft = "sft" in song_model and not is_turbo
-    is_base = "base" in song_model and not is_turbo
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
     if raw_steps in [None, "", "auto"]:
-        default_steps = 8 if is_turbo else (50 if is_sft else (32 if is_base else 8))
+        default_steps = _quality_default_steps(song_model)
     else:
-        default_steps = int(raw_steps)
+        try:
+            default_steps = int(raw_steps)
+        except (TypeError, ValueError):
+            default_steps = _quality_default_steps(song_model)
     inference_steps = clamp_int(default_steps, default_steps, 1, 200)
-    if is_turbo and inference_steps > 20:
-        inference_steps = min(inference_steps, 20)
+    if is_turbo and inference_steps > DOCS_BEST_TURBO_HIGH_CAP_STEPS:
+        inference_steps = min(inference_steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
 
     bpm_value = payload.get("bpm")
     bpm = None if bpm_value in [None, "", "auto", "Auto"] else clamp_int(bpm_value, 120, BPM_MIN, BPM_MAX)
@@ -843,9 +2508,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             time_signature = ""
 
-    official_used = official_fields_used(payload)
-    use_official = bool(official_used)
-    requested_format = str(payload.get("audio_format") or "wav").strip().lower().lstrip(".")
+    requested_lm_model = _requested_ace_lm_model(payload)
+    official_used = _active_official_fields(payload, task_type, official_fields_used(payload))
+    use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
+    requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     if use_official and requested_format == "ogg":
         raise ValueError("OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
     vocal_language = _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown"))
@@ -861,12 +2527,44 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if task_type == "complete" and not track_names:
         raise ValueError("complete requires one or more track names")
 
+    lyrics_text = str(payload.get("lyrics") or "")
+    instrumental = parse_bool(payload.get("instrumental"), False)
+    sample_mode = parse_bool(payload.get("sample_mode"), False)
+    sample_query = str(get_param(payload, "sample_query", "") or "").strip()
+    lm_controls = _explicit_ace_lm_controls(payload)
+    lm_quality_defaults = requested_lm_model != "none" and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS
+    if lm_controls and requested_lm_model == "none":
+        raise ValueError(
+            "ACE-Step LM controls require ace_lm_model. "
+            f"Set ace_lm_model to auto/acestep-5Hz-lm-4B or disable: {', '.join(lm_controls)}."
+        )
+    if needs_vocal_lyrics(
+        task_type=task_type,
+        instrumental=instrumental,
+        lyrics=lyrics_text,
+        sample_mode=sample_mode,
+        sample_query=sample_query,
+    ):
+        warnings = " ".join(str(item) for item in payload.get("payload_warnings", []) if item)
+        suffix = f" Payload warnings: {warnings}" if warnings else ""
+        raise ValueError(
+            "Text2Music vocal generation needs lyrics. Add lyrics, use Write Lyrics/Format, or enable Instrumental."
+            + suffix
+        )
+
+    title = str(payload.get("title") or "").strip() or "Untitled"
+    artist_name = _artist_name_from_payload(payload, title=title)
     return {
+        "ui_mode": str(payload.get("ui_mode") or task_type),
         "task_type": task_type,
-        "caption": str(payload.get("caption") or payload.get("prompt") or ""),
+        "caption": str(payload.get("caption") or ""),
         "global_caption": str(payload.get("global_caption") or ""),
-        "lyrics": str(payload.get("lyrics") or ""),
-        "instrumental": parse_bool(payload.get("instrumental"), False),
+        "lyrics": lyrics_text,
+        "caption_source": str(payload.get("caption_source") or "caption"),
+        "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
+        "tag_list": list(payload.get("tag_list") or []),
+        "payload_warnings": list(payload.get("payload_warnings") or []),
+        "instrumental": instrumental,
         "duration": duration,
         "bpm": bpm,
         "key_scale": str(get_param(payload, "key_scale", "") or "").strip(),
@@ -874,8 +2572,12 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "vocal_language": vocal_language,
         "batch_size": batch_size,
         "seed": str(payload.get("seeds") or payload.get("seed") or "-1"),
+        "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
         "song_model": song_model,
-        "ace_lm_model": str(payload.get("ace_lm_model") or "auto").strip() or "auto",
+        "ace_lm_model": requested_lm_model,
+        "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
+        "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
+        "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
         "reference_audio": _resolve_audio_reference(payload, "reference_audio_id", "reference_result_id"),
         "src_audio": _resolve_audio_reference(payload, "src_audio_id", "src_result_id"),
         "audio_code_string": str(get_param(payload, "audio_code_string", "") or ""),
@@ -885,42 +2587,42 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "audio_cover_strength": clamp_float(get_param(payload, "audio_cover_strength", 1.0), 1.0, 0.0, 1.0),
         "cover_noise_strength": clamp_float(payload.get("cover_noise_strength"), 0.0, 0.0, 1.0),
         "inference_steps": inference_steps,
-        "guidance_scale": clamp_float(payload.get("guidance_scale"), 7.0, 1.0, 15.0),
-        "shift": clamp_float(payload.get("shift"), 3.0 if "turbo" in song_model else 1.0, 1.0, 5.0),
-        "infer_method": "sde" if str(payload.get("infer_method")).lower() == "sde" else "ode",
-        "sampler_mode": "heun" if str(payload.get("sampler_mode")).lower() == "heun" else "euler",
+        "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
+        "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
+        "infer_method": "sde" if str(payload.get("infer_method") or model_defaults["infer_method"]).lower() == "sde" else "ode",
+        "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
         "velocity_norm_threshold": clamp_float(payload.get("velocity_norm_threshold"), 0.0, 0.0, 20.0),
         "velocity_ema_factor": clamp_float(payload.get("velocity_ema_factor"), 0.0, 0.0, 1.0),
         "use_adg": parse_bool(payload.get("use_adg"), False),
         "cfg_interval_start": clamp_float(payload.get("cfg_interval_start"), 0.0, 0.0, 1.0),
         "cfg_interval_end": clamp_float(payload.get("cfg_interval_end"), 1.0, 0.0, 1.0),
         "timesteps": parse_timesteps(payload.get("timesteps")),
-        "audio_format": normalize_audio_format(payload.get("audio_format"), allow_official=use_official),
+        "audio_format": normalize_audio_format(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav"), allow_official=use_official),
         "mp3_bitrate": str(payload.get("mp3_bitrate") or "128k").strip() or "128k",
         "mp3_sample_rate": clamp_int(payload.get("mp3_sample_rate"), 48000, 16000, 48000),
         "auto_score": parse_bool(payload.get("auto_score"), False),
         "auto_lrc": parse_bool(payload.get("auto_lrc"), False),
         "return_audio_codes": parse_bool(payload.get("return_audio_codes"), False),
         "save_to_library": parse_bool(payload.get("save_to_library"), False),
-        "title": str(payload.get("title") or "").strip() or "Untitled",
+        "title": title,
+        "artist_name": artist_name,
         "description": str(payload.get("description") or "").strip(),
         "album_metadata": payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {},
         "track_names": track_names,
-        "thinking": parse_bool(payload.get("thinking"), False),
-        "sample_mode": parse_bool(payload.get("sample_mode"), False),
-        "sample_query": str(get_param(payload, "sample_query", "") or "").strip(),
-        "use_format": parse_bool(get_param(payload, "use_format"), False),
-        "lm_temperature": clamp_float(payload.get("lm_temperature"), 0.85, 0.0, 2.0),
-        "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), 2.0, 0.0, 10.0),
-        "lm_top_k": clamp_int(payload.get("lm_top_k"), 0, 0, 200),
-        "lm_top_p": clamp_float(payload.get("lm_top_p"), 0.9, 0.0, 1.0),
+        "thinking": parse_bool(payload.get("thinking"), lm_quality_defaults),
+        "sample_mode": sample_mode,
+        "sample_query": sample_query,
+        "use_format": parse_bool(get_param(payload, "use_format"), lm_quality_defaults),
+        "lm_temperature": clamp_float(payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if lm_quality_defaults else 0.85, 0.0, 2.0),
+        "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if lm_quality_defaults else 2.0, 0.0, 10.0),
+        "lm_repetition_penalty": clamp_float(payload.get("lm_repetition_penalty") or payload.get("repetition_penalty"), 1.0, 0.1, 4.0),
+        "lm_top_k": clamp_int(payload.get("lm_top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if lm_quality_defaults else 0, 0, 200),
+        "lm_top_p": clamp_float(payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if lm_quality_defaults else 0.9, 0.0, 1.0),
         "lm_negative_prompt": str(payload.get("lm_negative_prompt") or "NO USER INPUT"),
-        "lm_backend": str(payload.get("lm_backend") or "auto").strip().lower()
-        if str(payload.get("lm_backend") or "auto").strip().lower() in {"auto", "vllm", "pt", "mlx"}
-        else "auto",
+        "lm_backend": _normalize_lm_backend(payload.get("lm_backend")),
         "use_cot_metas": parse_bool(payload.get("use_cot_metas"), True),
         "use_cot_caption": parse_bool(payload.get("use_cot_caption"), True),
-        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), False),
+        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), lm_quality_defaults),
         "use_cot_language": parse_bool(payload.get("use_cot_language"), True),
         "allow_lm_batch": parse_bool(payload.get("allow_lm_batch"), False),
         "lm_batch_chunk_size": clamp_int(payload.get("lm_batch_chunk_size"), 8, 1, 64),
@@ -939,8 +2641,18 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "fade_out_duration": clamp_float(payload.get("fade_out_duration"), 0.0, 0.0, 20.0),
         "latent_shift": clamp_float(payload.get("latent_shift"), 0.0, -2.0, 2.0),
         "latent_rescale": clamp_float(payload.get("latent_rescale"), 1.0, 0.1, 3.0),
+        "device": str(payload.get("device") or "auto").strip() or "auto",
+        "dtype": str(payload.get("dtype") or "auto").strip() or "auto",
+        "use_flash_attention": payload.get("use_flash_attention", "auto"),
+        "compile_model": parse_bool(payload.get("compile_model"), False),
+        "offload_to_cpu": parse_bool(payload.get("offload_to_cpu"), False),
+        "offload_dit_to_cpu": parse_bool(payload.get("offload_dit_to_cpu"), False),
+        "lm_device": str(payload.get("lm_device") or "auto").strip() or "auto",
+        "lm_dtype": str(payload.get("lm_dtype") or "auto").strip() or "auto",
+        "lm_offload_to_cpu": parse_bool(payload.get("lm_offload_to_cpu"), False),
         "official_fields": official_used,
         "requires_official_runner": use_official,
+        "runner_plan": "official" if use_official else "fast",
     }
 
 
@@ -995,15 +2707,35 @@ def _concrete_lm_model(requested: str) -> str | None:
         return None
     installed = _installed_lm_models()
     if value == "auto":
-        for candidate in ["acestep-5Hz-lm-1.7B", "acestep-5Hz-lm-0.6B", "acestep-5Hz-lm-4B"]:
+        for candidate in sorted(installed):
+            lowered = candidate.lower()
+            if "acestep-5hz-lm-4b" in lowered and "abliter" in lowered:
+                return candidate
+        for candidate in ["acestep-5Hz-lm-4B", "acestep-5Hz-lm-1.7B", "acestep-5Hz-lm-0.6B"]:
             if candidate in installed:
                 return candidate
         return None
     return value if value in installed else None
 
 
+def _concrete_lm_model_or_download(requested: str, context: str) -> str:
+    value = (requested or "auto").strip() or "auto"
+    lm_model = _concrete_lm_model(value)
+    if lm_model:
+        return lm_model
+    download_target = ACE_LM_PREFERRED_MODEL if value == "auto" else value
+    if download_target in _downloadable_model_names():
+        _start_model_download_or_raise(download_target, context=context)
+    raise RuntimeError(
+        "Official ACE-Step LM controls require a locally installed 5Hz LM model. "
+        "Choose or install acestep-5Hz-lm-0.6B/1.7B/4B."
+    )
+
+
 def _requires_lm(params: dict[str, Any]) -> bool:
-    if params["task_type"] in {"cover", "repaint", "extract"}:
+    if str(params.get("ace_lm_model") or "none").strip() == "none":
+        return False
+    if params["task_type"] in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
         return False
     lm_control_fields = {
         "allow_lm_batch",
@@ -1033,12 +2765,345 @@ def _requires_lm(params: dict[str, Any]) -> bool:
     )
 
 
+def _set_field_error(errors: dict[str, str], field: str, message: str) -> None:
+    if field in errors:
+        errors[field] = f"{errors[field]}; {message}"
+    else:
+        errors[field] = message
+
+
+def _audio_validation_status(
+    payload: dict[str, Any],
+    *,
+    upload_key: str,
+    result_key: str,
+    audio_codes_key: str | None = None,
+) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "present": False,
+        "ok": False,
+        "kind": "",
+        "id": "",
+        "result_id": "",
+        "filename": "",
+        "error": "",
+    }
+    audio_codes = str(payload.get(audio_codes_key) or "").strip() if audio_codes_key else ""
+    if audio_codes:
+        status.update({"present": True, "ok": True, "kind": "audio_codes"})
+        return status
+
+    direct_key = "reference_audio_path" if upload_key.startswith("reference") else "src_audio_path"
+    legacy_key = "reference_audio" if upload_key.startswith("reference") else "src_audio"
+    direct_text = str(get_param(payload, direct_key, payload.get(legacy_key)) or "").strip()
+    if direct_text:
+        status.update({"present": True, "kind": "path", "id": direct_text, "filename": Path(direct_text).name})
+        try:
+            direct = _resolve_direct_audio_path(direct_text)
+            status.update({"ok": True, "filename": direct.name})
+        except Exception as exc:
+            status["error"] = str(exc)
+        return status
+
+    upload_id = str(payload.get(upload_key) or "").strip()
+    result_id = str(payload.get(result_key) or "").strip()
+    if upload_id:
+        status.update({"present": True, "kind": "upload", "id": upload_id})
+        try:
+            path = _resolve_upload_file(upload_id)
+            status.update({"ok": True, "filename": path.name if path else ""})
+        except HTTPException as exc:
+            status["error"] = str(exc.detail)
+        except Exception as exc:
+            status["error"] = str(exc)
+        return status
+
+    if result_id:
+        status.update({"present": True, "kind": "result", "result_id": result_id})
+        try:
+            path = _resolve_result_audio(result_id, payload.get(f"{result_key}_audio_id"))
+            status.update({"ok": True, "filename": path.name if path else ""})
+        except HTTPException as exc:
+            status["error"] = str(exc.detail)
+        except Exception as exc:
+            status["error"] = str(exc)
+        return status
+
+    return status
+
+
+def _lm_validation_status(payload: dict[str, Any], requires_lm: bool) -> dict[str, Any]:
+    requested = str(payload.get("ace_lm_model") or payload.get("lm_model") or ACE_LM_PREFERRED_MODEL).strip() or ACE_LM_PREFERRED_MODEL
+    status: dict[str, Any] = {
+        "requested": requested,
+        "requires_lm": requires_lm,
+        "model": requested,
+        "installed": requested in {"auto", "none"},
+        "download_required": False,
+        "downloading": False,
+        "download_job": None,
+    }
+    if not requires_lm or requested == "none":
+        status["installed"] = True
+        return status
+
+    installed_lms = _installed_lm_models()
+    if requested == "auto":
+        concrete = _concrete_lm_model("auto")
+        download_target = concrete or ACE_LM_PREFERRED_MODEL
+    else:
+        concrete = requested if requested in installed_lms else None
+        download_target = requested
+
+    status["model"] = concrete or download_target
+    status["installed"] = bool(concrete)
+    if not concrete:
+        status["download_required"] = download_target in _downloadable_model_names()
+        status["download_job"] = _model_download_job(download_target)
+        status["downloading"] = bool(status["download_job"] and status["download_job"].get("state") in {"queued", "running"})
+    return status
+
+
+def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_model: str, official_used: list[str]) -> dict[str, Any]:
+    track_names = normalize_track_names(payload.get("track_names") or payload.get("track_name"))
+    requested_lm_model = _requested_ace_lm_model(payload)
+    official_used = _active_official_fields(payload, task_type, official_used)
+    use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
+    model_defaults = docs_best_model_settings(song_model)
+    requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
+    time_signature = str(get_param(payload, "time_signature", "") or "").strip()
+    if time_signature:
+        try:
+            if int(float(time_signature)) not in VALID_TIME_SIGNATURES:
+                time_signature = ""
+        except ValueError:
+            time_signature = ""
+    bpm_value = payload.get("bpm")
+    bpm = None if bpm_value in [None, "", "auto", "Auto"] else clamp_int(bpm_value, 120, BPM_MIN, BPM_MAX)
+    is_turbo = "turbo" in song_model
+    raw_steps = payload.get("inference_steps", payload.get("infer_step"))
+    if raw_steps in [None, "", "auto"]:
+        default_steps = _quality_default_steps(song_model)
+    else:
+        default_steps = int(raw_steps)
+    inference_steps = clamp_int(default_steps, default_steps, 1, 200)
+    if is_turbo and inference_steps > DOCS_BEST_TURBO_HIGH_CAP_STEPS:
+        inference_steps = DOCS_BEST_TURBO_HIGH_CAP_STEPS
+    title = str(payload.get("title") or "").strip() or "Untitled"
+    artist_name = _artist_name_from_payload(payload, title=title)
+    return {
+        "ui_mode": str(payload.get("ui_mode") or task_type),
+        "task_type": task_type,
+        "title": title,
+        "artist_name": artist_name,
+        "caption": str(payload.get("caption") or ""),
+        "global_caption": str(payload.get("global_caption") or ""),
+        "lyrics": str(payload.get("lyrics") or ""),
+        "caption_source": str(payload.get("caption_source") or "caption"),
+        "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
+        "tag_list": list(payload.get("tag_list") or []),
+        "payload_warnings": list(payload.get("payload_warnings") or []),
+        "instrumental": parse_bool(payload.get("instrumental"), False),
+        "duration": clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX),
+        "bpm": bpm,
+        "key_scale": str(get_param(payload, "key_scale", "") or "").strip(),
+        "time_signature": time_signature,
+        "vocal_language": _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown")),
+        "batch_size": clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE),
+        "seed": str(payload.get("seeds") or payload.get("seed") or "-1"),
+        "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
+        "song_model": song_model,
+        "ace_lm_model": _requested_ace_lm_model(payload),
+        "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
+        "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
+        "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
+        "audio_code_string": str(get_param(payload, "audio_code_string", "") or ""),
+        "track_names": track_names,
+        "track_name": track_names[0] if track_names else "",
+        "reference_audio_id": str(payload.get("reference_audio_id") or ""),
+        "reference_result_id": str(payload.get("reference_result_id") or ""),
+        "src_audio_id": str(payload.get("src_audio_id") or ""),
+        "src_result_id": str(payload.get("src_result_id") or ""),
+        "inference_steps": inference_steps,
+        "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
+        "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
+        "infer_method": "sde" if str(payload.get("infer_method") or model_defaults["infer_method"]).lower() == "sde" else "ode",
+        "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
+        "audio_format": normalize_audio_format(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav"), allow_official=use_official)
+        if not (use_official and requested_format == "ogg")
+        else requested_format,
+        "auto_score": parse_bool(payload.get("auto_score"), False),
+        "auto_lrc": parse_bool(payload.get("auto_lrc"), False),
+        "return_audio_codes": parse_bool(payload.get("return_audio_codes"), False),
+        "save_to_library": parse_bool(payload.get("save_to_library"), False),
+        "official_fields": official_used,
+        "requires_official_runner": use_official,
+        "runner_plan": "official" if use_official else "fast",
+    }
+
+
+def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_payload = _merge_nested_generation_metadata(dict(payload or {}))
+    task_type = normalize_task_type(raw_payload.get("task_type"))
+    normalized_text = normalize_generation_text_fields(raw_payload, task_type=task_type)
+    normalized_text = _apply_studio_lm_policy(normalized_text)
+    song_model = _normalize_song_model(get_param(normalized_text, "song_model", normalized_text.get("song_model")))
+    official_used = _active_official_fields(normalized_text, task_type, official_fields_used(normalized_text))
+    preview = _preview_generation_payload(normalized_text, task_type, song_model, official_used)
+    field_errors: dict[str, str] = {}
+
+    supported_tasks = supported_tasks_for_model(song_model)
+    task_supported = task_type in supported_tasks
+    if not task_supported:
+        _set_field_error(
+            field_errors,
+            "song_model",
+            f"{song_model} cannot run {task_type}. Supported tasks: {', '.join(supported_tasks)}.",
+        )
+
+    installed = song_model in _installed_acestep_models()
+    downloadable = song_model in _downloadable_model_names()
+    download_job = _model_download_job(song_model)
+    downloading = bool(download_job and download_job.get("state") in {"queued", "running"})
+    if song_model in OFFICIAL_UNRELEASED_MODELS:
+        _set_field_error(field_errors, "song_model", f"{song_model} is official but unreleased; it is not downloadable yet.")
+    elif not installed and not downloadable:
+        _set_field_error(field_errors, "song_model", f"{song_model} is not installed and cannot be auto-downloaded.")
+
+    requested_format = str(
+        normalized_text.get("audio_format")
+        or (docs_best_model_settings(song_model)["audio_format"] if _quality_lm_controls_enabled(normalized_text, task_type) else "wav")
+    ).strip().lower().lstrip(".")
+    if official_used and requested_format == "ogg":
+        _set_field_error(
+            field_errors,
+            "audio_format",
+            "OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.",
+        )
+
+    source_status = _audio_validation_status(
+        normalized_text,
+        upload_key="src_audio_id",
+        result_key="src_result_id",
+        audio_codes_key="audio_code_string",
+    )
+    reference_status = _audio_validation_status(
+        normalized_text,
+        upload_key="reference_audio_id",
+        result_key="reference_result_id",
+    )
+    if task_type in {"cover", "repaint", "extract", "lego", "complete"} and not source_status["present"]:
+        _set_field_error(field_errors, "source", f"{task_type} requires source audio, a source result, or audio codes.")
+    if source_status["present"] and not source_status["ok"]:
+        _set_field_error(field_errors, "source", source_status.get("error") or "Source audio could not be resolved.")
+    if reference_status["present"] and not reference_status["ok"]:
+        _set_field_error(field_errors, "reference", reference_status.get("error") or "Reference audio could not be resolved.")
+
+    track_names = normalize_track_names(normalized_text.get("track_names") or normalized_text.get("track_name"))
+    if task_type in {"extract", "lego"} and not track_names:
+        _set_field_error(field_errors, "track_name", f"{task_type} requires a track/stem name.")
+    if task_type == "complete" and not track_names:
+        _set_field_error(field_errors, "track_names", "complete requires one or more track/stem names.")
+
+    instrumental = parse_bool(normalized_text.get("instrumental"), False)
+    sample_mode = parse_bool(normalized_text.get("sample_mode"), False)
+    sample_query = str(get_param(normalized_text, "sample_query", "") or "").strip()
+    requested_lm_model = _requested_ace_lm_model(normalized_text)
+    lm_controls = _explicit_ace_lm_controls(normalized_text)
+    if lm_controls and requested_lm_model == "none":
+        _set_field_error(
+            field_errors,
+            "ace_lm_model",
+            "ACE-Step LM controls require ace_lm_model set to auto or an installed 5Hz LM. "
+            f"Disable these controls or select an LM: {', '.join(lm_controls)}.",
+        )
+    if needs_vocal_lyrics(
+        task_type=task_type,
+        instrumental=instrumental,
+        lyrics=str(normalized_text.get("lyrics") or ""),
+        sample_mode=sample_mode,
+        sample_query=sample_query,
+    ):
+        _set_field_error(
+            field_errors,
+            "lyrics",
+            "Text2Music vocal generation needs lyrics. Use Write Lyrics/Format, paste lyrics, or enable Instrumental.",
+        )
+
+    requires_lm = bool(
+        requested_lm_model != "none"
+        and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS
+        and (lm_controls or _quality_lm_controls_enabled(normalized_text, task_type))
+    )
+    lm_status = _lm_validation_status(normalized_text, requires_lm)
+
+    parse_error = ""
+    normalized_payload = preview
+    if not field_errors and installed:
+        try:
+            parsed = _parse_generation_payload(dict(normalized_text))
+            normalized_payload = {
+                key: _jsonable(value)
+                for key, value in parsed.items()
+                if key not in {"reference_audio", "src_audio"}
+            }
+            normalized_payload.update(
+                {
+                    "reference_audio_id": str(normalized_text.get("reference_audio_id") or ""),
+                    "reference_result_id": str(normalized_text.get("reference_result_id") or ""),
+                    "src_audio_id": str(normalized_text.get("src_audio_id") or ""),
+                    "src_result_id": str(normalized_text.get("src_result_id") or ""),
+                }
+            )
+            requires_lm = _requires_lm(parsed)
+            lm_status = _lm_validation_status(parsed, requires_lm)
+        except ModelDownloadStarted:
+            pass
+        except Exception as exc:
+            parse_error = str(exc)
+            _set_field_error(field_errors, "payload", parse_error)
+
+    valid = not field_errors
+    return {
+        "success": True,
+        "valid": valid,
+        "normalized_payload": _jsonable(normalized_payload),
+        "field_errors": field_errors,
+        "payload_warnings": list(normalized_payload.get("payload_warnings") or normalized_text.get("payload_warnings") or []),
+        "tag_list": list(normalized_payload.get("tag_list") or normalized_text.get("tag_list") or []),
+        "runner_plan": normalized_payload.get("runner_plan") or ("official" if official_used else "fast"),
+        "official_fields": list(normalized_payload.get("official_fields") or official_used),
+        "model": {
+            "name": song_model,
+            "installed": installed,
+            "downloadable": downloadable,
+            "download_required": bool(not installed and downloadable),
+            "downloading": downloading,
+            "download_job": _jsonable(download_job),
+            "task_supported": task_supported,
+            "supported_tasks": supported_tasks,
+        },
+        "lm_model": _jsonable(lm_status),
+        "source_status": _jsonable(source_status),
+        "reference_status": _jsonable(reference_status),
+        "compatibility": {
+            "task_type": task_type,
+            "task_supported": task_supported,
+            "model_installed": installed,
+            "download_required": bool(not installed and downloadable),
+            "official_runner_available": _official_runner_status().get("available"),
+        },
+        "parse_error": parse_error,
+        "contract_version": PAYLOAD_CONTRACT_VERSION,
+    }
+
+
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
     if needs_lm and not lm_model:
         requested_lm = params["ace_lm_model"]
-        download_target = recommended_lm_model(set()) if requested_lm == "auto" else requested_lm
+        download_target = ACE_LM_PREFERRED_MODEL if requested_lm == "auto" else requested_lm
         if download_target in _downloadable_model_names():
             _start_model_download_or_raise(download_target, context="official ACE-Step LM controls")
         raise RuntimeError(
@@ -1060,6 +3125,15 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "song_model": params["song_model"],
         "lm_model": lm_model,
         "requires_lm": needs_lm,
+        "device": params["device"],
+        "dtype": params["dtype"],
+        "use_flash_attention": params["use_flash_attention"],
+        "compile_model": params["compile_model"],
+        "offload_to_cpu": params["offload_to_cpu"],
+        "offload_dit_to_cpu": params["offload_dit_to_cpu"],
+        "lm_device": params["lm_device"],
+        "lm_dtype": params["lm_dtype"],
+        "lm_offload_to_cpu": params["lm_offload_to_cpu"],
         "params": {
             "task_type": params["task_type"],
             "instruction": params["instruction"],
@@ -1105,6 +3179,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "thinking": params["thinking"],
             "lm_temperature": params["lm_temperature"],
             "lm_cfg_scale": params["lm_cfg_scale"],
+            "repetition_penalty": params["lm_repetition_penalty"],
             "lm_top_k": params["lm_top_k"],
             "lm_top_p": params["lm_top_p"],
             "lm_negative_prompt": params["lm_negative_prompt"],
@@ -1121,8 +3196,8 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "config": {
             "batch_size": params["batch_size"],
             "allow_lm_batch": params["allow_lm_batch"],
-            "use_random_seed": params["seed"].strip() in {"", "-1"},
-            "seeds": None if params["seed"].strip() in {"", "-1"} else params["seed"],
+            "use_random_seed": params["use_random_seed"],
+            "seeds": None if params["use_random_seed"] or params["seed"].strip() in {"", "-1"} else params["seed"],
             "lm_batch_chunk_size": params["lm_batch_chunk_size"],
             "constrained_decoding_debug": params["constrained_decoding_debug"],
             "audio_format": params["audio_format"],
@@ -1132,32 +3207,16 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
     }
 
 
-def _copy_official_audio(result_dir: Path, audio: dict[str, Any], index: int, requested_format: str) -> tuple[Path, str]:
-    source = Path(str(audio.get("path") or ""))
-    if not source.is_file():
-        raise RuntimeError("Official ACE-Step runner did not return an audio file")
-    ext = source.suffix.lstrip(".") or ("wav" if requested_format == "wav32" else requested_format)
-    filename = f"take-{index + 1}.{ext}"
-    target = result_dir / filename
-    if source.resolve() != target.resolve():
-        shutil.copyfile(source, target)
-    return target, filename
-
-
-def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
+def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path, timeout: int = 3600) -> dict[str, Any]:
     if not OFFICIAL_ACE_STEP_DIR.exists():
         raise RuntimeError("Official ACE-Step runner requires app/vendor/ACE-Step-1.5. Run Install/Update first.")
     if not OFFICIAL_RUNNER_SCRIPT.exists():
         raise RuntimeError("Official ACE-Step runner script is missing.")
 
-    result_id = uuid.uuid4().hex[:12]
-    result_dir = RESULTS_DIR / result_id
-    official_dir = result_dir / "official"
-    result_dir.mkdir(parents=True, exist_ok=True)
-    official_dir.mkdir(parents=True, exist_ok=True)
-    request_path = result_dir / "official_request.json"
-    response_path = result_dir / "official_response.json"
-    request_path.write_text(json.dumps(_official_request_payload(params, official_dir), indent=2), encoding="utf-8")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    request_path = work_dir / "official_request.json"
+    response_path = work_dir / "official_response.json"
+    request_path.write_text(json.dumps(_jsonable(request_payload), indent=2), encoding="utf-8")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(OFFICIAL_ACE_STEP_DIR)
@@ -1166,54 +3225,212 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     env["XDG_CACHE_HOME"] = str(MODEL_CACHE_DIR / "xdg")
     env["ACESTEP_DISABLE_TQDM"] = "1"
 
-    with handler_lock:
-        _release_handler_state()
+    stdout_path = work_dir / "official_stdout.log"
+    stderr_path = work_dir / "official_stderr.log"
+    print(f"[official_runner] starting action={request_payload.get('action') or 'generate'} work_dir={work_dir}", flush=True)
 
-    completed = subprocess.run(
+    def stream_pipe(pipe: Any, log_path: Path) -> None:
+        with log_path.open("w", encoding="utf-8") as log_file:
+            while True:
+                try:
+                    line = pipe.readline()
+                except ValueError:
+                    break
+                if not line:
+                    break
+                log_file.write(line)
+                log_file.flush()
+                print(line, end="", flush=True)
+
+    process = subprocess.Popen(
         [sys.executable, str(OFFICIAL_RUNNER_SCRIPT), str(request_path), str(response_path)],
         cwd=str(OFFICIAL_ACE_STEP_DIR),
         env=env,
         text=True,
-        capture_output=True,
-        timeout=3600,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=1,
     )
-    (result_dir / "official_stdout.log").write_text(completed.stdout or "", encoding="utf-8")
-    (result_dir / "official_stderr.log").write_text(completed.stderr or "", encoding="utf-8")
-    if completed.returncode != 0:
-        tail = "\n".join((completed.stderr or completed.stdout or "").splitlines()[-20:])
-        raise RuntimeError(f"Official ACE-Step runner failed: {tail or completed.returncode}")
+    readers = [
+        threading.Thread(target=stream_pipe, args=(process.stdout, stdout_path), daemon=True),
+        threading.Thread(target=stream_pipe, args=(process.stderr, stderr_path), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        returncode = process.wait(timeout=30)
+        raise RuntimeError(f"Official ACE-Step runner timed out after {timeout}s") from exc
+    finally:
+        for pipe in [process.stdout, process.stderr]:
+            if pipe:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+        for reader in readers:
+            reader.join(timeout=2)
+    print(f"[official_runner] finished action={request_payload.get('action') or 'generate'} returncode={returncode}", flush=True)
+    if returncode != 0:
+        stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.is_file() else ""
+        stdout_text = stdout_path.read_text(encoding="utf-8") if stdout_path.is_file() else ""
+        tail = "\n".join((stderr_text or stdout_text).splitlines()[-20:])
+        raise RuntimeError(f"Official ACE-Step runner failed: {tail or returncode}")
     if not response_path.is_file():
         raise RuntimeError("Official ACE-Step runner did not write a response file")
+    return json.loads(response_path.read_text(encoding="utf-8"))
 
-    official = json.loads(response_path.read_text(encoding="utf-8"))
+
+def _official_aux_params(body: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "caption": str(body.get("caption") or body.get("prompt") or body.get("description") or ""),
+        "lyrics": str(body.get("lyrics") or ""),
+        "sample_query": str(get_param(body, "sample_query", body.get("query") or body.get("prompt") or body.get("description") or "") or ""),
+        "instrumental": parse_bool(body.get("instrumental"), False),
+        "vocal_language": _language_for_generation(str(get_param(body, "vocal_language", body.get("language") or "unknown") or "unknown")),
+        "bpm": None if str(body.get("bpm") or "").strip().lower() in {"", "auto"} else clamp_int(body.get("bpm"), 120, BPM_MIN, BPM_MAX),
+        "keyscale": str(get_param(body, "key_scale", "") or ""),
+        "timesignature": str(get_param(body, "time_signature", "") or ""),
+        "duration": clamp_float(get_param(body, "duration", body.get("audio_duration")), 60.0, DURATION_MIN, DURATION_MAX),
+        "lm_temperature": clamp_float(body.get("lm_temperature") or body.get("temperature"), 1.0, 0.0, 2.0),
+        "lm_top_k": clamp_int(body.get("lm_top_k") or body.get("top_k"), 40, 0, 200),
+        "lm_top_p": clamp_float(body.get("lm_top_p") or body.get("top_p"), 1.0, 0.0, 1.0),
+        "repetition_penalty": clamp_float(body.get("lm_repetition_penalty") or body.get("repetition_penalty"), 1.0, 0.1, 4.0),
+        "use_constrained_decoding": parse_bool(body.get("use_constrained_decoding"), True),
+        "constrained_decoding_debug": parse_bool(body.get("constrained_decoding_debug"), False),
+    }
+
+
+def _run_official_lm_aux(action: str, body: dict[str, Any], *, audio_codes: str = "") -> dict[str, Any]:
+    lm_model = _concrete_lm_model_or_download(
+        str(get_param(body, "ace_lm_model", "auto") or "auto"),
+        context=f"official ACE-Step {action}",
+    )
+    params = _official_aux_params(body)
+    if audio_codes:
+        params["audio_codes"] = audio_codes
+    if isinstance(body.get("param_obj"), str) and body.get("param_obj"):
+        try:
+            params["user_metadata"] = json.loads(str(body["param_obj"]))
+        except json.JSONDecodeError:
+            params["user_metadata"] = {}
+    else:
+        params["user_metadata"] = {
+            key: value
+            for key, value in {
+                "bpm": params.get("bpm"),
+                "keyscale": params.get("keyscale"),
+                "timesignature": params.get("timesignature"),
+                "duration": params.get("duration"),
+                "language": params.get("vocal_language"),
+            }.items()
+            if value not in [None, "", "unknown"]
+        }
+
+    aux_id = uuid.uuid4().hex[:12]
+    work_dir = RESULTS_DIR / f"official-{action}-{aux_id}"
+    raw = _run_official_runner_request(
+        {
+            "action": action,
+            "base_dir": str(BASE_DIR),
+            "vendor_dir": str(OFFICIAL_ACE_STEP_DIR),
+            "model_cache_dir": str(MODEL_CACHE_DIR),
+            "checkpoint_dir": str(MODEL_CACHE_DIR / "checkpoints"),
+            "save_dir": str(work_dir),
+            "lm_model": lm_model,
+        "lm_backend": _normalize_lm_backend(body.get("lm_backend")),
+            "lm_device": str(body.get("lm_device") or "auto"),
+            "lm_dtype": str(body.get("lm_dtype") or "auto"),
+            "lm_offload_to_cpu": parse_bool(body.get("lm_offload_to_cpu"), False),
+            "params": params,
+        },
+        work_dir,
+    )
+    if not raw.get("success", False):
+        raise RuntimeError(raw.get("error") or raw.get("status_message") or f"{action} failed")
+    raw["engine"] = "official"
+    raw["ace_lm_model"] = lm_model
+    raw["tags"] = raw.get("caption", "")
+    raw["key_scale"] = raw.get("keyscale", "")
+    raw["time_signature"] = raw.get("timesignature", "")
+    raw["language"] = raw.get("language") or raw.get("vocal_language") or params.get("vocal_language")
+    raw["vocal_language"] = raw["language"]
+    raw.setdefault("title", "ACE-Step Sample")
+    return raw
+
+
+def _copy_official_audio(
+    result_dir: Path,
+    audio: dict[str, Any],
+    index: int,
+    requested_format: str,
+    preferred_filename: str = "",
+) -> tuple[Path, str]:
+    source = Path(str(audio.get("path") or ""))
+    if not source.is_file():
+        raise RuntimeError("Official ACE-Step runner did not return an audio file")
+    ext = source.suffix.lstrip(".") or ("wav" if requested_format == "wav32" else requested_format)
+    filename = preferred_filename or f"take-{index + 1}.{ext}"
+    if not filename.endswith(f".{ext}"):
+        filename = f"{safe_filename(filename, f'take-{index + 1}')}.{ext}"
+    target = result_dir / filename
+    if source.resolve() != target.resolve():
+        shutil.copyfile(source, target)
+    return target, filename
+
+
+def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
+    result_id = uuid.uuid4().hex[:12]
+    result_dir = RESULTS_DIR / result_id
+    official_dir = result_dir / "official"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    official_dir.mkdir(parents=True, exist_ok=True)
+
+    with handler_lock:
+        _release_handler_state()
+
+    official = _run_official_runner_request(_official_request_payload(params, official_dir), result_dir)
     if not official.get("success"):
         raise RuntimeError(official.get("error") or "Official ACE-Step generation failed")
 
     audios: list[dict[str, Any]] = []
     for index, audio in enumerate(official.get("audios", [])):
-        path, filename = _copy_official_audio(result_dir, audio, index, params["audio_format"])
+        preferred_filename = _preferred_audio_filename(params, params["song_model"], index)
+        path, filename = _copy_official_audio(result_dir, audio, index, params["audio_format"], preferred_filename)
         audio_id = f"take-{index + 1}"
         audio_params = audio.get("params") or {}
         seed_text = str(audio_params.get("seed") or params["seed"] or "-1")
         item = {
             "id": audio_id,
+            "result_id": result_id,
             "filename": filename,
             "audio_url": _result_public_url(result_id, filename),
             "download_url": _result_public_url(result_id, filename),
+            "artist_name": params["artist_name"],
             "title": params["title"] if len(official.get("audios", [])) == 1 else f"{params['title']} {index + 1}",
             "seed": seed_text,
             "sample_rate": int(audio.get("sample_rate") or 48000),
+            "runner": "official",
+            "payload_warnings": params["payload_warnings"],
         }
         if params["return_audio_codes"] and audio_params.get("audio_codes"):
             item["audio_codes"] = audio_params["audio_codes"]
         if params["save_to_library"]:
             entry = _save_song_entry(
                 {
+                    "artist_name": params["artist_name"],
                     "title": item["title"],
                     "description": params["description"],
                     "tags": params["caption"],
+                    "tag_list": params["tag_list"],
                     "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+                    "caption_source": params["caption_source"],
+                    "lyrics_source": params["lyrics_source"],
+                    "payload_warnings": params["payload_warnings"],
+                    "runner_plan": params["runner_plan"],
+                    "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
                     "key_scale": params["key_scale"],
                     "time_signature": params["time_signature"],
@@ -1231,6 +3448,10 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                     "track_variant": params["album_metadata"].get("track_variant"),
                     "result_id": result_id,
                     "runner": "official",
+                    "album_family_id": params["album_metadata"].get("album_family_id"),
+                    "album_model": params["album_metadata"].get("album_model"),
+                    "album_model_label": params["album_metadata"].get("album_model_label"),
+                    "preferred_audio_file": filename,
                 },
                 path,
             )
@@ -1243,6 +3464,12 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "active_song_model": params["song_model"],
         "runner": "official",
+        "runner_plan": params["runner_plan"],
+        "ui_mode": params["ui_mode"],
+        "tags": params["caption"],
+        "tag_list": params["tag_list"],
+        "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+        "payload_warnings": params["payload_warnings"],
         "official_features": params["official_fields"],
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
         "time_costs": _jsonable(official.get("time_costs", {})),
@@ -1257,6 +3484,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "runner": "official",
         "official_features": params["official_fields"],
         "audios": audios,
+        "params": meta["params"],
+        "payload_warnings": params["payload_warnings"],
     }
 
 
@@ -1267,7 +3496,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         params["lyrics"] = "[Instrumental]"
     if params["requires_official_runner"]:
         return _run_official_generation(params)
-    use_random_seed = params["seed"].strip() in {"", "-1"}
+    use_random_seed = bool(params["use_random_seed"])
     with handler_lock:
         active_song_model = _ensure_song_model(params["song_model"])
         result = handler.generate_music(
@@ -1311,7 +3540,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
 
     for index, audio_dict in enumerate(result.get("audios", [])):
         audio_id = f"take-{index + 1}"
-        filename = f"{audio_id}.{params['audio_format']}"
+        filename = _preferred_audio_filename(params, active_song_model, index)
         path = result_dir / filename
         _write_audio_file(audio_dict, path)
         item_extra = _extra_for_index(extra, index)
@@ -1323,12 +3552,16 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
 
         item = {
             "id": audio_id,
+            "result_id": result_id,
             "filename": filename,
             "audio_url": _result_public_url(result_id, filename),
             "download_url": _result_public_url(result_id, filename),
+            "artist_name": params["artist_name"],
             "title": params["title"] if len(result.get("audios", [])) == 1 else f"{params['title']} {index + 1}",
             "seed": seed_text,
             "sample_rate": int(audio_dict["sample_rate"]),
+            "runner": "fast",
+            "payload_warnings": params["payload_warnings"],
         }
         if params["auto_lrc"]:
             item["lrc"] = _calculate_lrc(item_extra, params["duration"], params["vocal_language"], params["inference_steps"], seed_int)
@@ -1340,10 +3573,17 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         if params["save_to_library"]:
             entry = _save_song_entry(
                 {
+                    "artist_name": params["artist_name"],
                     "title": item["title"],
                     "description": params["description"],
                     "tags": params["caption"],
+                    "tag_list": params["tag_list"],
                     "lyrics": params["lyrics"],
+                    "caption_source": params["caption_source"],
+                    "lyrics_source": params["lyrics_source"],
+                    "payload_warnings": params["payload_warnings"],
+                    "runner_plan": params["runner_plan"],
+                    "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
                     "key_scale": params["key_scale"],
                     "time_signature": params["time_signature"],
@@ -1361,6 +3601,10 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
                     "score": item.get("score"),
                     "lrc": item.get("lrc"),
                     "result_id": result_id,
+                    "album_family_id": params["album_metadata"].get("album_family_id"),
+                    "album_model": params["album_metadata"].get("album_model"),
+                    "album_model_label": params["album_metadata"].get("album_model_label"),
+                    "preferred_audio_file": filename,
                 },
                 path,
             )
@@ -1372,6 +3616,13 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "id": result_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "active_song_model": active_song_model,
+        "runner": "fast",
+        "runner_plan": params["runner_plan"],
+        "ui_mode": params["ui_mode"],
+        "tags": params["caption"],
+        "tag_list": params["tag_list"],
+        "lyrics": params["lyrics"],
+        "payload_warnings": params["payload_warnings"],
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
         "time_costs": _jsonable(extra.get("time_costs", {})),
         "audios": audios,
@@ -1387,7 +3638,171 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "active_song_model": active_song_model,
         "audios": audios,
         "params": meta["params"],
+        "runner": "fast",
+        "payload_warnings": params["payload_warnings"],
         "time_costs": meta["time_costs"],
+    }
+
+
+def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[str, Any], family_id: str) -> dict[str, Any]:
+    model_name = str(model_item.get("model") or "")
+    model_defaults = docs_best_model_settings(model_name)
+    payload = dict(raw_payload or {})
+    payload.update(
+        {
+            "task_type": "text2music",
+            "song_model": model_name,
+            "batch_size": 1,
+            "inference_steps": int(model_item.get("default_steps") or _quality_default_steps(model_name)),
+            "guidance_scale": float(model_item.get("default_guidance_scale") or model_defaults["guidance_scale"]),
+            "shift": float(model_item.get("default_shift") or model_defaults["shift"]),
+            "ace_lm_model": _requested_ace_lm_model(raw_payload),
+            "planner_lm_provider": normalize_provider(raw_payload.get("planner_lm_provider") or raw_payload.get("planner_provider") or "ollama"),
+            "planner_model": str(raw_payload.get("planner_model") or raw_payload.get("planner_ollama_model") or raw_payload.get("ollama_model") or ""),
+            "render_strategy": SONG_PORTFOLIO_STRATEGY,
+            "thinking": parse_bool(raw_payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"]),
+            "use_format": parse_bool(raw_payload.get("use_format"), DOCS_BEST_LM_DEFAULTS["use_format"]),
+            "use_cot_metas": parse_bool(raw_payload.get("use_cot_metas"), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
+            "use_cot_caption": parse_bool(raw_payload.get("use_cot_caption"), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
+            "use_cot_lyrics": parse_bool(raw_payload.get("use_cot_lyrics"), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]),
+            "use_cot_language": parse_bool(raw_payload.get("use_cot_language"), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
+            "use_constrained_decoding": parse_bool(raw_payload.get("use_constrained_decoding"), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
+            "lm_temperature": clamp_float(raw_payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
+            "lm_cfg_scale": clamp_float(raw_payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"], 0.0, 10.0),
+            "lm_top_p": clamp_float(raw_payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"], 0.0, 1.0),
+            "lm_top_k": clamp_int(raw_payload.get("lm_top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"], 0, 200),
+        }
+    )
+    payload.setdefault("seed", "-1")
+    payload.setdefault("audio_format", model_defaults["audio_format"])
+    payload.setdefault("infer_method", model_defaults["infer_method"])
+    payload.setdefault("sampler_mode", model_defaults["sampler_mode"])
+    payload["artist_name"] = _artist_name_from_payload(payload, title=str(payload.get("title") or "Untitled"))
+    album_metadata = payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {}
+    album_metadata = dict(album_metadata)
+    album_metadata.update(
+        {
+            "render_strategy": SONG_PORTFOLIO_STRATEGY,
+            "portfolio_family_id": family_id,
+            "portfolio_model": model_name,
+            "portfolio_model_label": model_item.get("label") or model_name,
+            "portfolio_model_summary": model_item.get("summary") or "",
+            "portfolio_index": int(model_item.get("index") or 0),
+            "portfolio_model_slug": model_item.get("slug") or _model_slug(model_name),
+            "source_payload": _jsonable(raw_payload),
+            "album_model": model_name,
+            "album_model_label": model_item.get("label") or model_name,
+            "track_variant": 1,
+        }
+    )
+    payload["album_metadata"] = album_metadata
+    return payload
+
+
+def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    _ensure_training_idle()
+    raw_payload = dict(raw_payload or {})
+    task_type = normalize_task_type(raw_payload.get("task_type") or "text2music")
+    if task_type != "text2music":
+        raise ValueError("Render all 7 models is only available for Simple/Custom text2music.")
+    installed = _installed_acestep_models()
+    portfolio = album_model_portfolio(installed)
+    missing = [str(item["model"]) for item in portfolio if not item.get("installed")]
+    family_id = raw_payload.get("portfolio_family_id") or f"songfam-{uuid.uuid4().hex[:10]}"
+    logs = [
+        "Render all 7 models requested.",
+        f"Portfolio family: {family_id}",
+        f"Models: {', '.join(ALBUM_MODEL_PORTFOLIO_MODELS)}",
+    ]
+    if missing:
+        payload = _album_missing_download_payload(
+            missing,
+            logs,
+            render_strategy=SONG_PORTFOLIO_STRATEGY,
+            portfolio_family_id=family_id,
+            portfolio_models=portfolio,
+            source_payload=_jsonable(raw_payload),
+        )
+        payload["message"] = (
+            f"AceJAM started downloading {len(missing)} missing model(s). "
+            "The 7-model song render will resume after install."
+        )
+        return payload
+
+    validation_payload = _portfolio_generation_payload(raw_payload, portfolio[0], str(family_id))
+    validation = _validate_generation_payload(validation_payload)
+    if not validation.get("valid", False):
+        errors = validation.get("field_errors") or {}
+        message = "; ".join(f"{field}: {value}" for field, value in errors.items()) or validation.get("error") or "Payload is invalid"
+        raise ValueError(message)
+
+    model_results: list[dict[str, Any]] = []
+    audios: list[dict[str, Any]] = []
+    success_count = 0
+    for model_item in portfolio:
+        model_name = str(model_item["model"])
+        payload = _portfolio_generation_payload(raw_payload, model_item, str(family_id))
+        try:
+            result = _run_advanced_generation(payload)
+            model_audios = []
+            for audio in result.get("audios", []):
+                enriched = dict(audio)
+                enriched.update(
+                    {
+                        "render_strategy": SONG_PORTFOLIO_STRATEGY,
+                        "portfolio_family_id": family_id,
+                        "portfolio_model": model_name,
+                        "portfolio_model_label": model_item.get("label") or model_name,
+                        "portfolio_index": model_item.get("index"),
+                        "album_model": model_name,
+                        "album_model_label": model_item.get("label") or model_name,
+                    }
+                )
+                model_audios.append(enriched)
+                audios.append(enriched)
+            model_results.append(
+                {
+                    "success": True,
+                    "portfolio_model": model_name,
+                    "portfolio_model_label": model_item.get("label") or model_name,
+                    "portfolio_index": model_item.get("index"),
+                    "result_id": result.get("result_id"),
+                    "audios": model_audios,
+                    "params": result.get("params") or payload,
+                    "runner": result.get("runner"),
+                }
+            )
+            success_count += 1
+            logs.append(f"Rendered {model_item.get('label') or model_name}: {len(model_audios)} take(s).")
+        except ModelDownloadStarted:
+            raise
+        except Exception as exc:
+            model_results.append(
+                {
+                    "success": False,
+                    "portfolio_model": model_name,
+                    "portfolio_model_label": model_item.get("label") or model_name,
+                    "portfolio_index": model_item.get("index"),
+                    "error": str(exc),
+                    "audios": [],
+                }
+            )
+            logs.append(f"Failed {model_item.get('label') or model_name}: {exc}")
+
+    success = success_count == len(portfolio)
+    return {
+        "success": success,
+        "error": "" if success else f"Portfolio incomplete: {success_count}/{len(portfolio)} model renders succeeded.",
+        "render_strategy": SONG_PORTFOLIO_STRATEGY,
+        "portfolio_family_id": family_id,
+        "portfolio_models": portfolio,
+        "model_results": model_results,
+        "audios": audios,
+        "active_song_model": "all 7 models",
+        "runner": "portfolio",
+        "params": validation.get("normalized_payload") or validation_payload,
+        "payload_warnings": validation.get("payload_warnings") or [],
+        "logs": logs,
     }
 
 
@@ -1401,18 +3816,31 @@ def compose(
     composer_profile: str = "auto",
     instrumental: bool = False,
     ollama_model: str = "",
+    planner_lm_provider: str = "ollama",
+    planner_model: str = "",
 ) -> str:
     """Compose song spec (title, tags, lyrics, etc.) without generating music."""
+    provider = normalize_provider(planner_lm_provider)
+    selected_model = str(planner_model or (ollama_model if provider == "ollama" else "")).strip()
     try:
+        if selected_model:
+            selected_model = _resolve_local_llm_model_selection(provider, selected_model, "chat", "songwriting")
         composed = composer.compose(
             description=description,
             audio_duration=audio_duration,
             profile=composer_profile,
             instrumental=instrumental,
             ollama_model=ollama_model or None,
+            planner_lm_provider=provider,
+            planner_model=selected_model or None,
         )
         return json.dumps(composed)
+    except OllamaPullStarted:
+        raise
     except Exception as exc:
+        if provider == "ollama" and selected_model and _ollama_error_is_missing_model(exc):
+            job = _start_ollama_pull(selected_model, reason="songwriting", kind="chat")
+            raise OllamaPullStarted(selected_model, job, f"{selected_model} is missing; pull started for songwriting.") from exc
         print(f"[compose ERROR] {type(exc).__name__}: {exc}")
         print(traceback.format_exc())
         raise
@@ -1461,12 +3889,13 @@ def create(
         )
         _log_block("create.generated_lyrics", composed["lyrics"])
         _cleanup_accelerator_memory()
+        create_defaults = docs_best_model_settings(_normalize_song_model(song_model))
 
         print(
             "[create->acestep] "
             f"requested_song_model={song_model} "
             f"audio_duration={audio_duration} "
-            f"infer_steps=8 "
+            f"infer_steps={create_defaults['inference_steps']} "
             f"seed={seed} "
             f"language={composed['language']} "
             f"bpm={composed['bpm']} "
@@ -1480,13 +3909,14 @@ def create(
             prompt=composed["tags"],
             lyrics=composed["lyrics"],
             audio_duration=audio_duration,
-            infer_steps=8,
+            infer_steps=int(create_defaults["inference_steps"]),
             seed=seed,
             language=composed["language"],
             song_model=song_model,
             bpm=composed["bpm"],
             key_scale=composed.get("key_scale", ""),
             time_signature=composed.get("time_signature", ""),
+            guidance_scale=float(create_defaults["guidance_scale"]),
         )
         inference_elapsed = time.perf_counter() - inference_started_at
         total_elapsed = time.perf_counter() - started_at
@@ -1501,6 +3931,7 @@ def create(
 
         result = {
             "audio": audio_b64,
+            "artist_name": composed.get("artist_name") or derive_artist_name(composed["title"], description, composed["tags"]),
             "title": composed["title"],
             "tags": composed["tags"],
             "lyrics": composed["lyrics"],
@@ -1518,11 +3949,18 @@ def create(
             song_dir = SONGS_DIR / song_id
             song_dir.mkdir(parents=True, exist_ok=True)
 
-            audio_file = f"{song_id}.wav"
+            audio_file = _numbered_audio_filename(
+                composed["title"],
+                active_song_model,
+                "wav",
+                artist_name=result["artist_name"],
+                variant=1,
+            )
             (song_dir / audio_file).write_bytes(wav_bytes)
 
             meta = {
                 "id": song_id,
+                "artist_name": result["artist_name"],
                 "title": composed["title"],
                 "description": description,
                 "tags": composed["tags"],
@@ -1555,8 +3993,8 @@ def generate(
     prompt: str,
     lyrics: str,
     audio_duration: float = 60.0,
-    infer_step: int = 8,
-    guidance_scale: float = 7.0,
+    infer_step: int = 0,
+    guidance_scale: float = 0.0,
     seed: int = -1,
     song_model: str = "auto",
     bpm: int | None = None,
@@ -1567,6 +4005,16 @@ def generate(
 ) -> str:
     del lora_weight
     try:
+        repaired = normalize_generation_text_fields(
+            {
+                "caption": prompt,
+                "lyrics": lyrics,
+                "instrumental": str(lyrics or "").strip().lower() == "[instrumental]",
+            },
+            task_type="text2music",
+        )
+        prompt = repaired["caption"]
+        lyrics = repaired["lyrics"]
         if lora_name_or_path.strip():
             with handler_lock:
                 status_msg = handler.load_lora(lora_name_or_path.strip())
@@ -1592,8 +4040,7 @@ def generate(
 
 @app.api(name="delete_song", concurrency_limit=4)
 def delete_song(song_id: str) -> str:
-    import shutil
-    song_dir = SONGS_DIR / song_id
+    song_dir = SONGS_DIR / safe_id(song_id)
     if not song_dir.exists():
         return json.dumps({"success": False, "error": "not found"})
     # Remove from in-memory feed
@@ -1615,12 +4062,41 @@ def config() -> str:
     installed_models = _installed_acestep_models()
     installed_lms = _installed_lm_models()
     model_profiles = model_profiles_for_models(available_models, installed_models)
-    lm_profiles = lm_model_profiles_for_models(ACE_STEP_LM_MODELS, installed_lms)
+    for model_name, profile in model_profiles.items():
+        profile.update(_model_runtime_status(model_name))
+    lm_models = list(dict.fromkeys([*ACE_STEP_LM_MODELS, *sorted(name for name in installed_lms if name not in {"auto", "none"})]))
+    lm_profiles = lm_model_profiles_for_models(lm_models, installed_lms)
+    for lm_name, profile in lm_profiles.items():
+        if lm_name not in {"auto", "none"}:
+            job = _model_download_job(lm_name)
+            profile.update(
+                {
+                    "downloadable": lm_name in _downloadable_model_names(),
+                    "downloading": bool(job and job.get("state") in {"queued", "running"}),
+                    "download_job": _jsonable(job),
+                    "status": "installed" if lm_name in installed_lms else "download_required",
+                }
+            )
     return json.dumps(
         {
+            "app_version": APP_UI_VERSION,
+            "ui_hash": _app_ui_hash(),
+            "backend_hash": _backend_code_hash(),
+            "payload_contract_version": PAYLOAD_CONTRACT_VERSION,
             "active_song_model": ACTIVE_ACE_STEP_MODEL,
             "default_song_model": _default_acestep_checkpoint(),
+            "default_planner_lm_provider": "ollama",
+            "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
+            "default_album_embedding_model": DEFAULT_ALBUM_EMBEDDING_MODEL,
+            "default_album_planner_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
+            "default_album_embedding_provider": "ollama",
+            "local_llm": {
+                "default_provider": "ollama",
+                "ollama_host": _ollama_host(),
+                "lmstudio_host": lmstudio_model_catalog().get("host", ""),
+            },
             "recommended_song_model": recommended_song_model(installed_models),
+            "preferred_lm_model": ACE_LM_PREFERRED_MODEL,
             "recommended_lm_model": recommended_lm_model(installed_lms),
             "available_song_models": available_models,
             "installed_song_models": sorted(installed_models),
@@ -1631,13 +4107,16 @@ def config() -> str:
             "model_capabilities": _model_capabilities(),
             "model_downloads": {name: _model_download_job(name) for name in sorted(_downloadable_model_names())},
             "official_runner": _official_runner_status(),
+            "official_ace_step_manifest": official_manifest(),
+            "official_parity": _official_parity_payload()["manifest"],
             "ui_schema": studio_ui_schema(),
             "songwriting_toolkit": _songwriting_toolkit_payload(),
             "task_types": TASK_TYPES,
             "track_names": TRACK_NAMES,
             "valid_languages": VALID_LANGUAGES,
             "valid_time_signatures": VALID_TIME_SIGNATURES,
-            "lm_models": ACE_STEP_LM_MODELS,
+            "lm_models": lm_models,
+            "ace_lm": _ace_lm_status_payload(),
             "lora": handler.get_lora_status(),
             "trainer": training_manager.status(),
         }
@@ -1647,19 +4126,7 @@ def config() -> str:
 @app.api(name="ollama_models", concurrency_limit=8)
 def ollama_models() -> str:
     """List available Ollama models using the official ollama library."""
-    try:
-        import ollama
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        client = ollama.Client(host=ollama_url)
-        response = client.list()
-        models = [
-            {"name": m.model, "size_gb": round(m.size / 1e9, 1)}
-            for m in response.models
-        ]
-        return json.dumps({"models": [m["name"] for m in models], "details": models})
-    except Exception as exc:
-        print(f"[ollama_models ERROR] {exc}")
-        return json.dumps({"models": [], "error": str(exc)})
+    return json.dumps(_ollama_model_catalog())
 
 
 @app.api(name="generate_album", concurrency_limit=1, time_limit=3600)
@@ -1667,43 +4134,59 @@ def generate_album(
     concept: str,
     num_tracks: int = 5,
     track_duration: float = 180.0,
-    ollama_model: str = "llama3.2",
+    ollama_model: str = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
     language: str = "en",
     song_model: str = "auto",
-    embedding_model: str = "nomic-embed-text",
-    ace_lm_model: str = "auto",
+    embedding_model: str = DEFAULT_ALBUM_EMBEDDING_MODEL,
+    ace_lm_model: str = ACE_LM_PREFERRED_MODEL,
     request_json: str = "",
+    planner_lm_provider: str = "ollama",
+    embedding_lm_provider: str = "ollama",
 ) -> str:
     """Plan album with tools/CrewAI, then generate through the advanced engine."""
     logs: list[str] = []
     try:
         request_payload = json.loads(request_json or "{}")
+        if "ace_lm_model" not in request_payload and ace_lm_model:
+            request_payload["ace_lm_model"] = ace_lm_model
+        ace_lm_model = _requested_ace_lm_model(request_payload)
+        request_payload["ace_lm_model"] = ace_lm_model
+        album_job_id = str(request_payload.get("album_job_id") or "")
+        planner_lm_provider = normalize_provider(request_payload.get("planner_lm_provider") or planner_lm_provider or "ollama")
+        embedding_lm_provider = normalize_provider(request_payload.get("embedding_lm_provider") or request_payload.get("embedding_provider") or embedding_lm_provider or planner_lm_provider)
+        if not ollama_model:
+            ollama_model = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_lm_provider == "ollama" else ""
+        if not embedding_model:
+            embedding_model = DEFAULT_ALBUM_EMBEDDING_MODEL
+        track_duration = parse_duration_seconds(request_payload.get("track_duration") or request_payload.get("duration") or track_duration, track_duration)
         album_options = _album_options_from_payload(request_payload, song_model=song_model)
         planned_tracks = _json_list(request_payload.get("tracks") or request_payload.get("planned_tracks"))
-        model_info = choose_song_model(
-            _installed_acestep_models(),
-            str(album_options.get("song_model_strategy") or "best_installed"),
-            str(album_options.get("requested_song_model") or "auto"),
-        )
-        if not model_info.get("ok"):
-            download_model = _album_download_candidate(model_info, album_options)
-            if download_model:
-                job = _start_model_download(download_model)
-                logs.append(str(model_info.get("error") or "Album model is not installed."))
-                return json.dumps(
-                    _download_started_payload(
-                        download_model,
-                        job,
-                        logs,
-                        tracks=planned_tracks,
-                        album_model_strategy=album_options.get("song_model_strategy"),
-                    )
+        strategy = str(album_options.get("song_model_strategy") or "all_models_album")
+        album_models = album_models_for_strategy(strategy, _installed_acestep_models())
+        if not album_models:
+            raise RuntimeError(f"No album models resolved for strategy {strategy}.")
+        missing_models = [item["model"] for item in album_models if item.get("model") not in _installed_acestep_models()]
+        if missing_models:
+            downloadable_missing = [model for model in missing_models if model in _downloadable_model_names()]
+            if len(downloadable_missing) != len(missing_models):
+                blocked = sorted(set(missing_models) - set(downloadable_missing))
+                raise RuntimeError(f"Album model(s) cannot be downloaded: {', '.join(blocked)}")
+            logs.append(f"Album strategy {strategy} needs {len(album_models)} model album(s).")
+            logs.append(f"Missing model(s): {', '.join(downloadable_missing)}")
+            return json.dumps(
+                _album_missing_download_payload(
+                    downloadable_missing,
+                    logs,
+                    tracks=planned_tracks,
+                    album_model_strategy=strategy,
+                    album_model_portfolio=album_models,
                 )
-            raise RuntimeError(str(model_info.get("error") or "No installed album model available"))
+            )
 
         from album_crew import plan_album as _plan_album
 
         logs.append("Phase 1: Planning album with Hit Album Agent tools...")
+        _album_job_log(album_job_id, "Phase 1: Planning album with Hit Album Agent tools.", status="Planning album", progress=3)
         result = _plan_album(
             concept=concept,
             num_tracks=num_tracks,
@@ -1714,134 +4197,388 @@ def generate_album(
             options=album_options,
             use_crewai=not planned_tracks,
             input_tracks=planned_tracks if planned_tracks else None,
+            planner_provider=planner_lm_provider,
+            embedding_provider=embedding_lm_provider,
         )
         tracks = result.get("tracks", [])
         logs.extend(result.get("logs", []))
+        actual_memory = ((result.get("toolkit_report") or {}).get("memory") or {}) if isinstance(result.get("toolkit_report"), dict) else {}
+        if actual_memory.get("embedding_model"):
+            embedding_model = str(actual_memory.get("embedding_model") or embedding_model)
+        if album_job_id:
+            _set_album_job(
+                album_job_id,
+                logs=result.get("logs", []),
+                status="Album plan ready",
+                progress=8,
+                planner_model=ollama_model,
+                planner_provider=planner_lm_provider,
+                embedding_model=embedding_model,
+                embedding_provider=embedding_lm_provider,
+            )
 
         if not result.get("success", True) or not tracks or "error" in tracks[0]:
             logs.append("ERROR: Album planning failed")
             return json.dumps({"tracks": tracks, "logs": logs, "success": False, "error": result.get("error") or "Planning failed"})
 
         logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
-        logs.append(f"ACE-Step LM profile: {ace_lm_model}")
-        logs.append(f"Model strategy: {album_options.get('song_model_strategy')} -> {model_info.get('model')}")
+        logs.append(
+            f"Planner LM: {provider_label(planner_lm_provider)} ({ollama_model}); ACE-Step LM "
+            f"{ace_lm_model if ace_lm_model != 'none' else 'off unless official LM controls are enabled'}."
+        )
+        logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
         logs.append("---")
-        logs.append("Phase 2: Generating music for each track with /generate_advanced...")
+        logs.append("Phase 2: Generating every track through the album model portfolio...")
+        _album_job_log(
+            album_job_id,
+            "Phase 2: Generating every track through the album model portfolio.",
+            status="Generating model albums",
+            progress=10,
+            expected_count=len(tracks) * len(album_models),
+        )
 
-        album_id = uuid.uuid4().hex[:12]
+        album_family_id = uuid.uuid4().hex[:12]
+        album_family_title = safe_filename(concept[:48] or "album", "album")
         generated_audios: list[dict[str, Any]] = []
-        variants = clamp_int(album_options.get("track_variants"), 1, 1, MAX_BATCH_SIZE)
-        for i, track in enumerate(tracks):
-            track_title = track.get("title", f"Track {i+1}")
-            track_model = str(track.get("song_model") or model_info.get("model") or song_model)
+        model_albums: list[dict[str, Any]] = []
+        default_variants = clamp_int(album_options.get("track_variants"), 1, 1, MAX_BATCH_SIZE)
+        for base_track in tracks:
+            base_track["model_results"] = []
+            base_track["audios"] = []
+
+        for model_index, model_item in enumerate(album_models, start=1):
+            track_model = str(model_item["model"])
+            album_model_slug = safe_filename(str(model_item.get("slug") or _model_slug(track_model)), _model_slug(track_model))
+            album_id = f"{album_family_id}-{album_model_slug}"
+            logs.append(f"Model album {model_index}/{len(album_models)}: {model_item.get('label') or track_model} ({track_model})")
+            _album_job_log(
+                album_job_id,
+                f"Model album {model_index}/{len(album_models)}: {model_item.get('label') or track_model} ({track_model})",
+                current_model_album=track_model,
+                status=f"Generating {model_item.get('label') or track_model}",
+            )
+            album_tracks: list[dict[str, Any]] = []
+            album_audios: list[dict[str, Any]] = []
+            album_success_count = 0
+
             if track_model not in _installed_acestep_models():
                 if track_model in _downloadable_model_names():
-                    job = _start_model_download(track_model)
-                    logs.append(f"Track {i+1} needs {track_model}. Starting download instead of failing.")
+                    logs.append(f"Model album {track_model} is missing. Starting download instead of falling back.")
                     return json.dumps(
-                        _download_started_payload(
-                            track_model,
-                            job,
+                        _album_missing_download_payload(
+                            [track_model],
                             logs,
                             tracks=tracks,
-                            album_model_strategy=album_options.get("song_model_strategy"),
+                            album_family_id=album_family_id,
+                            album_id=album_id,
+                            album_model_strategy=strategy,
+                            album_model_portfolio=album_models,
                         )
                     )
                 raise RuntimeError(f"{track_model} is not installed and is not in the known ACE-Step download list.")
-            logs.append(f"Generating track {i+1}/{len(tracks)}: {track_title} ({variants} variant{'s' if variants != 1 else ''})...")
-            print(f"[generate_album] Generating track {i+1}/{len(tracks)}: {track_title}")
 
-            try:
-                _cleanup_accelerator_memory()
-                generation_payload = {
-                    "task_type": "text2music",
-                    "title": track_title,
-                    "description": track.get("description", ""),
-                    "caption": track.get("tags", ""),
-                    "lyrics": track.get("lyrics", ""),
-                    "duration": track.get("duration", track_duration),
-                    "bpm": track.get("bpm"),
-                    "key_scale": track.get("key_scale", ""),
-                    "time_signature": track.get("time_signature", "4"),
-                    "vocal_language": track.get("language", language),
-                    "batch_size": variants,
-                    "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
-                    "song_model": track_model,
-                    "ace_lm_model": ace_lm_model,
-                    "inference_steps": clamp_int(request_payload.get("inference_steps"), 8 if "turbo" in track_model else (50 if "sft" in track_model else 32), 1, 200),
-                    "guidance_scale": clamp_float(request_payload.get("guidance_scale"), 7.0, 1.0, 15.0),
-                    "shift": clamp_float(request_payload.get("shift"), 3.0 if "turbo" in track_model else 1.0, 1.0, 5.0),
-                    "infer_method": str(request_payload.get("infer_method") or "ode"),
-                    "use_adg": parse_bool(request_payload.get("use_adg"), False),
-                    "cfg_interval_start": clamp_float(request_payload.get("cfg_interval_start"), 0.0, 0.0, 1.0),
-                    "cfg_interval_end": clamp_float(request_payload.get("cfg_interval_end"), 1.0, 0.0, 1.0),
-                    "audio_format": str(request_payload.get("audio_format") or "wav"),
-                    "auto_score": parse_bool(request_payload.get("auto_score"), False),
-                    "auto_lrc": parse_bool(request_payload.get("auto_lrc"), False),
-                    "return_audio_codes": parse_bool(request_payload.get("return_audio_codes"), False),
-                    "save_to_library": parse_bool(request_payload.get("save_to_library"), True),
-                    "album_metadata": {
-                        "album_id": album_id,
-                        "album_concept": concept,
-                        "album_options": _jsonable(album_options),
-                        "album_toolkit_report": _jsonable(result.get("toolkit_report", {})),
-                        "track_number": track.get("track_number", i + 1),
-                        "track_variant": "batch",
-                        "tool_report": _jsonable(track.get("tool_report", {})),
-                        "tag_list": track.get("tag_list", []),
-                    },
+            for i, base_track in enumerate(tracks):
+                track = dict(base_track)
+                track.pop("model_results", None)
+                track.pop("audios", None)
+                track_title = track.get("title", f"Track {i+1}")
+                track_artist = normalize_artist_name(
+                    track.get("artist_name") or track.get("artist"),
+                    derive_artist_name(track_title, concept, track.get("tags") or track.get("caption") or "", i),
+                )
+                track["artist_name"] = track_artist
+                track["song_model"] = track_model
+                track["album_model"] = track_model
+                track["album_model_label"] = model_item.get("label") or track_model
+                track["final_model_policy"] = {
+                    "model": track_model,
+                    "model_label": model_item.get("label") or track_model,
+                    "locked": True,
+                    "strategy": strategy,
+                    "reason": "This model-specific album render uses the fixed portfolio model without fallback.",
                 }
-                generation_result = _run_advanced_generation(generation_payload)
-                if not generation_result.get("success"):
-                    raise RuntimeError(generation_result.get("error") or "Track generation failed")
+                raw_model_settings = track.get("model_render_settings") or track.get("per_model_settings") or {}
+                model_render_settings = {}
+                if isinstance(raw_model_settings, dict):
+                    model_render_settings = raw_model_settings.get(track_model) or raw_model_settings.get(album_model_slug) or {}
+                    if not isinstance(model_render_settings, dict):
+                        model_render_settings = {}
+                variants = clamp_int(track.get("track_variants", default_variants), default_variants, 1, MAX_BATCH_SIZE)
+                logs.append(f"  Track {i+1}/{len(tracks)}: {track_title} ({variants} variant{'s' if variants != 1 else ''})")
+                print(f"[generate_album] Generating {album_id} track {i+1}/{len(tracks)}: {track_title}")
+                _album_job_log(
+                    album_job_id,
+                    f"Generating {album_id} track {i+1}/{len(tracks)}: {track_title}",
+                    current_model_album=track_model,
+                    current_track=f"{i + 1}/{len(tracks)} {track_title}",
+                    status=f"{model_item.get('label') or track_model}: track {i + 1}/{len(tracks)}",
+                    progress=10 + int(((model_index - 1) * len(tracks) + i) / max(1, len(album_models) * len(tracks)) * 85),
+                )
 
-                track["result_id"] = generation_result.get("result_id")
-                track["active_song_model"] = generation_result.get("active_song_model")
-                track["audios"] = generation_result.get("audios", [])
-                if track["audios"]:
-                    first_audio = track["audios"][0]
-                    track["song_id"] = first_audio.get("song_id")
-                    track["audio_url"] = first_audio.get("audio_url") or first_audio.get("library_url")
-                for audio_index, audio in enumerate(track["audios"]):
-                    if audio.get("song_id"):
-                        _merge_song_album_metadata(
-                            audio["song_id"],
-                            {
-                                "album_concept": concept,
-                                "album_id": album_id,
-                                "track_number": track.get("track_number", i + 1),
-                                "track_variant": audio_index + 1,
-                                "album_toolkit_report": result.get("toolkit_report", {}),
-                                "tool_report": track.get("tool_report", {}),
-                                "tag_list": track.get("tag_list", []),
-                            },
-                        )
-                generated_audios.extend(track["audios"])
-                track["generated"] = True
+                try:
+                    _cleanup_accelerator_memory()
+                    track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
+                    track_lm_enabled = _requested_ace_lm_model({"ace_lm_model": track_lm_model}) != "none"
+                    model_defaults = docs_best_model_settings(track_model)
+                    generation_payload = {
+                        "task_type": "text2music",
+                        "ui_mode": "album",
+                        "artist_name": track_artist,
+                        "title": track_title,
+                        "description": track.get("description", ""),
+                        "caption": track.get("tags") or track.get("caption") or "",
+                        "lyrics": track.get("lyrics", ""),
+                        "duration": track.get("duration") or track_duration,
+                        "bpm": track.get("bpm") or request_payload.get("bpm"),
+                        "key_scale": track.get("key_scale") or request_payload.get("key_scale") or "",
+                        "time_signature": track.get("time_signature") or request_payload.get("time_signature") or "4",
+                        "vocal_language": track.get("language") or request_payload.get("vocal_language") or language,
+                        "batch_size": variants,
+                        "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
+                        "song_model": track_model,
+                        "ace_lm_model": track_lm_model,
+                        "global_caption": request_payload.get("global_caption") or concept,
+                        "inference_steps": clamp_int(
+                            model_render_settings.get("inference_steps", model_item.get("default_steps")),
+                            int(model_item.get("default_steps") or _quality_default_steps(track_model)),
+                            1,
+                            200,
+                        ),
+                        "guidance_scale": clamp_float(
+                            model_render_settings.get("guidance_scale", model_item.get("default_guidance_scale")),
+                            float(model_item.get("default_guidance_scale") or model_defaults["guidance_scale"]),
+                            1.0,
+                            15.0,
+                        ),
+                        "shift": clamp_float(
+                            model_render_settings.get("shift", model_item.get("default_shift")),
+                            float(model_item.get("default_shift") or model_defaults["shift"]),
+                            1.0,
+                            5.0,
+                        ),
+                        "infer_method": str(model_render_settings.get("infer_method") or track.get("infer_method") or request_payload.get("infer_method") or model_defaults["infer_method"]),
+                        "sampler_mode": str(model_render_settings.get("sampler_mode") or track.get("sampler_mode") or request_payload.get("sampler_mode") or model_defaults["sampler_mode"]),
+                        "use_adg": parse_bool(model_render_settings.get("use_adg", track.get("use_adg", request_payload.get("use_adg"))), False),
+                        "cfg_interval_start": clamp_float(model_render_settings.get("cfg_interval_start", track.get("cfg_interval_start", request_payload.get("cfg_interval_start"))), 0.0, 0.0, 1.0),
+                        "cfg_interval_end": clamp_float(model_render_settings.get("cfg_interval_end", track.get("cfg_interval_end", request_payload.get("cfg_interval_end"))), 1.0, 0.0, 1.0),
+                        "timesteps": model_render_settings.get("timesteps") or track.get("timesteps") or request_payload.get("timesteps") or "",
+                        "audio_format": str(track.get("audio_format") or request_payload.get("audio_format") or model_defaults["audio_format"]),
+                        "mp3_bitrate": str(track.get("mp3_bitrate") or request_payload.get("mp3_bitrate") or "128k"),
+                        "mp3_sample_rate": track.get("mp3_sample_rate") or request_payload.get("mp3_sample_rate") or 48000,
+                        "auto_score": parse_bool(track.get("auto_score", request_payload.get("auto_score")), False),
+                        "auto_lrc": parse_bool(track.get("auto_lrc", request_payload.get("auto_lrc")), False),
+                        "return_audio_codes": parse_bool(track.get("return_audio_codes", request_payload.get("return_audio_codes")), False),
+                        "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
+                        "thinking": parse_bool(track.get("thinking", request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
+                        "use_format": parse_bool(track.get("use_format", request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
+                        "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85, 0.0, 2.0),
+                        "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
+                        "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
+                        "lm_top_p": clamp_float(track.get("lm_top_p", request_payload.get("lm_top_p")), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if track_lm_enabled else 0.9, 0.0, 1.0),
+                        "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
+                        "use_cot_metas": parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
+                        "use_cot_caption": parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
+                        "use_cot_lyrics": parse_bool(track.get("use_cot_lyrics", request_payload.get("use_cot_lyrics")), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if track_lm_enabled else False),
+                        "use_cot_language": parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
+                        "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
+                        "album_metadata": {
+                            "album_family_id": album_family_id,
+                            "album_family_title": album_family_title,
+                            "album_id": album_id,
+                            "artist_name": track_artist,
+                            "album_model": track_model,
+                            "album_model_slug": album_model_slug,
+                            "album_model_label": model_item.get("label") or track_model,
+                            "album_model_summary": model_item.get("summary") or "",
+                            "album_concept": concept,
+                            "album_options": _jsonable(album_options),
+                            "album_model_portfolio": _jsonable(album_models),
+                            "album_toolkit_report": _jsonable(result.get("toolkit_report", {})),
+                            "track_number": track.get("track_number", i + 1),
+                            "track_variant": "batch",
+                            "tool_report": _jsonable(track.get("tool_report", {})),
+                            "production_team": _jsonable(track.get("production_team", {})),
+                            "model_render_settings": _jsonable(model_render_settings),
+                            "final_model_policy": _jsonable(track.get("final_model_policy", {})),
+                            "tag_list": track.get("tag_list", []),
+                        },
+                    }
+                    payload_validation = _validate_generation_payload(generation_payload)
+                    track["payload_validation"] = payload_validation
+                    track["payload_warnings"] = payload_validation.get("payload_warnings", [])
+                    if not payload_validation.get("valid"):
+                        raise ValueError(f"Invalid track payload: {payload_validation.get('field_errors')}")
+                    generation_result = _run_advanced_generation(generation_payload)
+                    if not generation_result.get("success"):
+                        raise RuntimeError(generation_result.get("error") or "Track generation failed")
 
-                logs.append(f"  Track {i+1} done: {track_title}")
-                print(f"[generate_album] Track {i+1} generated: {track.get('result_id')}")
+                    track["result_id"] = generation_result.get("result_id")
+                    track["active_song_model"] = generation_result.get("active_song_model")
+                    track["audios"] = generation_result.get("audios", [])
+                    track["payload_warnings"] = generation_result.get("payload_warnings", [])
+                    track["runner"] = generation_result.get("runner")
+                    track["generation_params"] = generation_result.get("params", {})
+                    track["album_id"] = album_id
+                    track["album_family_id"] = album_family_id
+                    if track["audios"]:
+                        first_audio = track["audios"][0]
+                        track["song_id"] = first_audio.get("song_id")
+                        track["audio_url"] = first_audio.get("audio_url") or first_audio.get("library_url")
+                    for audio_index, audio in enumerate(track["audios"]):
+                        audio["artist_name"] = track_artist
+                        audio["album_id"] = album_id
+                        audio["album_family_id"] = album_family_id
+                        audio["album_model"] = track_model
+                        audio["album_model_label"] = model_item.get("label") or track_model
+                        if audio.get("song_id"):
+                            _merge_song_album_metadata(
+                                audio["song_id"],
+                                {
+                                    "artist_name": track_artist,
+                                    "album_concept": concept,
+                                    "album_family_id": album_family_id,
+                                    "album_id": album_id,
+                                    "album_model": track_model,
+                                    "album_model_label": model_item.get("label") or track_model,
+                                    "track_number": track.get("track_number", i + 1),
+                                    "track_variant": audio_index + 1,
+                                    "album_toolkit_report": result.get("toolkit_report", {}),
+                                    "tool_report": track.get("tool_report", {}),
+                                    "production_team": track.get("production_team", {}),
+                                    "final_model_policy": track.get("final_model_policy", {}),
+                                    "tag_list": track.get("tag_list", []),
+                                },
+                            )
+                    generated_audios.extend(track["audios"])
+                    album_audios.extend(track["audios"])
+                    track["generated"] = True
+                    album_success_count += 1
+                    base_track["model_results"].append(_jsonable(track))
+                    base_track["audios"].extend(_jsonable(track["audios"]))
 
-            except Exception as track_exc:
-                track["generated"] = False
-                track["error"] = str(track_exc)
-                logs.append(f"  Track {i+1} FAILED: {track_exc}")
-                print(f"[generate_album] Track {i+1} failed: {track_exc}")
-            finally:
-                _cleanup_accelerator_memory()
+                    logs.append(f"    Done: {track_title} -> {track.get('result_id')}")
+                    print(f"[generate_album] {album_id} track {i+1} generated: {track.get('result_id')}")
+                    _album_job_log(
+                        album_job_id,
+                        f"Generated {album_id} track {i+1}: {track_title}",
+                        generated_count=len(generated_audios),
+                        progress=10 + int(((model_index - 1) * len(tracks) + i + 1) / max(1, len(album_models) * len(tracks)) * 85),
+                    )
 
-        generated_count = sum(1 for t in tracks if t.get("generated"))
+                except Exception as track_exc:
+                    track["generated"] = False
+                    track["error"] = str(track_exc)
+                    base_track["model_results"].append(_jsonable(track))
+                    logs.append(f"    FAILED: {track_exc}")
+                    print(f"[generate_album] {album_id} track {i+1} failed: {track_exc}")
+                    _album_job_log(
+                        album_job_id,
+                        f"FAILED {album_id} track {i+1}: {track_exc}",
+                        errors=[str(track_exc)],
+                    )
+                finally:
+                    _cleanup_accelerator_memory()
+
+                album_tracks.append(track)
+
+            album_success = album_success_count == len(tracks)
+            album_status = "completed" if album_success else "incomplete"
+            album_manifest = _write_album_manifest(
+                album_id,
+                {
+                    "album_family_id": album_family_id,
+                    "album_concept": concept,
+                    "album_model": track_model,
+                    "album_model_label": model_item.get("label") or track_model,
+                    "album_model_summary": model_item.get("summary") or "",
+                    "album_status": album_status,
+                    "track_count": len(tracks),
+                    "generated_count": album_success_count,
+                    "tracks": album_tracks,
+                    "audios": album_audios,
+                    "toolkit_report": result.get("toolkit_report", {}),
+                    "album_options": album_options,
+                    "download_url": f"/api/albums/{album_id}/download",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            model_albums.append(
+                {
+                    "album_id": album_id,
+                    "album_family_id": album_family_id,
+                    "album_model": track_model,
+                    "album_model_label": model_item.get("label") or track_model,
+                    "album_model_summary": model_item.get("summary") or "",
+                    "album_status": album_status,
+                    "track_count": len(tracks),
+                    "generated_count": album_success_count,
+                    "audios": album_audios,
+                    "tracks": album_tracks,
+                    "download_url": f"/api/albums/{album_id}/download",
+                    "manifest": album_manifest,
+                }
+            )
+            logs.append(f"  Model album {album_status}: {album_success_count}/{len(tracks)} tracks.")
+
+        generated_count = sum(int(album.get("generated_count") or 0) for album in model_albums)
+        expected_count = len(tracks) * len(album_models)
+        album_success = generated_count == expected_count
+        album_status = "completed" if album_success else "incomplete"
+        family_manifest = _write_album_manifest(
+            album_family_id,
+            {
+                "album_family_id": album_family_id,
+                "album_concept": concept,
+                "album_status": album_status,
+                "strategy": strategy,
+                "track_count": len(tracks),
+                "model_count": len(album_models),
+                "expected_renders": expected_count,
+                "generated_count": generated_count,
+                "model_albums": model_albums,
+                "album_model_portfolio": album_models,
+                "toolkit_report": result.get("toolkit_report", {}),
+                "album_options": album_options,
+                "download_url": f"/api/album-families/{album_family_id}/download",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         logs.append("---")
-        logs.append(f"Album complete: {generated_count}/{len(tracks)} tracks generated!")
+        logs.append(f"Album family {album_status}: {generated_count}/{expected_count} track/model renders generated.")
+        _album_job_log(
+            album_job_id,
+            f"Album family {album_status}: {generated_count}/{expected_count} track/model renders generated.",
+            generated_count=generated_count,
+            expected_count=expected_count,
+            album_family_id=album_family_id,
+            download_url=f"/api/album-families/{album_family_id}/download",
+            progress=100 if album_success else 98,
+        )
+        if not album_success:
+            logs.append("Album family marked incomplete because every requested track/model render must succeed.")
 
         return json.dumps({
             "tracks": tracks,
             "audios": generated_audios,
-            "album_id": album_id,
+            "album_id": model_albums[0]["album_id"] if model_albums else album_family_id,
+            "album_family_id": album_family_id,
+            "model_albums": model_albums,
+            "album_model_portfolio": album_models,
+            "album_status": album_status,
+            "expected_renders": expected_count,
+            "generated_count": generated_count,
+            "final_song_model": "all_models_album" if strategy == "all_models_album" else (album_models[0]["model"] if album_models else ALBUM_FINAL_MODEL),
+            "family_download_url": f"/api/album-families/{album_family_id}/download",
+            "manifest": family_manifest,
             "toolkit": result.get("toolkit", _songwriting_toolkit_payload()),
             "toolkit_report": result.get("toolkit_report", {}),
+            "planner_model": ollama_model,
+            "planner_provider": planner_lm_provider,
+            "embedding_model": embedding_model,
+            "embedding_provider": embedding_lm_provider,
             "logs": logs,
-            "success": True,
+            "success": album_success,
+            "error": "" if album_success else f"Album incomplete: {generated_count}/{expected_count} track/model renders generated.",
         })
     except ModelDownloadStarted as exc:
         print(f"[generate_album DOWNLOAD] {exc.message}")
@@ -1856,6 +4593,7 @@ def generate_album(
 
 @app.api(name="generate_advanced", concurrency_limit=1, time_limit=3600)
 def generate_advanced(request_json: str) -> str:
+    payload: dict[str, Any] = {}
     try:
         payload = json.loads(request_json or "{}")
         return json.dumps(_run_advanced_generation(payload))
@@ -1865,7 +4603,665 @@ def generate_advanced(request_json: str) -> str:
     except Exception as exc:
         print(f"[generate_advanced ERROR] {type(exc).__name__}: {exc}")
         print(traceback.format_exc())
-        return json.dumps({"success": False, "error": str(exc)})
+        return json.dumps({"success": False, "error": str(exc), "validation": _validate_generation_payload(payload)})
+    finally:
+        _cleanup_accelerator_memory()
+
+
+@app.api(name="generate_portfolio", concurrency_limit=1, time_limit=7200)
+def generate_portfolio(request_json: str) -> str:
+    payload: dict[str, Any] = {}
+    try:
+        payload = json.loads(request_json or "{}")
+        return json.dumps(_run_model_portfolio_generation(payload))
+    except Exception as exc:
+        print(f"[generate_portfolio ERROR] {type(exc).__name__}: {exc}")
+        print(traceback.format_exc())
+        return json.dumps({"success": False, "error": str(exc), "validation": _validate_generation_payload(payload)})
+    finally:
+        _cleanup_accelerator_memory()
+
+
+def _api_timestamp() -> int:
+    return int(time.time() * 1000)
+
+
+def _official_api_response(data: Any = None, *, error: str | None = None, code: int = 200) -> dict[str, Any]:
+    return {"data": data, "code": code, "error": error, "timestamp": _api_timestamp(), "extra": None}
+
+
+async def _require_official_api_key(request: Request) -> None:
+    expected = os.environ.get("ACESTEP_API_KEY", "").strip()
+    if not expected:
+        return
+    auth = request.headers.get("authorization", "")
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    supplied = request.headers.get("x-api-key") or request.query_params.get("api_key") or bearer
+    if supplied != expected and request.method.upper() not in {"GET", "HEAD"}:
+        try:
+            content_type = request.headers.get("content-type", "")
+            if "application/json" in content_type:
+                body = await request.json()
+                if isinstance(body, dict):
+                    supplied = body.get("ai_token") or body.get("api_key") or supplied
+            elif "form" in content_type or "multipart" in content_type:
+                form = await request.form()
+                supplied = form.get("ai_token") or form.get("api_key") or supplied
+        except Exception:
+            pass
+    if supplied != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing ACE-Step API key")
+
+
+def _job_stats() -> dict[str, Any]:
+    with _api_generation_tasks_lock:
+        tasks = list(_api_generation_tasks.values())
+    counts = {
+        "total": len(tasks),
+        "queued": sum(1 for item in tasks if item.get("state") == "queued"),
+        "running": sum(1 for item in tasks if item.get("state") == "running"),
+        "succeeded": sum(1 for item in tasks if item.get("state") == "succeeded"),
+        "failed": sum(1 for item in tasks if item.get("state") == "failed"),
+    }
+    return {
+        "jobs": counts,
+        "queue_size": counts["queued"],
+        "queue_maxsize": 200,
+        "avg_job_seconds": 0.0,
+        "active_downloads": len([job for job in _model_download_jobs.values() if job.get("state") in {"queued", "running"}]),
+        "active_training_job": training_manager.active_job(),
+    }
+
+
+def _runtime_progress_snapshot() -> dict[str, Any]:
+    if not PINOKIO_START_LOG.is_file():
+        return {"success": True, "available": False, "log_path": str(PINOKIO_START_LOG), "lines": []}
+    try:
+        with PINOKIO_START_LOG.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 24000))
+            text = handle.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return {"success": True, "available": False, "error": str(exc), "log_path": str(PINOKIO_START_LOG), "lines": []}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    interesting = [
+        line
+        for line in lines
+        if (
+            "[official_runner]" in line
+            or "[generate_album]" in line
+            or "[generate_advanced]" in line
+            or "it/s]" in line
+            or "s/it]" in line
+            or "%|" in line
+            or "loading 5Hz LM" in line
+            or "initialize_service" in line
+        )
+    ]
+    latest = interesting[-1] if interesting else (lines[-1] if lines else "")
+    progress: dict[str, Any] = {
+        "success": True,
+        "available": True,
+        "log_path": str(PINOKIO_START_LOG),
+        "backend": _runtime_backend_label(),
+        "latest": latest,
+        "lines": interesting[-20:],
+    }
+    match = re.search(r"(\d{1,3})%\|.*?\|\s*(\d+)/(\d+).*?\[([^<\]]+)<([^,\]]+),\s*([^\]]+)\]", latest)
+    if match:
+        progress.update(
+            {
+                "percent": int(match.group(1)),
+                "step": int(match.group(2)),
+                "total_steps": int(match.group(3)),
+                "elapsed": match.group(4).strip(),
+                "eta": match.group(5).strip(),
+                "speed": match.group(6).strip(),
+            }
+        )
+    return progress
+
+
+def _model_runtime_status(name: str) -> dict[str, Any]:
+    download_job = _model_download_job(name)
+    unreleased = name in OFFICIAL_UNRELEASED_MODELS
+    installed = name in _installed_acestep_models()
+    status = {
+        "installed": installed,
+        "downloadable": name in _downloadable_model_names(),
+        "downloading": bool(download_job and download_job.get("state") in {"queued", "running"}),
+        "download_job": _jsonable(download_job),
+        "status": "unreleased" if unreleased else ("installed" if installed else "download_required"),
+    }
+    if unreleased:
+        status["error"] = f"{name} is official but unreleased; it cannot be downloaded yet."
+    return status
+
+
+def _vendor_dataclass_fields(class_name: str) -> list[str]:
+    inference_path = OFFICIAL_ACE_STEP_DIR / "acestep" / "inference.py"
+    try:
+        tree = ast.parse(inference_path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                fields: list[str] = []
+                for item in node.body:
+                    if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                        fields.append(item.target.id)
+                return sorted(fields)
+    except Exception as exc:
+        print(f"[parity] unable to inspect {class_name} from {inference_path}: {exc}")
+    try:
+        from acestep import inference as inference_module
+
+        cls = getattr(inference_module, class_name)
+        fields = getattr(cls, "__dataclass_fields__", None) or {}
+        return sorted(fields)
+    except Exception as exc:
+        print(f"[parity] fallback import failed for {class_name}: {exc}")
+        return []
+
+
+def _runtime_backend_label() -> str:
+    if torch.cuda.is_available():
+        return "PyTorch (cuda)"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "PyTorch (mps)"
+    return "PyTorch (cpu)"
+
+
+def _schema_parity(manifest: dict[str, Any]) -> dict[str, Any]:
+    vendor_params = _vendor_dataclass_fields("GenerationParams")
+    vendor_config = _vendor_dataclass_fields("GenerationConfig")
+    manifest_params = sorted(manifest.get("generation_params", {}))
+    manifest_config = sorted(manifest.get("generation_config", {}))
+    return {
+        "generation_params": {
+            "vendor_fields": vendor_params,
+            "manifest_fields": manifest_params,
+            "unsupported_by_vendor": sorted(set(manifest_params) - set(vendor_params)),
+            "missing_in_manifest": sorted(set(vendor_params) - set(manifest_params)),
+        },
+        "generation_config": {
+            "vendor_fields": vendor_config,
+            "manifest_fields": manifest_config,
+            "unsupported_by_vendor": sorted(set(manifest_config) - set(vendor_config)),
+            "missing_in_manifest": sorted(set(vendor_config) - set(manifest_config)),
+        },
+    }
+
+
+def _official_parity_payload(request: Request | None = None) -> dict[str, Any]:
+    manifest = official_manifest()
+    installed_models = _installed_acestep_models()
+    installed_lms = _installed_lm_models()
+    recommended_actions: list[str] = []
+    for name, meta in manifest.get("dit_models", {}).items():
+        meta.update(_model_runtime_status(name))
+        meta["tasks"] = supported_tasks_for_model(name)
+    for name, meta in manifest.get("lm_models", {}).items():
+        job = _model_download_job(name)
+        installed = name in installed_lms
+        meta.update(
+            {
+                "installed": installed,
+                "downloadable": name in _downloadable_model_names(),
+                "downloading": bool(job and job.get("state") in {"queued", "running"}),
+                "download_job": _jsonable(job),
+                "status": "installed" if installed else "download_required",
+            }
+        )
+    schema_parity = _schema_parity(manifest)
+    if schema_parity["generation_params"]["unsupported_by_vendor"]:
+        recommended_actions.append("AceJAM will drop unsupported GenerationParams fields before calling the official runner.")
+    if DOCS_BEST_DEFAULT_LM_MODEL not in installed_lms:
+        recommended_actions.append(f"Install {DOCS_BEST_DEFAULT_LM_MODEL}; it is the Docs-best default for official LM controls.")
+    manifest["runtime"] = {
+        "app_version": APP_UI_VERSION,
+        "ui_hash": _app_ui_hash(),
+        "backend_hash": _backend_code_hash(),
+        "payload_contract_version": PAYLOAD_CONTRACT_VERSION,
+        "active_song_model": ACTIVE_ACE_STEP_MODEL,
+        "installed_song_models": sorted(installed_models),
+        "installed_lm_models": sorted(installed_lms),
+        "backend": _runtime_backend_label(),
+        "official_runner": _official_runner_status(),
+        "trainer": training_manager.status(),
+        "stats": _job_stats(),
+        "server_url": str(request.base_url).rstrip("/") if request is not None else "",
+        "api_key_enabled": bool(os.environ.get("ACESTEP_API_KEY", "").strip()),
+    }
+    manifest["quality_policy"] = docs_best_quality_policy()
+    manifest["schema_parity"] = schema_parity
+    manifest["lm_task_policy"] = docs_best_quality_policy()["lm_task_policy"]
+    manifest["recommended_actions"] = recommended_actions
+    return {"success": True, "manifest": manifest}
+
+
+async def _request_payload(request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        body = await request.json()
+        return dict(body or {}) if isinstance(body, dict) else {}
+    form = await request.form()
+    payload: dict[str, Any] = {}
+    for key, value in form.items():
+        if isinstance(value, str):
+            payload[key] = value
+            continue
+        filename = getattr(value, "filename", "")
+        read = getattr(value, "read", None)
+        if filename and callable(read):
+            suffix = Path(filename).suffix.lower()
+            if suffix not in ALLOWED_AUDIO_EXTENSIONS:
+                raise HTTPException(status_code=400, detail=f"Unsupported audio file: {suffix}")
+            upload_id = uuid.uuid4().hex[:12]
+            upload_dir = UPLOADS_DIR / upload_id
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            target = upload_dir / f"{safe_filename(filename)}{suffix}"
+            target.write_bytes(await read())
+            if key in {"src_audio", "source_audio", "src_audio_path"}:
+                payload["src_audio_id"] = upload_id
+            elif key in {"reference_audio", "reference", "reference_audio_path"}:
+                payload["reference_audio_id"] = upload_id
+            else:
+                payload[key] = upload_id
+    return payload
+
+
+def _set_api_generation_task(task_id: str, **updates: Any) -> dict[str, Any]:
+    with _api_generation_tasks_lock:
+        task = _api_generation_tasks.setdefault(
+            task_id,
+            {
+                "task_id": task_id,
+                "status": 0,
+                "state": "queued",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "payload": {},
+                "result": None,
+                "error": "",
+            },
+        )
+        task.update(_jsonable(updates))
+        task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return dict(task)
+
+
+def _generation_task_worker(task_id: str, payload: dict[str, Any]) -> None:
+    _set_api_generation_task(task_id, state="running", status=0)
+    try:
+        result = _run_advanced_generation_with_download_retry(payload)
+        _set_api_generation_task(task_id, state="succeeded", status=1, result=result, error="")
+    except Exception as exc:
+        _set_api_generation_task(task_id, state="failed", status=2, result=None, error=str(exc))
+    finally:
+        _cleanup_accelerator_memory()
+
+
+def _submit_api_generation_task(payload: dict[str, Any]) -> dict[str, Any]:
+    task_id = uuid.uuid4().hex
+    _set_api_generation_task(task_id, payload=payload)
+    thread = threading.Thread(target=_generation_task_worker, args=(task_id, payload), daemon=True)
+    thread.start()
+    return {"task_id": task_id, "status": 0}
+
+
+def _official_query_item(task_id: str) -> dict[str, Any]:
+    with _api_generation_tasks_lock:
+        task = dict(_api_generation_tasks.get(task_id) or {})
+    if not task:
+        return {"task_id": task_id, "status": 2, "result": "", "error": "Task not found"}
+    status_code = int(task.get("status") or 0)
+    if status_code == 1:
+        result = task.get("result") or {}
+        result_payload = []
+        for audio in result.get("audios", []):
+            params = result.get("params") or {}
+            result_payload.append(
+                {
+                    "file": audio.get("download_url") or audio.get("audio_url") or "",
+                    "wave": "",
+                    "status": 1,
+                    "create_time": int(time.time()),
+                    "env": "acejam",
+                    "prompt": params.get("caption") or "",
+                    "lyrics": params.get("lyrics") or "",
+                    "metas": {
+                        "bpm": params.get("bpm"),
+                        "duration": params.get("duration"),
+                        "genres": params.get("caption") or "",
+                        "keyscale": params.get("key_scale") or "",
+                        "timesignature": params.get("time_signature") or "",
+                    },
+                    "generation_info": f"AceJAM {result.get('runner', 'fast')} generation",
+                    "seed_value": audio.get("seed") or "",
+                    "lm_model": params.get("ace_lm_model") or "",
+                    "dit_model": result.get("active_song_model") or params.get("song_model") or "",
+                    "result_id": audio.get("result_id") or result.get("result_id") or "",
+                    "audio_id": audio.get("id") or "",
+                }
+            )
+        return {"task_id": task_id, "status": 1, "result": json.dumps(result_payload), "error": None}
+    if status_code == 2:
+        return {"task_id": task_id, "status": 2, "result": "", "error": task.get("error") or "Task failed"}
+    return {"task_id": task_id, "status": 0, "result": "", "error": None}
+
+
+def _task_ids_from_payload(body: dict[str, Any]) -> list[str]:
+    value = body.get("task_id_list") or body.get("task_ids") or body.get("task_id")
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except json.JSONDecodeError:
+            pass
+        return [item.strip() for item in stripped.split(",") if item.strip()]
+    return []
+
+
+def _runtime_status(request: Request | None = None) -> dict[str, Any]:
+    installed_models = _installed_acestep_models()
+    installed_lms = _installed_lm_models()
+    active_downloads = {
+        name: job
+        for name, job in _model_download_jobs.items()
+        if job.get("state") in {"queued", "running"}
+    }
+    base_url = str(request.base_url).rstrip("/") if request is not None else ""
+    return {
+        "success": True,
+        "app_version": APP_UI_VERSION,
+        "ui_hash": _app_ui_hash(),
+        "backend_hash": _backend_code_hash(),
+        "payload_contract_version": PAYLOAD_CONTRACT_VERSION,
+        "server_url": base_url,
+        "entrypoint": "http",
+        "file_url_supported": False,
+        "message": "Open AceJAM through the Pinokio Web UI HTTP URL, not file://app/index.html.",
+        "active_song_model": ACTIVE_ACE_STEP_MODEL,
+        "installed_song_model_count": len(installed_models),
+        "installed_lm_model_count": len([name for name in installed_lms if name not in {"auto", "none"}]),
+        "installed_song_models": sorted(installed_models),
+        "installed_lm_models": sorted(installed_lms),
+        "active_downloads": active_downloads,
+        "active_training_job": training_manager.active_job(),
+        "active_album_jobs": [
+            job for job in _album_job_snapshot() if isinstance(job, dict) and job.get("state") in {"queued", "running"}
+        ],
+        "ollama": json.loads(ollama_models()),
+        "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
+        "default_album_embedding_model": DEFAULT_ALBUM_EMBEDDING_MODEL,
+        "official_runner": _official_runner_status(),
+        "ace_lm": _ace_lm_status_payload(),
+        "trainer": training_manager.status(),
+    }
+
+
+def _album_job_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _album_jobs_lock:
+        if job_id:
+            job = _album_jobs.get(job_id)
+            return _jsonable(dict(job)) if job else {}
+        return [_jsonable(dict(job)) for job in _album_jobs.values()]
+
+
+def _set_album_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    with _album_jobs_lock:
+        job = _album_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "state": "queued",
+                "status": "Queued",
+                "progress": 0,
+                "logs": [],
+                "errors": [],
+                "result": None,
+                "payload": {},
+                "planner_model": "",
+                "embedding_model": "",
+                "memory_enabled": False,
+                "current_model_album": "",
+                "current_track": "",
+                "generated_count": 0,
+                "expected_count": 0,
+                "album_id": "",
+                "album_family_id": "",
+                "download_url": "",
+                "started_at": None,
+                "finished_at": None,
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-500:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-500:]
+        if "errors" in updates:
+            old_errors = list(job.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                job["errors"] = (old_errors + [str(item) for item in new_errors])[-100:]
+            elif new_errors:
+                job["errors"] = (old_errors + [str(new_errors)])[-100:]
+        job.update(_jsonable(updates))
+        if len(_album_jobs) > ALBUM_JOB_KEEP_LIMIT:
+            removable = sorted(
+                _album_jobs.values(),
+                key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""),
+            )
+            for old in removable[: max(0, len(_album_jobs) - ALBUM_JOB_KEEP_LIMIT)]:
+                if old.get("state") not in {"queued", "running"}:
+                    _album_jobs.pop(str(old.get("id")), None)
+        return dict(job)
+
+
+def _album_job_log(job_id: str, line: str, **updates: Any) -> None:
+    if not job_id:
+        return
+    _set_album_job(job_id, logs=[line], **updates)
+
+
+def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
+    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+    planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else ""))
+    embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
+    started = datetime.now(timezone.utc).isoformat()
+    _set_album_job(
+        job_id,
+        state="running",
+        status="Running album production team",
+        progress=1,
+        started_at=started,
+        finished_at=None,
+        payload=body,
+        planner_model=planner_model,
+        planner_provider=planner_provider,
+        embedding_model=embedding_model,
+        embedding_provider=embedding_provider,
+        memory_enabled=True,
+        logs=[
+            f"Album job {job_id} started.",
+            f"Planner: {provider_label(planner_provider)} ({planner_model})",
+            f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
+            "CrewAI memory: enabled, local provider only.",
+        ],
+    )
+    try:
+        track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
+        num_tracks = clamp_int(body.get("num_tracks"), 7, 1, 40)
+        strategy = str(body.get("song_model_strategy") or "all_models_album")
+        expected_models = album_models_for_strategy(strategy, _installed_acestep_models())
+        expected_count = len(expected_models) * num_tracks
+        _set_album_job(job_id, expected_count=expected_count, status="Planning album", progress=2)
+        request_body = dict(body)
+        request_body["album_job_id"] = job_id
+        request_body["planner_lm_provider"] = planner_provider
+        request_body["embedding_lm_provider"] = embedding_provider
+        request_body["planner_model"] = planner_model
+        request_body["ollama_model"] = planner_model if planner_provider == "ollama" else body.get("ollama_model", "")
+        request_body["embedding_model"] = embedding_model
+        request_body["track_duration"] = track_duration
+        raw = generate_album(
+            concept=str(request_body.get("concept") or ""),
+            num_tracks=num_tracks,
+            track_duration=track_duration,
+            ollama_model=planner_model,
+            language=str(request_body.get("language") or "en"),
+            song_model=str(request_body.get("song_model") or "auto"),
+            embedding_model=embedding_model,
+            ace_lm_model=str(request_body.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL),
+            request_json=json.dumps(request_body),
+            planner_lm_provider=planner_provider,
+            embedding_lm_provider=embedding_provider,
+        )
+        result = json.loads(raw or "{}")
+        planner_model = str(result.get("planner_model") or planner_model)
+        embedding_model = str(result.get("embedding_model") or embedding_model)
+        generated_count = int(result.get("generated_count") or len(result.get("audios") or []))
+        album_family_id = str(result.get("album_family_id") or "")
+        download_url = str(result.get("family_download_url") or (f"/api/album-families/{album_family_id}/download" if album_family_id else ""))
+        state = "succeeded" if result.get("success") else "failed"
+        _set_album_job(
+            job_id,
+            state=state,
+            status="Album completed" if state == "succeeded" else "Album failed or incomplete",
+            progress=100 if state == "succeeded" else max(5, min(99, int(generated_count / max(1, expected_count) * 100))),
+            result=result,
+            logs=result.get("logs") or [],
+            errors=[] if state == "succeeded" else [result.get("error") or "Album incomplete"],
+            generated_count=generated_count,
+            expected_count=int(result.get("expected_renders") or expected_count),
+            planner_model=planner_model,
+            embedding_model=embedding_model,
+            album_id=str(result.get("album_id") or ""),
+            album_family_id=album_family_id,
+            download_url=download_url,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        _set_album_job(
+            job_id,
+            state="failed",
+            status="Album job failed",
+            progress=100,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        _cleanup_accelerator_memory()
+
+
+def _run_album_plan_from_payload(body: dict[str, Any]) -> dict[str, Any]:
+    concept = str(body.get("concept") or "")
+    num_tracks = int(body.get("num_tracks") or 5)
+    track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
+    language = str(body.get("language") or "en")
+    song_model = str(body.get("song_model") or "auto")
+    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+    planner_model = _resolve_local_llm_model_selection(
+        planner_provider,
+        str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+        "chat",
+        "album planning",
+    )
+    embedding_model = _resolve_local_llm_model_selection(
+        embedding_provider,
+        str(body.get("embedding_model") or ""),
+        "embedding",
+        "album embeddings",
+    )
+    options = _album_options_from_payload({**body, "ollama_model": planner_model, "planner_model": planner_model}, song_model=song_model)
+    from album_crew import plan_album as _plan_album
+
+    result = _plan_album(
+        concept=concept,
+        num_tracks=num_tracks,
+        track_duration=track_duration,
+        ollama_model=planner_model,
+        language=language,
+        embedding_model=embedding_model,
+        options=options,
+        use_crewai=not parse_bool(body.get("toolbelt_only"), False),
+        input_tracks=_json_list(body.get("tracks")) or None,
+        planner_provider=planner_provider,
+        embedding_provider=embedding_provider,
+    )
+    result["planner_model"] = planner_model
+    result["planner_provider"] = planner_provider
+    result["embedding_model"] = str(((result.get("toolkit_report") or {}).get("memory") or {}).get("embedding_model") or embedding_model) if isinstance(result.get("toolkit_report"), dict) else embedding_model
+    result["embedding_provider"] = embedding_provider
+    return result
+
+
+def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
+    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+    planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
+    embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
+    _set_album_job(
+        job_id,
+        state="running",
+        job_type="album_plan",
+        status="Planning album",
+        progress=5,
+        payload=body,
+        planner_model=planner_model,
+        planner_provider=planner_provider,
+        embedding_model=embedding_model,
+        embedding_provider=embedding_provider,
+        memory_enabled=not parse_bool(body.get("toolbelt_only"), False),
+        started_at=datetime.now(timezone.utc).isoformat(),
+        finished_at=None,
+        logs=[
+            f"Album plan job {job_id} started.",
+            f"Planner: {planner_model}",
+            f"Embedding: {embedding_model}",
+        ],
+    )
+    try:
+        result = _run_album_plan_from_payload(body)
+        tracks = result.get("tracks") or []
+        success = bool(result.get("success", True)) and bool(tracks)
+        _set_album_job(
+            job_id,
+            state="succeeded" if success else "failed",
+            status="Album plan ready" if success else "Album plan failed",
+            progress=100,
+            result=result,
+            logs=result.get("logs") or [],
+            errors=[] if success else [result.get("error") or "Album planning failed"],
+            planner_model=str(result.get("planner_model") or planner_model),
+            embedding_model=str(result.get("embedding_model") or embedding_model),
+            expected_count=len(tracks),
+            planned_count=len(tracks),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        _set_album_job(
+            job_id,
+            state="failed",
+            job_type="album_plan",
+            status="Album plan failed",
+            progress=100,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
     finally:
         _cleanup_accelerator_memory()
 
@@ -1878,6 +5274,161 @@ async def api_config():
 @app.get("/api/config")
 async def api_config_get():
     return JSONResponse(json.loads(config()))
+
+
+@app.get("/api/status")
+async def api_status(request: Request):
+    return JSONResponse(_runtime_status(request))
+
+
+@app.get("/api/runtime/progress")
+async def api_runtime_progress():
+    return JSONResponse(_runtime_progress_snapshot())
+
+
+@app.get("/api/ace-step/parity")
+async def api_ace_step_parity(request: Request):
+    return JSONResponse(_official_parity_payload(request))
+
+
+@app.get("/api/ace-lm/status")
+async def api_ace_lm_status():
+    return JSONResponse(_ace_lm_status_payload())
+
+
+@app.post("/api/ace-lm/cleanup-preview")
+async def api_ace_lm_cleanup_preview():
+    return JSONResponse(_ace_lm_cleanup_preview())
+
+
+@app.post("/api/ace-lm/cleanup-originals")
+async def api_ace_lm_cleanup_originals(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse(_ace_lm_cleanup_originals(str((body or {}).get("confirm") or "")))
+
+
+@app.post("/api/ace-lm/upload-private")
+async def api_ace_lm_upload_private(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse(_ace_lm_private_upload(body if isinstance(body, dict) else {}))
+
+
+@app.post("/api/ace-lm/mark-smoke-passed")
+async def api_ace_lm_mark_smoke_passed(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse(_ace_lm_mark_smoke_passed(body if isinstance(body, dict) else {}))
+
+
+@app.post("/api/payload/validate")
+async def api_payload_validate(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return JSONResponse(_validate_generation_payload(payload if isinstance(payload, dict) else {}))
+
+
+@app.get("/health")
+async def health(request: Request):
+    return JSONResponse(_official_api_response({"status": "ok", **_runtime_status(request)}))
+
+
+@app.get("/v1/models")
+async def v1_models(request: Request):
+    await _require_official_api_key(request)
+    models = [
+        {
+            "name": name,
+            "is_default": name == _default_acestep_checkpoint(),
+            "is_loaded": name == ACTIVE_ACE_STEP_MODEL,
+            "tasks": supported_tasks_for_model(name),
+            **_model_runtime_status(name),
+        }
+        for name in _available_acestep_models()
+    ]
+    return JSONResponse(_official_api_response({"models": models, "default_model": _default_acestep_checkpoint()}))
+
+
+@app.post("/v1/init")
+async def v1_init(request: Request):
+    await _require_official_api_key(request)
+    try:
+        body = await _request_payload(request)
+        slot = clamp_int(body.get("slot"), 1, 1, 3)
+        slot_env = "" if slot == 1 else os.environ.get(f"ACESTEP_CONFIG_PATH{slot}", "").strip()
+        if slot != 1 and not slot_env:
+            return JSONResponse(
+                _official_api_response(None, error=f"Slot {slot} requires ACESTEP_CONFIG_PATH{slot} before startup.", code=400),
+                status_code=400,
+            )
+        model_name = _normalize_song_model(str(body.get("model") or body.get("song_model") or _default_acestep_checkpoint()))
+        if model_name in OFFICIAL_UNRELEASED_MODELS:
+            return JSONResponse(_official_api_response(None, error=f"{model_name} is unreleased.", code=400), status_code=400)
+        if model_name not in _installed_acestep_models():
+            if model_name in _downloadable_model_names():
+                job = _start_model_download(model_name)
+                return JSONResponse(_official_api_response({"download_started": True, "download_model": model_name, "download_job": job}))
+            return JSONResponse(_official_api_response(None, error=f"{model_name} is not installed.", code=400), status_code=400)
+        with handler_lock:
+            loaded_model = _ensure_song_model(model_name)
+        loaded_lm = None
+        if parse_bool(body.get("init_llm"), False):
+            loaded_lm = _concrete_lm_model_or_download(str(body.get("lm_model_path") or body.get("ace_lm_model") or "auto"), "v1 init")
+        return JSONResponse(
+            _official_api_response(
+                {
+                    "message": "Model initialization completed",
+                    "slot": slot,
+                    "loaded_model": loaded_model,
+                    "loaded_lm_model": loaded_lm,
+                    "llm_initialized": bool(loaded_lm),
+                    "llm_lazy": bool(loaded_lm),
+                    "models": [
+                        {"name": item, "is_default": item == _default_acestep_checkpoint(), "is_loaded": item == ACTIVE_ACE_STEP_MODEL}
+                        for item in _available_acestep_models()
+                    ],
+                    "lm_models": sorted(_installed_lm_models()),
+                }
+            )
+        )
+    except ModelDownloadStarted as exc:
+        return JSONResponse(_official_api_response(_download_started_payload(exc.model_name, exc.job)))
+    except Exception as exc:
+        return JSONResponse(_official_api_response(None, error=str(exc), code=400), status_code=400)
+
+
+@app.get("/v1/stats")
+async def v1_stats(request: Request):
+    await _require_official_api_key(request)
+    return JSONResponse(_official_api_response(_job_stats()))
+
+
+@app.get("/v1/audio")
+async def v1_audio(request: Request):
+    await _require_official_api_key(request)
+    raw_path = str(request.query_params.get("path") or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="path is required")
+    if raw_path.startswith("/media/results/"):
+        _, _, result_id, filename = raw_path.split("/", 4)[1:]
+        return FileResponse(_resolve_child(RESULTS_DIR, safe_id(result_id), filename))
+    if raw_path.startswith("/media/songs/"):
+        _, _, song_id, filename = raw_path.split("/", 4)[1:]
+        return FileResponse(_resolve_child(SONGS_DIR, safe_id(song_id), filename))
+    target = Path(raw_path).expanduser().resolve()
+    data_root = DATA_DIR.resolve()
+    if data_root not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target)
 
 
 @app.get("/api/songwriting_toolkit")
@@ -1910,27 +5461,64 @@ async def api_model_download(request: Request):
 
 @app.post("/api/album/plan")
 async def api_album_plan(request: Request):
-    body = await request.json()
-    concept = str(body.get("concept") or "")
-    num_tracks = int(body.get("num_tracks") or 5)
-    track_duration = float(body.get("track_duration") or body.get("duration") or 180.0)
-    language = str(body.get("language") or "en")
-    song_model = str(body.get("song_model") or "auto")
-    options = _album_options_from_payload(body, song_model=song_model)
-    from album_crew import plan_album as _plan_album
+    try:
+        body = await request.json()
+        result = _run_album_plan_from_payload(body)
+        return JSONResponse(result, status_code=200 if result.get("success", True) else 400)
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "album planning"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc), "logs": [str(exc)]}, status_code=400)
 
-    result = _plan_album(
-        concept=concept,
-        num_tracks=num_tracks,
-        track_duration=track_duration,
-        ollama_model=str(body.get("ollama_model") or "llama3.2"),
-        language=language,
-        embedding_model=str(body.get("embedding_model") or "nomic-embed-text"),
-        options=options,
-        use_crewai=not parse_bool(body.get("toolbelt_only"), False),
-        input_tracks=_json_list(body.get("tracks")) or None,
-    )
-    return JSONResponse(result, status_code=200 if result.get("success", True) else 400)
+
+@app.post("/api/album/plan/jobs")
+async def api_create_album_plan_job(request: Request):
+    try:
+        body = await request.json()
+        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+        planner_model = _resolve_local_llm_model_selection(
+            planner_provider,
+            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+            "chat",
+            "album planning",
+        )
+        embedding_model = _resolve_local_llm_model_selection(
+            embedding_provider,
+            str(body.get("embedding_model") or ""),
+            "embedding",
+            "album embeddings",
+        )
+        job_id = uuid.uuid4().hex[:12]
+        request_body = {
+            **body,
+            "planner_lm_provider": planner_provider,
+            "embedding_lm_provider": embedding_provider,
+            "planner_model": planner_model,
+            "ollama_model": planner_model if planner_provider == "ollama" else body.get("ollama_model", ""),
+            "embedding_model": embedding_model,
+        }
+        _set_album_job(
+            job_id,
+            state="queued",
+            job_type="album_plan",
+            status="Queued album planning job",
+            progress=0,
+            payload=request_body,
+            planner_model=planner_model,
+            planner_provider=planner_provider,
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            memory_enabled=not parse_bool(body.get("toolbelt_only"), False),
+            expected_count=int(body.get("num_tracks") or 5),
+            logs=[f"Queued album plan job {job_id}."],
+        )
+        threading.Thread(target=_album_plan_job_worker, args=(job_id, request_body), daemon=True).start()
+        return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "album planning"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc), "logs": [str(exc)]}, status_code=400)
 
 
 @app.get("/api/community")
@@ -1943,57 +5531,457 @@ async def api_ollama_models():
     return JSONResponse(json.loads(ollama_models()))
 
 
+@app.get("/api/ollama/status")
+async def api_ollama_status():
+    data = _ollama_model_catalog()
+    return JSONResponse(
+        {
+            "success": data.get("success", False),
+            "ready": data.get("ready", False),
+            "ollama_host": data.get("ollama_host", _ollama_host()),
+            "model_count": len(data.get("models") or []),
+            "chat_model_count": len(data.get("chat_models") or []),
+            "embedding_model_count": len(data.get("embedding_models") or []),
+            "running_models": data.get("running_models") or [],
+            "pull_jobs": data.get("pull_jobs") or [],
+            "error": data.get("error") or "",
+        }
+    )
+
+
+@app.get("/api/ollama/models")
+async def api_ollama_models_rich():
+    return JSONResponse(_ollama_model_catalog())
+
+
+@app.get("/api/local-llm/providers")
+async def api_local_llm_providers():
+    return JSONResponse(
+        {
+            "success": True,
+            "default_provider": "ollama",
+            "providers": [
+                {"id": "ollama", "label": "Ollama", "host": _ollama_host(), "ready": _ollama_model_catalog().get("ready", False)},
+                {"id": "lmstudio", "label": "LM Studio", "host": lmstudio_model_catalog().get("host", ""), "ready": lmstudio_model_catalog().get("ready", False)},
+            ],
+        }
+    )
+
+
+@app.get("/api/local-llm/models")
+async def api_local_llm_models(provider: str = "ollama"):
+    provider_name = normalize_provider(provider)
+    if provider_name == "ollama":
+        data = _ollama_model_catalog()
+        data["provider"] = "ollama"
+        data["provider_label"] = "Ollama"
+        data["host"] = data.get("ollama_host") or _ollama_host()
+        return JSONResponse(data)
+    return JSONResponse(lmstudio_model_catalog())
+
+
+@app.post("/api/local-llm/test")
+async def api_local_llm_test(request: Request):
+    try:
+        body = await request.json()
+        provider = normalize_provider(body.get("provider") or body.get("planner_lm_provider") or "ollama")
+        model = str(body.get("model") or body.get("model_name") or body.get("planner_model") or body.get("ollama_model") or "").strip()
+        kind = str(body.get("kind") or "chat").strip().lower()
+        if provider == "ollama":
+            _ensure_ollama_model_or_start_pull(model, context=f"{kind} test", kind="embedding" if kind == "embedding" else "chat")
+        return JSONResponse(local_llm_test_model(provider, model, kind))
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "local LLM test"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/local-llm/load")
+async def api_local_llm_load(request: Request):
+    try:
+        body = await request.json()
+        provider = normalize_provider(body.get("provider") or "lmstudio")
+        model = str(body.get("model") or body.get("model_name") or "").strip()
+        kind = str(body.get("kind") or "chat").strip().lower()
+        if provider != "lmstudio":
+            return JSONResponse({"success": True, "provider": provider, "model": model, "message": "Ollama loads models on demand."})
+        context_length = body.get("context_length")
+        return JSONResponse(lmstudio_load_model(model, kind=kind, context_length=int(context_length) if context_length else None))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/local-llm/unload")
+async def api_local_llm_unload(request: Request):
+    try:
+        body = await request.json()
+        provider = normalize_provider(body.get("provider") or "lmstudio")
+        model = str(body.get("model") or body.get("model_name") or "").strip()
+        if provider != "lmstudio":
+            return JSONResponse({"success": True, "provider": provider, "model": model, "message": "Ollama unload is managed by Ollama."})
+        return JSONResponse(lmstudio_unload_model(model))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/local-llm/download")
+async def api_local_llm_download(request: Request):
+    try:
+        body = await request.json()
+        provider = normalize_provider(body.get("provider") or "ollama")
+        model_name = str(body.get("model") or body.get("model_name") or "").strip()
+        kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat")).strip().lower()
+        if provider == "ollama":
+            job = _start_ollama_pull(model_name, reason=str(body.get("reason") or "manual"), kind=kind)
+            return JSONResponse({"success": True, "provider": "ollama", "job": job})
+        return JSONResponse(lmstudio_download_model(model_name, str(body.get("quantization") or ""), kind=kind))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/local-llm/download/{job_id}")
+async def api_local_llm_download_status(job_id: str, provider: str = "lmstudio"):
+    try:
+        provider_name = normalize_provider(provider)
+        if provider_name == "ollama":
+            job = _ollama_pull_job(job_id)
+            if not job:
+                return JSONResponse({"success": False, "error": "Ollama pull job not found."}, status_code=404)
+            return JSONResponse({"success": True, "provider": "ollama", "job": job})
+        return JSONResponse(lmstudio_download_status(job_id))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/lmstudio/models")
+async def api_lmstudio_models():
+    return JSONResponse(lmstudio_model_catalog())
+
+
+@app.post("/api/ollama/pull")
+async def api_ollama_pull(request: Request):
+    try:
+        body = await request.json()
+        model_name = str(body.get("model") or body.get("model_name") or "").strip()
+        kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat"))
+        job = _start_ollama_pull(model_name, reason=str(body.get("reason") or "manual"), kind=kind)
+        return JSONResponse({"success": True, "job": job})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/ollama/pull/{job_id}")
+async def api_ollama_pull_status(job_id: str):
+    job = _ollama_pull_job(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": "Ollama pull job not found"}, status_code=404)
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.post("/api/ollama/show")
+async def api_ollama_show(request: Request):
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+        model_name = str(body.get("model") or body.get("model_name") or "").strip()
+        _ensure_ollama_model_or_start_pull(model_name, context="model inspect", kind="embedding" if _is_embedding_model_name(model_name) else "chat")
+        data = _ollama_client().show(model_name)
+        return JSONResponse({"success": True, "model": model_name, "details": _jsonable(data)})
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "model inspect"))
+    except Exception as exc:
+        if _ollama_error_is_missing_model(exc):
+            model_name = str(body.get("model") or body.get("model_name") or "").strip()
+            job = _start_ollama_pull(model_name, reason="model inspect", kind="embedding" if _is_embedding_model_name(model_name) else "chat")
+            return JSONResponse(_ollama_pull_started_payload(model_name, job, "model inspect"))
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/ollama/test")
+async def api_ollama_test(request: Request):
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+        model_name = str(body.get("model") or body.get("model_name") or "").strip()
+        kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat"))
+        _ensure_ollama_model_or_start_pull(model_name, context=f"{kind} test", kind=kind)
+        client = _ollama_client()
+        if kind == "embedding":
+            response = client.embed(model=model_name, input="AceJAM embedding test")
+            embeddings = _ollama_attr(response, "embeddings", [])
+            first = embeddings[0] if embeddings else []
+            return JSONResponse(
+                {
+                    "success": True,
+                    "model": model_name,
+                    "kind": "embedding",
+                    "embedding_count": len(embeddings),
+                    "dimensions": len(first) if hasattr(first, "__len__") else 0,
+                }
+            )
+        response = client.chat(
+            model=model_name,
+            messages=[{"role": "user", "content": "Reply with just: OK"}],
+            think=False,
+            options={"temperature": 0.1, "top_p": 0.8, "top_k": 20},
+        )
+        return JSONResponse({"success": True, "model": model_name, "kind": "chat", "response": str(response.message.content or "").strip()})
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "Ollama test"))
+    except Exception as exc:
+        model_name = str(body.get("model") or body.get("model_name") or "").strip()
+        if model_name and _ollama_error_is_missing_model(exc):
+            kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat"))
+            job = _start_ollama_pull(model_name, reason=f"{kind} test", kind=kind)
+            return JSONResponse(_ollama_pull_started_payload(model_name, job, "Ollama test"))
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/prompt-assistant/prompts")
+async def api_prompt_assistant_prompts():
+    prompts = []
+    for mode, info in PROMPT_ASSISTANT_MODES.items():
+        path = BASE_DIR.parent / info["file"]
+        prompts.append(
+            {
+                "mode": mode,
+                "label": info["label"],
+                "description": info["description"],
+                "file": info["file"],
+                "available": path.is_file(),
+            }
+        )
+    return JSONResponse({"success": True, "prompts": prompts})
+
+
+@app.post("/api/prompt-assistant/run")
+async def api_prompt_assistant_run(request: Request):
+    raw_text = ""
+    try:
+        body = await request.json()
+        mode = _prompt_assistant_mode(str(body.get("mode") or "custom"))
+        user_prompt = str(body.get("user_prompt") or body.get("prompt") or "").strip()
+        if not user_prompt:
+            return JSONResponse({"success": False, "error": "Prompt is empty.", "raw_text": ""}, status_code=400)
+        current_payload = body.get("current_payload") if isinstance(body.get("current_payload"), dict) else {}
+        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
+        system_prompt = _prompt_assistant_system_prompt(mode)
+        raw_text = _run_prompt_assistant_local(system_prompt, user_prompt, planner_provider, planner_model, current_payload)
+        parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
+        payload, warnings = _normalize_prompt_assistant_payload(mode, parsed_payload, body)
+        validation = None
+        if mode not in {"album", "trainer"}:
+            try:
+                validation = _validate_generation_payload(payload)
+            except Exception as validation_exc:
+                warnings.append(str(validation_exc))
+        return JSONResponse(
+            {
+                "success": True,
+                "mode": mode,
+                "prompt_file": PROMPT_ASSISTANT_MODES[mode]["file"],
+                "payload": _jsonable(payload),
+                "paste_blocks": paste_blocks,
+                "warnings": warnings,
+                "validation": _jsonable(validation),
+                "raw_text": raw_text,
+            }
+        )
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "AI Fill", raw_text=raw_text, warnings=[]))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc), "raw_text": raw_text, "warnings": []}, status_code=400)
+
+
 @app.post("/api/delete_song")
 async def api_delete_song(request: Request):
     body = await request.json()
     return JSONResponse(json.loads(delete_song(str(body.get("song_id") or ""))))
 
 
+@app.get("/api/outputs/status")
+async def api_outputs_status():
+    return JSONResponse({"success": True, "generated": _count_generated_outputs()})
+
+
+@app.post("/api/outputs/delete_generated")
+async def api_delete_generated_outputs(request: Request):
+    body = await request.json()
+    return JSONResponse(_delete_generated_outputs(str(body.get("confirm") or "")))
+
+
+@app.post("/api/albums/{album_id}/delete")
+async def api_delete_album(album_id: str, request: Request):
+    body = await request.json()
+    return JSONResponse(_delete_album(album_id, str(body.get("confirm") or "")))
+
+
+@app.post("/api/album-families/{family_id}/delete")
+async def api_delete_album_family(family_id: str, request: Request):
+    body = await request.json()
+    return JSONResponse(_delete_album_family(family_id, str(body.get("confirm") or "")))
+
+
 @app.post("/api/compose")
 async def api_compose(request: Request):
-    body = await request.json()
-    raw = compose(
-        description=str(body.get("description") or ""),
-        audio_duration=float(body.get("audio_duration") or body.get("duration") or 60.0),
-        composer_profile=str(body.get("composer_profile") or "auto"),
-        instrumental=parse_bool(body.get("instrumental"), False),
-        ollama_model=str(body.get("ollama_model") or ""),
-    )
-    return JSONResponse(json.loads(raw))
+    try:
+        body = await request.json()
+        provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
+        raw = compose(
+            description=str(body.get("description") or ""),
+            audio_duration=float(body.get("audio_duration") or body.get("duration") or 60.0),
+            composer_profile=str(body.get("composer_profile") or "auto"),
+            instrumental=parse_bool(body.get("instrumental"), False),
+            ollama_model=str(body.get("ollama_model") or ""),
+            planner_lm_provider=provider,
+            planner_model=planner_model,
+        )
+        return JSONResponse(json.loads(raw))
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "compose"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/create_sample")
 async def api_create_sample(request: Request):
-    body = await request.json()
-    raw = compose(
-        description=str(body.get("query") or body.get("description") or body.get("caption") or ""),
-        audio_duration=float(body.get("duration") or 60.0),
-        composer_profile="auto",
-        instrumental=parse_bool(body.get("instrumental"), False),
-        ollama_model=str(body.get("ollama_model") or ""),
-    )
-    data = json.loads(raw)
-    return JSONResponse({"success": True, **data})
+    try:
+        body = _apply_studio_lm_policy(await request.json())
+        use_official = parse_bool(body.get("use_official_lm"), _requested_ace_lm_model(body) != "none")
+        if use_official:
+            return JSONResponse(_run_official_lm_aux("create_sample", body))
+        raw = compose(
+            description=str(body.get("query") or body.get("description") or body.get("caption") or ""),
+            audio_duration=float(body.get("duration") or 60.0),
+            composer_profile="auto",
+            instrumental=parse_bool(body.get("instrumental"), False),
+            ollama_model=str(body.get("ollama_model") or ""),
+            planner_lm_provider=str(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama"),
+            planner_model=str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+        )
+        data = json.loads(raw)
+        data["artist_name"] = normalize_artist_name(
+            body.get("artist_name") or data.get("artist_name"),
+            derive_artist_name(data.get("title") or "", body.get("description") or body.get("caption") or "", data.get("tags") or ""),
+        )
+        return JSONResponse({"success": True, "engine": normalize_provider(body.get("planner_lm_provider") or "ollama"), **data})
+    except ModelDownloadStarted as exc:
+        return JSONResponse(_download_started_payload(exc.model_name, exc.job))
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "create sample"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/format_sample")
 async def api_format_sample(request: Request):
-    body = await request.json()
-    raw = compose(
-        description=str(body.get("caption") or body.get("description") or "custom song"),
-        audio_duration=float(body.get("duration") or 60.0),
-        composer_profile="auto",
-        instrumental=parse_bool(body.get("instrumental"), False),
-        ollama_model=str(body.get("ollama_model") or ""),
-    )
-    data = json.loads(raw)
-    if str(body.get("lyrics") or "").strip():
-        data["lyrics"] = str(body["lyrics"]).strip()
-    return JSONResponse({"success": True, **data})
+    try:
+        body = _apply_studio_lm_policy(await request.json())
+        use_official = parse_bool(body.get("use_official_lm"), _requested_ace_lm_model(body) != "none")
+        if use_official:
+            return JSONResponse(_run_official_lm_aux("format_sample", body))
+        raw = compose(
+            description=str(body.get("caption") or body.get("description") or "custom song"),
+            audio_duration=float(body.get("duration") or 60.0),
+            composer_profile="auto",
+            instrumental=parse_bool(body.get("instrumental"), False),
+            ollama_model=str(body.get("ollama_model") or ""),
+            planner_lm_provider=str(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama"),
+            planner_model=str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+        )
+        data = json.loads(raw)
+        data["artist_name"] = normalize_artist_name(
+            body.get("artist_name") or data.get("artist_name"),
+            derive_artist_name(data.get("title") or "", body.get("description") or body.get("caption") or "", data.get("tags") or ""),
+        )
+        if str(body.get("lyrics") or "").strip():
+            data["lyrics"] = str(body["lyrics"]).strip()
+        return JSONResponse({"success": True, "engine": normalize_provider(body.get("planner_lm_provider") or "ollama"), **data})
+    except ModelDownloadStarted as exc:
+        return JSONResponse(_download_started_payload(exc.model_name, exc.job))
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "format sample"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/create_random_sample")
+async def create_random_sample(request: Request):
+    await _require_official_api_key(request)
+    try:
+        body = await _request_payload(request)
+        sample_type = str(body.get("sample_type") or "simple_mode").strip().lower()
+        if sample_type == "custom_mode":
+            data = {
+                "caption": "cinematic synth pop, warm analog bass, bright lead vocal, polished radio mix",
+                "lyrics": "[Verse]\nI found a spark in the city lights\n[Chorus]\nWe rise, we shine, we carry the night",
+                "bpm": 118,
+                "key_scale": "C major",
+                "time_signature": "4",
+                "duration": 180,
+                "vocal_language": "en",
+                "sample_type": "custom_mode",
+            }
+        else:
+            data = {
+                "caption": "upbeat pop song with guitar accompaniment, memorable hook, clean vocal production",
+                "lyrics": "[Verse 1]\nSunlight on my face, I keep moving\n[Chorus]\nThis is our moment, this is our sound",
+                "bpm": 120,
+                "key_scale": "G major",
+                "time_signature": "4",
+                "duration": 180,
+                "vocal_language": "en",
+                "sample_type": "simple_mode",
+            }
+        return JSONResponse(_official_api_response(data))
+    except Exception as exc:
+        return JSONResponse(_official_api_response(None, error=str(exc), code=400), status_code=400)
+
+
+@app.post("/format_input")
+async def format_input(request: Request):
+    await _require_official_api_key(request)
+    try:
+        body = await _request_payload(request)
+        body.setdefault("caption", body.get("prompt") or "")
+        body.setdefault("ace_lm_model", body.get("lm_model") or "auto")
+        body.setdefault("use_official_lm", True)
+        data = _run_official_lm_aux("format_sample", body)
+        return JSONResponse(_official_api_response(data))
+    except ModelDownloadStarted as exc:
+        return JSONResponse(_official_api_response(_download_started_payload(exc.model_name, exc.job)))
+    except Exception as exc:
+        return JSONResponse(_official_api_response(None, error=str(exc), code=400), status_code=400)
+
+
+@app.post("/release_task")
+async def release_task(request: Request):
+    await _require_official_api_key(request)
+    try:
+        body = await _request_payload(request)
+        if "prompt" in body and "caption" not in body:
+            body["caption"] = body["prompt"]
+        if "model" in body and "song_model" not in body:
+            body["song_model"] = body["model"]
+        task = _submit_api_generation_task(body)
+        return JSONResponse(_official_api_response(task))
+    except Exception as exc:
+        return JSONResponse(_official_api_response(None, error=str(exc), code=400), status_code=400)
+
+
+@app.post("/query_result")
+async def query_result(request: Request):
+    await _require_official_api_key(request)
+    body = await _request_payload(request)
+    task_ids = _task_ids_from_payload(body)
+    return JSONResponse(_official_api_response([_official_query_item(task_id) for task_id in task_ids]))
 
 
 @app.post("/api/generate_advanced")
 async def api_generate_advanced(request: Request):
+    payload: dict[str, Any] = {}
     try:
         payload = await request.json()
         return JSONResponse(_run_advanced_generation(payload))
@@ -2002,7 +5990,29 @@ async def api_generate_advanced(request: Request):
     except Exception as exc:
         print(f"[api_generate_advanced ERROR] {type(exc).__name__}: {exc}")
         print(traceback.format_exc())
-        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {"success": False, "error": str(exc), "validation": _validate_generation_payload(payload)},
+            status_code=400,
+        )
+    finally:
+        _cleanup_accelerator_memory()
+
+
+@app.post("/api/generate_portfolio")
+async def api_generate_portfolio(request: Request):
+    payload: dict[str, Any] = {}
+    try:
+        payload = await request.json()
+        return JSONResponse(_run_model_portfolio_generation(payload))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[api_generate_portfolio ERROR] {type(exc).__name__}: {exc}")
+        print(traceback.format_exc())
+        return JSONResponse(
+            {"success": False, "error": str(exc), "validation": _validate_generation_payload(payload)},
+            status_code=400,
+        )
     finally:
         _cleanup_accelerator_memory()
 
@@ -2154,19 +6164,20 @@ async def api_lora_dataset_scan(request: Request):
 
 @app.post("/api/lora/dataset/autolabel")
 async def api_lora_dataset_autolabel(request: Request):
-    body = await request.json()
-    files = body.get("files") or []
-    labels = []
-    for item in files[: int(body.get("limit") or 24)]:
-        path = Path(str(item.get("path") if isinstance(item, dict) else item))
-        duration = None
-        try:
-            info = sf.info(str(path))
-            duration = round(info.frames / info.samplerate, 2)
-        except Exception:
-            pass
-        labels.append(
-            {
+    try:
+        body = await request.json()
+        files = body.get("files") or []
+        use_official = parse_bool(body.get("use_official_lm"), False)
+        labels = []
+        for item in files[: int(body.get("limit") or 24)]:
+            path = Path(str(item.get("path") if isinstance(item, dict) else item)).expanduser()
+            duration = None
+            try:
+                info = sf.info(str(path))
+                duration = round(info.frames / info.samplerate, 2)
+            except Exception:
+                pass
+            fallback = {
                 "path": str(path),
                 "filename": path.name,
                 "caption": (item.get("caption") if isinstance(item, dict) else "") or path.stem.replace("-", " ").replace("_", " "),
@@ -2178,9 +6189,38 @@ async def api_lora_dataset_autolabel(request: Request):
                 "language": (item.get("language") if isinstance(item, dict) else "") or "instrumental",
                 "duration": duration or (item.get("duration") if isinstance(item, dict) else 0),
                 "is_instrumental": True,
+                "label_source": "filename_duration_fallback",
+                "trigger_tag": body.get("custom_tag") or body.get("trigger_tag") or "",
+                "tag_position": body.get("tag_position") or "prepend",
             }
-        )
-    return JSONResponse({"success": True, "labels": labels})
+            if use_official and path.is_file():
+                try:
+                    with handler_lock:
+                        _ensure_song_model(body.get("song_model"))
+                        codes = handler.convert_src_audio_to_codes(str(path))
+                    understood = _run_official_lm_aux("understand_music", body, audio_codes=codes)
+                    fallback.update(
+                        {
+                            "caption": understood.get("caption") or fallback["caption"],
+                            "lyrics": understood.get("lyrics") or fallback["lyrics"],
+                            "bpm": understood.get("bpm") or fallback["bpm"],
+                            "keyscale": understood.get("key_scale") or fallback["keyscale"],
+                            "timesignature": understood.get("time_signature") or fallback["timesignature"],
+                            "language": understood.get("language") or fallback["language"],
+                            "is_instrumental": str(understood.get("lyrics") or "").strip().lower() == "[instrumental]",
+                            "label_source": "official_ace_step_understand_music",
+                            "official_understanding": True,
+                            "ace_lm_model": understood.get("ace_lm_model"),
+                        }
+                    )
+                except ModelDownloadStarted:
+                    raise
+                except Exception as official_exc:
+                    fallback["official_error"] = str(official_exc)
+            labels.append(fallback)
+        return JSONResponse({"success": True, "labels": labels})
+    except ModelDownloadStarted as exc:
+        return JSONResponse(_download_started_payload(exc.model_name, exc.job))
 
 
 @app.post("/api/lora/train")
@@ -2191,6 +6231,30 @@ async def api_lora_train(request: Request):
         return JSONResponse({"success": True, "job": job})
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/v1/training/start")
+async def v1_training_start(request: Request):
+    await _require_official_api_key(request)
+    try:
+        body = await _request_payload(request)
+        body["adapter_type"] = "lora"
+        job = training_manager.start_train(body)
+        return JSONResponse(_official_api_response({"job": job}))
+    except Exception as exc:
+        return JSONResponse(_official_api_response(None, error=str(exc), code=400), status_code=400)
+
+
+@app.post("/v1/training/start_lokr")
+async def v1_training_start_lokr(request: Request):
+    await _require_official_api_key(request)
+    try:
+        body = await _request_payload(request)
+        body["adapter_type"] = "lokr"
+        job = training_manager.start_train(body)
+        return JSONResponse(_official_api_response({"job": job}))
+    except Exception as exc:
+        return JSONResponse(_official_api_response(None, error=str(exc), code=400), status_code=400)
 
 
 @app.post("/api/lora/dataset/save")
@@ -2290,34 +6354,133 @@ async def api_audio_understand(request: Request):
         with handler_lock:
             _ensure_song_model(body.get("song_model"))
             codes = handler.convert_src_audio_to_codes(str(audio_path))
-        return JSONResponse(
-            {
-                "success": True,
-                "duration": round(info.frames / info.samplerate, 2),
-                "sample_rate": info.samplerate,
-                "channels": info.channels,
-                "audio_codes": codes,
-            }
-        )
+        response = {
+            "success": True,
+            "duration": round(info.frames / info.samplerate, 2),
+            "sample_rate": info.samplerate,
+            "channels": info.channels,
+            "audio_codes": codes,
+            "official_understanding": False,
+        }
+        return JSONResponse(response)
+    except ModelDownloadStarted as exc:
+        return JSONResponse(_download_started_payload(exc.model_name, exc.job))
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/generate_album")
 async def api_generate_album(request: Request):
-    body = await request.json()
-    raw = generate_album(
-        concept=str(body.get("concept") or ""),
-        num_tracks=int(body.get("num_tracks") or 5),
-        track_duration=float(body.get("track_duration") or body.get("duration") or 180.0),
-        ollama_model=str(body.get("ollama_model") or "llama3.2"),
-        language=str(body.get("language") or "en"),
-        song_model=str(body.get("song_model") or "auto"),
-        embedding_model=str(body.get("embedding_model") or "nomic-embed-text"),
-        ace_lm_model=str(body.get("ace_lm_model") or "auto"),
-        request_json=json.dumps(body),
-    )
-    return JSONResponse(json.loads(raw))
+    try:
+        body = await request.json()
+        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+        planner_model = _resolve_local_llm_model_selection(
+            planner_provider,
+            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+            "chat",
+            "album generation",
+        )
+        embedding_model = _resolve_local_llm_model_selection(
+            embedding_provider,
+            str(body.get("embedding_model") or ""),
+            "embedding",
+            "album embeddings",
+        )
+        request_body = {
+            **body,
+            "planner_lm_provider": planner_provider,
+            "embedding_lm_provider": embedding_provider,
+            "planner_model": planner_model,
+            "ollama_model": planner_model if planner_provider == "ollama" else body.get("ollama_model", ""),
+            "embedding_model": embedding_model,
+        }
+        raw = generate_album(
+            concept=str(body.get("concept") or ""),
+            num_tracks=int(body.get("num_tracks") or 5),
+            track_duration=float(body.get("track_duration") or body.get("duration") or 180.0),
+            ollama_model=planner_model,
+            language=str(body.get("language") or "en"),
+            song_model=str(body.get("song_model") or "auto"),
+            embedding_model=embedding_model,
+            ace_lm_model=str(body.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL),
+            request_json=json.dumps(request_body),
+            planner_lm_provider=planner_provider,
+            embedding_lm_provider=embedding_provider,
+        )
+        return JSONResponse(json.loads(raw))
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "album generation"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc), "logs": [str(exc)]}, status_code=400)
+
+
+@app.post("/api/album/jobs")
+async def api_create_album_job(request: Request):
+    try:
+        body = await request.json()
+        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+        planner_model = _resolve_local_llm_model_selection(
+            planner_provider,
+            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
+            "chat",
+            "album job planning",
+        )
+        embedding_model = _resolve_local_llm_model_selection(
+            embedding_provider,
+            str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL),
+            "embedding",
+            "album job embeddings",
+        )
+        job_id = uuid.uuid4().hex[:12]
+        request_body = {
+            **body,
+            "planner_lm_provider": planner_provider,
+            "embedding_lm_provider": embedding_provider,
+            "planner_model": planner_model,
+            "ollama_model": planner_model if planner_provider == "ollama" else body.get("ollama_model", ""),
+            "embedding_model": embedding_model,
+        }
+        _set_album_job(
+            job_id,
+            state="queued",
+            status="Queued album production job",
+            progress=0,
+            payload=request_body,
+            planner_model=planner_model,
+            planner_provider=planner_provider,
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            memory_enabled=True,
+            logs=[f"Queued album job {job_id}."],
+        )
+        threading.Thread(target=_album_job_worker, args=(job_id, request_body), daemon=True).start()
+        return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "album job"))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc), "logs": [str(exc)]}, status_code=400)
+
+
+@app.get("/api/album/jobs/{job_id}")
+async def api_album_job_status(job_id: str):
+    job = _album_job_snapshot(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": "Album job not found"}, status_code=404)
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/albums/{album_id}/download")
+async def api_download_album(album_id: str):
+    zip_path = _build_album_zip(album_id)
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+
+
+@app.get("/api/album-families/{family_id}/download")
+async def api_download_album_family(family_id: str):
+    zip_path = _build_album_family_zip(family_id)
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
 
 
 @app.get("/media/songs/{song_id}/{filename}")
@@ -2327,7 +6490,7 @@ async def media(song_id: str, filename: str):
     target = (song_dir / filename).resolve()
     if songs_root not in song_dir.parents or not song_dir.is_dir() or song_dir not in target.parents or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target)
+    return FileResponse(target, filename=target.name)
 
 
 @app.get("/media/results/{result_id}/{filename}")
@@ -2335,7 +6498,7 @@ async def result_media(result_id: str, filename: str):
     target = _resolve_child(RESULTS_DIR, safe_id(result_id), filename)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target)
+    return FileResponse(target, filename=target.name)
 
 
 @app.get("/", response_class=HTMLResponse)

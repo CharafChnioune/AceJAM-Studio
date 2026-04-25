@@ -3,6 +3,7 @@
 /app/env/
 /app/vendor/
 /app/model_cache/
+/app/checkpoints/
 /app/composer_models/
 /app/data/
 /app/lora_datasets/

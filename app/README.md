@@ -27,8 +27,11 @@ This folder contains the self-contained AceJAM web app runtime. Pinokio launcher
 - `LM_MODEL_PROFILES` covers `auto`, `none`, and the 0.6B/1.7B/4B 5Hz LM choices.
 - `/api/config` returns `model_profiles`, `lm_model_profiles`, `recommended_song_model`, `recommended_lm_model`, installed model lists, per-model capabilities, official runner status, and the Custom `ui_schema`.
 - Unknown local `acestep-v15-*` folders get a fallback profile inferred from the model name, so locally discovered checkpoints still render safely.
+- `acestep-v15-turbo-rl` is listed as an official-but-unreleased checkpoint. It is visible in parity/model advice as not downloadable until ACE-Step publishes it.
 
 The UI renders this metadata in the model dropdown, workspace model guide, Custom model advice panel, Simple LM selector, Custom LM selector, and Album LM selector. Unsupported task/model combinations remain disabled through the same compatibility matrix used by the generation API. Selecting a missing known model automatically calls `/api/models/download`, shows queued/running/failed/installed state in the advice panel, and reloads config after the checkpoint lands in `model_cache/checkpoints`.
+
+`GET /api/ace-step/parity` exposes the full official parity manifest used by Settings: official sources, DiT/LM models, tasks, endpoints, `GenerationParams`, `GenerationConfig`, runtime controls, trainer features, and per-item status (`supported`, `guarded`, `missing`, `unreleased`, `not_applicable`). `/api/status` and `/api/config` also expose UI/backend hashes so stale browser sessions can prompt a refresh after restart.
 
 ## Custom Generation Runtime
 
@@ -40,6 +43,10 @@ The UI renders this metadata in the model dropdown, workspace model guide, Custo
 
 The official bridge runs in a subprocess with `PYTHONPATH` pointed at `vendor/ACE-Step-1.5`, avoiding namespace conflicts with local `app/acestep`. Missing vendor files, missing models, missing LM checkpoints, and unsupported output combinations return explicit errors.
 
+`official_runner.py` also handles official ACE-Step LM helper actions for `create_sample`, `format_sample`, and `understand_music` without loading the DiT model first. `/api/create_sample` and `/api/format_sample` keep the Ollama songwriter flow by default, while official-compatible endpoints and explicit API requests can use the 5Hz LM.
+
+If the UI is opened as `file://.../app/index.html`, it shows a runtime warning and disables generation actions. The working entrypoint is the Pinokio-served HTTP URL.
+
 ## Album Agent Runtime
 
 Album mode is now a two-stage agent studio:
@@ -48,7 +55,7 @@ Album mode is now a two-stage agent studio:
 2. `POST /api/album/plan` builds an editable track plan with title, caption/tags, full lyrics, BPM, key, time signature, model, and tool reports.
 3. `POST /api/generate_album` accepts the edited plan and sends each track through `_run_advanced_generation` with `task_type=text2music`, model choice, lyrics, BPM/key/time metadata, inference controls, variants, score/LRC/audio-code flags, and rich library metadata.
 
-The model advisor never silently swaps to a different checkpoint. `best_installed` prefers installed XL Turbo, then installed Turbo. `maximum_detail` prefers installed SFT models. `selected` uses the exact global model and returns a clear error if it is not installed.
+The model advisor never silently swaps to a different checkpoint. Album final render defaults to `xl_sft_final`, which locks every track to `acestep-v15-xl-sft`. If XL SFT is missing, the UI/API starts a download and retries with a fresh payload instead of rendering with a cheaper fallback. `best_installed`, `maximum_detail`, and `selected` remain available for planning/previews or direct API use.
 
 The CrewAI path receives real tools from `songwriting_toolkit.py`: model advisor, tag library, lyric length planner, rhyme/flow brief, metaphor world builder, hook checker, cliche guard, album arc, inspiration radar, caption polisher, and conflict checker. If CrewAI or Ollama fails, the deterministic toolbelt still returns a usable plan.
 
@@ -64,6 +71,14 @@ The CrewAI path receives real tools from `songwriting_toolkit.py`: model advisor
 The trainer runs as a subprocess with `PYTHONPATH` pointed at `vendor/ACE-Step-1.5`, so the official trainer package does not collide with the local inference package.
 
 ## API Examples
+
+Runtime status:
+
+```bash
+curl http://127.0.0.1:7860/api/status
+curl http://127.0.0.1:7860/health
+curl http://127.0.0.1:7860/v1/models
+```
 
 Create a structured sample:
 
@@ -110,6 +125,18 @@ curl -X POST http://127.0.0.1:7860/api/generate_advanced \
   }'
 ```
 
+Official-compatible status and parity:
+
+```bash
+curl http://127.0.0.1:7860/api/ace-step/parity
+curl http://127.0.0.1:7860/v1/stats
+curl -X POST http://127.0.0.1:7860/v1/init \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"acestep-v15-xl-sft","init_llm":true,"lm_model_path":"acestep-5Hz-lm-1.7B"}'
+```
+
+If `ACESTEP_API_KEY` is set in the environment, official-compatible routes require a matching `Authorization: Bearer ...`, `x-api-key`, `api_key`, or `ai_token`. The normal Studio endpoints are not blocked by that key.
+
 Plan and generate an album:
 
 ```python
@@ -120,7 +147,7 @@ album_request = {
     "concept": "Dutch club rap album with cinematic hooks",
     "num_tracks": 2,
     "track_duration": 90,
-    "song_model_strategy": "best_installed",
+    "song_model_strategy": "xl_sft_final",
     "tag_packs": ["genre_style", "production_style", "vocal_character"],
     "custom_tags": "male rap vocal, radio ready, punchy drums",
     "lyric_density": "rap_dense",
@@ -164,7 +191,7 @@ await fetch("/api/lora/load", {
 Run lightweight tests from this folder:
 
 ```bash
-env/bin/python -m unittest discover -s tests
+env/bin/python -m pytest tests -q
 ```
 
 Heavy model and LoRA acceptance tests are intentionally gated by environment flags and should only be run on suitable hardware.

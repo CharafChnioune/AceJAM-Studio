@@ -11,22 +11,74 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from local_llm import (
+    embed as local_llm_embed,
+    lmstudio_api_base_url,
+    lmstudio_model_catalog,
+    normalize_provider,
+    ollama_host,
+    provider_label,
+    test_model as local_llm_test_model,
+)
 from songwriting_toolkit import (
+    ALBUM_FINAL_MODEL,
+    ALBUM_MODEL_PORTFOLIO_MODELS,
+    album_model_portfolio,
     build_album_plan,
     choose_song_model,
     lyric_length_plan,
+    lyric_stats,
     make_crewai_tools,
     normalize_album_tracks,
+    parse_duration_seconds,
     sanitize_artist_references,
     toolkit_payload,
 )
+from studio_core import docs_best_model_settings
 
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL = ollama_host()
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+CREWAI_LEGACY_MEMORY_DIR = DATA_DIR / "crewai_memory"
+CREWAI_MEMORY_DIR = DATA_DIR / "crewai_album_memory_v2"
+DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = os.environ.get(
+    "ACEJAM_ALBUM_PLANNER_OLLAMA_MODEL",
+    "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general",
+)
+DEFAULT_ALBUM_EMBEDDING_MODEL = os.environ.get(
+    "ACEJAM_ALBUM_EMBEDDING_MODEL",
+    "charaf/qwen3-vl-embedding-8b:latest",
+)
+ALBUM_EMBEDDING_FALLBACK_MODELS = [
+    DEFAULT_ALBUM_EMBEDDING_MODEL,
+    "nomic-embed-text:latest",
+    "mxbai-embed-large:latest",
+]
+CREWAI_LLM_TIMEOUT_SECONDS = int(os.environ.get("ACEJAM_CREWAI_LLM_TIMEOUT_SECONDS", "86400"))
+CREWAI_EMPTY_RESPONSE_RETRIES = int(os.environ.get("ACEJAM_CREWAI_EMPTY_RESPONSE_RETRIES", "1"))
+CREWAI_EMPTY_RESPONSE_RETRY_DELAY = float(os.environ.get("ACEJAM_CREWAI_EMPTY_RESPONSE_RETRY_DELAY", "8"))
+CREWAI_AGENT_MAX_ITER = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_ITER", "80"))
+CREWAI_AGENT_MAX_RETRY_LIMIT = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_RETRY_LIMIT", "8"))
+CREWAI_TASK_MAX_RETRIES = int(os.environ.get("ACEJAM_CREWAI_TASK_MAX_RETRIES", "8"))
+CREWAI_LLM_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LLM_MAX_TOKENS", "12000"))
+CREWAI_LLM_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_LLM_CONTEXT_WINDOW", "32768"))
+CREWAI_LLM_NUM_PREDICT = int(os.environ.get("ACEJAM_CREWAI_LLM_NUM_PREDICT", str(CREWAI_LLM_MAX_TOKENS)))
+CREWAI_MEMORY_CONTENT_LIMIT = int(os.environ.get("ACEJAM_CREWAI_MEMORY_CONTENT_LIMIT", "1500"))
+CREWAI_PROMPT_BUDGET_CHARS = int(os.environ.get("ACEJAM_CREWAI_PROMPT_BUDGET_CHARS", "24000"))
+CREWAI_RESPECT_CONTEXT_WINDOW = os.environ.get("ACEJAM_CREWAI_RESPECT_CONTEXT_WINDOW", "0").lower() in {"1", "true", "yes"}
+CREWAI_DEBUG_LLM_RESPONSES = os.environ.get("ACEJAM_CREWAI_DEBUG_LLM_RESPONSES", "1").lower() not in {"0", "false", "no"}
+CREWAI_LIVE_TOOLS = os.environ.get("ACEJAM_CREWAI_LIVE_TOOLS", "0").lower() in {"1", "true", "yes"}
+CREWAI_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+ALBUM_FINAL_DOCS_BEST = docs_best_model_settings(ALBUM_FINAL_MODEL)
 
 LANG_NAMES = {
     "en": "English", "ar": "Arabic", "az": "Azerbaijani", "bg": "Bulgarian",
@@ -43,6 +95,149 @@ LANG_NAMES = {
     "ur": "Urdu", "vi": "Vietnamese", "yue": "Cantonese", "zh": "Chinese",
     "instrumental": "Instrumental",
 }
+
+
+class _AceJamStructuredModel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+
+class AlbumBibleModel(_AceJamStructuredModel):
+    concept: str = ""
+    arc: Any = ""
+    motifs: list[Any] = Field(default_factory=list)
+    sonic_palette: Any = ""
+    continuity_rules: list[Any] = Field(default_factory=list)
+
+
+class TrackBlueprintModel(_AceJamStructuredModel):
+    track_number: int = 0
+    artist_name: str = ""
+    title: str = ""
+    description: str = ""
+    tags: Any = ""
+    bpm: Any = 90
+    key_scale: str = "C minor"
+    time_signature: Any = "4"
+    duration: Any = 180
+    hook_promise: str = ""
+    performance_brief: str = ""
+
+
+class AlbumBiblePayloadModel(_AceJamStructuredModel):
+    album_bible: AlbumBibleModel = Field(default_factory=AlbumBibleModel)
+    tracks: list[TrackBlueprintModel] = Field(default_factory=list)
+
+
+class TrackProductionPayloadModel(_AceJamStructuredModel):
+    track_number: int = 0
+    artist_name: str = ""
+    title: str = ""
+    description: str = ""
+    tags: Any = ""
+    lyrics: str = ""
+    bpm: Any = 90
+    key_scale: str = "C minor"
+    time_signature: Any = "4"
+    language: str = "en"
+    duration: Any = 180
+    song_model: str = ALBUM_FINAL_MODEL
+    seed: Any = -1
+    inference_steps: Any = ALBUM_FINAL_DOCS_BEST["inference_steps"]
+    guidance_scale: Any = ALBUM_FINAL_DOCS_BEST["guidance_scale"]
+    shift: Any = ALBUM_FINAL_DOCS_BEST["shift"]
+    infer_method: str = "ode"
+    sampler_mode: str = ALBUM_FINAL_DOCS_BEST["sampler_mode"]
+    audio_format: str = ALBUM_FINAL_DOCS_BEST["audio_format"]
+    auto_score: bool = False
+    auto_lrc: bool = False
+    return_audio_codes: bool = False
+    save_to_library: bool = True
+    tool_notes: Any = ""
+    production_team: dict[str, Any] = Field(default_factory=dict)
+    model_render_notes: Any = Field(default_factory=dict)
+
+
+def _clip_text(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _compact_json(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=True, default=str, separators=(",", ":"))
+    except TypeError:
+        text = str(value)
+    return _clip_text(text, limit)
+
+
+def _small_scalar(value: Any, limit: int = 160) -> Any:
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _clip_text(value, limit)
+
+
+def _prompt_within_budget(*parts: Any) -> bool:
+    text = "\n".join(str(part or "") for part in parts)
+    return len(text) <= CREWAI_PROMPT_BUDGET_CHARS
+
+
+def _task_output_json_dict(output: Any) -> dict[str, Any]:
+    tasks_output = getattr(output, "tasks_output", None)
+    if isinstance(tasks_output, list) and tasks_output:
+        try:
+            return _task_output_json_dict(tasks_output[-1])
+        except Exception:
+            pass
+    json_dict = getattr(output, "json_dict", None)
+    if isinstance(json_dict, dict):
+        return json_dict
+    pydantic_obj = getattr(output, "pydantic", None)
+    if pydantic_obj is not None:
+        if hasattr(pydantic_obj, "model_dump"):
+            dumped = pydantic_obj.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        if hasattr(pydantic_obj, "dict"):
+            dumped = pydantic_obj.dict()
+            if isinstance(dumped, dict):
+                return dumped
+    raw = getattr(output, "raw", None)
+    return _json_object_from_text(str(raw if raw is not None else output))
+
+
+def _compact_track_memory_record(track: dict[str, Any], *, include_lyrics_excerpt: bool = False) -> tuple[str, dict[str, Any]]:
+    stats = lyric_stats(str(track.get("lyrics") or ""))
+    caption = track.get("caption") or track.get("tags") or ""
+    title = str(track.get("title") or "Untitled")
+    lyrics_excerpt = ""
+    if include_lyrics_excerpt:
+        lyrics_excerpt = "\nlyrics_excerpt=" + _clip_text(track.get("lyrics"), 420)
+    content = (
+        f"Track {track.get('track_number') or '?'}: {title}\n"
+        f"description={_clip_text(track.get('description'), 260)}\n"
+        f"caption={_clip_text(caption, 360)}\n"
+        f"duration={track.get('duration')} bpm={track.get('bpm')} key={track.get('key_scale')} "
+        f"time={track.get('time_signature')} language={track.get('language')}\n"
+        f"lyrics_stats=words:{stats.get('word_count')}, lines:{stats.get('line_count')}, "
+        f"sections:{stats.get('section_count')}\n"
+        f"quality={_clip_text(track.get('tool_report'), 420)}"
+        f"{lyrics_excerpt}"
+    )
+    metadata = {
+        "track_number": _small_scalar(track.get("track_number")),
+        "title": _small_scalar(title),
+        "duration": _small_scalar(track.get("duration")),
+        "bpm": _small_scalar(track.get("bpm")),
+        "key_scale": _small_scalar(track.get("key_scale")),
+        "time_signature": _small_scalar(track.get("time_signature")),
+        "language": _small_scalar(track.get("language")),
+        "lyric_words": stats.get("word_count"),
+        "lyric_lines": stats.get("line_count"),
+        "lyric_sections": stats.get("section_count"),
+    }
+    return _clip_text(content), metadata
 
 
 def _get_ollama_client():
@@ -78,6 +273,329 @@ def test_ollama_model(model_name: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+def _ollama_model_installed(model_name: str) -> bool:
+    model = str(model_name or "").strip()
+    if not model:
+        return False
+    return model in set(ollama_model_names())
+
+
+def _ollama_embed_works(client: Any, model_name: str) -> tuple[bool, str]:
+    try:
+        response = client.embed(model=model_name, input="AceJAM album memory preflight")
+        embeddings = getattr(response, "embeddings", None)
+        if embeddings is None and isinstance(response, dict):
+            embeddings = response.get("embeddings") or response.get("embedding")
+        if embeddings:
+            return True, ""
+        return False, "Ollama returned no embeddings"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def preflight_album_ollama(ollama_model: str, embedding_model: str) -> dict[str, Any]:
+    planner = str(ollama_model or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL).strip()
+    embedder = str(embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL).strip()
+    client = _get_ollama_client()
+    installed = set(ollama_model_names())
+    errors: list[str] = []
+    warnings: list[str] = []
+    if planner not in installed:
+        errors.append(f"Planner model is not installed in Ollama: {planner}")
+    if embedder not in installed:
+        errors.append(f"Embedding model is not installed in Ollama: {embedder}")
+    chat_ok = False
+    embed_ok = False
+    if not errors:
+        try:
+            response = client.chat(
+                model=planner,
+                messages=[{"role": "user", "content": "Reply OK. No explanation."}],
+                options={"num_predict": 8},
+                think=False,
+            )
+            chat_ok = bool(str(getattr(getattr(response, "message", None), "content", "") or "").strip())
+        except Exception as exc:
+            errors.append(f"Planner model test failed: {exc}")
+        embed_ok, embed_error = _ollama_embed_works(client, embedder)
+        if not embed_ok:
+            for fallback in ALBUM_EMBEDDING_FALLBACK_MODELS:
+                if fallback == embedder or fallback not in installed:
+                    continue
+                fallback_ok, fallback_error = _ollama_embed_works(client, fallback)
+                if fallback_ok:
+                    warnings.append(
+                        f"Embedding model {embedder} failed embed() ({embed_error}); using {fallback} instead."
+                    )
+                    embedder = fallback
+                    embed_ok = True
+                    break
+                warnings.append(f"Embedding fallback {fallback} failed embed(): {fallback_error}")
+        if not embed_ok:
+            errors.append(f"Embedding model test failed: {embed_error}")
+    return {
+        "ok": not errors,
+        "planner_model": planner,
+        "embedding_model": embedder,
+        "chat_ok": chat_ok,
+        "embed_ok": embed_ok,
+        "memory_dir": str(CREWAI_MEMORY_DIR),
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def _strip_thinking_blocks(raw: Any) -> str:
+    text = str(raw or "")
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<think>[\s\S]*", "", text, flags=re.IGNORECASE)
+    return text.replace("</think>", "").strip()
+
+
+def _empty_response_fallback_text(model_name: str) -> str:
+    payload = {
+        "acejam_empty_response_fallback": True,
+        "error": f"{model_name} returned an empty response after CrewAI retries.",
+        "album_bible": {"concept": "", "arc": "", "motifs": []},
+        "tracks": [],
+    }
+    return "Thought: I now know the final answer\nFinal Answer: " + json.dumps(payload, ensure_ascii=True)
+
+
+def _compact_tool_context(opts: dict[str, Any], track_duration: float, num_tracks: int, concept: str) -> dict[str, Any]:
+    length_plan = lyric_length_plan(
+        track_duration,
+        str(opts.get("lyric_density") or "dense"),
+        str(opts.get("structure_preset") or "auto"),
+        concept,
+    )
+    portfolio = album_model_portfolio(opts.get("installed_models"))
+    arc = [
+        "opener - immediate identity and strongest first impression",
+        *["escalation - new scene, sharper rhythm, more pressure"] * max(0, num_tracks - 5),
+        "climax - highest stakes and biggest hook",
+        "cooldown - emotional consequence and contrast",
+        "closer - resolution, callback, or final twist",
+    ][:num_tracks]
+    return {
+        "lyric_length_plan": length_plan,
+        "album_arc": arc,
+        "album_model_portfolio": portfolio,
+        "quality_target": opts.get("quality_target") or "hit",
+        "tag_packs": opts.get("tag_packs") or ["genre_style", "mood_atmosphere", "instruments", "timbre_texture"],
+        "artist_reference_notes": opts.get("artist_reference_notes") or [],
+        "live_crewai_tools": CREWAI_LIVE_TOOLS,
+    }
+
+
+def preflight_album_local_llm(
+    planner_provider: str,
+    planner_model: str,
+    embedding_provider: str,
+    embedding_model: str,
+) -> dict[str, Any]:
+    provider_name = normalize_provider(planner_provider)
+    embed_provider = normalize_provider(embedding_provider)
+    if provider_name == "ollama" and embed_provider == "ollama":
+        return preflight_album_ollama(planner_model, embedding_model)
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    chat_ok = False
+    embed_ok = False
+    selected_embedding = str(embedding_model or "").strip()
+    try:
+        catalog = lmstudio_model_catalog() if provider_name == "lmstudio" else {"ready": True, "chat_models": ollama_model_names()}
+        if not catalog.get("ready"):
+            errors.append(catalog.get("error") or f"{provider_label(provider_name)} is not reachable.")
+        elif planner_model not in set(catalog.get("chat_models") or catalog.get("models") or []):
+            errors.append(f"Planner model {planner_model} is not available in {provider_label(provider_name)}.")
+        else:
+            test = local_llm_test_model(provider_name, planner_model, "chat")
+            chat_ok = bool(test.get("success"))
+    except Exception as exc:
+        errors.append(f"Planner model preflight failed: {exc}")
+
+    try:
+        embed_catalog = lmstudio_model_catalog() if embed_provider == "lmstudio" else {"ready": True, "embedding_models": ollama_model_names()}
+        if not embed_catalog.get("ready"):
+            errors.append(embed_catalog.get("error") or f"{provider_label(embed_provider)} is not reachable.")
+        else:
+            embed_models = [str(item) for item in (embed_catalog.get("embedding_models") or []) if str(item).strip()]
+            if selected_embedding not in set(embed_models):
+                if embed_models:
+                    fallback = embed_models[0]
+                    warnings.append(f"Embedding model {selected_embedding or '(empty)'} was not available; using {fallback}.")
+                    selected_embedding = fallback
+                else:
+                    errors.append(f"No embedding model is available in {provider_label(embed_provider)}.")
+            if selected_embedding:
+                vector = local_llm_embed(embed_provider, selected_embedding, "AceJAM album memory test")
+                embed_ok = bool(vector)
+                if not embed_ok:
+                    errors.append(f"Embedding model {selected_embedding} returned no vector.")
+    except Exception as exc:
+        errors.append(f"Embedding model preflight failed: {exc}")
+
+    return {
+        "ok": not errors and chat_ok and embed_ok,
+        "planner_provider": provider_name,
+        "planner_model": planner_model,
+        "embedding_provider": embed_provider,
+        "embedding_model": selected_embedding,
+        "chat_ok": chat_ok,
+        "embed_ok": embed_ok,
+        "errors": errors,
+        "warnings": warnings,
+        "memory_dir": str(CREWAI_MEMORY_DIR),
+        "legacy_memory_dir": str(CREWAI_LEGACY_MEMORY_DIR),
+    }
+
+
+def _ollama_v1_base_url() -> str:
+    return f"{OLLAMA_BASE_URL.rstrip('/')}/v1"
+
+
+def _ollama_embedding_url() -> str:
+    return f"{OLLAMA_BASE_URL.rstrip('/')}/api/embeddings"
+
+
+def _ollama_embedder_config(model_name: str) -> dict[str, Any]:
+    model = str(model_name or DEFAULT_ALBUM_EMBEDDING_MODEL).strip() or DEFAULT_ALBUM_EMBEDDING_MODEL
+    return {
+        "provider": "ollama",
+        "config": {
+            "model_name": model,
+            "url": _ollama_embedding_url(),
+        },
+    }
+
+
+def _local_embedder_config(provider: str, model_name: str) -> dict[str, Any]:
+    provider_name = normalize_provider(provider)
+    model = str(model_name or DEFAULT_ALBUM_EMBEDDING_MODEL).strip() or DEFAULT_ALBUM_EMBEDDING_MODEL
+    if provider_name == "lmstudio":
+        return {
+            "provider": "openai",
+            "config": {
+                "model": model,
+                "api_base": lmstudio_api_base_url(),
+                "api_key": os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
+            },
+        }
+    return _ollama_embedder_config(model)
+
+
+def _make_album_memory(
+    planner_model: str,
+    embedding_model: str,
+    read_only: bool = True,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
+):
+    from crewai import Memory
+
+    return Memory(
+        llm=_make_llm(planner_model, planner_provider),
+        storage=str(CREWAI_MEMORY_DIR),
+        embedder=_local_embedder_config(embedding_provider, embedding_model),
+        root_scope="acejam_album_production",
+        read_only=read_only,
+        consolidation_threshold=1.0,
+        consolidation_limit=1,
+        exploration_budget=0,
+        query_analysis_threshold=100000,
+    )
+
+
+def _make_album_memory_writer(
+    planner_model: str,
+    embedding_model: str,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
+):
+    return _make_album_memory(planner_model, embedding_model, read_only=False, planner_provider=planner_provider, embedding_provider=embedding_provider)
+
+
+def _remember_compact(
+    memory: Any,
+    content: Any,
+    *,
+    scope: str,
+    categories: list[str],
+    metadata: dict[str, Any] | None = None,
+    importance: float = 0.5,
+    logs: list[str] | None = None,
+) -> bool:
+    compact_content = _clip_text(content, CREWAI_MEMORY_CONTENT_LIMIT)
+    safe_metadata = {
+        str(key): _small_scalar(value)
+        for key, value in (metadata or {}).items()
+        if isinstance(value, (str, int, float, bool)) or value is None
+    }
+    try:
+        memory.remember(
+            compact_content,
+            scope=scope,
+            categories=[_clip_text(category, 80) for category in categories],
+            metadata=safe_metadata,
+            importance=float(importance),
+            source="acejam",
+            private=False,
+            root_scope="acejam_album_production",
+        )
+        return True
+    except Exception as exc:
+        message = f"AceJAM compact memory save skipped: {exc}"
+        if logs is not None:
+            logs.append(message)
+        print(f"[album_crew][memory] {message}", flush=True)
+        return False
+
+
+def _remember_album_bible(
+    memory: Any,
+    album_bible: dict[str, Any],
+    blueprints: list[dict[str, Any]],
+    logs: list[str] | None = None,
+) -> None:
+    content = (
+        "Album bible summary\n"
+        f"concept={_clip_text(album_bible.get('concept'), 360)}\n"
+        f"arc={_clip_text(album_bible.get('arc'), 360)}\n"
+        f"motifs={_compact_json(album_bible.get('motifs') or [], 360)}\n"
+        f"tracks={_compact_json([{'n': b.get('track_number'), 'title': b.get('title'), 'role': b.get('description')} for b in blueprints], 620)}"
+    )
+    metadata = {
+        "record_type": "album_bible",
+        "track_count": len(blueprints),
+        "concept": _clip_text(album_bible.get("concept"), 160),
+    }
+    _remember_compact(
+        memory,
+        content,
+        scope="/acejam_album_production/album_bible",
+        categories=["album_bible", "album_arc", "track_blueprints"],
+        metadata=metadata,
+        importance=0.6,
+        logs=logs,
+    )
+
+
+def _remember_track(memory: Any, track: dict[str, Any], logs: list[str] | None = None) -> None:
+    content, metadata = _compact_track_memory_record(track)
+    metadata["record_type"] = "track_production"
+    _remember_compact(
+        memory,
+        content,
+        scope="/acejam_album_production/track",
+        categories=["track_production", "lyrics_summary", "ace_step_payload"],
+        metadata=metadata,
+        importance=0.55,
+        logs=logs,
+    )
+
+
 def _search_web(query: str) -> str:
     try:
         encoded = urllib.parse.quote(query)
@@ -101,30 +619,133 @@ def _search_web(query: str) -> str:
         return f"Search failed: {exc}"
 
 
-def _make_llm(model_name: str):
+def _make_llm(model_name: str, provider: str = "ollama"):
     from crewai import LLM
 
-    llm = LLM(
-        model=f"ollama/{model_name}",
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.72,
-        max_tokens=131072,
-        timeout=7200,
-    )
+    provider_name = normalize_provider(provider)
+    if provider_name == "lmstudio":
+        llm = LLM(
+            model=f"openai/{model_name}",
+            provider="openai",
+            base_url=lmstudio_api_base_url(),
+            api_base=lmstudio_api_base_url(),
+            api_key=os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
+            temperature=0.72,
+            top_p=0.92,
+            max_tokens=CREWAI_LLM_MAX_TOKENS,
+            context_window_size=CREWAI_LLM_CONTEXT_WINDOW,
+            additional_params={
+                "num_ctx": CREWAI_LLM_CONTEXT_WINDOW,
+                "num_predict": CREWAI_LLM_NUM_PREDICT,
+            },
+            timeout=CREWAI_LLM_TIMEOUT_SECONDS,
+        )
+    else:
+        llm = LLM(
+            model=model_name,
+            provider="ollama",
+            base_url=OLLAMA_BASE_URL,
+            api_base=_ollama_v1_base_url(),
+            temperature=0.72,
+            top_p=0.92,
+            max_tokens=CREWAI_LLM_MAX_TOKENS,
+            context_window_size=CREWAI_LLM_CONTEXT_WINDOW,
+            additional_params={
+                "num_ctx": CREWAI_LLM_CONTEXT_WINDOW,
+                "num_predict": CREWAI_LLM_NUM_PREDICT,
+            },
+            timeout=CREWAI_LLM_TIMEOUT_SECONDS,
+        )
+    # Qwen/Ollama models often emit raw <think> content. If CrewAI sends native
+    # OpenAI-style tool schemas to Ollama, that content can crash Ollama's tool
+    # parser before AceJAM gets a fallback. Keep tools available through CrewAI's
+    # text tool loop, but do not advertise native function-calling support.
+    llm.supports_function_calling = lambda: False
     original_call = llm.call
 
+    def _debug_print_response(label: str, value: Any, attempt: int) -> None:
+        if not CREWAI_DEBUG_LLM_RESPONSES:
+            return
+        text = str(value if value is not None else "")
+        print(
+            f"\n[album_crew][llm][{label}] provider={provider_name} model={model_name} "
+            f"attempt={attempt + 1}/{CREWAI_EMPTY_RESPONSE_RETRIES + 1} "
+            f"type={type(value).__name__} chars={len(text)}",
+            flush=True,
+        )
+        print("[album_crew][llm][content-begin]", flush=True)
+        print(text, flush=True)
+        print("[album_crew][llm][content-end]\n", flush=True)
+
     def _patched_call(*args, **kwargs):
-        result = original_call(*args, **kwargs)
-        if isinstance(result, str) and "<think>" in result:
-            result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL).strip()
-        return result
+        last_result: Any = None
+        for attempt in range(CREWAI_EMPTY_RESPONSE_RETRIES + 1):
+            try:
+                result = original_call(*args, **kwargs)
+            except Exception as exc:
+                text = str(exc)
+                if "OpenAI API call failed" in text:
+                    text = text.replace("OpenAI API call failed", f"Local Ollama/LiteLLM call failed for {model_name}")
+                if "context length" in text.lower() or "input length" in text.lower():
+                    text += (
+                        f" [AceJAM limit: num_ctx={CREWAI_LLM_CONTEXT_WINDOW}, "
+                        f"num_predict={CREWAI_LLM_NUM_PREDICT}. CrewAI auto-summarization is disabled by default.]"
+                    )
+                print(
+                    f"\n[album_crew][llm][exception] provider={provider_name} model={model_name} "
+                    f"attempt={attempt + 1}/{CREWAI_EMPTY_RESPONSE_RETRIES + 1} "
+                    f"{type(exc).__name__}: {text}\n",
+                    flush=True,
+                )
+                raise
+            last_result = result
+            _debug_print_response("raw-response", result, attempt)
+            if isinstance(result, str) and "<think" in result.lower():
+                stripped = _strip_thinking_blocks(result)
+                _debug_print_response("stripped-response", stripped, attempt)
+                result = stripped
+            if str(result or "").strip():
+                return result
+            print(
+                f"[album_crew][llm][empty-response] provider={provider_name} model={model_name} "
+                f"attempt={attempt + 1}/{CREWAI_EMPTY_RESPONSE_RETRIES + 1}; retrying={attempt < CREWAI_EMPTY_RESPONSE_RETRIES}",
+                flush=True,
+            )
+            if attempt < CREWAI_EMPTY_RESPONSE_RETRIES:
+                time.sleep(CREWAI_EMPTY_RESPONSE_RETRY_DELAY)
+        fallback = _empty_response_fallback_text(model_name)
+        _debug_print_response("empty-response-fallback", fallback, CREWAI_EMPTY_RESPONSE_RETRIES)
+        return fallback
 
     llm.call = _patched_call
     return llm
 
 
+def _crew_task(
+    *,
+    description: str,
+    expected_output: str,
+    agent: Any,
+    context: list[Any] | None = None,
+    output_json: type[BaseModel] | None = None,
+):
+    from crewai import Task
+
+    kwargs: dict[str, Any] = {
+        "description": description,
+        "expected_output": expected_output,
+        "agent": agent,
+        "guardrail_max_retries": CREWAI_TASK_MAX_RETRIES,
+    }
+    if context is not None:
+        kwargs["context"] = context
+    if output_json is not None:
+        kwargs["output_json"] = output_json
+    return Task(**kwargs)
+
+
 def _json_from_text(raw: str) -> list[dict[str, Any]]:
-    text = re.sub(r"<think>.*?</think>", "", str(raw or ""), flags=re.DOTALL).strip()
+    text = _strip_thinking_blocks(raw)
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     try:
@@ -146,6 +767,26 @@ def _json_from_text(raw: str) -> list[dict[str, Any]]:
     raise ValueError("Crew result did not contain a valid JSON track array")
 
 
+def _json_object_from_text(raw: str) -> dict[str, Any]:
+    text = _strip_thinking_blocks(raw)
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            return parsed[0]
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        parsed = json.loads(match.group(0))
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("Crew result did not contain a valid JSON object")
+
+
 def _coerce_options(
     concept: str,
     num_tracks: int,
@@ -155,7 +796,7 @@ def _coerce_options(
 ) -> dict[str, Any]:
     opts = dict(options or {})
     sanitized, artist_notes = sanitize_artist_references(concept)
-    opts.setdefault("song_model_strategy", "best_installed")
+    opts.setdefault("song_model_strategy", "all_models_album")
     opts.setdefault("quality_target", "hit")
     opts.setdefault("lyric_density", "dense")
     opts.setdefault("rhyme_density", 0.8)
@@ -166,6 +807,16 @@ def _coerce_options(
     opts.setdefault("key_strategy", "related")
     opts.setdefault("use_web_inspiration", False)
     opts.setdefault("track_variants", 1)
+    opts.setdefault("inference_steps", ALBUM_FINAL_DOCS_BEST["inference_steps"])
+    opts.setdefault("guidance_scale", ALBUM_FINAL_DOCS_BEST["guidance_scale"])
+    opts.setdefault("shift", ALBUM_FINAL_DOCS_BEST["shift"])
+    opts.setdefault("infer_method", ALBUM_FINAL_DOCS_BEST["infer_method"])
+    opts.setdefault("sampler_mode", ALBUM_FINAL_DOCS_BEST["sampler_mode"])
+    opts.setdefault("audio_format", ALBUM_FINAL_DOCS_BEST["audio_format"])
+    opts.setdefault("auto_score", False)
+    opts.setdefault("auto_lrc", False)
+    opts.setdefault("return_audio_codes", False)
+    opts.setdefault("save_to_library", True)
     opts.update(
         {
             "concept": concept,
@@ -191,11 +842,13 @@ def create_album_crew(
     language: str = "en",
     embedding_model: str = "nomic-embed-text",
     options: dict[str, Any] | None = None,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
 ):
-    from crewai import Agent, Crew, Process, Task
+    from crewai import Agent, Crew, Process
 
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
-    llm = _make_llm(ollama_model)
+    llm = _make_llm(ollama_model, planner_provider)
     lang_name = LANG_NAMES.get(language, language)
     length_plan = lyric_length_plan(
         track_duration,
@@ -220,6 +873,7 @@ def create_album_crew(
         {
             "lyric_length_plan": length_plan,
             "model_advice": model_info,
+            "album_model_portfolio": album_model_portfolio(opts.get("installed_models")),
             "quality_target": opts.get("quality_target"),
             "tag_packs": opts.get("tag_packs"),
             "custom_tags": opts.get("custom_tags"),
@@ -234,7 +888,21 @@ def create_album_crew(
         "metaphor discipline, punchlines, hook contrast, breath control, and cinematic imagery. "
         "Use the provided tools when useful. Output concrete, editable production data."
     )
-    cfg = dict(llm=llm, verbose=True, allow_delegation=False, max_iter=20)
+    schema_rules = (
+        "Use machine-safe values only: duration must be numeric seconds, bpm must be 30-300, "
+        "key_scale must be like C minor or F# major, time_signature must be 2, 3, 4, or 6, "
+        "infer_method must be ode or sde, sampler_mode must be euler or heun, audio_format must be wav/wav32/flac/ogg/mp3, "
+        "and seed must be numeric or -1. Put colorful phrases in description/tool_notes, never in these fields."
+    )
+    cfg = dict(
+        llm=llm,
+        verbose=True,
+        allow_delegation=False,
+        max_iter=CREWAI_AGENT_MAX_ITER,
+        max_execution_time=None,
+        max_retry_limit=CREWAI_AGENT_MAX_RETRY_LIMIT,
+        respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
+    )
 
     executive_producer = Agent(
         role="Executive Producer",
@@ -247,26 +915,69 @@ def create_album_crew(
         tools=tools,
         **cfg,
     )
-    beat_producer = Agent(
-        role="Beat Producer and ACE-Step Tag Architect",
-        goal="Create ACE-Step captions, tags, BPM, key, time signature, and model choices",
+    artist_performer = Agent(
+        role="Artist and Lead Performer",
+        goal=f"Define an original persona, cadence, delivery, ad-libs, and vocal performance tags in {lang_name}",
         backstory=(
             f"{shared_rules}\n\n"
-            "Use caption dimensions from ACE-Step: genre, emotion, instruments, timbre, era, "
-            "production, vocal character, speed, rhythm, and structure hints. "
-            "Keep BPM/key/time in metadata instead of repeating them in captions."
+            "You think like the artist in the booth: intent, breath, pocket, ad-libs, confidence, vulnerability, "
+            "and hook delivery. You turn artist references into neutral technique language only."
         ),
         tools=tools,
         **cfg,
     )
     songwriter = Agent(
-        role="Rhyme, Hook, and Lyric Writer",
-        goal=f"Write original, duration-matched lyrics in {lang_name}",
+        role="Songwriter and Hook Architect",
+        goal=f"Write complete original hooks, verses, bridges, and outros in {lang_name}",
         backstory=(
             f"{shared_rules}\n\n"
-            "Write vivid lyrics with specific nouns, internal/slant rhyme, one coherent metaphor world, "
-            "clear section tags, hook contrast, and no repeated filler. "
-            "Use concise meta tags such as [Verse - rap], [Chorus - anthemic], [Bridge - whispered]."
+            "You write enough lyrics for the chosen duration, with clear section tags, memorable titles, "
+            "hook contrast, concrete scenes, and no placeholder lines."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    rhyme_editor = Agent(
+        role="Rhyme and Metaphor Editor",
+        goal="Raise rhyme density, imagery, punchline discipline, and remove cliches",
+        backstory=(
+            f"{shared_rules}\n\n"
+            "You sharpen internal rhyme, multisyllabic/slant rhyme, metaphor worlds, line endings, "
+            "and lyrical specificity without copying any living artist's identity."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    beat_producer = Agent(
+        role="Beat Producer",
+        goal="Design genre, instruments, BPM, key, rhythm, arrangement, and sonic contrast",
+        backstory=(
+            f"{shared_rules}\n\n"
+            "You build the record's musical body: drums, bass, arrangement, keys, transitions, "
+            "energy curve, and track-to-track contrast."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    prompt_engineer = Agent(
+        role="ACE-Step Prompt Engineer",
+        goal="Convert production intent into compact ACE-Step captions, tags, lyric meta tags, and safe settings",
+        backstory=(
+            f"{shared_rules}\n\n"
+            "Use ACE-Step dimensions: genre, mood, instruments, timbre, era, production, vocals, rhythm, "
+            "structure, and stem tags. Keep BPM/key/time as metadata, not cluttered inside captions."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    studio_engineer = Agent(
+        role="Studio Engineer and Mix/Master QA",
+        goal="Set generation steps, guidance, shift, sampler, output format, score, LRC, and audio-code flags",
+        backstory=(
+            f"{shared_rules}\n\n"
+            "Album generation renders a full model portfolio: Turbo, Turbo Shift3, SFT, Base, "
+            "XL Turbo, XL SFT, and XL Base. You tune controllable per-track settings for quality, "
+            "repeatability, and clean library metadata while AceJAM locks each model-specific album render."
         ),
         tools=tools,
         **cfg,
@@ -283,56 +994,339 @@ def create_album_crew(
         **cfg,
     )
 
-    task_concept = Task(
+    task_concept = _crew_task(
         description=(
             f"Plan exactly {num_tracks} tracks for this album.\n"
             f"Concept: {opts['sanitized_concept']}\n"
             f"Language: {lang_name}\n"
             f"Tool context: {tool_summary}\n"
             + (f"Current inspiration snippets:\n{inspiration}\n" if inspiration else "")
-            + "Return track titles, role in album arc, unique scene, and hook promise."
+            + "Use AlbumArcTool and AlbumContinuityTool. Return track titles, role in album arc, unique scene, and hook promise."
         ),
         expected_output=f"Numbered plan for {num_tracks} distinct tracks.",
         agent=executive_producer,
     )
-    task_sonic = Task(
+    task_performance = _crew_task(
         description=(
-            "For each planned track, assign ACE-Step-ready caption tags, BPM, key_scale, time_signature, "
-            "vocal character, and the chosen installed song_model. Use ModelAdvisorTool and TagLibraryTool. "
-            "Every track must have different tags and a clear production reason."
+            f"For each planned track, define an original artist/performance brief in {lang_name}: "
+            "persona, cadence, vocal character, ad-libs, delivery tags, and hook performance. "
+            "Use VocalPerformanceTool and RhymeFlowTool when artist references or flow goals appear."
         ),
-        expected_output="Sonic specification for every track.",
-        agent=beat_producer,
+        expected_output="Performance and persona brief for every track.",
+        agent=artist_performer,
         context=[task_concept],
     )
-    task_lyrics = Task(
+    task_lyrics = _crew_task(
         description=(
             f"Write complete lyrics for all tracks in {lang_name}.\n"
             f"Duration per track: {int(track_duration)} seconds.\n"
             f"Required plan: {length_plan['structure']}; target {length_plan['target_words']} words, "
             f"minimum {length_plan['min_words']} words and {length_plan['min_lines']} lyric lines.\n"
-            "Use enough lyrics for the duration. Keep each hook unique. Do not include placeholder lines."
+            "Use enough lyrics for the duration. Every track needs verses, choruses, a bridge or contrasting moment, "
+            "and performance/section tags such as [Verse - rap], [Pre-Chorus], [Chorus - anthemic], [Bridge], "
+            "[Final Chorus], [Ad-libs], or [Outro] where musically appropriate. Keep sonic tags in caption, "
+            "not as random lyric lines. Keep each hook unique. Do not include placeholder lines."
         ),
         expected_output="Complete duration-matched lyrics for every track.",
         agent=songwriter,
-        context=[task_concept, task_sonic],
+        context=[task_concept, task_performance],
     )
-    task_json = Task(
+    task_lyric_edit = _crew_task(
+        description=(
+            "Edit every lyric for internal/slant rhyme, metaphor focus, cliche cleanup, repeated-line checks, "
+            "and hook memorability. Use RhymeFlowTool, MetaphorWorldTool, HookDoctorTool, ClicheGuardTool, "
+            "HitScoreTool, and TrackRepairTool."
+        ),
+        expected_output="Repaired lyrics and quality notes for every track.",
+        agent=rhyme_editor,
+        context=[task_concept, task_performance, task_lyrics],
+    )
+    task_sonic = _crew_task(
+        description=(
+            "For each planned track, design arrangement, genre, instruments, BPM, key_scale, time_signature, "
+            "rhythm pocket, and energy movement. Use ArrangementTool and TagLibraryTool. "
+            "Every track must have different sonic reasons and still fit the album arc."
+        ),
+        expected_output="Sonic specification for every track.",
+        agent=beat_producer,
+        context=[task_concept, task_performance, task_lyric_edit],
+    )
+    task_prompt = _crew_task(
+        description=(
+            "Convert each track into ACE-Step-ready generation fields. Use ModelPortfolioTool, "
+            "PerModelSettingsTool, AlbumRenderMatrixTool, ModelAdvisorTool, CaptionPolisherTool, "
+            "ConflictCheckerTool, and TagLibraryTool. Fields must include title, tags/caption, lyrics, "
+            "bpm, key_scale, time_signature, language, duration, song_model, and model_render_notes for "
+            "the full 7-model portfolio. Caption/tags must describe genre, mood, instruments, timbre, production, "
+            "vocal character, rhythm, and dynamics. Lyrics must contain only lyric/performance section tags. "
+            f"{schema_rules}"
+        ),
+        expected_output="Prompt and metadata spec for every track.",
+        agent=prompt_engineer,
+        context=[task_concept, task_performance, task_lyric_edit, task_sonic],
+    )
+    task_engineering = _crew_task(
+        description=(
+            "Set editable generation controls for every track: seed, inference_steps, guidance_scale, shift, "
+            "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library. "
+            "Use GenerationSettingsTool, PerModelSettingsTool, AlbumRenderMatrixTool, FilenamePlannerTool, "
+            "and MixMasterTool. Plan strong defaults; AceJAM will render every track once with each portfolio model. "
+            f"{schema_rules}"
+        ),
+        expected_output="Generation-control spec and mix/master QA for every track.",
+        agent=studio_engineer,
+        context=[task_concept, task_prompt],
+    )
+    task_json = _crew_task(
         description=(
             "Combine the album plan, sonic specs, and lyrics into a strict JSON array only. "
             "Each object must include: track_number, title, description, tags, lyrics, bpm, key_scale, "
-            "time_signature, language, duration, song_model. "
-            "Also include tool_notes when you changed an artist reference into technique language."
+            "time_signature, language, duration, song_model, seed, inference_steps, guidance_scale, shift, "
+            "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library, "
+            "tool_notes, production_team, and model_render_notes. "
+            f"{schema_rules} "
+            f"Every lyrics field must meet at least {length_plan['min_words']} words and {length_plan['min_lines']} lyric lines "
+            f"for {int(track_duration)} seconds, unless the track is explicitly instrumental. "
+            f"For planning, song_model may be {ALBUM_FINAL_MODEL}; final audio generation will render all models: "
+            f"{', '.join(ALBUM_MODEL_PORTFOLIO_MODELS)}. "
+            "Also include tool_notes when you changed an artist reference into technique language. JSON array only."
         ),
         expected_output="Valid JSON array of album tracks only.",
         agent=quality_editor,
-        context=[task_concept, task_sonic, task_lyrics],
+        context=[task_concept, task_performance, task_lyrics, task_lyric_edit, task_sonic, task_prompt, task_engineering],
     )
 
     return Crew(
-        agents=[executive_producer, beat_producer, songwriter, quality_editor],
-        tasks=[task_concept, task_sonic, task_lyrics, task_json],
+        agents=[
+            executive_producer,
+            artist_performer,
+            songwriter,
+            rhyme_editor,
+            beat_producer,
+            prompt_engineer,
+            studio_engineer,
+            quality_editor,
+        ],
+        tasks=[
+            task_concept,
+            task_performance,
+            task_lyrics,
+            task_lyric_edit,
+            task_sonic,
+            task_prompt,
+            task_engineering,
+            task_json,
+        ],
         process=Process.sequential,
+        memory=_make_album_memory(ollama_model, embedding_model, read_only=True, planner_provider=planner_provider, embedding_provider=embedding_provider),
+        embedder=_local_embedder_config(embedding_provider, embedding_model),
+        verbose=True,
+    )
+
+
+def create_album_bible_crew(
+    concept: str,
+    num_tracks: int,
+    track_duration: float,
+    ollama_model: str,
+    language: str = "en",
+    embedding_model: str = DEFAULT_ALBUM_EMBEDDING_MODEL,
+    options: dict[str, Any] | None = None,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
+):
+    from crewai import Agent, Crew, Process
+
+    opts = _coerce_options(concept, num_tracks, track_duration, language, options)
+    llm = _make_llm(ollama_model, planner_provider)
+    lang_name = LANG_NAMES.get(language, language)
+    length_plan = lyric_length_plan(
+        track_duration,
+        str(opts.get("lyric_density") or "dense"),
+        str(opts.get("structure_preset") or "auto"),
+        opts["sanitized_concept"],
+    )
+    tool_context = _compact_tool_context(opts, track_duration, num_tracks, opts["sanitized_concept"])
+    tools = make_crewai_tools({**opts, "web_inspiration": ""}) if CREWAI_LIVE_TOOLS else []
+    cfg = dict(
+        llm=llm,
+        verbose=True,
+        allow_delegation=False,
+        max_iter=CREWAI_AGENT_MAX_ITER,
+        max_execution_time=None,
+        max_retry_limit=CREWAI_AGENT_MAX_RETRY_LIMIT,
+        respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
+    )
+    producer = Agent(
+        role="Executive Producer and Album Bible Architect",
+        goal="Create a compact album bible and track blueprints without full lyrics",
+        backstory=(
+            "You design award-level album arcs. Keep context compact: no full lyrics here. "
+            "Create original music only and convert artist references into technique briefs."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    prompt_engineer = Agent(
+        role="ACE-Step Blueprint Engineer",
+        goal="Turn the album bible into compact generation-ready track blueprints",
+        backstory=(
+            "You write concise, machine-safe JSON. Captions contain sonic tags; lyrics will be written later per track."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    bible_task = _crew_task(
+        description=(
+            f"Create a compact album_bible for exactly {num_tracks} tracks.\n"
+            f"Concept: {opts['sanitized_concept']}\n"
+            f"Language: {lang_name}\n"
+            f"Track duration: {int(track_duration)} seconds.\n"
+            f"Deterministic AceJAM tool context: {json.dumps(tool_context, ensure_ascii=True)[:2600]}\n"
+            f"Lyric target later per track: {length_plan['target_words']} words, min {length_plan['min_words']} words, "
+            f"{length_plan['min_lines']} min lyric lines.\n"
+            "Do not call tools. Do not write full lyrics. Return only compact plan details: album arc, sonic palette, recurring motifs, and per-track roles."
+        ),
+        expected_output="Compact album bible and track roles, no full lyrics.",
+        agent=producer,
+    )
+    blueprint_task = _crew_task(
+        description=(
+            "Return strict JSON only with this shape: "
+            "{\"album_bible\":{\"concept\":\"...\",\"arc\":\"...\",\"motifs\":[\"...\"]},"
+            "\"tracks\":[{\"track_number\":1,\"artist_name\":\"original stage/project name\",\"title\":\"...\",\"description\":\"...\","
+            "\"tags\":\"compact ACE-Step sonic tags\",\"bpm\":90,\"key_scale\":\"C minor\","
+            "\"time_signature\":\"4\",\"duration\":180,\"hook_promise\":\"...\",\"performance_brief\":\"...\"}]}.\n"
+            "Do not call tools. No full lyrics in this phase. Invent original artist/project names only; never use real artist names from references. "
+            "Use concise captions/tags with genre, mood, instruments, timbre, production, vocals, rhythm, and dynamics."
+        ),
+        expected_output="Strict JSON album_bible plus compact track blueprints.",
+        agent=prompt_engineer,
+        context=[bible_task],
+        output_json=AlbumBiblePayloadModel,
+    )
+    return Crew(
+        agents=[producer, prompt_engineer],
+        tasks=[bible_task, blueprint_task],
+        process=Process.sequential,
+        memory=_make_album_memory(ollama_model, embedding_model, read_only=True, planner_provider=planner_provider, embedding_provider=embedding_provider),
+        embedder=_local_embedder_config(embedding_provider, embedding_model),
+        verbose=True,
+    )
+
+
+def create_track_production_crew(
+    album_bible: dict[str, Any],
+    blueprint: dict[str, Any],
+    num_tracks: int,
+    track_duration: float,
+    ollama_model: str,
+    language: str = "en",
+    embedding_model: str = DEFAULT_ALBUM_EMBEDDING_MODEL,
+    options: dict[str, Any] | None = None,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
+):
+    from crewai import Agent, Crew, Process
+
+    opts = _coerce_options(
+        str(album_bible.get("concept") or (options or {}).get("concept") or ""),
+        num_tracks,
+        track_duration,
+        language,
+        options,
+    )
+    llm = _make_llm(ollama_model, planner_provider)
+    lang_name = LANG_NAMES.get(language, language)
+    length_plan = lyric_length_plan(
+        blueprint.get("duration") or track_duration,
+        str(opts.get("lyric_density") or "dense"),
+        str(opts.get("structure_preset") or "auto"),
+        " ".join([str(blueprint.get("tags") or ""), str(blueprint.get("description") or ""), opts["sanitized_concept"]]),
+    )
+    blueprint_for_context = {
+        key: value
+        for key, value in blueprint.items()
+        if key not in {"lyrics", "raw_lyrics", "full_track_json", "production_team"}
+    }
+    album_bible_for_context = {
+        "concept": _clip_text(album_bible.get("concept"), 500),
+        "arc": _clip_text(album_bible.get("arc"), 500),
+        "motifs": album_bible.get("motifs") or [],
+        "sonic_palette": _clip_text(album_bible.get("sonic_palette"), 300),
+    }
+    tool_context = {
+        **_compact_tool_context(
+            opts,
+            parse_duration_seconds(blueprint.get("duration") or track_duration, track_duration),
+            num_tracks,
+            " ".join([str(blueprint.get("tags") or ""), str(blueprint.get("description") or ""), opts["sanitized_concept"]]),
+        ),
+        "current_track": blueprint_for_context,
+        "album_bible": album_bible_for_context,
+    }
+    tools = make_crewai_tools(tool_context) if CREWAI_LIVE_TOOLS else []
+    cfg = dict(
+        llm=llm,
+        verbose=True,
+        allow_delegation=False,
+        max_iter=CREWAI_AGENT_MAX_ITER,
+        max_execution_time=None,
+        max_retry_limit=CREWAI_AGENT_MAX_RETRY_LIMIT,
+        respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
+    )
+    producer = Agent(
+        role="Track Production Team",
+        goal=f"Produce one track: a complete professional song in {lang_name}",
+        backstory=(
+            "You are a focused production team for one song only: performer, songwriter, lyric editor, beat producer, "
+            "ACE-Step prompt engineer, studio engineer, and A&R gate. Do not include other tracks' full lyrics."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    finalizer = Agent(
+        role="Track JSON Finalizer",
+        goal="Return strict JSON for exactly one AceJAM album track",
+        backstory=(
+            "You output valid JSON only. Lyrics must be long enough for the requested duration and captions must stay compact sonic tags."
+        ),
+        tools=tools,
+        **cfg,
+    )
+    production_task = _crew_task(
+        description=(
+            f"Produce exactly one track from this compact blueprint:\n{_compact_json(blueprint_for_context, 1800)}\n"
+            f"Album bible summary:\n{_compact_json(album_bible_for_context, 1200)}\n"
+            f"Deterministic AceJAM tool context:\n{json.dumps(tool_context, ensure_ascii=True)[:2600]}\n"
+            f"Duration target: {int(blueprint.get('duration') or track_duration)} seconds.\n"
+            f"Required lyric plan: {length_plan['structure']}; target {length_plan['target_words']} words, "
+            f"minimum {length_plan['min_words']} words and {length_plan['min_lines']} lyric lines.\n"
+            "Do not call tools. Write full lyrics now with verses, choruses, bridge/final chorus, ad-libs/performance tags, and no placeholders. "
+            "Keep sonic/instrument/production tags in caption/tags, not as random lyric lines."
+        ),
+        expected_output="Complete one-track production spec with full lyrics.",
+        agent=producer,
+    )
+    json_task = _crew_task(
+        description=(
+            "Return strict JSON object only. Required fields: track_number, artist_name, title, description, tags, lyrics, bpm, "
+            "key_scale, time_signature, language, duration, song_model, seed, inference_steps, guidance_scale, shift, "
+            "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library, "
+            "tool_notes, production_team, model_render_notes. artist_name must be an original stage/project name, never a real artist reference. "
+            "Do not call tools. Do not wrap in markdown."
+        ),
+        expected_output="One valid JSON object for a single track.",
+        agent=finalizer,
+        context=[production_task],
+        output_json=TrackProductionPayloadModel,
+    )
+    return Crew(
+        agents=[producer, finalizer],
+        tasks=[production_task, json_task],
+        process=Process.sequential,
+        memory=_make_album_memory(ollama_model, embedding_model, read_only=True, planner_provider=planner_provider, embedding_provider=embedding_provider),
+        embedder=_local_embedder_config(embedding_provider, embedding_model),
         verbose=True,
     )
 
@@ -341,12 +1335,14 @@ def plan_album(
     concept: str,
     num_tracks: int = 5,
     track_duration: float = 180.0,
-    ollama_model: str = "llama3.2",
+    ollama_model: str = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
     language: str = "en",
-    embedding_model: str = "nomic-embed-text",
+    embedding_model: str = DEFAULT_ALBUM_EMBEDDING_MODEL,
     options: dict[str, Any] | None = None,
     use_crewai: bool = True,
     input_tracks: list[dict[str, Any]] | None = None,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
 ) -> dict[str, Any]:
     logs: list[str] = []
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
@@ -354,6 +1350,22 @@ def plan_album(
     logs.append(f"Concept: {opts['sanitized_concept']}")
     logs.append(f"Language: {lang_name}")
     logs.append(f"Tracks: {num_tracks} x {int(track_duration)}s")
+    planner_provider = normalize_provider(planner_provider or "ollama")
+    embedding_provider = normalize_provider(embedding_provider or planner_provider)
+    ollama_model = str(ollama_model or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL).strip()
+    embedding_model = str(embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL).strip()
+    logs.append(f"Planner LM: {provider_label(planner_provider)} ({ollama_model}); ACE-Step LM is not used for album agents.")
+    logs.append(f"Embedding: {provider_label(embedding_provider)} ({embedding_model}).")
+    logs.append(
+        "CrewAI runtime: "
+        f"timeout={CREWAI_LLM_TIMEOUT_SECONDS}s, "
+        f"num_ctx={CREWAI_LLM_CONTEXT_WINDOW}, "
+        f"num_predict={CREWAI_LLM_NUM_PREDICT}, "
+        f"agent_iter={CREWAI_AGENT_MAX_ITER}, "
+        f"agent_retries={CREWAI_AGENT_MAX_RETRY_LIMIT}, "
+        f"task_retries={CREWAI_TASK_MAX_RETRIES}, "
+        f"respect_context_window={CREWAI_RESPECT_CONTEXT_WINDOW}."
+    )
     logs.append(f"Song model strategy: {opts.get('song_model_strategy')}")
     if opts.get("artist_reference_notes"):
         logs.extend(str(note) for note in opts["artist_reference_notes"])
@@ -363,9 +1375,21 @@ def plan_album(
         str(opts.get("song_model_strategy") or "best_installed"),
         str(opts.get("requested_song_model") or "auto"),
     )
+    if str(opts.get("song_model_strategy")) == "all_models_album":
+        model_info = {
+            "ok": True,
+            "model": "per-model portfolio",
+            "strategy": "all_models_album",
+            "reason": "Album renders will be produced once per track for every ACE-Step album portfolio model.",
+            "album_models": album_model_portfolio(opts.get("installed_models")),
+            "multi_album": True,
+        }
     if not model_info.get("ok"):
-        logs.append(f"ERROR: {model_info.get('error')}")
-        return {"tracks": [], "logs": logs, "success": False, "error": model_info.get("error"), "toolkit": toolkit_payload(opts.get("installed_models"))}
+        if str(opts.get("song_model_strategy")) == "xl_sft_final" and model_info.get("model") == ALBUM_FINAL_MODEL:
+            logs.append(f"Final model download required before generation: {model_info.get('error')}")
+        else:
+            logs.append(f"ERROR: {model_info.get('error')}")
+            return {"tracks": [], "logs": logs, "success": False, "error": model_info.get("error"), "toolkit": toolkit_payload(opts.get("installed_models"))}
 
     if input_tracks:
         tracks = normalize_album_tracks(input_tracks, opts)
@@ -380,8 +1404,22 @@ def plan_album(
 
     if use_crewai:
         try:
-            logs.append(f"Planning with CrewAI and Ollama model {ollama_model}...")
-            crew = create_album_crew(concept, num_tracks, track_duration, ollama_model, language, embedding_model, opts)
+            preflight = preflight_album_local_llm(planner_provider, ollama_model, embedding_provider, embedding_model)
+            logs.append(f"CrewAI memory: enabled at {preflight['memory_dir']} with local providers only.")
+            logs.append(f"{provider_label(planner_provider)} preflight: planner chat={preflight['chat_ok']}, embedding={preflight['embed_ok']}.")
+            for warning in preflight.get("warnings") or []:
+                logs.append(f"Local LLM preflight warning: {warning}")
+            if not preflight["ok"]:
+                raise RuntimeError("; ".join(preflight["errors"]))
+            embedding_model = str(preflight.get("embedding_model") or embedding_model)
+            album_memory_writer = _make_album_memory_writer(ollama_model, embedding_model, planner_provider, embedding_provider)
+            logs.append(f"CrewAI memory embedder selected: {embedding_model}.")
+            logs.append(
+                "CrewAI agent memory is read-only; AceJAM writes compact memory records only "
+                f"(max {CREWAI_MEMORY_CONTENT_LIMIT} chars each)."
+            )
+            logs.append(f"Planning compact album bible with CrewAI and {provider_label(planner_provider)} model {ollama_model}...")
+            bible_crew = create_album_bible_crew(concept, num_tracks, track_duration, ollama_model, language, embedding_model, opts, planner_provider, embedding_provider)
 
             def _task_callback(output):
                 desc = getattr(output, "description", "")[:90]
@@ -391,18 +1429,81 @@ def plan_album(
                 if raw:
                     logs.append("  " + raw[:240].replace("\n", " ") + "...")
 
-            for task in crew.tasks:
+            for task in bible_crew.tasks:
                 task.callback = _task_callback
-            result = crew.kickoff()
-            parsed = _json_from_text(str(result))
-            tracks = normalize_album_tracks(parsed[:num_tracks], opts)
-            logs.append(f"CrewAI planned {len(tracks)} tracks.")
+            bible_result = bible_crew.kickoff()
+            bible_payload = _task_output_json_dict(bible_result)
+            album_bible = bible_payload.get("album_bible") if isinstance(bible_payload.get("album_bible"), dict) else {
+                "concept": opts["sanitized_concept"],
+                "arc": str(bible_payload.get("arc") or ""),
+                "motifs": bible_payload.get("motifs") or [],
+            }
+            blueprints = [item for item in (bible_payload.get("tracks") or []) if isinstance(item, dict)]
+            if not blueprints:
+                blueprints = build_album_plan(concept, num_tracks, track_duration, opts)["tracks"]
+            blueprints = blueprints[:num_tracks]
+            logs.append(f"CrewAI compact bible planned {len(blueprints)} track blueprint(s).")
+            _remember_album_bible(album_memory_writer, album_bible, blueprints, logs)
+            produced_tracks: list[dict[str, Any]] = []
+            for index, blueprint in enumerate(blueprints):
+                blueprint = dict(blueprint)
+                blueprint.setdefault("track_number", index + 1)
+                blueprint.setdefault("duration", track_duration)
+                logs.append(f"Producing track {index + 1}/{len(blueprints)} with compact context: {blueprint.get('title') or f'Track {index + 1}'}")
+                track_crew = create_track_production_crew(
+                    album_bible,
+                    blueprint,
+                    num_tracks,
+                    track_duration,
+                    ollama_model,
+                    language,
+                    embedding_model,
+                    opts,
+                    planner_provider,
+                    embedding_provider,
+                )
+                for task in track_crew.tasks:
+                    task.callback = _task_callback
+                try:
+                    track_result = track_crew.kickoff()
+                    produced = _task_output_json_dict(track_result)
+                except Exception as track_exc:
+                    logs.append(f"Track {index + 1} CrewAI production fallback repair: {track_exc}")
+                    produced = blueprint
+                produced_tracks.append(produced)
+            tracks = normalize_album_tracks(produced_tracks[:num_tracks], opts)
+            failed_quality = [
+                track for track in tracks
+                if not track.get("tool_report", {}).get("length_ok") and parse_duration_seconds(track.get("duration") or track_duration, track_duration) >= 180
+            ]
+            if failed_quality:
+                titles = ", ".join(str(track.get("title") or "untitled") for track in failed_quality[:5])
+                raise RuntimeError(f"Album quality gate failed after repair for: {titles}")
+            for track in tracks:
+                _remember_track(album_memory_writer, track, logs)
+            logs.append(f"CrewAI produced {len(tracks)} duration-ready track(s) with per-track compact context.")
             return {
                 "tracks": tracks,
                 "logs": logs,
                 "success": True,
                 "toolkit": toolkit_payload(opts.get("installed_models")),
-                "toolkit_report": {"model_advice": model_info, "artist_reference_notes": opts.get("artist_reference_notes", [])},
+                "toolkit_report": {
+                    "model_advice": model_info,
+                    "artist_reference_notes": opts.get("artist_reference_notes", []),
+                    "album_bible": album_bible,
+                    "memory": {
+                        "enabled": True,
+                        "read_only_agents": True,
+                        "backend_compact_writer": True,
+                        "planner_model": ollama_model,
+                        "planner_provider": planner_provider,
+                        "embedding_model": embedding_model,
+                        "embedding_provider": embedding_provider,
+                        "memory_dir": str(CREWAI_MEMORY_DIR),
+                        "legacy_memory_dir_untouched": str(CREWAI_LEGACY_MEMORY_DIR),
+                        "record_limit_chars": CREWAI_MEMORY_CONTENT_LIMIT,
+                    },
+                },
             }
         except Exception as exc:
             logs.append(f"CrewAI planning fell back to deterministic toolbelt: {exc}")
@@ -422,10 +1523,12 @@ def generate_album(
     concept: str,
     num_tracks: int = 5,
     track_duration: float = 180.0,
-    ollama_model: str = "llama3.2",
+    ollama_model: str = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
     language: str = "en",
-    embedding_model: str = "nomic-embed-text",
+    embedding_model: str = DEFAULT_ALBUM_EMBEDDING_MODEL,
     options: dict[str, Any] | None = None,
+    planner_provider: str = "ollama",
+    embedding_provider: str = "ollama",
 ) -> dict[str, Any]:
     return plan_album(
         concept=concept,
@@ -436,4 +1539,6 @@ def generate_album(
         embedding_model=embedding_model,
         options=options,
         use_crewai=True,
+        planner_provider=planner_provider,
+        embedding_provider=embedding_provider,
     )

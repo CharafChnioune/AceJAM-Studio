@@ -10,6 +10,8 @@ AceJAM is a native Pinokio app for ACE-Step 1.5 music generation. It keeps the f
 
 Generated data lives under `app/data/` and model files under `app/model_cache/`. These folders are ignored by git.
 
+Do not open `app/index.html` directly with a `file://` URL for real work. The UI now shows a warning in that case because browser file views cannot call the local `/api` backend. Use Pinokio's **Open Web UI** HTTP link.
+
 ## Studio Modes
 
 AceJAM uses a Clean Studio layout by default: the everyday controls stay visible, while advanced inference, LM, output, post-processing, album craft, and trainer hyperparameters are tucked into closed disclosure panels until you need them.
@@ -39,6 +41,7 @@ DiT quick guide:
 | `acestep-v15-xl-turbo` | Best 20GB+ quality daily driver | XL quality with 8-step turbo speed; 20GB+ VRAM is recommended without offload. |
 | `acestep-v15-xl-sft` | Highest-detail XL standard tasks | 50 steps with CFG for slower, detailed tuning. |
 | `acestep-v15-xl-base` | XL all-task model | Best XL choice for extract, lego, complete, and advanced control. |
+| `acestep-v15-turbo-rl` | Officially mentioned RL variant | Marked as unreleased/not downloadable until ACE-Step publishes a checkpoint. |
 
 LM quick guide:
 
@@ -66,13 +69,21 @@ Custom exposes both the fast AceJAM DiT path and official ACE-Step 1.5 controls:
 - If a visible control needs the official runner, `/api/generate_advanced` routes through `app/official_runner.py` with `PYTHONPATH=app/vendor/ACE-Step-1.5`. If the vendor checkout, model, or LM is missing, the API returns a clear error instead of ignoring the setting.
 - User BPM/key/time/duration always override LM-inferred metadata.
 
+## Official Parity Layer
+
+`GET /api/ace-step/parity` returns AceJAM's explicit ACE-Step parity manifest. It lists official DiT/LM models, tasks, public-compatible endpoints, `GenerationParams`, `GenerationConfig`, runtime knobs, trainer features, source links, and per-item status: `supported`, `guarded`, `missing`, `unreleased`, or `not_applicable`.
+
+Official-compatible routes support optional `ACESTEP_API_KEY`. If the environment variable is set, pass `Authorization: Bearer <key>`, `x-api-key`, `api_key`, or `ai_token` depending on request shape. The local Studio routes stay open for normal Pinokio use.
+
+Runtime controls exposed in Custom/Settings are guarded: device, dtype, flash attention, compile, DiT CPU offload, LM backend/device/dtype/offload, and LM repetition penalty. The official subprocess uses them where the installed ACE-Step vendor runtime supports them.
+
 ## Hit Album Agent Studio
 
 Album mode now plans before it generates. The agent layer can use CrewAI with Ollama, but every plan is repaired by the deterministic AceJAM songwriting toolbelt so tracks always carry editable ACE-Step generation data.
 
 Toolbelt highlights:
 
-- `ModelAdvisorTool`: chooses only installed compatible ACE-Step models. Album default prefers `acestep-v15-xl-turbo` when installed, then `acestep-v15-turbo`; maximum-detail prefers installed SFT models.
+- `ModelAdvisorTool` and `XLModelPolicyTool`: album final generation is locked to `acestep-v15-xl-sft` by default (`xl_sft_final`). If XL SFT is missing, AceJAM starts a download and resumes instead of silently falling back. Other strategies remain available for planning/previews, but final album rendering uses XL SFT.
 - `TagLibraryTool`: exposes ACE-Step caption dimensions, lyric section tags, performance tags, stems, curated tag packs, custom tags, and negative tags.
 - `LyricLengthTool`: scales word, line, and section targets for short clips through long tracks while keeping ACE-Step lyric limits in view.
 - `RhymeFlowTool`, `MetaphorWorldTool`, `HookDoctorTool`, `ClicheGuardTool`, `AlbumArcTool`, `InspirationRadarTool`, `CaptionPolisherTool`, and `ConflictCheckerTool`: provide non-imitative craft reports for rhyme density, hooks, metaphor worlds, repeated lines, tag conflicts, inspiration notes, and caption polish.
@@ -117,7 +128,7 @@ const albumRequest = {
   concept: "Dutch luxury rap album with cinematic hooks",
   num_tracks: 3,
   track_duration: 120,
-  song_model_strategy: "best_installed",
+  song_model_strategy: "xl_sft_final",
   tag_packs: ["genre_style", "production_style", "vocal_character"],
   custom_tags: "male rap vocal, radio ready, punchy drums",
   lyric_density: "rap_dense",
@@ -166,7 +177,7 @@ album_plan = requests.post(
         "concept": "cinematic Dutch rap about discipline and victory",
         "num_tracks": 2,
         "track_duration": 90,
-        "song_model_strategy": "best_installed",
+        "song_model_strategy": "xl_sft_final",
         "lyric_density": "rap_dense",
         "tag_packs": ["genre_style", "speed_rhythm", "production_style"],
     },
@@ -178,7 +189,7 @@ album = requests.post(
         "concept": "cinematic Dutch rap about discipline and victory",
         "num_tracks": 2,
         "track_duration": 90,
-        "song_model_strategy": "best_installed",
+        "song_model_strategy": "xl_sft_final",
         "tracks": album_plan["tracks"],
         "save_to_library": True,
     },
@@ -213,7 +224,7 @@ curl -X POST http://127.0.0.1:7860/api/album/plan \
     "concept":"Dutch club rap album with cinematic hooks",
     "num_tracks":2,
     "track_duration":90,
-    "song_model_strategy":"best_installed",
+    "song_model_strategy":"xl_sft_final",
     "tag_packs":["genre_style","production_style"],
     "custom_tags":"male rap vocal, radio ready, punchy drums",
     "lyric_density":"rap_dense"
@@ -234,7 +245,9 @@ curl -X POST http://127.0.0.1:7860/api/lora/train \
 
 ## Main Endpoints
 
-- `GET /api/config` returns available models, installed flags, recommendations, model advice, compatibility, official runner status, and `ui_schema` for Custom controls.
+- `GET /api/status` returns runtime health, server URL hint, installed model counts, active downloads, active trainer job, Ollama status, official runner status, and trainer status.
+- `GET /api/config` returns available models, installed flags, recommendations, model advice, compatibility, official runner status, backend/UI hashes, official parity, and `ui_schema` for Custom controls.
+- `GET /api/ace-step/parity` returns the official parity manifest and runtime status snapshot.
 - `GET /api/songwriting_toolkit` returns tag taxonomy, lyric meta tags, craft tools, density presets, and model strategy descriptions.
 - `GET /api/models/downloads` returns active/missing/installed model download states.
 - `GET /api/models/download/{model_name}` returns one model download state.
@@ -245,6 +258,7 @@ curl -X POST http://127.0.0.1:7860/api/lora/train \
 - `POST /api/generate_advanced`
 - `POST /api/album/plan`
 - `POST /api/generate_album`
+- Official ACE-Step-compatible aliases: `GET /health`, `GET /v1/models`, `POST /v1/init`, `GET /v1/stats`, `GET /v1/audio`, `POST /create_random_sample`, `POST /format_input`, `POST /release_task`, `POST /query_result`, `POST /v1/training/start`, `POST /v1/training/start_lokr`.
 - `POST /api/uploads`
 - `GET /api/results/{id}`
 - `POST /api/audio-codes`
@@ -272,4 +286,10 @@ App code stays in `app/`; launcher scripts stay in the project root. `start.js` 
 ```js
 event: "/(http:\\/\\/[0-9.:]+)/"
 url: "{{input.event[1]}}"
+```
+
+Lightweight tests:
+
+```bash
+app/env/bin/python -m pytest app/tests -q
 ```

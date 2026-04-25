@@ -29,6 +29,7 @@ torchao>=0.16.0,<0.17.0; platform_machine != "aarch64"
 torchao; platform_machine == "aarch64"
 xxhash
 huggingface_hub>=0.20.0
-ollama>=0.4.0
-crewai>=0.108.0
-crewai-tools>=0.40.0
+ollama>=0.6.1
+crewai>=1.14.3
+crewai-tools>=1.14.3
+pytest>=8.0.0

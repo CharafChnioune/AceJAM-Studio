@@ -8,10 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from local_llm import chat_completion, model_catalog, normalize_provider, provider_label
+from songwriting_toolkit import derive_artist_name, normalize_artist_name
+
 
 SONG_SCHEMA = {
     "type": "object",
     "properties": {
+        "artist_name": {"type": "string"},
         "title": {"type": "string"},
         "tags": {
             "type": "array",
@@ -25,7 +29,7 @@ SONG_SCHEMA = {
         "language": {"type": "string"},
         "lyrics": {"type": "string"},
     },
-    "required": ["title", "tags", "bpm", "key_scale", "time_signature", "language", "lyrics"],
+    "required": ["artist_name", "title", "tags", "bpm", "key_scale", "time_signature", "language", "lyrics"],
 }
 
 SYSTEM_PROMPT = """You are an expert songwriter and music producer crafting input for ACE-Step, a state-of-the-art AI music generator. Your job is to take any description—even a vague one—and expand it into a rich, professional-grade song specification that will produce the highest quality music.
@@ -136,6 +140,7 @@ If the description is vague (e.g. "a happy song"), you MUST:
 - Write lyrics that could only belong to THIS song, not any generic song
 
 ## Other rules
+- `artist_name` must be a short original stage/project name that fits the song persona. Never use a real artist name, even when the user mentions one as a style reference.
 - `title` must be a short, catchy, evocative song title that captures the essence of the song.
 - `language` must be one of: en, zh, ja, ko, instrumental, unknown.
 - If the request is instrumental, set `language` to `instrumental` and `lyrics` to `[Instrumental]`.
@@ -363,23 +368,58 @@ def _strip_wrappers(raw: str) -> str:
     return cleaned.strip()
 
 
+def _loads_json_lenient(text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        repaired: list[str] = []
+        in_string = False
+        escape = False
+        for char in text:
+            if in_string:
+                if escape:
+                    repaired.append(char)
+                    escape = False
+                    continue
+                if char == "\\":
+                    repaired.append(char)
+                    escape = True
+                    continue
+                if char == '"':
+                    repaired.append(char)
+                    in_string = False
+                    continue
+                if char == "\n":
+                    repaired.append("\\n")
+                    continue
+                if char == "\r":
+                    continue
+                if char == "\t":
+                    repaired.append("\\t")
+                    continue
+                repaired.append(char)
+                continue
+            repaired.append(char)
+            if char == '"':
+                in_string = True
+        payload = json.loads("".join(repaired))
+    if not isinstance(payload, dict):
+        raise ValueError("model returned non-object JSON")
+    return payload
+
+
 def _extract_json(raw: str) -> dict[str, Any]:
     # Strip <think>...</think> tags
     cleaned = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL)
     cleaned = _strip_wrappers(cleaned)
     try:
-        payload = json.loads(cleaned)
-        if isinstance(payload, dict):
-            return payload
-    except json.JSONDecodeError:
+        return _loads_json_lenient(cleaned)
+    except (json.JSONDecodeError, ValueError):
         pass
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if not match:
         raise ValueError("model did not return JSON")
-    payload = json.loads(match.group(0))
-    if not isinstance(payload, dict):
-        raise ValueError("model returned non-object JSON")
-    return payload
+    return _loads_json_lenient(match.group(0))
 
 
 def _log_block(label: str, text: str) -> None:
@@ -389,14 +429,16 @@ def _log_block(label: str, text: str) -> None:
     print(f"[/{label}] ---")
 
 
-# ── Ollama-based Composer ────────────────────────────────────────────────
+# ── Local LLM Composer ───────────────────────────────────────────────────
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 
 class LocalComposer:
-    def __init__(self, ollama_model: str | None = None):
+    def __init__(self, ollama_model: str | None = None, planner_lm_provider: str = "ollama", planner_model: str | None = None):
         self.ollama_model = ollama_model
+        self.planner_lm_provider = normalize_provider(planner_lm_provider)
+        self.planner_model = planner_model
 
     def compose(
         self,
@@ -405,25 +447,26 @@ class LocalComposer:
         profile: str = "auto",
         instrumental: bool = False,
         ollama_model: str | None = None,
+        planner_lm_provider: str = "ollama",
+        planner_model: str | None = None,
     ) -> dict[str, Any]:
-        import ollama
-
-        model = ollama_model or self.ollama_model
+        provider = normalize_provider(planner_lm_provider or self.planner_lm_provider)
+        model = planner_model or (ollama_model if provider == "ollama" else "") or self.planner_model or self.ollama_model
         if not model:
-            # Try to pick the first available model
+            # Try to pick the first available local chat model.
             try:
-                client = ollama.Client(host=OLLAMA_BASE_URL)
-                models = client.list().models
+                catalog = model_catalog(provider)
+                models = catalog.get("chat_models") or catalog.get("models") or []
                 if models:
-                    model = models[0].model
-                    print(f"[composer] auto-selected Ollama model: {model}")
+                    model = str(models[0])
+                    print(f"[composer] auto-selected {provider_label(provider)} model: {model}")
                 else:
-                    raise RuntimeError("No Ollama models available. Pull a model first: ollama pull qwen3:4b")
+                    raise RuntimeError(f"No {provider_label(provider)} chat models available.")
             except Exception as exc:
-                raise RuntimeError(f"Cannot connect to Ollama at {OLLAMA_BASE_URL}: {exc}") from exc
+                raise RuntimeError(f"Cannot connect to {provider_label(provider)}: {exc}") from exc
 
         compose_started_at = time.perf_counter()
-        print(f"[composer] starting model={model} duration={audio_duration} instrumental={instrumental}")
+        print(f"[composer] starting provider={provider} model={model} duration={audio_duration} instrumental={instrumental}")
 
         user_prompt = (
             f"Description: {description.strip()}\n"
@@ -439,23 +482,22 @@ class LocalComposer:
 
         try:
             generation_started_at = time.perf_counter()
-            print("[composer] generating song spec via Ollama...")
-            client = ollama.Client(host=OLLAMA_BASE_URL)
-            response = client.chat(
-                model=model,
-                messages=[
+            print(f"[composer] generating song spec via {provider_label(provider)}...")
+            content = chat_completion(
+                provider,
+                model,
+                [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                format="json",
-                think=False,
                 options={
                     "temperature": 0.6,
                     "top_p": 0.95,
                     "top_k": 20,
                 },
+                json_format=True,
             )
-            content = response.message.content or "{}"
+            content = content or "{}"
             generation_elapsed = time.perf_counter() - generation_started_at
             print(f"[composer] response received elapsed={generation_elapsed:.2f}s chars={len(content)}")
             _log_block("composer.raw_response", content)
@@ -467,6 +509,10 @@ class LocalComposer:
 
         title = str(payload.get("title") or _guess_title(description)).strip()[:60] or "Untitled"
         tags = _normalize_tags(payload.get("tags"), description)
+        artist_name = normalize_artist_name(
+            payload.get("artist_name") or payload.get("artist"),
+            derive_artist_name(title, description, ", ".join(tags)),
+        )
         bpm = payload.get("bpm")
         try:
             bpm_value = int(bpm)
@@ -503,11 +549,13 @@ class LocalComposer:
             f"key_scale={key_scale or 'N/A'} time_signature={time_sig_value} "
             f"fallback_lyrics={used_fallback_lyrics} total={total_elapsed:.2f}s"
         )
+        print(f"[composer] artist_name={artist_name}")
         print(f"[composer] title={title}")
         print(f"[composer] tags={', '.join(tags)}")
         _log_block("composer.final_lyrics", lyrics)
 
         return {
+            "artist_name": artist_name,
             "title": title,
             "tags": ", ".join(tags),
             "bpm": bpm_value,
@@ -516,4 +564,5 @@ class LocalComposer:
             "language": language,
             "lyrics": lyrics,
             "composer_model": model,
+            "composer_provider": provider,
         }

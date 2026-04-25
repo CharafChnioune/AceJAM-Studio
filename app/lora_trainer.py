@@ -182,6 +182,7 @@ class AceTrainingManager:
             "ready": vendor_ready and not missing,
             "active_job": active,
             "adapter_count": len(self.list_adapters()),
+            "tensorboard_runs": self.tensorboard_runs(),
         }
 
     def vendor_ready(self) -> bool:
@@ -533,6 +534,22 @@ class AceTrainingManager:
                     }
                 )
         return adapters
+
+    def tensorboard_runs(self) -> list[dict[str, str]]:
+        runs: list[dict[str, str]] = []
+        for run_dir in sorted(self.training_dir.rglob("runs")):
+            if not run_dir.is_dir():
+                continue
+            if not any(path.name.startswith("events.out.tfevents") for path in run_dir.rglob("*") if path.is_file()):
+                continue
+            runs.append(
+                {
+                    "path": str(run_dir),
+                    "name": run_dir.parent.name,
+                    "updated_at": datetime.fromtimestamp(run_dir.stat().st_mtime, timezone.utc).isoformat(),
+                }
+            )
+        return runs[:20]
 
     def export_adapter(self, source: Path, name: str | None = None) -> dict[str, Any]:
         source = source.expanduser()

@@ -82,6 +82,19 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("lokr", command)
             self.assertIn("--lokr-weight-decompose", command)
 
+    def test_tensorboard_runs_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            run_dir = root / "data" / "lora_training" / "demo" / "runs"
+            run_dir.mkdir(parents=True)
+            (run_dir / "events.out.tfevents.unit").write_text("event", encoding="utf-8")
+
+            runs = manager.tensorboard_runs()
+
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["name"], "demo")
+
 
 if __name__ == "__main__":
     unittest.main()
