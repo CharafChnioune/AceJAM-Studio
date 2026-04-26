@@ -390,14 +390,7 @@ def _subject_terms(text: str) -> list[str]:
 
 def sanitize_artist_references(text: str) -> tuple[str, list[str]]:
     raw = str(text or "")
-    cleaned = raw
-    notes: list[str] = []
-    for artist, technique in ARTIST_TECHNIQUES.items():
-        pattern = re.compile(rf"(?i)\b{re.escape(artist)}\b")
-        if pattern.search(cleaned):
-            cleaned = pattern.sub(f"technique brief: {technique}", cleaned)
-            notes.append(f"Converted artist reference '{artist}' into technique brief: {technique}.")
-    return cleaned.strip(), notes
+    return raw.strip(), []
 
 
 ARTIST_NAME_SUFFIXES = [
@@ -416,6 +409,8 @@ ARTIST_NAME_SUFFIXES = [
 
 def normalize_artist_name(value: Any, fallback: str = "AceJAM") -> str:
     text = str(value or "").strip()
+    if re.match(r"(?i)^\s*(?:in the style of|zoals|like|feat\.?|featuring|ft\.)\b", text):
+        return str(fallback or "AceJAM").strip()[:48] or "AceJAM"
     cleaned, notes = sanitize_artist_references(text)
     if notes:
         cleaned = ""

@@ -56,9 +56,15 @@ def _parse_seeds(value: Any) -> list[int] | None:
 
 def _resolve_backend(requested: str) -> str:
     value = (requested or "auto").strip().lower()
+    apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
+    if value == "auto":
+        return "mlx" if apple_silicon else "pt"
+    if value == "mlx":
+        return "mlx" if apple_silicon else "pt"
     if value in {"pt", "vllm"}:
         return value
-    return "pt"
+    return "mlx" if apple_silicon else "pt"
+
 
 def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
     def _disabled_mlx_backends(self: Any, *args: Any, **kwargs: Any) -> tuple[str, str]:
@@ -73,25 +79,26 @@ def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
 
 
 def _patch_mlx_thread_stream(handler_cls: Any) -> None:
-    """Bypass the threading timeout wrapper when MLX is the DiT backend.
+    """Bypass the diffusion worker thread when MLX is the DiT backend.
 
-    MLX Metal GPU streams are NOT thread-safe — mx.eval() cannot be called from
-    a child thread (causes "There is no Stream(gpu, 0) in current thread").
-    Since MLX on Apple Silicon is fast enough, timeout monitoring is unnecessary.
-
-    Fix: replace the thread+join pattern with a direct call on the main thread
-    when MLX is the active backend.
+    MLX Metal streams are thread-local. ACE-Step's default wrapper runs
+    service_generate in a child thread so it can enforce a timeout; that trips
+    MLX with "There is no Stream(gpu, 0) in current thread". For active MLX DiT
+    runs, execute service_generate directly on the caller thread and block the
+    vendor PyTorch fallback that would otherwise OOM on XL models.
     """
     try:
         from acestep.core.generation.handler.generate_music_execute import (
             GenerateMusicExecuteMixin,
-            _DEFAULT_GENERATION_TIMEOUT,
         )
     except ImportError:
         return
 
-    import threading as _threading
     from loguru import logger as _logger
+
+    current = GenerateMusicExecuteMixin._run_generate_music_service_with_progress
+    if getattr(current, "_acejam_mlx_direct", False):
+        return
 
     _orig = GenerateMusicExecuteMixin._run_generate_music_service_with_progress
 
@@ -100,32 +107,105 @@ def _patch_mlx_thread_stream(handler_cls: Any) -> None:
         if not use_mlx:
             return _orig(self, *args, **kwargs)
 
-        # MLX path: monkey-patch threading.Thread to run target directly (no thread)
-        _RealThread = _threading.Thread
+        bound = inspect.signature(_orig).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        values = bound.arguments
+        progress = values["progress"]
+        actual_batch_size = values["actual_batch_size"]
+        audio_duration = values["audio_duration"]
+        inference_steps = values["inference_steps"]
+        timesteps = values["timesteps"]
+        service_inputs = values["service_inputs"]
+        refer_audios = values["refer_audios"]
+        guidance_scale = values["guidance_scale"]
+        actual_seed_list = values["actual_seed_list"]
+        audio_cover_strength = values["audio_cover_strength"]
+        cover_noise_strength = values["cover_noise_strength"]
+        use_adg = values["use_adg"]
+        cfg_interval_start = values["cfg_interval_start"]
+        cfg_interval_end = values["cfg_interval_end"]
+        shift = values["shift"]
+        infer_method = values["infer_method"]
+        sampler_mode = values["sampler_mode"]
+        velocity_norm_threshold = values["velocity_norm_threshold"]
+        velocity_ema_factor = values["velocity_ema_factor"]
+        repaint_crossfade_frames = values["repaint_crossfade_frames"]
+        repaint_injection_ratio = values["repaint_injection_ratio"]
 
-        class _DirectCallThread:
-            """Fake Thread that runs target() directly on the calling thread."""
-            def __init__(self, target=None, name=None, daemon=None, **kw):
-                self._target = target
-                self._alive = False
-            def start(self):
-                self._alive = True
-                if self._target:
-                    self._target()
-                self._alive = False
-            def join(self, timeout=None):
-                pass
-            def is_alive(self):
-                return self._alive
+        infer_steps_for_progress = len(timesteps) if timesteps else inference_steps
+        progress_desc = f"Generating music (batch size: {actual_batch_size})..."
+        if callable(progress):
+            progress(0.52, desc=progress_desc)
 
-        # Only replace Thread for the duration of this call
-        _threading.Thread = _DirectCallThread
+        stop_event = None
+        progress_thread = None
+        original_generate_audio = getattr(getattr(self, "model", None), "generate_audio", None)
+
+        def _blocked_pytorch_fallback(*_a: Any, **_kw: Any) -> Any:
+            raise RuntimeError(
+                "MLX diffusion failed and AceJAM blocked the PyTorch/MPS fallback to avoid "
+                "XL model OOM. Check the previous '[service_generate] MLX diffusion failed' "
+                "line for the native MLX error."
+            )
+
         try:
-            _logger.info("[generate_music] MLX active — bypassing thread wrapper (running on main thread).")
-            return _orig(self, *args, **kwargs)
-        finally:
-            _threading.Thread = _RealThread
+            start_estimator = getattr(self, "_start_diffusion_progress_estimator", None)
+            if callable(start_estimator):
+                stop_event, progress_thread = start_estimator(
+                    progress=progress,
+                    start=0.52,
+                    end=0.79,
+                    infer_steps=infer_steps_for_progress,
+                    batch_size=actual_batch_size,
+                    duration_sec=audio_duration if audio_duration and audio_duration > 0 else None,
+                    desc=progress_desc,
+                )
+            if original_generate_audio is not None:
+                setattr(self.model, "generate_audio", _blocked_pytorch_fallback)
 
+            _logger.info("[generate_music] MLX active - running diffusion directly on the main thread.")
+            outputs = self.service_generate(
+                captions=service_inputs["captions_batch"],
+                global_captions=service_inputs.get("global_captions_batch"),
+                lyrics=service_inputs["lyrics_batch"],
+                metas=service_inputs["metas_batch"],
+                vocal_languages=service_inputs["vocal_languages_batch"],
+                refer_audios=refer_audios,
+                target_wavs=service_inputs["target_wavs_tensor"],
+                infer_steps=inference_steps,
+                guidance_scale=guidance_scale,
+                seed=actual_seed_list,
+                repainting_start=service_inputs["repainting_start_batch"],
+                repainting_end=service_inputs["repainting_end_batch"],
+                instructions=service_inputs["instructions_batch"],
+                audio_cover_strength=audio_cover_strength,
+                cover_noise_strength=cover_noise_strength,
+                use_adg=use_adg,
+                cfg_interval_start=cfg_interval_start,
+                cfg_interval_end=cfg_interval_end,
+                shift=shift,
+                infer_method=infer_method,
+                sampler_mode=sampler_mode,
+                velocity_norm_threshold=velocity_norm_threshold,
+                velocity_ema_factor=velocity_ema_factor,
+                audio_code_hints=service_inputs["audio_code_hints_batch"],
+                return_intermediate=service_inputs["should_return_intermediate"],
+                timesteps=timesteps,
+                chunk_mask_modes=service_inputs.get("chunk_mask_modes_batch"),
+                repaint_crossfade_frames=repaint_crossfade_frames,
+                repaint_injection_ratio=repaint_injection_ratio,
+            )
+            return {"outputs": outputs, "infer_steps_for_progress": infer_steps_for_progress}
+        finally:
+            if original_generate_audio is not None:
+                setattr(self.model, "generate_audio", original_generate_audio)
+            if stop_event is not None:
+                stop_event.set()
+            if progress_thread is not None:
+                progress_thread.join(timeout=1.0)
+
+    _patched_run_with_progress._acejam_mlx_direct = True
+    _patched_run_with_progress._acejam_original = _orig
     GenerateMusicExecuteMixin._run_generate_music_service_with_progress = _patched_run_with_progress
 
 

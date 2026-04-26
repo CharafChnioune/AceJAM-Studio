@@ -160,7 +160,7 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(payload["lyrics_source"], "instrumental_default")
 
     def test_official_field_detection(self):
-        self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": True, "lm_backend": "pt"}), [])
+        self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": True}), [])
         self.assertNotIn("sample_query", official_fields_used({"description": "metadata only"}))
         self.assertIn("thinking", official_fields_used({"thinking": False}))
         self.assertIn("audio_format", official_fields_used({"audio_format": "mp3"}))

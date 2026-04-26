@@ -307,6 +307,8 @@ def _normalize_lm_backend(value: Any) -> str:
     backend = str(value or ACE_LM_BACKEND_DEFAULT).strip().lower()
     if backend == "auto":
         return ACE_LM_BACKEND_DEFAULT
+    if backend == "mlx" and not _IS_APPLE_SILICON:
+        return ACE_LM_BACKEND_DEFAULT
     return backend if backend in {"pt", "vllm", "mlx"} else ACE_LM_BACKEND_DEFAULT
 
 
@@ -363,7 +365,12 @@ def _explicit_ace_lm_controls(payload: dict[str, Any]) -> list[str]:
             continue
         value = payload.get(field)
         if field in ACE_LM_DISABLED_DEFAULTS:
-            if not _studio_default_value(value, ACE_LM_DISABLED_DEFAULTS[field]):
+            default = ACE_LM_DISABLED_DEFAULTS[field]
+            if isinstance(default, bool):
+                if parse_bool(value, default) and not default:
+                    used.append(field)
+                continue
+            if not _studio_default_value(value, default):
                 used.append(field)
         elif str(value or "").strip():
             used.append(field)
@@ -3326,7 +3333,6 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "thinking": params["thinking"],
             "lm_temperature": params["lm_temperature"],
             "lm_cfg_scale": params["lm_cfg_scale"],
-            "repetition_penalty": params["lm_repetition_penalty"],
             "lm_top_k": params["lm_top_k"],
             "lm_top_p": params["lm_top_p"],
             "lm_negative_prompt": params["lm_negative_prompt"],
@@ -3354,6 +3360,44 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
     }
 
 
+def _redact_official_runner_log_line(line: str) -> str:
+    """Keep official ACE-Step subprocess logs compact in Pinokio terminals."""
+    if "formatted_prompt_with_cot=" in line:
+        return re.sub(
+            r"formatted_prompt_with_cot=.*",
+            "formatted_prompt_with_cot=[redacted by AceJAM: prompt/audio-code payload]",
+            line,
+        )
+    if "Debug output text:" in line and "<|audio_code_" in line:
+        return re.sub(
+            r"Debug output text:.*",
+            "Debug output text: [redacted by AceJAM: audio-code payload]",
+            line,
+        )
+    if "<|audio_code_" in line:
+        return re.sub(r"(?:<\|audio_code_\d+\|>){3,}", "<|audio_code_REDACTED|>", line)
+    if len(line) > 1600:
+        ending = "\n" if line.endswith("\n") else ""
+        return f"{line[:1600].rstrip()} ... [truncated by AceJAM]{ending}"
+    return line
+
+
+def _redact_official_runner_stream_line(line: str, state: dict[str, Any]) -> str:
+    if "conditioning_text:_prepare_text_conditioning_inputs" in line:
+        state["conditioning_block"] = True
+        if "text_prompt:" in line:
+            return re.sub(r"text_prompt:.*", "text_prompt: [redacted by AceJAM: conditioning prompt]", line)
+        if "lyrics_text:" in line:
+            return re.sub(r"lyrics_text:.*", "lyrics_text: [redacted by AceJAM: conditioning lyrics]", line)
+        return ""
+    if state.get("conditioning_block"):
+        if re.match(r"^\d{4}-\d{2}-\d{2}\s", line):
+            state["conditioning_block"] = False
+            return _redact_official_runner_log_line(line)
+        return ""
+    return _redact_official_runner_log_line(line)
+
+
 def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path, timeout: int = 3600) -> dict[str, Any]:
     if not OFFICIAL_ACE_STEP_DIR.exists():
         raise RuntimeError("Official ACE-Step runner requires app/vendor/ACE-Step-1.5. Run Install/Update first.")
@@ -3371,12 +3415,14 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
     env["HF_MODULES_CACHE"] = str(MODEL_CACHE_DIR / "hf_modules")
     env["XDG_CACHE_HOME"] = str(MODEL_CACHE_DIR / "xdg")
     env["ACESTEP_DISABLE_TQDM"] = "1"
+    env["LOGURU_LEVEL"] = os.environ.get("ACEJAM_OFFICIAL_LOGURU_LEVEL", "INFO")
 
     stdout_path = work_dir / "official_stdout.log"
     stderr_path = work_dir / "official_stderr.log"
     print(f"[official_runner] starting action={request_payload.get('action') or 'generate'} work_dir={work_dir}", flush=True)
 
     def stream_pipe(pipe: Any, log_path: Path) -> None:
+        redaction_state: dict[str, Any] = {}
         with log_path.open("w", encoding="utf-8") as log_file:
             while True:
                 try:
@@ -3385,6 +3431,9 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
                     break
                 if not line:
                     break
+                line = _redact_official_runner_stream_line(line, redaction_state)
+                if not line:
+                    continue
                 log_file.write(line)
                 log_file.flush()
                 print(line, end="", flush=True)

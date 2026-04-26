@@ -185,9 +185,86 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(params["lm_top_k"], 40)
         self.assertEqual(params["lm_top_p"], 1.0)
 
-    def test_mlx_lm_backend_is_removed_from_studio_payloads(self):
-        self.assertEqual(acejam_app._normalize_lm_backend("mlx"), "pt")
-        self.assertEqual(acejam_app._normalize_lm_backend("auto"), "pt")
+    def test_official_generation_payload_omits_lm_only_repetition_penalty(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "German schlager, bright brass, singalong chorus",
+                    "lyrics": "[Verse]\nWir tanzen durch die Nacht\n\n[Chorus]\nLa la, das Herz erwacht",
+                    "duration": 30,
+                    "lm_repetition_penalty": 1.4,
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+
+        self.assertEqual(params["lm_repetition_penalty"], 1.4)
+        self.assertNotIn("repetition_penalty", request["params"])
+
+    def test_explicit_lm_none_survives_disabled_cot_flags(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "German schlager, bright brass, singalong chorus",
+                    "lyrics": "[Verse]\nWir tanzen durch die Nacht\n\n[Chorus]\nLa la, das Herz erwacht",
+                    "duration": 30,
+                    "audio_format": "wav32",
+                    "ace_lm_model": "none",
+                    "thinking": False,
+                    "use_format": False,
+                    "use_cot_caption": False,
+                    "use_cot_language": False,
+                    "use_cot_metas": False,
+                    "use_cot_lyrics": False,
+                    "lm_backend": "mlx",
+                }
+            )
+
+        self.assertEqual(params["ace_lm_model"], "none")
+        self.assertFalse(params["thinking"])
+        self.assertFalse(params["use_format"])
+        self.assertFalse(params["use_cot_lyrics"])
+        self.assertEqual(params["runner_plan"], "official")
+
+    def test_official_runner_log_redacts_prompt_and_audio_codes(self):
+        prompt_line = "formatted_prompt_with_cot=<|im_start|>user secrets\n"
+        codes_line = "Debug output text: <|audio_code_1|><|audio_code_2|><|audio_code_3|>\n"
+
+        self.assertNotIn("user secrets", acejam_app._redact_official_runner_log_line(prompt_line))
+        self.assertIn("redacted", acejam_app._redact_official_runner_log_line(codes_line))
+
+    def test_official_runner_stream_redacts_conditioning_prompt_blocks(self):
+        state = {}
+        lines = [
+            "2026-04-26 21:43:35 | INFO | acestep.core.generation.handler.conditioning_text:_prepare_text_conditioning_inputs:122 - text_prompt:\n",
+            "# Caption\n",
+            "SECRET CAPTION\n",
+            "2026-04-26 21:43:35 | INFO | acestep.core.generation.handler.conditioning_text:_prepare_text_conditioning_inputs:124 - lyrics_text:\n",
+            "# Lyric\n",
+            "SECRET LYRIC\n",
+            "2026-04-26 21:43:35 | INFO | acestep.core.generation.handler.service_generate_execute:_execute_service_generate_diffusion:137 - [service_generate] Generating audio... (DiT backend: MLX (native))\n",
+        ]
+
+        rendered = "".join(acejam_app._redact_official_runner_stream_line(line, state) for line in lines)
+
+        self.assertIn("conditioning prompt", rendered)
+        self.assertIn("conditioning lyrics", rendered)
+        self.assertIn("DiT backend: MLX (native)", rendered)
+        self.assertNotIn("SECRET CAPTION", rendered)
+        self.assertNotIn("SECRET LYRIC", rendered)
+
+    def test_lm_backend_preserves_runtime_default_for_studio_payloads(self):
+        expected_default = acejam_app.ACE_LM_BACKEND_DEFAULT
+        expected_mlx = "mlx" if acejam_app._IS_APPLE_SILICON else expected_default
+        self.assertEqual(acejam_app._normalize_lm_backend("mlx"), expected_mlx)
+        self.assertEqual(acejam_app._normalize_lm_backend("auto"), expected_default)
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-base"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -201,7 +278,7 @@ class AppParityTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(normalized["lm_backend"], "pt")
+        self.assertEqual(normalized["lm_backend"], expected_mlx)
 
     def test_lm_backend_alone_does_not_require_ace_lm(self):
         validation = acejam_app._validate_generation_payload(

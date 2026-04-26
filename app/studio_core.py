@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import platform
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -168,11 +170,12 @@ DOCS_BEST_STANDARD_GUIDANCE = 8.0
 DOCS_BEST_TURBO_SHIFT = 3.0
 DOCS_BEST_STANDARD_SHIFT = 1.0
 DOCS_BEST_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
+DOCS_BEST_DEFAULT_LM_BACKEND = "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "pt"
 DOCS_BEST_SOURCE_TASK_LM_SKIPS = {"cover", "repaint", "extract"}
 DOCS_BEST_LM_TASKS = {"text2music", "lego", "complete"}
 DOCS_BEST_LM_DEFAULTS: dict[str, Any] = {
     "ace_lm_model": DOCS_BEST_DEFAULT_LM_MODEL,
-    "lm_backend": "pt",
+    "lm_backend": DOCS_BEST_DEFAULT_LM_BACKEND,
     "thinking": True,
     "use_format": True,
     "use_cot_metas": True,
