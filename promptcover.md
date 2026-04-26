@@ -73,7 +73,7 @@ Source requirements: tell the user to upload/select source audio in AceJAM and p
 Caption/tags should describe the NEW cover/remix direction, not just the original: genre/style, mood, instruments, rhythm/groove, vocal character, production, structure, dynamics, stems.
 Use tags like acoustic cover, orchestral pop cover, club remix, afrohouse remix, drill remix, synthwave reinterpretation, piano ballad, stripped verse, explosive chorus, male vocal, female vocal, layered harmonies, crisp modern mix, polished master.
 
-negative_tags must include: muddy mix, generic lyrics, weak hook, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, copied artist style, source bleed, distorted source.
+negative_tags must include: muddy mix, generic lyrics, weak hook, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, source bleed, distorted source.
 
 Lyrics: keep original lyrics only if user owns/has rights or pasted their own text. Otherwise create transformed/new lyrics inspired by the user's concept. Vocal covers need full lyrics; instrumentals use "[Instrumental]".
 

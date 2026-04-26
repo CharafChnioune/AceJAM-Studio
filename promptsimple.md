@@ -69,7 +69,7 @@ Use XL SFT, 64 steps, guidance 8.0, shift 1.0, wav32 for best quality. If user a
 Caption/tags: compact comma-separated prompt with 12-24 coherent tags across genre/style, mood, instruments, timbre, rhythm/groove, vocals, production, structure, dynamics, stems.
 Examples: melodic rap, pop, trap, R&B, afrohouse, boom-bap, cinematic, dark, euphoric, 808 bass, punchy snare, piano, Rhodes, strings, analog synths, male rap vocal, female vocal, layered harmonies, dry vocal, crisp modern mix, radio-ready, anthemic chorus.
 
-negative_tags must include: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, copied artist style.
+negative_tags must include: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style.
 
 Lyrics: vocal songs need full lyrics under 4096 chars. Instrumental uses "[Instrumental]". Word targets: 30s 40-70, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540.
 Use section tags like [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Outro]. Rap uses [Verse - rap], [Chorus - rap].

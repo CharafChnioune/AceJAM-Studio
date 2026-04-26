@@ -146,7 +146,7 @@ Caption/tag taxonomy:
 - rhythm: half-time, double-time rap, syncopated groove, four-on-the-floor, dembow, shuffled hats, laid-back pocket, drill bounce, afrohouse groove.
 - stems: vocals, backing vocals, drums, bass, guitar, keyboard, strings, synth, brass, woodwinds, percussion, fx.
 
-Always use negative_tags to fight: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, repetitive chorus, contradictory style, copied artist style.
+Always use negative_tags to fight: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, repetitive chorus, contradictory style.
 
 Lyrics rules:
 - Full lyrics for every vocal track. Instrumentals use lyrics exactly "[Instrumental]".

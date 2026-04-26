@@ -783,7 +783,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["tags"] = caption
     normalized.setdefault(
         "negative_tags",
-        "muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, copied artist style",
+        "muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style",
     )
     instrumental = parse_bool(normalized.get("instrumental"), False)
     normalized["instrumental"] = instrumental

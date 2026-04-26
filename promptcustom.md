@@ -78,7 +78,7 @@ Required JSON:
 Caption/tag taxonomy: choose 12-24 non-contradictory tags from genre/style, mood, instruments, timbre, rhythm/groove, vocals, production, structure, dynamics, stems.
 Useful tags: pop, trap, drill, melodic rap, boom-bap, R&B, soul, gospel, afrohouse, amapiano, reggaeton, house, synthwave, indie rock, cinematic, ambient, dark, euphoric, melancholic, luxurious, 808 bass, sub-bass, trap hi-hats, punchy snare, piano, Rhodes, clean guitar, strings, brass, choir, analog synths, pads, male rap vocal, female vocal, breathy vocal, raspy vocal, falsetto, stacked harmonies, ad-libs, dry vocal, wide stereo, crisp modern mix, high-fidelity, radio-ready, anthemic chorus, cinematic bridge, explosive drop.
 
-negative_tags: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style, copied artist style.
+negative_tags: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style.
 
 Lyrics: full lyrics for vocal songs, "[Instrumental]" for instrumentals. Under 4096 chars. Target words: 30s 40-70, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540.
 Use [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Post-Chorus], [Outro], plus delivery tags like [Verse - rap], [Chorus - anthemic], [Chorus - layered vocals].

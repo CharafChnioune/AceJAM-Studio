@@ -93,7 +93,7 @@ Caption / tags are the most important music signal. Create a compact comma-separ
 - stems: vocals, backing vocals, drums, bass, guitar, keyboard, strings, synth, brass, woodwinds, percussion, fx.
 
 Always include negative_tags:
-"muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style, copied artist style"
+"muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style"
 Add more negatives for the user's request.
 
 Lyrics rules:

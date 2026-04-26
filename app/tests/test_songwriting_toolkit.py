@@ -227,13 +227,11 @@ kill all the rivals
         resolved = album_models_for_strategy("all_models_album", {"acestep-v15-turbo"})
         self.assertEqual([item["model"] for item in resolved], ALBUM_MODEL_PORTFOLIO_MODELS)
 
-    def test_artist_references_become_technique_briefs(self):
+    def test_artist_references_pass_through_unchanged(self):
         cleaned, notes = sanitize_artist_references("Dutch rap like Nas and Eminem")
-        self.assertNotIn("Nas", cleaned)
-        self.assertNotIn("Eminem", cleaned)
-        self.assertIn("internal rhyme", cleaned)
-        self.assertIn("multisyllabic rhyme", cleaned)
-        self.assertEqual(len(notes), 2)
+        self.assertIn("Nas", cleaned)
+        self.assertIn("Eminem", cleaned)
+        self.assertEqual(len(notes), 0)
 
     def test_lyric_length_scales_with_duration(self):
         short = lyric_length_plan(30, "dense", genre_hint="rap")

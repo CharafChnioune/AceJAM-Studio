@@ -274,7 +274,7 @@ woodwinds, percussion, fx
 Negative tags die je moet vermijden of tegengaan:
 muddy mix, generic lyrics, weak hook, empty lyrics, off-beat vocal, noisy vocal,
 thin drums, harsh high end, boring arrangement, repetitive chorus, overcompressed,
-unclear diction, washed out mix, random genre clash, copied artist style
+unclear diction, washed out mix, random genre clash
 
 Metadata die bij de song moet passen, ook al komt dit niet als JSON terug:
 song_model = acestep-v15-xl-sft voor premium final, duration 10-600 seconden,
