@@ -1572,10 +1572,7 @@
             <label for="album-tracks">Tracks</label>
             <input id="album-tracks" type="number" min="1" max="20" value="5" />
           </div>
-          <div>
-            <label for="album-duration">Track seconds</label>
-            <input id="album-duration" type="number" min="10" max="600" value="180" />
-          </div>
+          <input id="album-duration" type="hidden" value="240" />
           <div>
             <label for="album-language">Language</label>
             <select id="album-language"></select>
@@ -1627,7 +1624,6 @@
           </div>
         </div>
         <div class="album-plan-actions">
-          <button class="secondary" id="album-plan-btn">Plan Album</button>
           <button class="primary" id="album-btn">Generate Album</button>
           <button class="secondary" id="refresh-ollama">Refresh local LLMs</button>
         </div>
@@ -2312,7 +2308,7 @@
       if (location.protocol !== "file:") return false;
       document.body.classList.add("file-url-opened");
       setStatus("Open AceJAM from Pinokio's HTTP Web UI. The file view cannot reach /api.", "error");
-      document.querySelectorAll("[data-generate], #ai-fill-btn, #compose-btn, #format-btn, #write-lyrics-btn, #album-plan-btn, #album-btn, #lora-preprocess, #lora-train, #lora-estimate").forEach((button) => {
+      document.querySelectorAll("[data-generate], #ai-fill-btn, #compose-btn, #format-btn, #write-lyrics-btn, #album-btn, #lora-preprocess, #lora-train, #lora-estimate").forEach((button) => {
         button.disabled = true;
       });
       return true;
@@ -5907,7 +5903,6 @@
       $("format-btn").addEventListener("click", formatSample);
       $("write-lyrics-btn").addEventListener("click", writeLyricsClick);
       document.querySelectorAll("[data-generate]").forEach((button) => button.addEventListener("click", () => generate()));
-      $("album-plan-btn").addEventListener("click", planAlbum);
       $("album-btn").addEventListener("click", generateAlbum);
       $("album-saved-refresh").addEventListener("click", loadAlbumSaves);
       $("output-cleanup-refresh")?.addEventListener("click", loadOutputStatus);

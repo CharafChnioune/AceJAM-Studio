@@ -1383,13 +1383,15 @@ def create_album_crew(
             f"UserAlbumContract: {contract_summary}\n"
             + (f"Current inspiration snippets:\n{inspiration}\n" if inspiration else "")
             + f"Genre production reference:{genre_detail}\n"
-            f"Default duration suggestion: {int(track_duration)} seconds per track, but you decide the best duration "
-            "for each track based on its genre, style, and role in the album arc. Typical ranges: "
-            "60-120s for interludes/sketches, 150-240s for standard hit songs, 210-270s for full radio hits, up to 300s for epic/progressive tracks.\n"
+            "TRACK LENGTH CATEGORIES (do NOT specify exact seconds — duration will be calculated from lyrics):\n"
+            "- 'intro' or 'interlude' or 'skit': short atmospheric piece (30-90s worth of content)\n"
+            "- 'full_song': standard album hit (180-300s, the majority of tracks)\n"
+            "- 'epic': progressive/cinematic closer (240-360s)\n"
+            "A professional album should have mostly full_song tracks, with 1-2 intros/interludes max.\n"
             "Use AlbumArcTool and AlbumContinuityTool. Return for each track: title, role in album arc, "
-            "unique scene, hook promise, genre/subgenre, and duration in seconds."
+            "unique scene, hook promise, genre/subgenre, and length category (intro/full_song/epic)."
         ),
-        expected_output=f"Numbered plan for {num_tracks} distinct tracks with titles, scenes, hook promises, genres, and durations.",
+        expected_output=f"Numbered plan for {num_tracks} distinct tracks with titles, scenes, hook promises, genres, and length categories.",
         agent=executive_producer,
     )
     task_performance = _crew_task(
@@ -1407,12 +1409,16 @@ def create_album_crew(
     )
     task_lyrics = _crew_task(
         description=(
-            f"Write complete lyrics for all {num_tracks} tracks in {lang_name}.\n"
+            f"Write FULL professional lyrics for all {num_tracks} tracks in {lang_name}.\n"
             f"{lang_guidance}\n"
-            "Use each track's planned duration from the Executive Producer to determine lyric length.\n"
-            f"Reference lyric plan for default {int(track_duration)}s: {length_plan['structure']}; "
-            f"target ~{length_plan['target_words']} words, minimum {length_plan['min_words']} words "
-            f"and {length_plan['min_lines']} lyric lines. Scale proportionally for shorter/longer tracks.\n"
+            "DO NOT write short demos. Write COMPLETE album-quality songs. The track duration will be "
+            "CALCULATED FROM YOUR LYRICS — more words = longer track. Write as much as the song needs.\n"
+            "LENGTH GUIDE per track category:\n"
+            "- full_song: complete [Intro] + [Verse 1] + [Pre-Chorus] + [Chorus] + [Verse 2] + [Pre-Chorus] + "
+            "[Chorus] + [Bridge] + [Final Chorus] + [Outro]. Minimum 200 words, target 250-400 words.\n"
+            "- epic: extended structure with 3+ verses, multiple bridges/solos, 300-500 words.\n"
+            "- intro/interlude: short atmospheric content 20-60 words, or [Instrumental] with section tags.\n"
+            "DURATION WILL BE DERIVED: singing ≈ 2.5 words/sec, rap ≈ 3.5 words/sec, sparse EDM ≈ 1.5 words/sec.\n"
             f"{section_tags_ref}\n"
             "HIT-WRITING QUALITY GATES:\n"
             "- Every vocal song needs a central emotional promise: what changes between verse and chorus?\n"
@@ -1427,7 +1433,7 @@ def create_album_crew(
             "Keep sonic/instrument/production tags in caption only, not as random lyric lines. "
             "Keep each hook unique across the album. No placeholder lines. No AI filler."
         ),
-        expected_output="Complete duration-matched lyrics with proper section tags for every track.",
+        expected_output="Complete FULL-LENGTH professional lyrics for every track (minimum 200 words per full_song).",
         agent=songwriter,
         context=[task_concept, task_performance],
     )
@@ -1510,6 +1516,14 @@ def create_album_crew(
             "genre_profile, genre_modules, section_map, lyric_density_notes, workflow_mode, negative_control, "
             "quality_checks, troubleshooting_hints, and anti_ai_rewrite_notes. "
             "Include contract_compliance with each locked field marked kept, repaired, or blocked.\n"
+            "DURATION CALCULATION FROM LYRICS (MANDATORY):\n"
+            "Count the words in the lyrics field for each track, then calculate duration:\n"
+            "- Singing (pop/R&B/rock/soul/indie): duration = (word_count / 2.5) + 30 seconds for intro/outro/breaks\n"
+            "- Rap (hip-hop/trap/drill/boom-bap): duration = (word_count / 3.5) + 20 seconds for beats/hooks\n"
+            "- Sparse (EDM/house/techno/trance/DnB/dubstep): duration = (word_count / 1.5) + 60 seconds for builds/drops\n"
+            "- Instrumental ([Instrumental] only): duration = 180-240 seconds\n"
+            "- Intro/interlude/skit: duration = 30-90 seconds\n"
+            "Round to nearest 10 seconds. Minimum 180s for full songs. Maximum 360s.\n"
             "VALIDATION BEFORE OUTPUT:\n"
             "- 'tags' (caption) contains genre, instruments, mood, vocal type, timbre/production, mix -- NO BPM/key/duration\n"
             "- 'lyrics' uses clear section tags, no instrument descriptions, no stacked bracket descriptors\n"
@@ -1517,7 +1531,7 @@ def create_album_crew(
             "- Lines are short enough to sing or rap (4-10 syllables)\n"
             "- No placeholders, no AI filler, no unfinished sections\n"
             "- Language script is correct for target language\n"
-            "- Duration is realistic numeric seconds (60-600)\n"
+            "- Duration matches lyrics word count (calculated above)\n"
             "- Caption and lyrics do not conflict\n"
             f"{schema_rules} "
             f"For planning, song_model may be {ALBUM_FINAL_MODEL}; final audio generation will render all models: "
@@ -1526,7 +1540,7 @@ def create_album_crew(
             "Also include tool_notes when you changed an artist reference into technique language. JSON array only. "
             "Do not include analysis, thoughts, markdown fences, or prose. The first character must be [ and the last character must be ]."
         ),
-        expected_output="Valid JSON array of album tracks only.",
+        expected_output="Valid JSON array of album tracks with durations calculated from lyrics word count.",
         agent=quality_editor,
         context=[task_concept, task_performance, task_lyrics, task_lyric_edit, task_sonic, task_prompt, task_engineering],
     )
