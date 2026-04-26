@@ -138,6 +138,8 @@ from user_album_contract import (
     tracks_from_user_album_contract,
 )
 from studio_core import (
+    ACE_STEP_CAPTION_CHAR_LIMIT,
+    ACE_STEP_LYRICS_CHAR_LIMIT,
     ACE_STEP_LM_MODELS,
     ALLOWED_AUDIO_EXTENSIONS,
     DOCS_BEST_AUDIO_FORMAT,
@@ -152,6 +154,7 @@ from studio_core import (
     build_task_instruction,
     clamp_float,
     clamp_int,
+    apply_ace_step_text_budget,
     docs_best_model_settings,
     docs_best_quality_policy,
     ensure_task_supported,
@@ -309,6 +312,8 @@ def _normalize_lm_backend(value: Any) -> str:
         return ACE_LM_BACKEND_DEFAULT
     if backend == "mlx" and not _IS_APPLE_SILICON:
         return ACE_LM_BACKEND_DEFAULT
+    if backend == "pt" and _IS_APPLE_SILICON and not parse_bool(os.environ.get("ACEJAM_ALLOW_PT_LM_BACKEND_ON_APPLE"), False):
+        return ACE_LM_BACKEND_DEFAULT
     return backend if backend in {"pt", "vllm", "mlx"} else ACE_LM_BACKEND_DEFAULT
 
 
@@ -382,11 +387,14 @@ def _quality_lm_controls_enabled(payload: dict[str, Any], task_type: str) -> boo
         return False
     if task_type in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
         return False
+    supplied_lyrics = str(payload.get("lyrics") or "").strip()
+    has_supplied_vocal_lyrics = bool(supplied_lyrics and supplied_lyrics.lower() != "[instrumental]")
+    default_enabled = not has_supplied_vocal_lyrics
     return any(
         [
-            parse_bool(payload.get("thinking"), ACE_LM_QUALITY_DEFAULTS["thinking"]),
-            parse_bool(get_param(payload, "use_format"), ACE_LM_QUALITY_DEFAULTS["use_format"]),
-            parse_bool(payload.get("use_cot_lyrics"), ACE_LM_QUALITY_DEFAULTS["use_cot_lyrics"]),
+            parse_bool(payload.get("thinking"), default_enabled and ACE_LM_QUALITY_DEFAULTS["thinking"]),
+            parse_bool(get_param(payload, "use_format"), default_enabled and ACE_LM_QUALITY_DEFAULTS["use_format"]),
+            parse_bool(payload.get("use_cot_lyrics"), default_enabled and ACE_LM_QUALITY_DEFAULTS["use_cot_lyrics"]),
             parse_bool(payload.get("sample_mode"), False),
             bool(str(get_param(payload, "sample_query", "") or "").strip()),
         ]
@@ -714,6 +722,9 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         for field, value in DOCS_BEST_LM_DEFAULTS.items():
             if field != "ace_lm_model":
                 normalized[field] = value
+        normalized["thinking"] = False
+        normalized["use_format"] = False
+        normalized["use_cot_lyrics"] = False
         normalized.setdefault("track_variants", 1)
         normalized.setdefault("save_to_library", True)
         tracks = normalized.get("tracks")
@@ -736,9 +747,9 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
                     ),
                 )
                 track["ace_lm_model"] = normalized["ace_lm_model"]
-                track["thinking"] = DOCS_BEST_LM_DEFAULTS["thinking"]
+                track["thinking"] = False
                 track["use_format"] = False
-                track["use_cot_lyrics"] = DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]
+                track["use_cot_lyrics"] = False
                 track["audio_format"] = normalized["audio_format"]
                 track["inference_steps"] = normalized["inference_steps"]
                 track["guidance_scale"] = normalized["guidance_scale"]
@@ -816,6 +827,9 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     for field, value in DOCS_BEST_LM_DEFAULTS.items():
         if field != "ace_lm_model":
             normalized[field] = value
+    normalized["thinking"] = False
+    normalized["use_format"] = False
+    normalized["use_cot_lyrics"] = False
     _apply_prompt_kit_metadata(mode, normalized)
     normalized.setdefault("save_to_library", True)
     if mode in {"cover", "repaint", "extract", "lego", "complete"} and not (
@@ -2627,6 +2641,15 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload = _merge_nested_generation_metadata(payload)
     task_type = normalize_task_type(payload.get("task_type"))
     payload = normalize_generation_text_fields(payload, task_type=task_type)
+    overflow_policy = str(payload.get("lyrics_overflow_policy") or "auto_fit").strip().lower() or "auto_fit"
+    exact_lyrics = parse_bool(payload.get("exact_lyrics") or payload.get("locked_lyrics"), False)
+    raw_lyrics_len = len(str(payload.get("lyrics") or ""))
+    if raw_lyrics_len > ACE_STEP_LYRICS_CHAR_LIMIT and (exact_lyrics or overflow_policy in {"error", "strict", "fail"}):
+        raise ValueError(
+            f"ACE-Step accepts max {ACE_STEP_LYRICS_CHAR_LIMIT} lyrics characters per render; "
+            f"got {raw_lyrics_len}. Use auto_fit or split the song into parts."
+        )
+    payload = apply_ace_step_text_budget(payload, task_type=task_type)
     payload = _apply_studio_lm_policy(payload)
     song_model = _normalize_song_model(get_param(payload, "song_model", payload.get("song_model")))
     ensure_task_supported(song_model, task_type)
@@ -2686,7 +2709,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sample_mode = parse_bool(payload.get("sample_mode"), False)
     sample_query = str(get_param(payload, "sample_query", "") or "").strip()
     lm_controls = _explicit_ace_lm_controls(payload)
-    lm_quality_defaults = requested_lm_model != "none" and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS
+    supplied_vocal_lyrics = bool(lyrics_text.strip() and lyrics_text.strip().lower() != "[instrumental]")
+    lm_quality_defaults = requested_lm_model != "none" and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS and not supplied_vocal_lyrics
     if lm_controls and requested_lm_model == "none":
         raise ValueError(
             "ACE-Step LM controls require ace_lm_model. "
@@ -2718,6 +2742,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
         "tag_list": list(payload.get("tag_list") or []),
         "payload_warnings": list(payload.get("payload_warnings") or []),
+        "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
         "instrumental": instrumental,
         "duration": duration,
         "bpm": bpm,
@@ -2895,7 +2920,6 @@ def _requires_lm(params: dict[str, Any]) -> bool:
         "allow_lm_batch",
         "constrained_decoding_debug",
         "lm_batch_chunk_size",
-        "lm_backend",
         "lm_cfg_scale",
         "lm_negative_prompt",
         "lm_temperature",
@@ -3057,6 +3081,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
         "tag_list": list(payload.get("tag_list") or []),
         "payload_warnings": list(payload.get("payload_warnings") or []),
+        "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
         "instrumental": parse_bool(payload.get("instrumental"), False),
         "duration": clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX),
         "bpm": bpm,
@@ -3100,11 +3125,23 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     raw_payload = _merge_nested_generation_metadata(dict(payload or {}))
     task_type = normalize_task_type(raw_payload.get("task_type"))
     normalized_text = normalize_generation_text_fields(raw_payload, task_type=task_type)
+    overflow_policy = str(normalized_text.get("lyrics_overflow_policy") or "auto_fit").strip().lower() or "auto_fit"
+    exact_lyrics = parse_bool(normalized_text.get("exact_lyrics") or normalized_text.get("locked_lyrics"), False)
+    raw_lyrics_len = len(str(normalized_text.get("lyrics") or ""))
+    text_budget_error = ""
+    if raw_lyrics_len > ACE_STEP_LYRICS_CHAR_LIMIT and (exact_lyrics or overflow_policy in {"error", "strict", "fail"}):
+        text_budget_error = (
+            f"ACE-Step accepts max {ACE_STEP_LYRICS_CHAR_LIMIT} lyrics characters per render; "
+            f"got {raw_lyrics_len}. Use auto_fit or split the song into parts."
+        )
+    normalized_text = apply_ace_step_text_budget(normalized_text, task_type=task_type)
     normalized_text = _apply_studio_lm_policy(normalized_text)
     song_model = _normalize_song_model(get_param(normalized_text, "song_model", normalized_text.get("song_model")))
     official_used = _active_official_fields(normalized_text, task_type, official_fields_used(normalized_text))
     preview = _preview_generation_payload(normalized_text, task_type, song_model, official_used)
     field_errors: dict[str, str] = {}
+    if text_budget_error:
+        _set_field_error(field_errors, "lyrics", text_budget_error)
 
     supported_tasks = supported_tasks_for_model(song_model)
     task_supported = task_type in supported_tasks
@@ -3255,6 +3292,19 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
+    runtime_caption = str(params.get("caption") or "")
+    runtime_lyrics = "[Instrumental]" if params["instrumental"] else str(params.get("lyrics") or "")
+    if len(runtime_caption) > ACE_STEP_CAPTION_CHAR_LIMIT:
+        raise RuntimeError(
+            f"Official ACE-Step runner blocked an over-budget caption: "
+            f"{len(runtime_caption)}/{ACE_STEP_CAPTION_CHAR_LIMIT} chars."
+        )
+    if not params["instrumental"] and len(runtime_lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
+        raise RuntimeError(
+            f"Official ACE-Step runner blocked over-budget lyrics: "
+            f"{len(runtime_lyrics)}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars. "
+            "Use auto_fit or split the song into parts."
+        )
     if needs_lm and not lm_model:
         requested_lm = params["ace_lm_model"]
         download_target = ACE_LM_PREFERRED_MODEL if requested_lm == "auto" else requested_lm
@@ -3276,6 +3326,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "model_cache_dir": str(MODEL_CACHE_DIR),
         "checkpoint_dir": str(MODEL_CACHE_DIR / "checkpoints"),
         "save_dir": str(save_dir),
+        "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "song_model": params["song_model"],
         "lm_model": lm_model,
         "requires_lm": needs_lm,
@@ -3294,9 +3345,9 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "reference_audio": str(params["reference_audio"]) if params["reference_audio"] else None,
             "src_audio": str(params["src_audio"]) if params["src_audio"] else None,
             "audio_codes": params["audio_code_string"],
-            "caption": params["caption"],
+            "caption": runtime_caption,
             "global_caption": params["global_caption"],
-            "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+            "lyrics": runtime_lyrics,
             "instrumental": params["instrumental"],
             "vocal_language": params["vocal_language"],
             "bpm": params["bpm"],
@@ -3472,15 +3523,27 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
     if returncode != 0:
         stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.is_file() else ""
         stdout_text = stdout_path.read_text(encoding="utf-8") if stdout_path.is_file() else ""
-        tail = "\n".join((stderr_text or stdout_text).splitlines()[-20:])
-        raise RuntimeError(f"Official ACE-Step runner failed: {tail or returncode}")
+        tail_lines = (stderr_text or stdout_text).splitlines()[-8:]
+        tail = "\n".join(line[:600] for line in tail_lines)
+        if returncode < 0:
+            signal_name = "SIGKILL" if returncode == -9 else f"signal {-returncode}"
+            budget = request_payload.get("ace_step_text_budget") or {}
+            details = (
+                f"Official ACE-Step runner was killed by the OS ({signal_name}), likely memory pressure. "
+                f"Runtime lyrics {budget.get('runtime_lyrics_char_count', 'unknown')}/"
+                f"{budget.get('lyrics_char_limit', ACE_STEP_LYRICS_CHAR_LIMIT)} chars; "
+                f"LM backend {request_payload.get('lm_backend') or 'auto'}; "
+                f"LM required {bool(request_payload.get('requires_lm'))}."
+            )
+            raise RuntimeError(f"{details}\nLast official log lines:\n{tail}")
+        raise RuntimeError(f"Official ACE-Step runner failed (exit {returncode}): {tail or returncode}")
     if not response_path.is_file():
         raise RuntimeError("Official ACE-Step runner did not write a response file")
     return json.loads(response_path.read_text(encoding="utf-8"))
 
 
 def _official_aux_params(body: dict[str, Any]) -> dict[str, Any]:
-    return {
+    params = {
         "caption": str(body.get("caption") or body.get("prompt") or body.get("description") or ""),
         "lyrics": str(body.get("lyrics") or ""),
         "sample_query": str(get_param(body, "sample_query", body.get("query") or body.get("prompt") or body.get("description") or "") or ""),
@@ -3497,6 +3560,7 @@ def _official_aux_params(body: dict[str, Any]) -> dict[str, Any]:
         "use_constrained_decoding": parse_bool(body.get("use_constrained_decoding"), True),
         "constrained_decoding_debug": parse_bool(body.get("constrained_decoding_debug"), False),
     }
+    return apply_ace_step_text_budget(params, task_type="text2music")
 
 
 def _run_official_lm_aux(action: str, body: dict[str, Any], *, audio_codes: str = "") -> dict[str, Any]:
@@ -3536,7 +3600,8 @@ def _run_official_lm_aux(action: str, body: dict[str, Any], *, audio_codes: str 
             "checkpoint_dir": str(MODEL_CACHE_DIR / "checkpoints"),
             "save_dir": str(work_dir),
             "lm_model": lm_model,
-        "lm_backend": _normalize_lm_backend(body.get("lm_backend")),
+            "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+            "lm_backend": _normalize_lm_backend(body.get("lm_backend")),
             "lm_device": str(body.get("lm_device") or "auto"),
             "lm_dtype": str(body.get("lm_dtype") or "auto"),
             "lm_offload_to_cpu": parse_bool(body.get("lm_offload_to_cpu"), False),
@@ -3610,6 +3675,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "sample_rate": int(audio.get("sample_rate") or 48000),
             "runner": "official",
             "payload_warnings": params["payload_warnings"],
+            "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         }
         if params["return_audio_codes"] and audio_params.get("audio_codes"):
             item["audio_codes"] = audio_params["audio_codes"]
@@ -3625,6 +3691,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                     "caption_source": params["caption_source"],
                     "lyrics_source": params["lyrics_source"],
                     "payload_warnings": params["payload_warnings"],
+                    "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
                     "runner_plan": params["runner_plan"],
                     "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
@@ -3666,6 +3733,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "tag_list": params["tag_list"],
         "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
         "payload_warnings": params["payload_warnings"],
+        "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "official_features": params["official_fields"],
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
         "time_costs": _jsonable(official.get("time_costs", {})),
@@ -3682,6 +3750,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "audios": audios,
         "params": meta["params"],
         "payload_warnings": params["payload_warnings"],
+        "ace_step_text_budget": meta["ace_step_text_budget"],
     }
 
 
@@ -3758,6 +3827,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             "sample_rate": int(audio_dict["sample_rate"]),
             "runner": "fast",
             "payload_warnings": params["payload_warnings"],
+            "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         }
         if params["auto_lrc"]:
             item["lrc"] = _calculate_lrc(item_extra, params["duration"], params["vocal_language"], params["inference_steps"], seed_int)
@@ -3778,6 +3848,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
                     "caption_source": params["caption_source"],
                     "lyrics_source": params["lyrics_source"],
                     "payload_warnings": params["payload_warnings"],
+                    "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
                     "runner_plan": params["runner_plan"],
                     "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
@@ -3819,6 +3890,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "tag_list": params["tag_list"],
         "lyrics": params["lyrics"],
         "payload_warnings": params["payload_warnings"],
+        "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
         "time_costs": _jsonable(extra.get("time_costs", {})),
         "audios": audios,
@@ -3836,6 +3908,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "params": meta["params"],
         "runner": "fast",
         "payload_warnings": params["payload_warnings"],
+        "ace_step_text_budget": meta["ace_step_text_budget"],
         "time_costs": meta["time_costs"],
     }
 
@@ -3844,6 +3917,7 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
     model_name = str(model_item.get("model") or "")
     model_defaults = docs_best_model_settings(model_name)
     payload = dict(raw_payload or {})
+    has_vocal_lyrics = bool(str(payload.get("lyrics") or "").strip() and str(payload.get("lyrics") or "").strip().lower() != "[instrumental]")
     payload.update(
         {
             "task_type": "text2music",
@@ -3856,11 +3930,11 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
             "planner_lm_provider": normalize_provider(raw_payload.get("planner_lm_provider") or raw_payload.get("planner_provider") or "ollama"),
             "planner_model": str(raw_payload.get("planner_model") or raw_payload.get("planner_ollama_model") or raw_payload.get("ollama_model") or ""),
             "render_strategy": SONG_PORTFOLIO_STRATEGY,
-            "thinking": parse_bool(raw_payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"]),
-            "use_format": parse_bool(raw_payload.get("use_format"), DOCS_BEST_LM_DEFAULTS["use_format"]),
+            "thinking": parse_bool(raw_payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"] if not has_vocal_lyrics else False),
+            "use_format": parse_bool(raw_payload.get("use_format"), DOCS_BEST_LM_DEFAULTS["use_format"] if not has_vocal_lyrics else False),
             "use_cot_metas": parse_bool(raw_payload.get("use_cot_metas"), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
             "use_cot_caption": parse_bool(raw_payload.get("use_cot_caption"), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
-            "use_cot_lyrics": parse_bool(raw_payload.get("use_cot_lyrics"), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]),
+            "use_cot_lyrics": parse_bool(raw_payload.get("use_cot_lyrics"), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if not has_vocal_lyrics else False),
             "use_cot_language": parse_bool(raw_payload.get("use_cot_language"), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
             "use_constrained_decoding": parse_bool(raw_payload.get("use_constrained_decoding"), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
             "lm_temperature": clamp_float(raw_payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
@@ -4525,6 +4599,7 @@ def generate_album(
                     _cleanup_accelerator_memory()
                     track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
                     track_lm_enabled = _requested_ace_lm_model({"ace_lm_model": track_lm_model}) != "none"
+                    track_has_vocal_lyrics = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
                     model_defaults = docs_best_model_settings(track_model)
                     generation_payload = {
                         "task_type": "text2music",
@@ -4575,8 +4650,8 @@ def generate_album(
                         "auto_lrc": parse_bool(track.get("auto_lrc", request_payload.get("auto_lrc")), False),
                         "return_audio_codes": parse_bool(track.get("return_audio_codes", request_payload.get("return_audio_codes")), False),
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
-                        "thinking": parse_bool(track.get("thinking", request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
-                        "use_format": parse_bool(track.get("use_format", request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
+                        "thinking": parse_bool(track.get("thinking", False if track_has_vocal_lyrics else request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled and not track_has_vocal_lyrics else False),
+                        "use_format": parse_bool(track.get("use_format", False if track_has_vocal_lyrics else request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled and not track_has_vocal_lyrics else False),
                         "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85, 0.0, 2.0),
                         "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
                         "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
@@ -4584,7 +4659,7 @@ def generate_album(
                         "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
                         "use_cot_metas": parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
                         "use_cot_caption": parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
-                        "use_cot_lyrics": parse_bool(track.get("use_cot_lyrics", request_payload.get("use_cot_lyrics")), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if track_lm_enabled else False),
+                        "use_cot_lyrics": parse_bool(track.get("use_cot_lyrics", False if track_has_vocal_lyrics else request_payload.get("use_cot_lyrics")), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if track_lm_enabled and not track_has_vocal_lyrics else False),
                         "use_cot_language": parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
                         "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
                         "album_metadata": {

@@ -1179,11 +1179,11 @@
             </div>
             <div>
               <label for="lm-backend">Backend</label>
-              <select id="lm-backend"><option value="pt" selected>pt</option></select>
+              <select id="lm-backend"><option value="mlx" selected>mlx</option><option value="pt">pt</option><option value="vllm">vllm</option></select>
             </div>
             <div>
               <label>&nbsp;</label>
-              <label class="check"><input type="checkbox" id="thinking" checked /> Thinking</label>
+              <label class="check"><input type="checkbox" id="thinking" /> Thinking</label>
             </div>
           </div>
           <div class="lm-advice" id="custom-lm-advice"></div>
@@ -1231,10 +1231,10 @@
           </div>
           <div class="row" style="margin-top:10px;">
             <label class="check"><input type="checkbox" id="sample-mode" /> Sample mode</label>
-            <label class="check"><input type="checkbox" id="use-format" checked /> Format caption</label>
+            <label class="check"><input type="checkbox" id="use-format" /> Format caption</label>
             <label class="check"><input type="checkbox" id="use-cot-metas" checked /> CoT metas</label>
             <label class="check"><input type="checkbox" id="use-cot-caption" checked /> CoT caption</label>
-            <label class="check"><input type="checkbox" id="use-cot-lyrics" checked /> CoT lyrics</label>
+            <label class="check"><input type="checkbox" id="use-cot-lyrics" /> CoT lyrics</label>
             <label class="check"><input type="checkbox" id="use-cot-language" checked /> CoT language</label>
             <label class="check"><input type="checkbox" id="constrained-decoding" checked /> Constrained</label>
             <label class="check"><input type="checkbox" id="constrained-debug" /> Debug</label>
@@ -2220,7 +2220,7 @@
 
   <script>
     const modes = ["simple", "custom", "cover", "repaint", "extract", "lego", "complete", "album", "lora", "library", "settings"];
-    const CLIENT_UI_VERSION = "acejam-docs-best-4b-2026-04-25";
+    const CLIENT_UI_VERSION = "acejam-text-budget-mlx-2026-04-26";
     const CLIENT_PAYLOAD_CONTRACT_VERSION = "2026-04-25";
     const DEFAULT_ACE_LM_MODEL = "acestep-5Hz-lm-4B";
     const DOCS_BEST_AUDIO_FORMAT = "wav32";
@@ -2418,6 +2418,10 @@
       return String(el.value ?? "");
     }
 
+    function defaultLmBackend() {
+      return state.config?.ui_schema?.quality_policy?.lm_defaults?.lm_backend || "mlx";
+    }
+
     function defaultsChanged(defaults) {
       return Object.entries(defaults).some(([id, expected]) => controlValue(id) !== expected);
     }
@@ -2453,10 +2457,10 @@
         "custom-lm",
         `${controlValue("custom-ace-lm-model") && controlValue("custom-ace-lm-model") !== "none" ? `ACE-Step LM ${controlValue("custom-ace-lm-model")}` : "Ollama planner active, ACE-Step LM off"}`,
         defaultsChanged({
-          "custom-ace-lm-model": DEFAULT_ACE_LM_MODEL, "lm-backend": "pt", thinking: true, "sample-query": "", "lm-negative": "NO USER INPUT",
+          "custom-ace-lm-model": DEFAULT_ACE_LM_MODEL, "lm-backend": defaultLmBackend(), thinking: false, "sample-query": "", "lm-negative": "NO USER INPUT",
           "lm-temp": "1", "lm-cfg": "10", "lm-top-p": "1", "lm-top-k": "40", "lm-repetition": "1", "lm-batch-chunk": "8",
-          "allow-lm-batch": false, "sample-mode": false, "use-format": true, "use-cot-metas": true,
-          "use-cot-caption": true, "use-cot-lyrics": true, "use-cot-language": true, "constrained-decoding": true, "constrained-debug": false
+          "allow-lm-batch": false, "sample-mode": false, "use-format": false, "use-cot-metas": true,
+          "use-cot-caption": true, "use-cot-lyrics": false, "use-cot-language": true, "constrained-decoding": true, "constrained-debug": false
         })
       );
       setSummary(
@@ -3654,13 +3658,20 @@
         if (bestModel) modelSelect.value = bestModel;
       }
       const lmOptions = (state.config.lm_models || ["auto", "none"]).map((name) => `<option value="${esc(name)}">${esc(lmOptionLabel(name))}</option>`).join("");
-	      for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
+      for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
 	        $(id).innerHTML = lmOptions;
 	        const preferred = state.config.preferred_lm_model || state.config.ace_lm?.preferred_model || DEFAULT_ACE_LM_MODEL;
 	        const previous = (!selectedLmValues[id] || selectedLmValues[id] === "none") ? preferred : selectedLmValues[id];
 	        $(id).value = [...$(id).options].some((option) => option.value === previous) ? previous : preferred;
 	        if (![...$(id).options].some((option) => option.value === $(id).value)) $(id).value = "auto";
 	      }
+      const lmBackendSelect = $("lm-backend");
+      if (lmBackendSelect) {
+        const previousBackend = lmBackendSelect.value || defaultLmBackend();
+        const backendOptions = ["mlx", "pt", "vllm"];
+        lmBackendSelect.innerHTML = backendOptions.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+        lmBackendSelect.value = backendOptions.includes(previousBackend) ? previousBackend : defaultLmBackend();
+      }
       const languages = state.config.valid_languages || ["unknown", "en"];
       for (const id of ["language", "album-language"]) {
         $(id).innerHTML = languages.map((lang) => `<option value="${esc(lang)}"${lang === "en" ? " selected" : ""}>${esc(lang)}</option>`).join("");
@@ -4299,6 +4310,7 @@
         source_status: validation?.source_status,
         reference_status: validation?.reference_status,
         lm_model: validation?.lm_model,
+        ace_step_text_budget: normalized.ace_step_text_budget || validation?.normalized_payload?.ace_step_text_budget,
         field_errors: validation?.field_errors || {},
         warnings: validation?.payload_warnings || normalized.payload_warnings || [],
       };
@@ -4307,6 +4319,7 @@
       const taskSupported = validation?.model?.task_supported ?? true;
       const checks = [
         readinessChip("lyrics", preview.field_errors.lyrics ? "warn" : (stats.words || normalized.instrumental ? "ready" : "warn"), preview.field_errors.lyrics ? "missing" : `${stats.words} words`),
+        readinessChip("text", stats.chars <= (preview.ace_step_text_budget?.lyrics_char_limit || 4096) ? "ready" : "warn", `${stats.chars}/${preview.ace_step_text_budget?.lyrics_char_limit || 4096}`),
         readinessChip("tags", preview.tag_list.length || normalized.caption ? "ready" : "warn", preview.tag_list.length ? `${preview.tag_list.length} tags` : "caption"),
         readinessChip("model", installed === "installed" ? "ready" : "warn", installed),
         readinessChip("runner", preview.runner === "official" ? "warn" : "ready", preview.runner || "fast"),
@@ -4409,11 +4422,11 @@
         planner_ollama_model: plannerProvider === "ollama" ? plannerModel : "",
         ollama_model: plannerProvider === "ollama" ? plannerModel : "",
         use_official_lm: selectedLm !== "none",
-        thinking: $("thinking")?.checked ?? true,
-        use_format: $("use-format")?.checked ?? true,
+        thinking: $("thinking")?.checked ?? false,
+        use_format: $("use-format")?.checked ?? false,
         use_cot_metas: $("use-cot-metas")?.checked ?? true,
         use_cot_caption: $("use-cot-caption")?.checked ?? true,
-        use_cot_lyrics: $("use-cot-lyrics")?.checked ?? true,
+        use_cot_lyrics: $("use-cot-lyrics")?.checked ?? false,
         use_cot_language: $("use-cot-language")?.checked ?? true,
         use_constrained_decoding: $("constrained-decoding")?.checked ?? true,
         lm_temperature: Number($("lm-temp")?.value || 1),
@@ -4421,7 +4434,7 @@
         lm_top_k: Number($("lm-top-k")?.value || 40),
         lm_top_p: Number($("lm-top-p")?.value || 1),
         lm_repetition_penalty: Number($("lm-repetition")?.value || 1),
-        lm_backend: $("lm-backend")?.value || "pt"
+        lm_backend: $("lm-backend")?.value || defaultLmBackend()
       };
     }
 
@@ -5135,20 +5148,20 @@
         use_adg: track.use_adg ?? defaults.use_adg ?? false,
         cfg_interval_start: track.cfg_interval_start ?? defaults.cfg_interval_start ?? 0,
         cfg_interval_end: track.cfg_interval_end ?? defaults.cfg_interval_end ?? 1,
-        thinking: track.thinking ?? defaults.thinking ?? true,
+        thinking: track.thinking ?? defaults.thinking ?? false,
         sample_mode: track.sample_mode ?? defaults.sample_mode ?? false,
         sample_query: track.sample_query || defaults.sample_query || "",
-        use_format: track.use_format ?? defaults.use_format ?? true,
+        use_format: track.use_format ?? defaults.use_format ?? false,
         lm_temperature: track.lm_temperature ?? defaults.lm_temperature ?? 1,
         lm_cfg_scale: track.lm_cfg_scale ?? defaults.lm_cfg_scale ?? 10,
         lm_top_k: track.lm_top_k ?? defaults.lm_top_k ?? 40,
         lm_top_p: track.lm_top_p ?? defaults.lm_top_p ?? 1,
         lm_repetition_penalty: track.lm_repetition_penalty ?? defaults.lm_repetition_penalty ?? 1,
         lm_negative_prompt: track.lm_negative_prompt || defaults.lm_negative_prompt || "NO USER INPUT",
-        lm_backend: track.lm_backend || defaults.lm_backend || "pt",
+        lm_backend: track.lm_backend || defaults.lm_backend || defaultLmBackend(),
         use_cot_metas: track.use_cot_metas ?? defaults.use_cot_metas ?? true,
         use_cot_caption: track.use_cot_caption ?? defaults.use_cot_caption ?? true,
-        use_cot_lyrics: track.use_cot_lyrics ?? defaults.use_cot_lyrics ?? true,
+        use_cot_lyrics: track.use_cot_lyrics ?? defaults.use_cot_lyrics ?? false,
         use_cot_language: track.use_cot_language ?? defaults.use_cot_language ?? true,
         use_constrained_decoding: track.use_constrained_decoding ?? defaults.use_constrained_decoding ?? true,
         auto_score: track.auto_score ?? defaults.auto_score,

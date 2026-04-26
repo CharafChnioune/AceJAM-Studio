@@ -108,7 +108,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["inference_steps"], 64)
         self.assertEqual(normalized["runner_plan"], "official")
 
-    def test_studio_generation_defaults_to_4b_thinking_best_quality(self):
+    def test_studio_generation_with_supplied_lyrics_leaves_ace_lm_format_off(self):
         payload = {
             "task_type": "text2music",
             "song_model": "acestep-v15-base",
@@ -121,15 +121,15 @@ class AppParityTest(unittest.TestCase):
             normalized = acejam_app._parse_generation_payload(payload)
 
         self.assertEqual(normalized["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
-        self.assertTrue(normalized["thinking"])
-        self.assertTrue(normalized["use_format"])
-        self.assertTrue(normalized["use_cot_lyrics"])
+        self.assertFalse(normalized["thinking"])
+        self.assertFalse(normalized["use_format"])
+        self.assertFalse(normalized["use_cot_lyrics"])
         self.assertEqual(normalized["inference_steps"], 64)
         self.assertEqual(normalized["guidance_scale"], 8.0)
         self.assertEqual(normalized["shift"], 1.0)
         self.assertEqual(normalized["sampler_mode"], "heun")
-        self.assertEqual(normalized["audio_format"], "wav32")
-        self.assertEqual(normalized["runner_plan"], "official")
+        self.assertEqual(normalized["audio_format"], "wav")
+        self.assertEqual(normalized["runner_plan"], "fast")
 
     def test_simple_custom_helpers_default_to_official_4b_lm(self):
         client = TestClient(acejam_app.app)
@@ -205,6 +205,53 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(params["lm_repetition_penalty"], 1.4)
         self.assertNotIn("repetition_penalty", request["params"])
 
+    def test_official_generation_payload_fits_overlong_lyrics_before_runner(self):
+        long_lyrics = "<think>draft</think>\nI will now write it.\n[Verse]\n" + "\n".join(
+            f"Runtime line {index}" for index in range(1200)
+        )
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "German schlager, bright brass, singalong chorus",
+                    "lyrics": long_lyrics,
+                    "duration": 180,
+                    "ace_lm_model": "none",
+                    "audio_format": "wav32",
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+
+        self.assertLessEqual(len(request["params"]["lyrics"]), acejam_app.ACE_STEP_LYRICS_CHAR_LIMIT)
+        self.assertNotIn("<think>", request["params"]["lyrics"])
+        self.assertNotIn("I will now write", request["params"]["lyrics"])
+        self.assertEqual(request["ace_step_text_budget"]["source_lyrics_char_count"], len(long_lyrics))
+        self.assertLessEqual(
+            request["ace_step_text_budget"]["runtime_lyrics_char_count"],
+            acejam_app.ACE_STEP_LYRICS_CHAR_LIMIT,
+        )
+
+    def test_strict_overlong_exact_lyrics_fails_before_runner(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}):
+            validation = acejam_app._validate_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "pop, bright hook",
+                    "lyrics": "[Verse]\n" + ("line\n" * 1200),
+                    "duration": 180,
+                    "lyrics_overflow_policy": "error",
+                    "ace_lm_model": "none",
+                }
+            )
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("4096", validation["field_errors"]["lyrics"])
+
     def test_explicit_lm_none_survives_disabled_cot_flags(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -265,6 +312,10 @@ class AppParityTest(unittest.TestCase):
         expected_mlx = "mlx" if acejam_app._IS_APPLE_SILICON else expected_default
         self.assertEqual(acejam_app._normalize_lm_backend("mlx"), expected_mlx)
         self.assertEqual(acejam_app._normalize_lm_backend("auto"), expected_default)
+        self.assertEqual(
+            acejam_app._normalize_lm_backend("pt"),
+            expected_default if acejam_app._IS_APPLE_SILICON else "pt",
+        )
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-base"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -560,8 +611,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(len(data["audios"]), len(acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS))
         self.assertTrue(all(item["batch_size"] == 1 for item in calls))
         self.assertTrue(all(item["ace_lm_model"] == acejam_app.ACE_LM_PREFERRED_MODEL for item in calls))
-        self.assertTrue(all(item["thinking"] for item in calls))
-        self.assertTrue(all(item["use_cot_lyrics"] for item in calls))
+        self.assertTrue(all(not item["thinking"] for item in calls))
+        self.assertTrue(all(not item["use_cot_lyrics"] for item in calls))
         self.assertEqual(calls[0]["inference_steps"], 8)
         self.assertEqual(calls[2]["inference_steps"], 64)
         self.assertEqual(calls[0]["guidance_scale"], 7.0)

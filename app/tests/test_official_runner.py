@@ -86,6 +86,20 @@ class OfficialRunnerTest(unittest.TestCase):
 
         self.assertEqual(filtered, {"caption": "cinematic rap", "lyrics": "[Verse]\nline", "thinking": True})
 
+    def test_normalize_generation_params_blanks_optional_timestep_fields(self):
+        normalized = official_runner._normalize_generation_params(
+            {
+                "caption": "schlager",
+                "timesteps": "",
+                "repainting_start": "",
+                "repainting_end": None,
+            }
+        )
+
+        self.assertIsNone(normalized["timesteps"])
+        self.assertIsNone(normalized["repainting_start"])
+        self.assertIsNone(normalized["repainting_end"])
+
     def test_call_compat_drops_unknown_initialize_kwargs(self):
         calls = {}
 

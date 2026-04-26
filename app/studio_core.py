@@ -171,6 +171,9 @@ DOCS_BEST_TURBO_SHIFT = 3.0
 DOCS_BEST_STANDARD_SHIFT = 1.0
 DOCS_BEST_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
 DOCS_BEST_DEFAULT_LM_BACKEND = "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "pt"
+ACE_STEP_CAPTION_CHAR_LIMIT = 512
+ACE_STEP_LYRICS_CHAR_LIMIT = 4096
+ACE_STEP_DIT_LYRICS_TOKEN_LIMIT = 2048
 DOCS_BEST_SOURCE_TASK_LM_SKIPS = {"cover", "repaint", "extract"}
 DOCS_BEST_LM_TASKS = {"text2music", "lego", "complete"}
 DOCS_BEST_LM_DEFAULTS: dict[str, Any] = {
@@ -686,16 +689,16 @@ OFFICIAL_FIELD_DEFAULTS: dict[str, Any] = {
     "sample_mode": False,
     "sample_query": "",
     "sampler_mode": "heun",
-    "thinking": DOCS_BEST_LM_DEFAULTS["thinking"],
+    "thinking": False,
     "offload_dit_to_cpu": False,
     "offload_to_cpu": False,
     "use_flash_attention": "auto",
     "use_constrained_decoding": DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"],
     "use_cot_caption": DOCS_BEST_LM_DEFAULTS["use_cot_caption"],
     "use_cot_language": DOCS_BEST_LM_DEFAULTS["use_cot_language"],
-    "use_cot_lyrics": DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"],
+    "use_cot_lyrics": False,
     "use_cot_metas": DOCS_BEST_LM_DEFAULTS["use_cot_metas"],
-    "use_format": DOCS_BEST_LM_DEFAULTS["use_format"],
+    "use_format": False,
     "use_random_seed": True,
     "velocity_ema_factor": 0.0,
     "velocity_norm_threshold": 0.0,
@@ -868,6 +871,121 @@ def normalize_generation_text_fields(payload: dict[str, Any], task_type: str | N
             "ui_mode": str(normalized.get("ui_mode") or normalized.get("mode") or task_type or "").strip(),
         }
     )
+    return normalized
+
+
+_META_LEAK_LINE_RE = re.compile(
+    r"(?i)^\s*(?:thought:|reasoning:|analysis:|self[-\s]?correction:|draft:|note:|"
+    r"i will now\b|i'?ll now\b|let'?s write\b|let me\b|here(?:'s| is)\b|"
+    r"the complete production spec\b|track metadata:|artist:|description:|tags:|"
+    r"duration:|bpm:|key scale:|title:|metadata:|json\b)"
+)
+
+
+def strip_ace_step_lyrics_leakage(lyrics: str | None) -> str:
+    """Remove assistant/planning prose that can leak into the ACE-Step lyrics field."""
+    text = str(lyrics or "")
+    if not text.strip():
+        return ""
+    text = re.sub(r"(?is)<think>.*?</think>", "", text)
+    text = re.sub(r"(?is)```(?:json|markdown|text)?\s*", "", text)
+    text = text.replace("```", "")
+    kept: list[str] = []
+    saw_section = False
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            if kept and kept[-1] != "":
+                kept.append("")
+            continue
+        if INLINE_LYRIC_SECTION_RE.search(stripped):
+            saw_section = True
+            kept.append(line)
+            continue
+        if not saw_section and _META_LEAK_LINE_RE.search(stripped):
+            continue
+        if saw_section and _META_LEAK_LINE_RE.search(stripped) and len(stripped) > 24:
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def fit_ace_step_lyrics_to_limit(lyrics: str | None, limit: int = ACE_STEP_LYRICS_CHAR_LIMIT) -> str:
+    """Fit lyrics into the official ACE-Step one-request text budget without inventing new content."""
+    text = str(lyrics or "").strip()
+    if len(text) <= limit:
+        return text
+    budget = max(256, int(limit) - 96)
+    blocks = re.split(r"\n\s*\n", text)
+    kept: list[str] = []
+    total = 0
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        addition_len = len(block) + (2 if kept else 0)
+        if total + addition_len > budget:
+            break
+        kept.append(block)
+        total += addition_len
+    fitted = "\n\n".join(kept).strip()
+    if not fitted:
+        fitted = text[:budget].rstrip()
+    if "[Outro]" not in fitted[-240:]:
+        outro = "\n\n[Outro]\nLet it breathe."
+        fitted = fitted[: max(0, limit - len(outro))].rstrip() + outro
+    return fitted[:limit].rstrip()
+
+
+def apply_ace_step_text_budget(payload: dict[str, Any], *, task_type: str | None = None) -> dict[str, Any]:
+    """Normalize text fields to the official ACE-Step request limits and record what changed."""
+    normalized = dict(payload or {})
+    warnings = list(normalized.get("payload_warnings") or [])
+    budget = dict(normalized.get("ace_step_text_budget") or {})
+    caption = str(normalized.get("caption") or "")
+    lyrics = str(normalized.get("lyrics") or "")
+    source_caption_count = len(caption)
+    source_lyrics_count = len(lyrics)
+    action = "none"
+
+    if len(caption) > ACE_STEP_CAPTION_CHAR_LIMIT:
+        caption = caption[:ACE_STEP_CAPTION_CHAR_LIMIT].rstrip()
+        warnings.append(f"Caption fit to ACE-Step {ACE_STEP_CAPTION_CHAR_LIMIT}-character limit.")
+        action = "caption_trimmed"
+
+    cleaned_lyrics = strip_ace_step_lyrics_leakage(lyrics)
+    if cleaned_lyrics != lyrics.strip():
+        warnings.append("Removed assistant planning prose from lyrics before ACE-Step generation.")
+        action = "lyrics_cleaned" if action == "none" else f"{action}+lyrics_cleaned"
+    lyrics = cleaned_lyrics
+
+    policy = str(normalized.get("lyrics_overflow_policy") or "auto_fit").strip().lower() or "auto_fit"
+    if len(lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
+        lyrics = fit_ace_step_lyrics_to_limit(lyrics, ACE_STEP_LYRICS_CHAR_LIMIT)
+        warnings.append(f"Lyrics fit to ACE-Step {ACE_STEP_LYRICS_CHAR_LIMIT}-character runtime limit.")
+        action = "lyrics_auto_fit" if action == "none" else f"{action}+lyrics_auto_fit"
+
+    budget.update(
+        {
+            "caption_char_limit": ACE_STEP_CAPTION_CHAR_LIMIT,
+            "lyrics_char_limit": ACE_STEP_LYRICS_CHAR_LIMIT,
+            "dit_lyrics_token_limit": ACE_STEP_DIT_LYRICS_TOKEN_LIMIT,
+            "source_caption_char_count": source_caption_count,
+            "runtime_caption_char_count": len(caption),
+            "source_lyrics_char_count": source_lyrics_count,
+            "runtime_lyrics_char_count": len(lyrics),
+            "lyrics_overflow_policy": policy,
+            "lyrics_overflow_action": action,
+            "task_type": task_type or normalized.get("task_type") or "",
+        }
+    )
+    normalized["caption"] = caption
+    normalized["lyrics"] = lyrics
+    normalized["ace_step_text_budget"] = budget
+    normalized["payload_warnings"] = warnings
     return normalized
 
 
@@ -1162,6 +1280,11 @@ def studio_ui_schema() -> dict[str, Any]:
         "official_parity_endpoint": "/api/ace-step/parity",
         "audio_formats": sorted(OFFICIAL_AUDIO_FORMATS),
         "fast_audio_formats": sorted(SUPPORTED_AUDIO_FORMATS),
+        "ace_step_text_budget": {
+            "caption_char_limit": ACE_STEP_CAPTION_CHAR_LIMIT,
+            "lyrics_char_limit": ACE_STEP_LYRICS_CHAR_LIMIT,
+            "dit_lyrics_token_limit": ACE_STEP_DIT_LYRICS_TOKEN_LIMIT,
+        },
         "quality_policy": docs_best_quality_policy(),
         "task_lm_usage": {
             "uses_lm": sorted(DOCS_BEST_LM_TASKS),

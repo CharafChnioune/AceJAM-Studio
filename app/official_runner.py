@@ -234,6 +234,16 @@ def _filter_generation_params(params_data: dict[str, Any], generation_params_cls
     return {key: value for key, value in params_data.items() if key in allowed}
 
 
+def _normalize_generation_params(params_data: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(params_data)
+    if str(normalized.get("timesteps") or "").strip() == "":
+        normalized["timesteps"] = None
+    for key in ["repainting_start", "repainting_end"]:
+        if str(normalized.get(key) or "").strip() == "":
+            normalized[key] = None
+    return normalized
+
+
 def _call_compat(method: Any, **kwargs: Any) -> Any:
     try:
         signature = inspect.signature(method)
@@ -361,7 +371,7 @@ def _run(request_path: Path, response_path: Path) -> None:
     if not ready:
         raise RuntimeError(status)
 
-    params_data = dict(request["params"])
+    params_data = _normalize_generation_params(dict(request["params"]))
     config_data = dict(request["config"])
     llm_handler = None
     if request.get("requires_lm"):

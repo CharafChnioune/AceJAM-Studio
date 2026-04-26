@@ -1,6 +1,8 @@
 import unittest
 
 from studio_core import (
+    ACE_STEP_CAPTION_CHAR_LIMIT,
+    ACE_STEP_LYRICS_CHAR_LIMIT,
     ACE_STEP_LM_MODELS,
     KNOWN_ACE_STEP_MODELS,
     LM_MODEL_PROFILES,
@@ -10,6 +12,7 @@ from studio_core import (
     build_task_instruction,
     docs_best_model_settings,
     ensure_task_supported,
+    apply_ace_step_text_budget,
     lm_model_profile,
     lm_model_profiles_for_models,
     model_profile,
@@ -159,10 +162,31 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(payload["lyrics"], "[Instrumental]")
         self.assertEqual(payload["lyrics_source"], "instrumental_default")
 
+    def test_ace_step_text_budget_cleans_and_fits_runtime_text(self):
+        polluted = (
+            "<think>private chain</think>\n"
+            "I will now generate the final lyrics.\n"
+            "[Verse]\n"
+            + "\n".join(f"Line {index} for the song" for index in range(900))
+        )
+
+        payload = apply_ace_step_text_budget(
+            {"caption": "x" * (ACE_STEP_CAPTION_CHAR_LIMIT + 20), "lyrics": polluted},
+            task_type="text2music",
+        )
+
+        self.assertLessEqual(len(payload["caption"]), ACE_STEP_CAPTION_CHAR_LIMIT)
+        self.assertLessEqual(len(payload["lyrics"]), ACE_STEP_LYRICS_CHAR_LIMIT)
+        self.assertNotIn("<think>", payload["lyrics"])
+        self.assertNotIn("I will now generate", payload["lyrics"])
+        self.assertEqual(payload["ace_step_text_budget"]["source_lyrics_char_count"], len(polluted))
+        self.assertLessEqual(payload["ace_step_text_budget"]["runtime_lyrics_char_count"], ACE_STEP_LYRICS_CHAR_LIMIT)
+        self.assertIn("Lyrics fit", " ".join(payload["payload_warnings"]))
+
     def test_official_field_detection(self):
-        self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": True}), [])
+        self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": False}), [])
         self.assertNotIn("sample_query", official_fields_used({"description": "metadata only"}))
-        self.assertIn("thinking", official_fields_used({"thinking": False}))
+        self.assertIn("thinking", official_fields_used({"thinking": True}))
         self.assertIn("audio_format", official_fields_used({"audio_format": "mp3"}))
         self.assertIn("lm_temperature", official_fields_used({"lm_temperature": 1.1}))
         self.assertIn("lm_repetition_penalty", official_fields_used({"lm_repetition_penalty": 1.2}))
