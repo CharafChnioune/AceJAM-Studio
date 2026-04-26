@@ -1602,14 +1602,16 @@
             <select id="album-embed"></select>
           </div>
           <div>
-            <label for="album-model-strategy">Model strategy</label>
+            <label for="album-model-strategy">Model</label>
             <select id="album-model-strategy">
-              <option value="all_models_album" selected>All 7 model albums</option>
-              <option value="xl_sft_final">XL SFT final only</option>
-              <option value="best_installed">Best installed</option>
-              <option value="fast_installed">Fast installed</option>
-              <option value="maximum_detail">Maximum detail</option>
-              <option value="selected">Selected model</option>
+              <option value="all_models_album">All 7 models</option>
+              <option value="acestep-v15-turbo">Turbo (fast, 8 steps)</option>
+              <option value="acestep-v15-turbo-shift3">Turbo Shift3 (dry timbre)</option>
+              <option value="acestep-v15-sft">SFT (detail, 50 steps)</option>
+              <option value="acestep-v15-base">Base (flexible)</option>
+              <option value="acestep-v15-xl-turbo">XL Turbo (best fast)</option>
+              <option value="acestep-v15-xl-sft" selected>XL SFT (highest quality)</option>
+              <option value="acestep-v15-xl-base">XL Base (all-task)</option>
             </select>
           </div>
         </div>
@@ -2507,7 +2509,7 @@
       );
       setSummary(
         "album-generation",
-        `${controlValue("album-variants") || 1} variant(s), ${controlValue("album-audio-format") || "wav"}, ${controlValue("album-model-strategy") === "all_models_album" ? "7 model albums" : "single model album"}`,
+        `${controlValue("album-variants") || 1} variant(s), ${controlValue("album-audio-format") || "wav"}, ${controlValue("album-model-strategy") === "all_models_album" ? "all 7 models" : controlValue("album-model-strategy")}`,
         defaultsChanged({
           "album-variants": "1", "album-seed": "-1", "album-audio-format": albumDefaults.audio_format,
           "album-inference-steps": String(albumDefaults.inference_steps),
@@ -5042,9 +5044,10 @@
         embedding_model: $("album-embed").value || (embedProvider === "ollama" ? state.config?.default_album_embedding_model : "") || "",
         language: $("album-language").value,
         song_model: $("song-model").value,
-        final_song_model: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : "acestep-v15-xl-sft",
+        final_song_model: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : $("album-model-strategy").value,
         ace_lm_model: activeLmModelFor("album"),
-        song_model_strategy: $("album-model-strategy").value,
+        song_model_strategy: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : "selected",
+        requested_song_model: $("album-model-strategy").value === "all_models_album" ? "auto" : $("album-model-strategy").value,
         quality_target: $("album-quality").value,
         structure_preset: $("album-structure").value,
         tag_packs: selectedAlbumTagPacks(),
@@ -5551,7 +5554,7 @@
           <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(track.bpm || "")}" /></td>
           <td><input data-field="key_scale" value="${esc(track.key_scale || "")}" /></td>
           <td><input data-field="time_signature" value="${esc(track.time_signature || "4")}" /></td>
-          <td><input data-field="song_model" value="${esc($("album-model-strategy").value === "all_models_album" ? "all 7 models" : (track.song_model || "acestep-v15-xl-sft"))}" readonly title="Album Generate renders the selected model strategy; default is all 7 model albums." /></td>
+          <td><input data-field="song_model" value="${esc($("album-model-strategy").value === "all_models_album" ? "all 7 models" : $("album-model-strategy").value)}" readonly title="Model selected in album settings." /></td>
           <td><input data-field="seed" value="${esc(track.seed || $("album-seed").value || "-1")}" /></td>
           <td><input data-field="inference_steps" type="number" min="1" max="200" value="${esc(track.inference_steps || $("album-inference-steps").value || albumDocsBestSettings().inference_steps)}" /></td>
           <td><input data-field="guidance_scale" type="number" min="1" max="15" step="0.1" value="${esc(track.guidance_scale || $("album-guidance").value || albumDocsBestSettings().guidance_scale)}" /></td>
