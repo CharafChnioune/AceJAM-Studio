@@ -73,45 +73,30 @@ def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
 
 
 def _patch_mlx_thread_stream(handler_cls: Any) -> None:
-    """Patch the generation thread to initialize the MLX stream for child threads.
+    """Patch MLX diffusion to set the Metal stream at the start of each call.
 
     MLX Metal streams are thread-local. The diffusion timeout mechanism runs
-    the actual generation in a threading.Thread, but MLX was initialized in the
-    main thread. This patches _run_generate_music_service_with_progress to set
-    mx.set_default_device(mx.gpu) inside the child thread before running.
+    generation in a child thread, but MLX was initialized in the main thread.
+    Fix: wrap _mlx_run_diffusion to call mx.set_default_device(mx.gpu) first.
     """
     try:
-        from acestep.core.generation.handler.generate_music_execute import GenerateMusicExecuteMixin
+        from acestep.core.generation.handler.diffusion import DiffusionMixin
     except ImportError:
         return
 
-    _orig = getattr(GenerateMusicExecuteMixin, "_run_generate_music_service_with_progress", None)
-    if _orig is None:
+    _orig_mlx_run = getattr(DiffusionMixin, "_mlx_run_diffusion", None)
+    if _orig_mlx_run is None:
         return
 
-    import threading as _threading
-
-    def _patched(self, *args, **kwargs):
-        # Monkey-patch threading.Thread to inject MLX stream setup
-        _OrigThread = _threading.Thread
-
-        class _MLXThread(_OrigThread):
-            def run(self):
-                if getattr(self._target, "__name__", "") == "_service_target":
-                    try:
-                        import mlx.core as mx
-                        mx.set_default_device(mx.gpu)
-                    except Exception:
-                        pass
-                super().run()
-
-        _threading.Thread = _MLXThread
+    def _patched_mlx_run(self, *args, **kwargs):
         try:
-            return _orig(self, *args, **kwargs)
-        finally:
-            _threading.Thread = _OrigThread
+            import mlx.core as mx
+            mx.set_default_device(mx.gpu)
+        except Exception:
+            pass
+        return _orig_mlx_run(self, *args, **kwargs)
 
-    GenerateMusicExecuteMixin._run_generate_music_service_with_progress = _patched
+    DiffusionMixin._mlx_run_diffusion = _patched_mlx_run
 
 
 def _none_if_auto(value: Any) -> Any:
