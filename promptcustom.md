@@ -35,9 +35,9 @@ Required JSON:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
-  "use_format": true,
+  "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
   "use_cot_lyrics": true,
@@ -83,5 +83,5 @@ negative_tags: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal
 Lyrics: full lyrics for vocal songs, "[Instrumental]" for instrumentals. Under 4096 chars. Target words: 30s 40-70, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540.
 Use [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Post-Chorus], [Outro], plus delivery tags like [Verse - rap], [Chorus - anthemic], [Chorus - layered vocals].
 
-Quality: strong hook, concrete imagery, one metaphor world, internal/slant rhyme for rap, pre-chorus lift for pop, chant hook for club, original artist_name only, no direct living-artist imitation.
+Quality: strong hook, concrete imagery, one metaphor world, internal/slant rhyme for rap, pre-chorus lift for pop, chant hook for club.
 ```

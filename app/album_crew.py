@@ -52,7 +52,24 @@ from songwriting_toolkit import (
     sanitize_artist_references,
     toolkit_payload,
 )
+from prompt_kit import (
+    PROMPT_KIT_VERSION,
+    infer_genre_modules,
+    is_sparse_lyric_genre,
+    kit_metadata_defaults,
+    language_preset,
+    prompt_kit_payload,
+    section_map_for,
+)
 from studio_core import docs_best_model_settings
+from user_album_contract import (
+    USER_ALBUM_CONTRACT_VERSION,
+    apply_user_album_contract_to_track,
+    apply_user_album_contract_to_tracks,
+    contract_prompt_context,
+    contract_track,
+    extract_user_album_contract,
+)
 
 
 OLLAMA_BASE_URL = ollama_host()
@@ -363,6 +380,8 @@ def _compact_track_memory_record(track: dict[str, Any], *, include_lyrics_excerp
         "key_scale": _small_scalar(track.get("key_scale")),
         "time_signature": _small_scalar(track.get("time_signature")),
         "language": _small_scalar(track.get("language")),
+        "prompt_kit_version": _small_scalar(track.get("prompt_kit_version") or PROMPT_KIT_VERSION),
+        "genre_modules": _clip_text(",".join(str(item) for item in (track.get("genre_modules") or [])), 120),
         "lyric_words": stats.get("word_count"),
         "lyric_lines": stats.get("line_count"),
         "lyric_sections": stats.get("section_count"),
@@ -493,6 +512,9 @@ def _empty_response_fallback_text(model_name: str) -> str:
 
 
 def _compact_tool_context(opts: dict[str, Any], track_duration: float, num_tracks: int, concept: str) -> dict[str, Any]:
+    lang = str(opts.get("language") or "en")
+    genre_modules = infer_genre_modules(concept, max_modules=2)
+    sparse = is_sparse_lyric_genre(concept)
     length_plan = lyric_length_plan(
         track_duration,
         str(opts.get("lyric_density") or "dense"),
@@ -515,6 +537,18 @@ def _compact_tool_context(opts: dict[str, Any], track_duration: float, num_track
         "tag_packs": opts.get("tag_packs") or ["genre_style", "mood_atmosphere", "instruments", "timbre_texture"],
         "artist_reference_notes": opts.get("artist_reference_notes") or [],
         "live_crewai_tools": CREWAI_LIVE_TOOLS,
+        "prompt_kit_version": PROMPT_KIT_VERSION,
+        "language_preset": language_preset(lang),
+        "genre_modules": genre_modules,
+        "section_map": section_map_for(track_duration, concept, instrumental=sparse),
+        "kit_metadata_defaults": kit_metadata_defaults(
+            mode="album",
+            language=lang,
+            genre_hint=concept,
+            duration=track_duration,
+            instrumental=sparse,
+        ),
+        "user_album_contract": contract_prompt_context(opts.get("user_album_contract")),
     }
 
 
@@ -1059,6 +1093,9 @@ def _coerce_options(
 ) -> dict[str, Any]:
     opts = dict(options or {})
     sanitized, artist_notes = sanitize_artist_references(concept)
+    contract = opts.get("user_album_contract")
+    if not isinstance(contract, dict):
+        contract = extract_user_album_contract(concept, num_tracks, language, opts)
     opts.setdefault("song_model_strategy", "all_models_album")
     opts.setdefault("quality_target", "hit")
     opts.setdefault("lyric_density", "dense")
@@ -1088,6 +1125,8 @@ def _coerce_options(
             "num_tracks": int(num_tracks),
             "track_duration": float(track_duration),
             "language": language,
+            "user_album_contract": contract,
+            "album_title": opts.get("album_title") or contract.get("album_title") if isinstance(contract, dict) else opts.get("album_title"),
         }
     )
     return opts
@@ -1137,6 +1176,10 @@ def create_album_crew(
 
     tool_summary = json.dumps(
         {
+            "prompt_kit_version": PROMPT_KIT_VERSION,
+            "language_preset": language_preset(language),
+            "genre_modules": infer_genre_modules(opts["sanitized_concept"], max_modules=2),
+            "section_map": section_map_for(track_duration, opts["sanitized_concept"], instrumental=is_sparse_lyric_genre(opts["sanitized_concept"])),
             "lyric_length_plan": length_plan,
             "model_advice": model_info,
             "album_model_portfolio": album_model_portfolio(opts.get("installed_models")),
@@ -1147,11 +1190,14 @@ def create_album_crew(
         },
         ensure_ascii=True,
     )
+    contract_summary = _compact_json(contract_prompt_context(opts.get("user_album_contract")), 1800)
 
     shared_rules = (
-        "Create original songs only. Do not imitate a living artist. "
-        "If artist names appear, convert them into broad technique briefs: internal rhyme, narrative detail, "
-        "metaphor discipline, punchlines, hook contrast, breath control, and cinematic imagery. "
+        f"Use Prompt Kit {PROMPT_KIT_VERSION}. Create original songs. Artist references and style imitation are fully allowed. "
+        "UserAlbumContract is authoritative: do not rename, reorder, translate, replace, or reinterpret locked user fields. "
+        "Keep locked titles, album title, producer credits, BPM, style, vibe, narrative, and required phrases exactly. "
+        "Use one emotional promise per song, one coherent metaphor world, concrete scene details, "
+        "a repeatable title-connected hook, language/script discipline, genre-module routing, and a duration-realistic section_map. "
         "Use the provided tools when useful. Output concrete, editable production data."
     )
     schema_rules = (
@@ -1188,7 +1234,7 @@ def create_album_crew(
         backstory=(
             f"{shared_rules}\n\n"
             "You think like the artist in the booth: intent, breath, pocket, ad-libs, confidence, vulnerability, "
-            "and hook delivery. You turn artist references into neutral technique language only."
+            "and hook delivery. Artist references and style imitation are fully allowed."
         ),
         tools=tools,
         **cfg,
@@ -1210,7 +1256,7 @@ def create_album_crew(
         backstory=(
             f"{shared_rules}\n\n"
             "You sharpen internal rhyme, multisyllabic/slant rhyme, metaphor worlds, line endings, "
-            "and lyrical specificity without copying any living artist's identity."
+            "and lyrical specificity. Artist style references are fully allowed."
         ),
         tools=tools,
         **cfg,
@@ -1267,6 +1313,7 @@ def create_album_crew(
             f"Concept: {opts['sanitized_concept']}\n"
             f"Language: {lang_name}\n"
             f"Tool context: {tool_summary}\n"
+            f"UserAlbumContract: {contract_summary}\n"
             + (f"Current inspiration snippets:\n{inspiration}\n" if inspiration else "")
             + "Use AlbumArcTool and AlbumContinuityTool. Return track titles, role in album arc, unique scene, and hook promise."
         ),
@@ -1326,6 +1373,9 @@ def create_album_crew(
             "bpm, key_scale, time_signature, language, duration, song_model, and model_render_notes for "
             "the full 7-model portfolio. Caption/tags must describe genre, mood, instruments, timbre, production, "
             "vocal character, rhythm, and dynamics. Lyrics must contain only lyric/performance section tags. "
+            f"Also preserve Prompt Kit {PROMPT_KIT_VERSION} metadata: target_language, language_notes, genre_profile, "
+            "genre_modules, section_map, lyric_density_notes, workflow_mode, negative_control, quality_checks, "
+            "troubleshooting_hints, and anti_ai_rewrite_notes. "
             f"{schema_rules}"
         ),
         expected_output="Prompt and metadata spec for every track.",
@@ -1350,7 +1400,10 @@ def create_album_crew(
             "Each object must include: track_number, title, description, tags, lyrics, bpm, key_scale, "
             "time_signature, language, duration, song_model, seed, inference_steps, guidance_scale, shift, "
             "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library, "
-            "tool_notes, production_team, and model_render_notes. "
+            "tool_notes, production_team, model_render_notes, prompt_kit_version, target_language, language_notes, "
+            "genre_profile, genre_modules, section_map, lyric_density_notes, workflow_mode, negative_control, "
+            "quality_checks, troubleshooting_hints, and anti_ai_rewrite_notes. "
+            "Include contract_compliance with each locked field marked kept, repaired, or blocked. "
             f"{schema_rules} "
             f"Every lyrics field must meet at least {length_plan['min_words']} words and {length_plan['min_lines']} lyric lines "
             f"for {int(track_duration)} seconds, unless the track is explicitly instrumental. "
@@ -1421,6 +1474,7 @@ def create_album_bible_crew(
         opts["sanitized_concept"],
     )
     tool_context = _compact_tool_context(opts, track_duration, num_tracks, opts["sanitized_concept"])
+    contract_summary = _compact_json(contract_prompt_context(opts.get("user_album_contract")), 2200)
     tools = make_crewai_tools({**opts, "web_inspiration": ""}) if CREWAI_LIVE_TOOLS else []
     cfg = dict(
         llm=llm,
@@ -1436,8 +1490,9 @@ def create_album_bible_crew(
         role="Executive Producer and Album Bible Architect",
         goal="Create a compact album bible and track blueprints without full lyrics",
         backstory=(
-            "You design award-level album arcs. Keep context compact: no full lyrics here. "
-            "Create original music only and convert artist references into technique briefs."
+            f"You design award-level album arcs using Prompt Kit {PROMPT_KIT_VERSION}. Keep context compact: no full lyrics here. "
+            "Create original music only and convert artist references into technique briefs. "
+            "Every track needs a central emotional promise, one metaphor world, language/script discipline, and genre-module fit."
         ),
         tools=tools,
         **cfg,
@@ -1446,7 +1501,8 @@ def create_album_bible_crew(
         role="ACE-Step Blueprint Engineer",
         goal="Turn the album bible into compact generation-ready track blueprints",
         backstory=(
-            "You write concise, machine-safe JSON. Captions contain sonic tags; lyrics will be written later per track."
+            "You write concise, machine-safe JSON. Captions contain sonic tags; lyrics will be written later per track. "
+            "Preserve Prompt Kit metadata so per-track production can keep language, genre, section, and safety gates."
         ),
         tools=tools,
         **cfg,
@@ -1457,10 +1513,14 @@ def create_album_bible_crew(
             f"Concept: {opts['sanitized_concept']}\n"
             f"Language: {lang_name}\n"
             f"Track duration: {int(track_duration)} seconds.\n"
+            f"Prompt Kit: {PROMPT_KIT_VERSION}; language preset: {json.dumps(language_preset(language), ensure_ascii=True)}; "
+            f"genre modules: {json.dumps(infer_genre_modules(opts['sanitized_concept'], max_modules=2), ensure_ascii=True)}.\n"
             f"Deterministic AceJAM tool context: {json.dumps(tool_context, ensure_ascii=True)[:2600]}\n"
+            f"UserAlbumContract: {contract_summary}\n"
             f"Lyric target later per track: {length_plan['target_words']} words, min {length_plan['min_words']} words, "
             f"{length_plan['min_lines']} min lyric lines.\n"
-            "Do not call tools. Do not write full lyrics. Return only compact plan details: album arc, sonic palette, recurring motifs, and per-track roles."
+            "Do not call tools. Do not write full lyrics. Return only compact plan details: album arc, sonic palette, recurring motifs, and per-track roles. "
+            "UserAlbumContract is authoritative: do not rename, reorder, translate, replace, or reinterpret locked user fields."
         ),
         expected_output="Compact album bible and track roles, no full lyrics.",
         agent=producer,
@@ -1471,9 +1531,13 @@ def create_album_bible_crew(
             "{\"album_bible\":{\"concept\":\"...\",\"arc\":\"...\",\"motifs\":[\"...\"]},"
             "\"tracks\":[{\"track_number\":1,\"artist_name\":\"original stage/project name\",\"title\":\"...\",\"description\":\"...\","
             "\"tags\":\"compact ACE-Step sonic tags\",\"bpm\":90,\"key_scale\":\"C minor\","
-            "\"time_signature\":\"4\",\"duration\":180,\"hook_promise\":\"...\",\"performance_brief\":\"...\"}]}.\n"
+            "\"time_signature\":\"4\",\"duration\":180,\"hook_promise\":\"...\",\"performance_brief\":\"...\","
+            "\"prompt_kit_version\":\"" + PROMPT_KIT_VERSION + "\",\"target_language\":\"" + str(language) + "\",\"genre_modules\":[\"pop\"],"
+            "\"section_map\":[],\"negative_control\":[],\"quality_checks\":{}}]}.\n"
             "Do not call tools. No full lyrics in this phase. Invent original artist/project names only; never use real artist names from references. "
             "Use concise captions/tags with genre, mood, instruments, timbre, production, vocals, rhythm, and dynamics. "
+            "Use the selected target language code, not hardcoded English, when target_language is not en. "
+            "Locked fields from UserAlbumContract must be copied exactly and each track should include contract_compliance. "
             "Do not include analysis, thoughts, markdown fences, or prose. The first character must be { and the last character must be }."
         ),
         expected_output="Strict JSON album_bible plus compact track blueprints.",
@@ -1518,6 +1582,10 @@ def create_track_production_crew(
         language,
         options,
     )
+    blueprint = dict(blueprint or {})
+    blueprint_index = max(0, int(blueprint.get("track_number") or 1) - 1)
+    blueprint = apply_user_album_contract_to_track(blueprint, opts.get("user_album_contract"), blueprint_index)
+    track_contract = contract_track(opts.get("user_album_contract"), blueprint.get("track_number"), blueprint_index)
     llm = _make_llm(ollama_model, planner_provider)
     lang_name = LANG_NAMES.get(language, language)
     length_plan = lyric_length_plan(
@@ -1546,6 +1614,7 @@ def create_track_production_crew(
         ),
         "current_track": blueprint_for_context,
         "album_bible": album_bible_for_context,
+        "current_track_contract": contract_prompt_context({"tracks": [track_contract], "version": USER_ALBUM_CONTRACT_VERSION}) if track_contract else {},
     }
     tools = make_crewai_tools(tool_context) if CREWAI_LIVE_TOOLS else []
     cfg = dict(
@@ -1562,8 +1631,12 @@ def create_track_production_crew(
         role="Track Production Team",
         goal=f"Produce one track: a complete professional song in {lang_name}",
         backstory=(
-            "You are a focused production team for one song only: performer, songwriter, lyric editor, beat producer, "
-            "ACE-Step prompt engineer, studio engineer, and A&R gate. Do not include other tracks' full lyrics."
+            f"You are a focused production team for one song only using Prompt Kit {PROMPT_KIT_VERSION}: performer, "
+            "songwriter, lyric editor, beat producer, ACE-Step prompt engineer, studio engineer, and A&R gate. "
+            "The current UserAlbumContract is authoritative: keep the locked title, producer credit, BPM/style/vibe/narrative, "
+            "and safe required phrases exactly. "
+            "Do not include other tracks' full lyrics. Enforce the emotional promise, hook repeatability, concrete detail, "
+            "one metaphor world, language/script rules, and section_map duration realism."
         ),
         tools=tools,
         **cfg,
@@ -1572,7 +1645,8 @@ def create_track_production_crew(
         role="Track JSON Finalizer",
         goal="Return strict JSON for exactly one AceJAM album track",
         backstory=(
-            "You output valid JSON only. Lyrics must be long enough for the requested duration and captions must stay compact sonic tags."
+            "You output valid JSON only. Lyrics must be long enough for the requested duration and captions must stay compact sonic tags. "
+            "Keep Prompt Kit metadata intact, fill quality_checks, and include contract_compliance with kept/repaired/blocked fields."
         ),
         tools=tools,
         **cfg,
@@ -1581,12 +1655,17 @@ def create_track_production_crew(
         description=(
             f"Produce exactly one track from this compact blueprint:\n{_compact_json(blueprint_for_context, 1800)}\n"
             f"Album bible summary:\n{_compact_json(album_bible_for_context, 1200)}\n"
+            f"Prompt Kit: {PROMPT_KIT_VERSION}; language preset: {json.dumps(language_preset(language), ensure_ascii=True)}; "
+            f"genre modules: {json.dumps(infer_genre_modules(str(blueprint.get('tags') or '') + ' ' + str(blueprint.get('description') or ''), max_modules=2), ensure_ascii=True)}.\n"
             f"Deterministic AceJAM tool context:\n{json.dumps(tool_context, ensure_ascii=True)[:2600]}\n"
+            f"UserAlbumContract for this track:\n{_compact_json(track_contract or {}, 1600)}\n"
             f"Duration target: {int(blueprint.get('duration') or track_duration)} seconds.\n"
             f"Required lyric plan: {length_plan['structure']}; target {length_plan['target_words']} words, "
             f"minimum {length_plan['min_words']} words and {length_plan['min_lines']} lyric lines.\n"
             "Do not call tools. Write full lyrics now with verses, choruses, bridge/final chorus, ad-libs/performance tags, and no placeholders. "
+            "For sparse EDM/cinematic/ambient blueprints, use section tags, builds, drops, and short vocal motifs rather than forced full verses. "
             "Keep sonic/instrument/production tags in caption/tags, not as random lyric lines."
+            " Do not rename, reorder, translate, replace, or reinterpret locked user fields."
         ),
         expected_output="Complete one-track production spec with full lyrics.",
         agent=producer,
@@ -1596,7 +1675,9 @@ def create_track_production_crew(
             "Return strict JSON object only. Required fields: track_number, artist_name, title, description, tags, lyrics, bpm, "
             "key_scale, time_signature, language, duration, song_model, seed, inference_steps, guidance_scale, shift, "
             "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library, "
-            "tool_notes, production_team, model_render_notes. artist_name must be an original stage/project name, never a real artist reference. "
+            "tool_notes, production_team, model_render_notes, prompt_kit_version, target_language, language_notes, "
+            "genre_profile, genre_modules, section_map, lyric_density_notes, workflow_mode, negative_control, quality_checks, "
+            "troubleshooting_hints, anti_ai_rewrite_notes, and contract_compliance. artist_name must be an original stage/project name, never a real artist reference. "
             "Do not call tools. Do not include analysis, thoughts, markdown fences, or prose. "
             "The first character must be { and the last character must be }."
         ),
@@ -1655,6 +1736,22 @@ def plan_album(
     lang_name = LANG_NAMES.get(language, language)
     logs.append(f"Concept preview: {_monitor_preview(opts['sanitized_concept'], 220)}")
     logs.append(f"Language: {lang_name}")
+    logs.append(f"Prompt Kit: {PROMPT_KIT_VERSION}")
+    logs.append(
+        "Prompt Kit routing: "
+        f"language_preset={language_preset(language).get('code')}; "
+        f"genre_modules={','.join(module.get('slug', '') for module in infer_genre_modules(opts['sanitized_concept'], max_modules=2))}."
+    )
+    contract = opts.get("user_album_contract") if isinstance(opts.get("user_album_contract"), dict) else {}
+    repair_lines_before = len([line for line in logs if str(line).startswith("Contract repaired:")])
+    if contract.get("applied"):
+        locked_titles = [str(item.get("locked_title") or "").strip() for item in contract.get("tracks") or [] if str(item.get("locked_title") or "").strip()]
+        logs.append(
+            "Input Contract: applied; "
+            f"album_title={_monitor_preview(contract.get('album_title') or 'untitled', 80)}; "
+            f"locked_tracks={len(locked_titles)}; "
+            f"blocked_unsafe={int(contract.get('blocked_unsafe_count') or 0)}."
+        )
     logs.append(f"Tracks: {num_tracks} x {int(track_duration)}s")
     planner_provider = normalize_provider(planner_provider or "ollama")
     embedding_provider = normalize_provider(embedding_provider or planner_provider)
@@ -1705,12 +1802,21 @@ def plan_album(
                 "crewai_used": False,
                 "toolbelt_fallback": False,
                 "crewai_output_log_file": str(crewai_output_log_file or ""),
+                "prompt_kit_version": PROMPT_KIT_VERSION,
+                "prompt_kit": prompt_kit_payload(),
                 "toolkit": toolkit_payload(opts.get("installed_models")),
+                "input_contract": contract_prompt_context(contract),
+                "input_contract_applied": bool(contract.get("applied")),
+                "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+                "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0),
+                "contract_repair_count": 0,
             }
 
     if input_tracks:
+        input_tracks = apply_user_album_contract_to_tracks(input_tracks, contract, logs)
         tracks = normalize_album_tracks(input_tracks, opts)
         logs.append(f"Using editable album plan with {len(tracks)} tracks.")
+        contract_repairs = len([line for line in logs if str(line).startswith("Contract repaired:")]) - repair_lines_before
         return {
             "tracks": tracks,
             "logs": logs,
@@ -1719,8 +1825,21 @@ def plan_album(
             "crewai_used": False,
             "toolbelt_fallback": False,
             "crewai_output_log_file": str(crewai_output_log_file or ""),
+            "prompt_kit_version": PROMPT_KIT_VERSION,
+            "prompt_kit": prompt_kit_payload(),
             "toolkit": toolkit_payload(opts.get("installed_models")),
-            "toolkit_report": {"model_advice": model_info, "artist_reference_notes": opts.get("artist_reference_notes", [])},
+            "input_contract": contract_prompt_context(contract),
+            "input_contract_applied": bool(contract.get("applied")),
+            "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+            "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0),
+            "contract_repair_count": max(0, contract_repairs),
+            "toolkit_report": {
+                "model_advice": model_info,
+                "artist_reference_notes": opts.get("artist_reference_notes", []),
+                "user_album_contract": contract,
+                "input_contract_applied": bool(contract.get("applied")),
+                "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0),
+            },
         }
 
     if use_crewai:
@@ -1781,6 +1900,16 @@ def plan_album(
             if not blueprints:
                 blueprints = build_album_plan(concept, num_tracks, track_duration, opts)["tracks"]
             blueprints = blueprints[:num_tracks]
+            if len(blueprints) < num_tracks:
+                fallback_blueprints = build_album_plan(concept, num_tracks, track_duration, opts)["tracks"]
+                seen_numbers = {int(item.get("track_number") or idx + 1) for idx, item in enumerate(blueprints)}
+                for fallback_track in fallback_blueprints:
+                    number = int(fallback_track.get("track_number") or 0)
+                    if number not in seen_numbers:
+                        blueprints.append(fallback_track)
+                    if len(blueprints) >= num_tracks:
+                        break
+            blueprints = apply_user_album_contract_to_tracks(blueprints, contract, logs)
             for index, blueprint in enumerate(blueprints):
                 blueprint["track_number"] = int(blueprint.get("track_number") or index + 1)
                 blueprint["duration"] = track_duration
@@ -1840,8 +1969,10 @@ def plan_album(
                             f"Track {index + 1} CrewAI JSON repair used production text: "
                             f"{_monitor_preview(parse_exc, 260)}"
                         )
+                produced = apply_user_album_contract_to_track(produced, contract, index, logs)
                 produced_tracks.append(produced)
             tracks = normalize_album_tracks(produced_tracks[:num_tracks], opts)
+            tracks = apply_user_album_contract_to_tracks(tracks, contract, logs)
             failed_quality = [
                 track for track in tracks
                 if not track.get("tool_report", {}).get("length_ok") and parse_duration_seconds(track.get("duration") or track_duration, track_duration) >= 180
@@ -1852,6 +1983,7 @@ def plan_album(
             for track in tracks:
                 _remember_track(album_memory_writer, track, logs)
             logs.append(f"CrewAI produced {len(tracks)} duration-ready track(s) with per-track compact context.")
+            contract_repairs = len([line for line in logs if str(line).startswith("Contract repaired:")]) - repair_lines_before
             return {
                 "tracks": tracks,
                 "logs": logs,
@@ -1860,11 +1992,24 @@ def plan_album(
                 "crewai_used": True,
                 "toolbelt_fallback": False,
                 "crewai_output_log_file": crewai_log_file,
+                "prompt_kit_version": PROMPT_KIT_VERSION,
+                "prompt_kit": prompt_kit_payload(),
                 "toolkit": toolkit_payload(opts.get("installed_models")),
+                "input_contract": contract_prompt_context(contract),
+                "input_contract_applied": bool(contract.get("applied")),
+                "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+                "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0),
+                "contract_repair_count": max(0, contract_repairs),
                 "toolkit_report": {
+                    "prompt_kit_version": PROMPT_KIT_VERSION,
+                    "prompt_kit": prompt_kit_payload(),
                     "model_advice": model_info,
                     "artist_reference_notes": opts.get("artist_reference_notes", []),
                     "album_bible": album_bible,
+                    "user_album_contract": contract,
+                    "input_contract_applied": bool(contract.get("applied")),
+                    "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0),
+                    "contract_repair_count": max(0, contract_repairs),
                     "memory": {
                         "enabled": True,
                         "read_only_agents": True,
@@ -1885,6 +2030,7 @@ def plan_album(
 
     fallback = build_album_plan(concept, num_tracks, track_duration, opts)
     logs.append(f"Toolbelt fallback planned {len(fallback['tracks'])} tracks.")
+    contract_repairs = len([line for line in logs if str(line).startswith("Contract repaired:")]) - repair_lines_before
     return {
         "tracks": fallback["tracks"],
         "logs": logs,
@@ -1894,7 +2040,14 @@ def plan_album(
         "toolbelt_fallback": bool(use_crewai),
         "crewai_error": crewai_error,
         "crewai_output_log_file": str(crewai_output_log_file or ""),
+        "prompt_kit_version": PROMPT_KIT_VERSION,
+        "prompt_kit": prompt_kit_payload(),
         "toolkit": toolkit_payload(opts.get("installed_models")),
+        "input_contract": contract_prompt_context(contract),
+        "input_contract_applied": bool(contract.get("applied")),
+        "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+        "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0),
+        "contract_repair_count": max(0, contract_repairs),
         "toolkit_report": fallback.get("toolkit_report", {}),
     }
 

@@ -30,7 +30,7 @@ Required JSON:
   "task_type": "lego",
   "song_model": "acestep-v15-xl-base",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
   "use_cot_metas": true,

@@ -39,7 +39,7 @@ LORA_EXPORTS_DIR = DATA_DIR / "loras"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
-APP_UI_VERSION = "acejam-docs-best-4b-2026-04-25"
+APP_UI_VERSION = "acejam-v0.5-2026-04-26"
 PAYLOAD_CONTRACT_VERSION = "2026-04-25"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
@@ -117,6 +117,23 @@ from songwriting_toolkit import (
     parse_duration_seconds,
     split_terms,
     toolkit_payload,
+)
+from prompt_kit import (
+    PROMPT_KIT_METADATA_FIELDS,
+    PROMPT_KIT_VERSION,
+    infer_genre_modules,
+    is_sparse_lyric_genre,
+    kit_metadata_defaults,
+    prompt_kit_payload,
+    prompt_kit_system_block,
+    section_map_for,
+)
+from user_album_contract import (
+    USER_ALBUM_CONTRACT_VERSION,
+    apply_user_album_contract_to_tracks,
+    contract_prompt_context,
+    extract_user_album_contract,
+    tracks_from_user_album_contract,
 )
 from studio_core import (
     ACE_STEP_LM_MODELS,
@@ -451,11 +468,13 @@ def _prompt_assistant_system_prompt(mode: str) -> str:
     text = _prompt_assistant_path(mode).read_text(encoding="utf-8")
     match = re.search(r"## System Prompt\s*```(?:text)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        base_prompt = match.group(1).strip()
+        return f"{base_prompt}\n\n{prompt_kit_system_block(mode)}"
     match = re.search(r"```(?:text)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
     if match:
-        return match.group(1).strip()
-    return text.strip()
+        base_prompt = match.group(1).strip()
+        return f"{base_prompt}\n\n{prompt_kit_system_block(mode)}"
+    return f"{text.strip()}\n\n{prompt_kit_system_block(mode)}"
 
 
 def _balanced_json_object(raw: str, start: int = 0) -> dict[str, Any]:
@@ -558,6 +577,70 @@ def _prompt_mode_default_model(mode: str) -> str:
     return "acestep-v15-xl-base" if mode in {"extract", "lego", "complete"} else "acestep-v15-xl-sft"
 
 
+PROMPT_KIT_POLISHED_MODES = {"simple", "custom", "song", "album", "news"}
+PROMPT_KIT_SOURCE_AUDIO_MODES = {"cover", "repaint", "extract", "lego", "complete"}
+
+
+def _prompt_payload_kit_hint(payload: dict[str, Any]) -> str:
+    parts = [
+        payload.get("genre_profile"),
+        payload.get("genre_modules"),
+        payload.get("tags"),
+        payload.get("caption"),
+        payload.get("description"),
+        payload.get("concept"),
+        payload.get("title"),
+    ]
+    return " ".join(json.dumps(part, ensure_ascii=True) if isinstance(part, (dict, list)) else str(part or "") for part in parts)
+
+
+def _apply_prompt_kit_metadata(mode: str, payload: dict[str, Any]) -> None:
+    language = (
+        payload.get("target_language")
+        or payload.get("vocal_language")
+        or payload.get("language")
+        or "en"
+    )
+    duration = payload.get("duration") or payload.get("track_duration") or 180
+    hint = _prompt_payload_kit_hint(payload)
+    instrumental = parse_bool(payload.get("instrumental"), False) or is_sparse_lyric_genre(hint)
+    defaults = kit_metadata_defaults(
+        mode=_prompt_mode_task_type(mode),
+        language=language,
+        genre_hint=hint,
+        duration=parse_duration_seconds(duration, 180),
+        instrumental=instrumental,
+    )
+    defaults["concept_summary"] = str(payload.get("concept_summary") or payload.get("concept") or payload.get("description") or payload.get("title") or "")[:300]
+    defaults["ace_caption"] = str(payload.get("ace_caption") or payload.get("caption") or payload.get("tags") or "")
+    defaults["lyrics"] = str(payload.get("lyrics") or "")
+    defaults["metadata"] = {
+        "duration": parse_duration_seconds(duration, 180),
+        "bpm": payload.get("bpm"),
+        "key_scale": payload.get("key_scale"),
+        "time_signature": payload.get("time_signature"),
+        "vocal_language": payload.get("vocal_language") or language,
+    }
+    defaults["generation_settings"] = {
+        key: payload.get(key)
+        for key in ["song_model", "seed", "inference_steps", "guidance_scale", "shift", "infer_method", "sampler_mode", "audio_format"]
+        if payload.get(key) not in (None, "")
+    }
+    for field in PROMPT_KIT_METADATA_FIELDS:
+        if field == "copy_paste_block":
+            payload.setdefault(field, "")
+        elif field in defaults:
+            payload.setdefault(field, defaults[field])
+    payload.setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
+    payload.setdefault("vocal_language", defaults.get("vocal_language") or language)
+    payload.setdefault("section_map", section_map_for(parse_duration_seconds(duration, 180), hint, instrumental=instrumental))
+    payload.setdefault("genre_modules", [module.get("slug") for module in infer_genre_modules(hint, max_modules=2)])
+    if mode in PROMPT_KIT_SOURCE_AUDIO_MODES:
+        payload["source_audio_mode"] = payload.get("source_audio_mode") or "source_locked"
+    if mode in PROMPT_KIT_POLISHED_MODES:
+        payload["use_format"] = False
+
+
 def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     normalized = dict(payload or {})
     warnings: list[str] = []
@@ -587,6 +670,31 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     if mode == "album":
         normalized.setdefault("song_model_strategy", "all_models_album")
         normalized.setdefault("final_song_model", "all_models_album")
+        contract_source = "\n\n".join(
+            part for part in [
+                str(body.get("user_prompt") or body.get("prompt") or ""),
+                str(normalized.get("album_title") or normalized.get("album_name") or ""),
+                str(normalized.get("concept") or ""),
+                json.dumps(normalized.get("tracks") or [], ensure_ascii=True, default=str)[:6000],
+            ]
+            if part
+        )
+        user_album_contract = normalized.get("user_album_contract")
+        if not isinstance(user_album_contract, dict):
+            user_album_contract = extract_user_album_contract(
+                contract_source,
+                int(normalized.get("num_tracks") or body.get("num_tracks") or 0) or None,
+                str(normalized.get("language") or normalized.get("target_language") or body.get("language") or "en"),
+                normalized,
+            )
+        if user_album_contract.get("applied"):
+            normalized["user_album_contract"] = user_album_contract
+            normalized["input_contract"] = contract_prompt_context(user_album_contract)
+            normalized["input_contract_applied"] = True
+            normalized["input_contract_version"] = USER_ALBUM_CONTRACT_VERSION
+            normalized["blocked_unsafe_count"] = int(user_album_contract.get("blocked_unsafe_count") or 0)
+            if user_album_contract.get("album_title"):
+                normalized["album_title"] = user_album_contract.get("album_title")
         album_defaults = docs_best_model_settings(ALBUM_FINAL_MODEL)
         normalized["audio_format"] = album_defaults["audio_format"]
         normalized["inference_steps"] = album_defaults["inference_steps"]
@@ -600,9 +708,13 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized.setdefault("track_variants", 1)
         normalized.setdefault("save_to_library", True)
         tracks = normalized.get("tracks")
-        if not isinstance(tracks, list):
-            normalized["tracks"] = []
-            warnings.append("Album prompt did not return tracks; use Plan Album or ask again with more detail.")
+        if not isinstance(tracks, list) or not tracks:
+            contract_tracks = tracks_from_user_album_contract(user_album_contract)
+            normalized["tracks"] = contract_tracks if contract_tracks else []
+            if not contract_tracks:
+                warnings.append("Album prompt did not return tracks; use Plan Album or ask again with more detail.")
+        else:
+            normalized["tracks"] = apply_user_album_contract_to_tracks(tracks, user_album_contract)
         for track in normalized.get("tracks") or []:
             if isinstance(track, dict):
                 track.setdefault(
@@ -616,7 +728,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
                 )
                 track["ace_lm_model"] = normalized["ace_lm_model"]
                 track["thinking"] = DOCS_BEST_LM_DEFAULTS["thinking"]
-                track["use_format"] = DOCS_BEST_LM_DEFAULTS["use_format"]
+                track["use_format"] = False
                 track["use_cot_lyrics"] = DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]
                 track["audio_format"] = normalized["audio_format"]
                 track["inference_steps"] = normalized["inference_steps"]
@@ -625,6 +737,10 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
                 track["sampler_mode"] = normalized["sampler_mode"]
                 track["auto_score"] = False
                 track["auto_lrc"] = False
+                track.setdefault("language", str(normalized.get("language") or normalized.get("target_language") or "en"))
+                _apply_prompt_kit_metadata("album", track)
+        _apply_prompt_kit_metadata("album", normalized)
+        normalized["use_format"] = False
         return normalized, warnings
 
     if mode == "trainer":
@@ -639,6 +755,8 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             normalized["generation_reference_defaults"].setdefault("thinking", DOCS_BEST_LM_DEFAULTS["thinking"])
             normalized["generation_reference_defaults"].setdefault("use_format", DOCS_BEST_LM_DEFAULTS["use_format"])
             normalized["generation_reference_defaults"].setdefault("use_cot_lyrics", DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"])
+            normalized["generation_reference_defaults"].setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
+        _apply_prompt_kit_metadata("trainer", normalized)
         return normalized, warnings
 
     normalized.setdefault("task_type", _prompt_mode_task_type(mode))
@@ -689,6 +807,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     for field, value in DOCS_BEST_LM_DEFAULTS.items():
         if field != "ace_lm_model":
             normalized[field] = value
+    _apply_prompt_kit_metadata(mode, normalized)
     normalized.setdefault("save_to_library", True)
     if mode in {"cover", "repaint", "extract", "lego", "complete"} and not (
         normalized.get("src_audio_id") or normalized.get("src_result_id") or normalized.get("audio_code_string")
@@ -2139,10 +2258,28 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
     installed_models = sorted(_installed_acestep_models())
     default_model = ALBUM_FINAL_MODEL if strategy != "selected" else (song_model or ALBUM_FINAL_MODEL)
     model_defaults = docs_best_model_settings(default_model)
+    contract_source = "\n\n".join(
+        part for part in [
+            str(payload.get("user_prompt") or payload.get("prompt") or ""),
+            str(payload.get("album_title") or payload.get("album_name") or ""),
+            str(payload.get("concept") or ""),
+            json.dumps(payload.get("tracks") or payload.get("planned_tracks") or [], ensure_ascii=True, default=str)[:6000],
+        ]
+        if part
+    )
+    user_album_contract = payload.get("user_album_contract")
+    if not isinstance(user_album_contract, dict):
+        user_album_contract = extract_user_album_contract(
+            contract_source,
+            int(payload.get("num_tracks") or 0) or None,
+            str(payload.get("language") or payload.get("target_language") or "en"),
+            payload,
+        )
     return {
         "requested_song_model": requested_song_model,
         "song_model_strategy": strategy,
         "final_song_model": ALBUM_FINAL_MODEL,
+        "prompt_kit_version": str(payload.get("prompt_kit_version") or PROMPT_KIT_VERSION),
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
@@ -2171,7 +2308,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "sampler_mode": str(payload.get("sampler_mode") or model_defaults["sampler_mode"]),
         "audio_format": str(payload.get("audio_format") or model_defaults["audio_format"]),
         "thinking": parse_bool(payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"]),
-        "use_format": parse_bool(payload.get("use_format"), DOCS_BEST_LM_DEFAULTS["use_format"]),
+        "use_format": parse_bool(payload.get("use_format"), False),
         "lm_temperature": clamp_float(payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
         "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"], 0.0, 10.0),
         "lm_top_k": clamp_int(payload.get("lm_top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"], 0, 200),
@@ -2187,6 +2324,11 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "save_to_library": parse_bool(payload.get("save_to_library"), True),
         "installed_models": installed_models,
         "global_caption": str(payload.get("global_caption") or ""),
+        "album_title": str(payload.get("album_title") or user_album_contract.get("album_title") or ""),
+        "user_album_contract": user_album_contract,
+        "input_contract_applied": bool(user_album_contract.get("applied")),
+        "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+        "blocked_unsafe_count": int(user_album_contract.get("blocked_unsafe_count") or 0),
     }
 
 
@@ -4083,6 +4225,8 @@ def config() -> str:
             "ui_hash": _app_ui_hash(),
             "backend_hash": _backend_code_hash(),
             "payload_contract_version": PAYLOAD_CONTRACT_VERSION,
+            "prompt_kit_version": PROMPT_KIT_VERSION,
+            "prompt_kit": prompt_kit_payload(),
             "active_song_model": ACTIVE_ACE_STEP_MODEL,
             "default_song_model": _default_acestep_checkpoint(),
             "default_planner_lm_provider": "ollama",
@@ -4215,6 +4359,14 @@ def generate_album(
                 planner_provider=planner_lm_provider,
                 embedding_model=embedding_model,
                 embedding_provider=embedding_lm_provider,
+                planning_engine=str(result.get("planning_engine") or ""),
+                crewai_used=bool(result.get("crewai_used")),
+                toolbelt_fallback=bool(result.get("toolbelt_fallback")),
+                input_contract=result.get("input_contract") or contract_prompt_context(album_options.get("user_album_contract")),
+                input_contract_applied=bool(result.get("input_contract_applied") or album_options.get("input_contract_applied")),
+                input_contract_version=str(result.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION),
+                blocked_unsafe_count=int(result.get("blocked_unsafe_count") or album_options.get("blocked_unsafe_count") or 0),
+                contract_repair_count=int(result.get("contract_repair_count") or 0),
             )
 
         if not result.get("success", True) or not tracks or "error" in tracks[0]:
@@ -5186,6 +5338,8 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
         "album embeddings",
     )
     options = _album_options_from_payload({**body, "ollama_model": planner_model, "planner_model": planner_model}, song_model=song_model)
+    if not concept and isinstance(options.get("user_album_contract"), dict):
+        concept = str(options["user_album_contract"].get("concept") or "")
     from album_crew import plan_album as _plan_album
 
     result = _plan_album(
@@ -5218,6 +5372,20 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     toolbelt_only = parse_bool(body.get("toolbelt_only"), False)
     requested_engine = "deterministic toolbelt" if toolbelt_only else "CrewAI"
     crewai_output_log_file = str(body.get("crewai_output_log_file") or "")
+    user_album_contract = extract_user_album_contract(
+        "\n\n".join(
+            part for part in [
+                str(body.get("user_prompt") or body.get("prompt") or ""),
+                str(body.get("album_title") or body.get("album_name") or ""),
+                str(body.get("concept") or ""),
+                json.dumps(body.get("tracks") or [], ensure_ascii=True, default=str)[:6000],
+            ]
+            if part
+        ),
+        int(body.get("num_tracks") or 0) or None,
+        str(body.get("language") or "en"),
+        body,
+    )
     if not toolbelt_only and not crewai_output_log_file:
         from album_crew import crewai_output_log_path as _crewai_output_log_path
 
@@ -5226,9 +5394,16 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     start_logs = [
         f"Album plan job {job_id} started.",
         f"Planning engine requested: {requested_engine}.",
+        f"Prompt Kit: {PROMPT_KIT_VERSION}.",
         f"Planner: {provider_label(planner_provider)} ({planner_model})",
         f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
     ]
+    if user_album_contract.get("applied"):
+        start_logs.append(
+            "Input Contract: applied; "
+            f"locked_tracks={len(user_album_contract.get('tracks') or [])}; "
+            f"blocked_unsafe={int(user_album_contract.get('blocked_unsafe_count') or 0)}"
+        )
     if crewai_output_log_file:
         start_logs.append(f"CrewAI output log file: {crewai_output_log_file}")
     _set_album_job(
@@ -5243,6 +5418,11 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
         crewai_output_log_file=crewai_output_log_file,
+        prompt_kit_version=PROMPT_KIT_VERSION,
+        input_contract=contract_prompt_context(user_album_contract),
+        input_contract_applied=bool(user_album_contract.get("applied")),
+        input_contract_version=USER_ALBUM_CONTRACT_VERSION,
+        blocked_unsafe_count=int(user_album_contract.get("blocked_unsafe_count") or 0),
         memory_enabled=not toolbelt_only,
         started_at=datetime.now(timezone.utc).isoformat(),
         finished_at=None,
@@ -5283,6 +5463,12 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             crewai_used=bool(result.get("crewai_used")),
             toolbelt_fallback=bool(result.get("toolbelt_fallback")),
             crewai_output_log_file=str(result.get("crewai_output_log_file") or crewai_output_log_file),
+            prompt_kit_version=str(result.get("prompt_kit_version") or PROMPT_KIT_VERSION),
+            input_contract=result.get("input_contract") or contract_prompt_context(user_album_contract),
+            input_contract_applied=bool(result.get("input_contract_applied") or user_album_contract.get("applied")),
+            input_contract_version=str(result.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION),
+            blocked_unsafe_count=int(result.get("blocked_unsafe_count") or user_album_contract.get("blocked_unsafe_count") or 0),
+            contract_repair_count=int(result.get("contract_repair_count") or 0),
             expected_count=len(tracks),
             planned_count=len(tracks),
             finished_at=datetime.now(timezone.utc).isoformat(),
@@ -5297,6 +5483,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             errors=[str(exc)],
             logs=[traceback.format_exc()],
             crewai_output_log_file=crewai_output_log_file,
+            prompt_kit_version=PROMPT_KIT_VERSION,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
     finally:
@@ -5817,6 +6004,7 @@ async def api_prompt_assistant_run(request: Request):
             {
                 "success": True,
                 "mode": mode,
+                "prompt_kit_version": PROMPT_KIT_VERSION,
                 "prompt_file": PROMPT_ASSISTANT_MODES[mode]["file"],
                 "payload": _jsonable(payload),
                 "paste_blocks": paste_blocks,

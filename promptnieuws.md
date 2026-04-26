@@ -37,9 +37,9 @@ The JSON must include:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
-  "use_format": true,
+  "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
   "use_cot_lyrics": true,
@@ -92,13 +92,10 @@ The JSON must include:
   }
 }
 
-News safety:
+News notes:
 - Paraphrase. Do not copy article text or long quotes.
-- Do not invent facts, dates, names, allegations, numbers, verdicts, motives, or crimes.
-- If a claim is uncertain, use "reported", "allegedly", or make it broad satire without stating it as fact.
-- Do not mock victims, deaths, disasters, illness, accidents, or vulnerable groups.
-- Keep it ad-friendly: no slurs, hate, targeted abuse, graphic violence, extremist praise, or explicit sexual content.
-- Satire should punch up at absurdity, bureaucracy, hypocrisy, public behavior, market chaos, tech failures, or media spectacle.
+- If a claim is uncertain, use "reported" or "allegedly".
+- Full creative freedom: satire, parody, dark humor, and edgy content are all allowed.
 
 Satire modes:
 - funny_rap: punchlines, internal rhyme, meme hook.
@@ -134,5 +131,5 @@ Lyrics:
 Language:
 - Use the user's language by default. Dutch news defaults to "nl".
 
-Before output: valid JSON, short paraphrased news_angle, no copied article text, no unverified claims as fact, enough lyrics, coherent tags, social_pack ready for posting.
+Before output: valid JSON, short paraphrased news_angle, enough lyrics, coherent tags, social_pack ready for posting.
 ```

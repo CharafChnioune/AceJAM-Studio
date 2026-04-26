@@ -3028,7 +3028,19 @@
       const panel = $("album-toolkit");
       const tools = (toolkit.craft_tools || []).map((tool) => `<span class="badge"><strong>${esc(tool.name)}</strong>${esc(tool.summary)}</span>`).join("");
       const strategies = Object.entries(toolkit.model_strategies || {}).map(([key, value]) => `<span class="badge"><strong>${esc(value.label || key)}</strong>${esc(value.summary || "")}</span>`).join("");
+      const kitVersion = toolkit.prompt_kit_version || toolkit.prompt_kit?.version || state.config?.prompt_kit_version || "";
+      const languageCount = Object.keys(toolkit.language_presets || {}).length;
+      const genreCount = Object.keys(toolkit.genre_modules || {}).length;
+      const validationCount = (toolkit.validation_checklist || []).length;
+      const troubleshootingCount = Object.keys(toolkit.troubleshooting_matrix || {}).length;
       panel.innerHTML = `
+        <div class="model-badges">
+          <span class="badge ok"><strong>Prompt Kit</strong>${esc(kitVersion)}</span>
+          <span class="badge"><strong>Languages</strong>${esc(languageCount)}</span>
+          <span class="badge"><strong>Genre modules</strong>${esc(genreCount)}</span>
+          <span class="badge"><strong>Validation</strong>${esc(validationCount)} checks</span>
+          <span class="badge"><strong>Troubleshooting</strong>${esc(troubleshootingCount)} hints</span>
+        </div>
         <div class="model-badges">${tools}</div>
         <div class="model-badges">${strategies}</div>
         <div class="control-note">${esc(toolkit.tag_policy || "")}</div>
@@ -5185,9 +5197,15 @@
         ? "CrewAI used"
         : (result.toolbelt_fallback || job.toolbelt_fallback ? "toolbelt fallback" : (engineText.includes("toolbelt") ? "toolbelt used" : "pending"));
       const crewaiLogFile = job.crewai_output_log_file || result.crewai_output_log_file || "";
+      const promptKitVersion = job.prompt_kit_version || result.prompt_kit_version || state.config?.prompt_kit_version || state.config?.songwriting_toolkit?.prompt_kit_version || "";
+      const contractApplied = Boolean(job.input_contract_applied || result.input_contract_applied);
+      const contractRepairs = Number(job.contract_repair_count || result.contract_repair_count || 0);
+      const blockedUnsafe = Number(job.blocked_unsafe_count || result.blocked_unsafe_count || 0);
       const parts = [
         `Job ${job.id || ""}: ${job.state || "unknown"} · ${job.status || ""} · ${Math.round(Number(job.progress || 0))}%`,
         `Engine: ${engine} · ${engineStatus}`,
+        promptKitVersion ? `Prompt Kit: ${promptKitVersion}` : "",
+        contractApplied ? `Input Contract: applied · Repairs: ${contractRepairs} · Blocked unsafe items: ${blockedUnsafe}` : "",
         `Planner: ${job.planner_provider || "local"} / ${job.planner_model || "unknown"} · Embedding: ${job.embedding_provider || "local"} / ${job.embedding_model || "unknown"} · Memory: ${job.memory_enabled ? "on" : "off"}`,
         crewaiLogFile ? `CrewAI log file: ${crewaiLogFile}` : "",
         job.current_model_album ? `Model album: ${job.current_model_album}` : "",

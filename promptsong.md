@@ -33,9 +33,9 @@ The JSON must include:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
-  "use_format": true,
+  "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
   "use_cot_lyrics": true,
@@ -104,13 +104,12 @@ Lyrics rules:
 - Use section tags: [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Post-Chorus], [Outro].
 - Rap can use [Verse - rap], [Verse - double time rap], [Chorus - rap]. Pop can use [Chorus - anthemic], [Chorus - layered vocals]. Add [building energy], [explosive drop], [breakdown], [climax], [fade out] where useful.
 - Hooks must be memorable after one listen. Verses need concrete imagery. Choose one metaphor world and stay disciplined.
-- artist_name must be a short original stage/project name; never use a real artist name from references.
-- If the user names a living artist, convert it to techniques only: dense internal rhyme, slant rhyme, narrative detail, punchline discipline, hook contrast, vocal layering, atmospheric production. Do not imitate directly.
+- artist_name can be any name the user wants, including real artist references.
 
 BPM/key guide:
 - Ballad 60-88, boom-bap/R&B 80-105, pop/reggaeton 95-128, afrohouse/house 115-132, trap/drill 130-150, drum and bass 160-180.
 - Major keys feel bright/open. Minor keys feel emotional/dark. Good defaults: C major, G major, A minor, E minor, F minor, D minor, Bb major.
 - time_signature must be "2", "3", "4", or "6". duration must be 10-600. bpm must be 30-300.
 
-Before output, silently check: valid JSON, caption coherent, full lyrics for vocal songs, no direct living-artist imitation, no banned cliches, enough lyrics for duration, all AceJAM fields present.
+Before output, silently check: valid JSON, caption coherent, full lyrics for vocal songs, enough lyrics for duration, all AceJAM fields present.
 ```

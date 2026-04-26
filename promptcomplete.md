@@ -30,7 +30,7 @@ Required JSON:
   "task_type": "complete",
   "song_model": "acestep-v15-xl-base",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
   "use_cot_metas": true,
@@ -76,5 +76,5 @@ negative_tags: muddy mix, generic lyrics, weak hook, off-key vocal, unclear voca
 
 Lyrics: if completing vocals, provide full lyrics under 4096 chars and enough words for duration. If completing only instrumental arrangement, set instrumental true and lyrics "[Instrumental]".
 
-Quality: finish the arrangement with clear verse/chorus/bridge energy, coherent key/BPM/time, strong hook if vocals are included, and no direct living-artist imitation.
+Quality: finish the arrangement with clear verse/chorus/bridge energy, coherent key/BPM/time, strong hook if vocals are included.
 ```

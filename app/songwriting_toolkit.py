@@ -6,7 +6,30 @@ import zlib
 from collections import Counter
 from typing import Any
 
+from prompt_kit import (
+    ADVANCED_GENERATION_ADVISORY,
+    GENRE_MODULES,
+    LANGUAGE_PRESETS,
+    PROMPT_KIT_METADATA_FIELDS,
+    PROMPT_KIT_VERSION,
+    TROUBLESHOOTING_MATRIX,
+    VALIDATION_CHECKLIST,
+    infer_genre_modules,
+    is_sparse_lyric_genre,
+    kit_metadata_defaults,
+    language_preset,
+    negative_control_for,
+    prompt_kit_payload,
+    section_map_for,
+)
 from studio_core import docs_best_model_settings
+from user_album_contract import (
+    USER_ALBUM_CONTRACT_VERSION,
+    apply_user_album_contract_to_tracks,
+    apply_user_album_contract_to_track,
+    extract_user_album_contract,
+    tracks_from_user_album_contract,
+)
 
 
 OFFICIAL_SOURCES = [
@@ -92,9 +115,10 @@ DENSITY_PRESETS = {
 TAG_TAXONOMY: dict[str, list[str]] = {
     "genre_style": [
         "pop", "hip-hop", "rap", "trap", "drill", "melodic rap", "R&B", "soul", "afrobeat",
-        "afrohouse", "dancehall", "reggaeton", "garage", "house", "tech house", "EDM", "synthwave",
-        "indie pop", "indie folk", "rock", "alt rock", "punk", "metal", "jazz", "lo-fi hip hop",
-        "classical", "cinematic", "orchestral", "ambient", "gospel", "country", "latin pop",
+        "afrobeats", "amapiano", "afrohouse", "dancehall", "reggaeton", "garage", "house", "tech house",
+        "techno", "trance", "drum and bass", "dubstep", "EDM", "synthwave", "indie pop", "indie folk",
+        "rock", "alt rock", "punk", "punk rock", "metal", "jazz", "lo-fi hip hop",
+        "classical", "cinematic", "orchestral", "ambient", "gospel", "country", "latin pop", "K-pop", "J-pop",
     ],
     "mood_atmosphere": [
         "melancholic", "uplifting", "euphoric", "dark", "dreamy", "nostalgic", "intimate",
@@ -143,14 +167,14 @@ TAG_TAXONOMY: dict[str, list[str]] = {
 }
 
 LYRIC_META_TAGS: dict[str, list[str]] = {
-    "basic_structure": ["[Intro]", "[Verse]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Bridge]", "[Outro]"],
-    "dynamic_sections": ["[Build]", "[Drop]", "[Breakdown]", "[Fade Out]", "[Silence]"],
-    "instrumental_sections": ["[Instrumental]", "[Guitar Solo]", "[Piano Interlude]", "[Drum Break]"],
+    "basic_structure": ["[Intro]", "[Verse]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Post-Chorus]", "[Bridge]", "[Final Chorus]", "[Outro]"],
+    "dynamic_sections": ["[Build]", "[Build-Up]", "[Drop]", "[Final Drop]", "[Breakdown]", "[Climax]", "[Fade Out]", "[Silence]"],
+    "instrumental_sections": ["[Instrumental]", "[Instrumental Break]", "[Synth Solo]", "[Guitar Solo]", "[Piano Interlude]", "[Brass Break]", "[Drum Break]"],
     "performance_modifiers": [
         "[Verse - rap]", "[Chorus - rap]", "[Verse - melodic rap]", "[Chorus - anthemic]",
         "[Bridge - whispered]", "[Chorus - layered vocals]", "[Intro - dreamy]",
     ],
-    "energy_markers": ["[building energy]", "[explosive drop]", "[calm]", "[intense]"],
+    "energy_markers": ["[building energy]", "[explosive drop]", "[calm]", "[intense]", "[Final chord fades out]"],
 }
 
 CRAFT_TOOLS: list[dict[str, str]] = [
@@ -177,6 +201,13 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "MixMasterTool", "summary": "Recommends output, score/LRC/audio-code flags, and mix/master safety checks."},
     {"name": "HitScoreTool", "summary": "Scores hook, lyric sufficiency, uniqueness, and production readiness."},
     {"name": "TrackRepairTool", "summary": "Repairs missing lyrics, weak hooks, tag conflicts, and under-specified generation fields."},
+    {"name": "LanguagePresetTool", "summary": "Returns the selected language/script policy and romanization guidance."},
+    {"name": "GenreModuleTool", "summary": "Routes prompts through the closest prompt-kit genre module or fusion."},
+    {"name": "SectionMapTool", "summary": "Builds duration-realistic section maps for vocal or instrumental workflows."},
+    {"name": "IterationPlanTool", "summary": "Plans listen-adjust-regenerate passes for human-centered ACE-Step iteration."},
+    {"name": "TroubleshootingTool", "summary": "Maps common ACE-Step failures to compact repair instructions."},
+    {"name": "ValidationChecklistTool", "summary": "Returns prompt-kit quality gates for captions, lyrics, metadata, safety, and runtime support."},
+    {"name": "NegativeControlTool", "summary": "Builds genre-aware negative control phrases for generation payloads."},
 ]
 
 BANNED_CLICHES = [
@@ -358,16 +389,15 @@ def _subject_terms(text: str) -> list[str]:
 
 
 def sanitize_artist_references(text: str) -> tuple[str, list[str]]:
-    cleaned = str(text or "")
+    raw = str(text or "")
+    cleaned = raw
     notes: list[str] = []
     for artist, technique in ARTIST_TECHNIQUES.items():
-        pattern = re.compile(rf"(?i)(?:in the style of|like|zoals|als|a la|ala)?\s*\b{re.escape(artist)}\b")
-        if not pattern.search(cleaned):
-            continue
-        cleaned = pattern.sub(f" {technique} ", cleaned)
-        notes.append(f"Artist reference '{artist}' converted to technique brief: {technique}.")
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-    return cleaned, notes
+        pattern = re.compile(rf"(?i)\b{re.escape(artist)}\b")
+        if pattern.search(cleaned):
+            cleaned = pattern.sub(f"technique brief: {technique}", cleaned)
+            notes.append(f"Converted artist reference '{artist}' into technique brief: {technique}.")
+    return cleaned.strip(), notes
 
 
 ARTIST_NAME_SUFFIXES = [
@@ -431,7 +461,14 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
     dur = int(parse_duration_seconds(duration, 120))
     preset = DENSITY_PRESETS.get(density, DENSITY_PRESETS["balanced"])
     rap = bool(re.search(r"\b(rap|hip.?hop|trap|drill|grime)\b", genre_hint or "", re.I))
-    sections = section_sequence(dur, structure_preset, rap=rap)
+    sparse_genre = bool(is_sparse_lyric_genre(genre_hint) and not rap)
+    if sparse_genre:
+        section_map = section_map_for(dur, genre_hint, instrumental=True)
+        sections = [str(item.get("tag") or "").strip("[]") for item in section_map if item.get("tag")]
+        density = "sparse"
+        preset = DENSITY_PRESETS["sparse"]
+    else:
+        sections = section_sequence(dur, structure_preset, rap=rap)
     bands = [
         (30, 45, 58, 70),
         (60, 90, 110, 130),
@@ -446,10 +483,25 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         if dur <= limit:
             min_words, base_words, max_words = low, base, high
             break
+    if sparse_genre:
+        sparse_bands = [
+            (60, 0, 16, 40),
+            (120, 8, 32, 70),
+            (210, 16, 54, 110),
+            (300, 24, 78, 150),
+            (600, 32, 96, 180),
+        ]
+        for limit, low, base, high in sparse_bands:
+            if dur <= limit:
+                min_words, base_words, max_words = low, base, high
+                break
     density_factor = {"sparse": 0.9, "balanced": 1.0, "dense": 1.1, "rap_dense": 1.16}.get(density, 1.0)
     target_words = max(min_words, min(max_words, int(base_words * density_factor)))
     target_lines = max(len(sections) * 3, int(target_words / (4.6 if rap else 5.4) * float(preset["line_factor"])))
     min_lines = max(len(sections) * 2, int(target_lines * 0.72))
+    if sparse_genre:
+        target_lines = max(len(sections), min(len(sections) * 3, target_lines))
+        min_lines = max(0 if min_words == 0 else len(sections), int(target_lines * 0.5))
     return {
         "duration": dur,
         "density": density,
@@ -465,6 +517,8 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         "duration_coverage_note": (
             "At very long durations ACE-Step's lyric cap limits continuous vocals; use enough sections plus intentional instrumental breaks."
             if dur > 360
+            else "Sparse or instrumental genres should cover the duration with section tags, builds, drops, and short motifs instead of forced full verses."
+            if sparse_genre
             else "Lyrics should cover the full selected duration with verses, hooks, bridge, and final chorus."
         ),
         "note": "ACE-Step lyrics are the temporal script; keep sonic tags in caption and use lyric/performance tags inside lyrics.",
@@ -871,7 +925,27 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
         ),
         2,
     )
+    troubleshooting_hints: list[str] = []
+    if conflicts:
+        troubleshooting_hints.append(TROUBLESHOOTING_MATRIX["muddy_mix"])
+    if missing_sections:
+        troubleshooting_hints.append(TROUBLESHOOTING_MATRIX["overlong_lines"])
+    if cliches or stats["repeated_lines"]:
+        troubleshooting_hints.append(TROUBLESHOOTING_MATRIX["too_generic"])
+    if "caption_metadata_leak" in str(track.get("tags") or "").lower():
+        troubleshooting_hints.append(TROUBLESHOOTING_MATRIX["caption_metadata_leak"])
+    quality_checks = {
+        "caption_lyrics_metadata_separated": "pass" if not conflicts else "review",
+        "target_language_script_respected": "pending",
+        "no_placeholders": "pass" if "placeholder" not in lowered else "fail",
+        "hook_has_title_or_emotional_promise": "pending",
+        "section_map_matches_duration": "pass" if section_coverage >= 0.72 else "review",
+        "genre_module_matches_caption": "pending",
+        "negative_control_present": "pass",
+        "runtime_fields_supported_or_advisory": "pass",
+    }
     return {
+        "prompt_kit_version": PROMPT_KIT_VERSION,
         "length_plan": plan,
         "lyric_stats": stats,
         "length_ok": length_ok and char_ok and section_coverage >= 0.72,
@@ -884,6 +958,9 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
         "cliches": cliches,
         "repeated_lines": stats["repeated_lines"],
         "conflicts": conflicts,
+        "quality_checks": quality_checks,
+        "negative_control": negative_control_for(track.get("tags") or options.get("concept") or "", instrumental=bool(track.get("instrumental"))),
+        "troubleshooting_hints": troubleshooting_hints,
         "hit_gate_passed": bool(length_ok and char_ok and section_coverage >= 0.72 and not cliches and len(stats["repeated_lines"]) <= 2),
     }
 
@@ -891,13 +968,26 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
 def production_team_report(track: dict[str, Any], options: dict[str, Any], model_info: dict[str, Any]) -> dict[str, Any]:
     tags = split_terms(track.get("tags") or track.get("caption") or "")
     duration = parse_duration_seconds(track.get("duration") or options.get("track_duration") or 120, 120)
+    genre_hint = " ".join([str(track.get("tags") or ""), str(track.get("description") or ""), str(options.get("concept") or "")])
+    modules = infer_genre_modules(genre_hint, max_modules=2)
+    language = str(track.get("language") or options.get("language") or "en")
+    preset = language_preset(language)
+    instrumental = bool(track.get("instrumental")) or is_sparse_lyric_genre(genre_hint)
     lyric_plan = lyric_length_plan(
         duration,
         str(options.get("lyric_density") or "dense"),
         str(options.get("structure_preset") or "auto"),
-        str(track.get("tags") or options.get("sanitized_concept") or options.get("concept") or ""),
+        genre_hint,
     )
     return {
+        "prompt_kit": {
+            "version": PROMPT_KIT_VERSION,
+            "language_preset": preset,
+            "genre_modules": modules,
+            "section_map": section_map_for(duration, genre_hint, instrumental=instrumental),
+            "validation_checklist": VALIDATION_CHECKLIST,
+            "advanced_generation_settings": ADVANCED_GENERATION_ADVISORY,
+        },
         "final_model_policy": {
             "model": ALBUM_FINAL_MODEL if str(options.get("song_model_strategy") or "") == "xl_sft_final" else "per-model portfolio",
             "portfolio": album_model_portfolio(options.get("installed_models")),
@@ -909,9 +999,10 @@ def production_team_report(track: dict[str, Any], options: dict[str, Any], model
             "quality_target": options.get("quality_target") or "hit",
         },
         "artist_performer": {
-            "vocal_language": track.get("language") or options.get("language") or "en",
+            "vocal_language": language,
+            "language_notes": preset["notes"],
             "performance_tags": [tag for tag in tags if "vocal" in tag.lower() or "rap" in tag.lower()][:6],
-            "delivery_note": "Original persona, clear cadence, hook contrast, no direct artist imitation.",
+            "delivery_note": "Original persona, clear cadence, hook contrast.",
         },
         "songwriter": {
             "target_sections": lyric_plan["sections"],
@@ -955,6 +1046,11 @@ def production_team_report(track: dict[str, Any], options: dict[str, Any], model
 
 def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) -> dict[str, Any]:
     concept = str(options.get("sanitized_concept") or options.get("concept") or "")
+    contract = options.get("user_album_contract")
+    if not isinstance(contract, dict):
+        contract = extract_user_album_contract(concept, options.get("num_tracks"), str(options.get("language") or "en"), options)
+    contract_logs: list[str] = []
+    track = apply_user_album_contract_to_track(track, contract, index, contract_logs)
     title = str(track.get("title") or f"Track {index + 1}").strip()[:80]
     duration = parse_duration_seconds(track.get("duration") or track.get("duration_seconds") or options.get("track_duration") or 120, 120)
     language = str(track.get("language") or options.get("language") or "en").strip().lower()
@@ -1052,11 +1148,88 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         "auto_lrc": bool(track.get("auto_lrc", options.get("auto_lrc", False))),
         "return_audio_codes": bool(track.get("return_audio_codes", options.get("return_audio_codes", False))),
         "save_to_library": bool(track.get("save_to_library", options.get("save_to_library", True))),
+        "use_format": bool(track.get("use_format", options.get("use_format", False))),
         "model_advice": model_info,
         "tool_notes": tool_notes,
         "duration_seconds": duration,
     }
+    for field in [
+        "locked_title",
+        "source_title",
+        "producer_credit",
+        "engineer_credit",
+        "artist_role",
+        "style",
+        "vibe",
+        "narrative",
+        "required_phrases",
+        "content_policy_status",
+        "input_contract_applied",
+        "input_contract_version",
+        "contract_repaired_fields",
+        "contract_compliance",
+    ]:
+        if field in track:
+            normalized[field] = track.get(field)
+    if normalized.get("input_contract_applied"):
+        normalized["input_contract_version"] = normalized.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION
+        normalized["tool_notes"] = " ".join(
+            split_terms(
+                [
+                    normalized.get("tool_notes"),
+                    "Input contract applied; locked user-provided title and production brief preserved.",
+                ]
+            )
+        )
+    kit_hint = " ".join([caption, str(normalized.get("description") or ""), concept])
+    instrumental = bool(track.get("instrumental")) or is_sparse_lyric_genre(kit_hint)
+    kit_defaults = kit_metadata_defaults(
+        mode=str(options.get("workflow_mode") or "text2music"),
+        language=language,
+        genre_hint=kit_hint,
+        duration=duration,
+        instrumental=instrumental,
+    )
+    kit_defaults["concept_summary"] = str(track.get("concept_summary") or concept or normalized.get("description") or "")[:300]
+    kit_defaults["ace_caption"] = caption
+    kit_defaults["lyrics"] = lyrics
+    kit_defaults["metadata"] = {
+        "bpm": bpm,
+        "key_scale": key_scale,
+        "time_signature": time_signature,
+        "duration": duration,
+        "vocal_language": language,
+    }
+    kit_defaults["generation_settings"] = {
+        "song_model": song_model,
+        "inference_steps": inference_steps,
+        "guidance_scale": guidance_scale,
+        "shift": shift,
+        "infer_method": normalize_infer_method(track.get("infer_method") or options.get("infer_method") or model_defaults["infer_method"]),
+        "sampler_mode": normalize_sampler_mode(track.get("sampler_mode") or options.get("sampler_mode") or model_defaults["sampler_mode"]),
+    }
+    for field in PROMPT_KIT_METADATA_FIELDS:
+        if field == "copy_paste_block":
+            normalized[field] = str(track.get(field) or "")
+        elif field in {"lyrics", "ace_caption", "metadata", "generation_settings"}:
+            normalized[field] = kit_defaults.get(field)
+        elif field in track and track.get(field) not in (None, ""):
+            normalized[field] = track.get(field)
+        elif field in kit_defaults:
+            normalized[field] = kit_defaults[field]
+    normalized["vocal_language"] = str(track.get("vocal_language") or kit_defaults.get("vocal_language") or language)
+    normalized["instrumental"] = instrumental
     normalized["tool_report"] = quality_report(normalized, options)
+    normalized["quality_checks"] = {
+        **dict(normalized.get("quality_checks") or {}),
+        **dict(normalized["tool_report"].get("quality_checks") or {}),
+    }
+    normalized["troubleshooting_hints"] = list(
+        dict.fromkeys(
+            list(normalized.get("troubleshooting_hints") or [])
+            + list(normalized["tool_report"].get("troubleshooting_hints") or [])
+        )
+    )
     normalized["production_team"] = production_team_report(normalized, options, model_info)
     normalized["tool_report"]["production_team"] = normalized["production_team"]
     return normalized
@@ -1069,27 +1242,45 @@ def normalize_album_tracks(tracks: list[dict[str, Any]], options: dict[str, Any]
 def build_album_plan(concept: str, num_tracks: int, track_duration: float, options: dict[str, Any] | None = None) -> dict[str, Any]:
     opts = dict(options or {})
     sanitized, artist_notes = sanitize_artist_references(concept)
+    contract = opts.get("user_album_contract")
+    if not isinstance(contract, dict):
+        contract = extract_user_album_contract(concept, num_tracks, str(opts.get("language") or "en"), opts)
     opts.update(
         {
             "concept": concept,
             "sanitized_concept": sanitized,
             "num_tracks": num_tracks,
             "track_duration": track_duration,
+            "user_album_contract": contract,
         }
     )
     arcs = album_arc(num_tracks)
     terms = _subject_terms(sanitized) or ["signal", "night", "arrival", "pressure", "crown"]
-    tracks: list[dict[str, Any]] = []
+    contract_tracks = tracks_from_user_album_contract(contract)
+    tracks: list[dict[str, Any]] = [dict(track) for track in contract_tracks[: max(0, int(num_tracks))]]
     for index in range(max(1, int(num_tracks))):
+        if index < len(tracks):
+            tracks[index].setdefault("track_number", index + 1)
+            tracks[index].setdefault(
+                "description",
+                tracks[index].get("narrative") or tracks[index].get("vibe") or arcs[min(index, len(arcs) - 1)],
+            )
+            continue
         core = terms[index % len(terms)].title()
         title = f"{core} Protocol" if index == 0 else f"{core} Season"
         description = f"{arcs[index]}; scene built around {terms[index % len(terms)]} and {terms[(index + 1) % len(terms)]}."
         tracks.append({"track_number": index + 1, "title": title, "description": description})
+    tracks = apply_user_album_contract_to_tracks(tracks[: max(1, int(num_tracks))], contract)
     normalized = normalize_album_tracks(tracks, opts)
     toolkit_report = {
+        "prompt_kit_version": PROMPT_KIT_VERSION,
+        "prompt_kit": prompt_kit_payload(),
         "artist_reference_notes": artist_notes,
         "tag_snapshot": {key: values[:12] for key, values in TAG_TAXONOMY.items()},
         "lyric_plan": lyric_length_plan(track_duration, str(opts.get("lyric_density") or "balanced"), str(opts.get("structure_preset") or "auto"), sanitized),
+        "language_preset": language_preset(opts.get("language") or "en"),
+        "genre_modules": infer_genre_modules(sanitized, max_modules=2),
+        "section_map": section_map_for(track_duration, sanitized, instrumental=is_sparse_lyric_genre(sanitized)),
         "model_strategy": MODEL_STRATEGIES.get(str(opts.get("song_model_strategy") or "best_installed"), MODEL_STRATEGIES["best_installed"]),
         "album_model_portfolio": album_model_portfolio(opts.get("installed_models")),
         "final_model_policy": {
@@ -1100,6 +1291,10 @@ def build_album_plan(concept: str, num_tracks: int, track_duration: float, optio
             "default_shift": docs_best_model_settings(ALBUM_FINAL_MODEL)["shift"],
             "quality_preset": docs_best_model_settings(ALBUM_FINAL_MODEL)["quality_preset"],
         },
+        "user_album_contract": contract,
+        "input_contract_applied": bool(contract.get("applied")) if isinstance(contract, dict) else False,
+        "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+        "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0) if isinstance(contract, dict) else 0,
     }
     return {"tracks": normalized, "toolkit_report": toolkit_report}
 
@@ -1107,6 +1302,14 @@ def build_album_plan(concept: str, num_tracks: int, track_duration: float, optio
 def toolkit_payload(installed_models: set[str] | list[str] | None = None) -> dict[str, Any]:
     installed = set(installed_models or [])
     return {
+        "prompt_kit_version": PROMPT_KIT_VERSION,
+        "prompt_kit": prompt_kit_payload(),
+        "prompt_kit_metadata_fields": PROMPT_KIT_METADATA_FIELDS,
+        "language_presets": LANGUAGE_PRESETS,
+        "genre_modules": GENRE_MODULES,
+        "troubleshooting_matrix": TROUBLESHOOTING_MATRIX,
+        "validation_checklist": VALIDATION_CHECKLIST,
+        "advanced_generation_settings": ADVANCED_GENERATION_ADVISORY,
         "sources": OFFICIAL_SOURCES,
         "tag_taxonomy": TAG_TAXONOMY,
         "lyric_meta_tags": LYRIC_META_TAGS,
@@ -1120,7 +1323,7 @@ def toolkit_payload(installed_models: set[str] | list[str] | None = None) -> dic
         "album_model_portfolio": album_model_portfolio(installed),
         "installed_song_models": sorted(installed),
         "cliche_guard": BANNED_CLICHES,
-        "artist_reference_policy": "Living artist names are converted to technique briefs, not direct imitation prompts.",
+        "artist_reference_policy": "Artist references are passed through freely.",
         "tag_policy": "ACE-Step captions are free-form; these official-style categories are a starter library, and Custom Tags/Negative Tags extend them.",
     }
 
@@ -1295,16 +1498,14 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
                     "clear original persona",
                     "breath-control planning",
                     "ad-libs only where they support the hook",
-                    "no direct imitation of living artists",
                 ],
             }
         )
 
     @tool("RhymeFlowTool")
     def rhyme_flow(artist_or_goal: str = "") -> str:
-        """Convert artist references or flow goals into non-imitative technique briefs."""
-        cleaned, notes = sanitize_artist_references(artist_or_goal)
-        return json.dumps({"technique_brief": cleaned, "notes": notes})
+        """Return flow and rhyme technique guidance."""
+        return json.dumps({"technique_brief": str(artist_or_goal or ""), "notes": []})
 
     @tool("MetaphorWorldTool")
     def metaphor_world(seed: str = "") -> str:
@@ -1390,14 +1591,14 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
 
     @tool("InspirationRadarTool")
     def inspiration_radar(query: str = "") -> str:
-        """Return approved inspiration notes without asking for direct artist imitation."""
-        cleaned, notes = sanitize_artist_references(query or context.get("inspiration_queries") or context.get("concept") or "")
+        """Return inspiration notes for the given query."""
+        raw = query or context.get("inspiration_queries") or context.get("concept") or ""
         return json.dumps(
             {
-                "query": cleaned,
-                "artist_reference_notes": notes,
+                "query": str(raw),
+                "artist_reference_notes": [],
                 "web_notes": str(context.get("web_inspiration") or "")[:1200],
-                "usage": "Use broad trends, scenes, topics, and sonic cues. Do not copy melodies, lyrics, or artist identity.",
+                "usage": "Use trends, scenes, topics, sonic cues, and artist references freely.",
             }
         )
 
@@ -1483,6 +1684,81 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         repaired["quality_report"] = quality_report(repaired, context)
         return json.dumps(repaired)
 
+    @tool("LanguagePresetTool")
+    def language_preset_tool(language_code: str = "") -> str:
+        """Return language/script policy and romanization guidance."""
+        return json.dumps(language_preset(language_code or context.get("language") or "en"), ensure_ascii=True)
+
+    @tool("GenreModuleTool")
+    def genre_module_tool(genre_hint: str = "") -> str:
+        """Return prompt-kit genre modules for a style hint."""
+        hint = genre_hint or context.get("sanitized_concept") or context.get("concept") or ""
+        return json.dumps({"modules": infer_genre_modules(hint, max_modules=3)}, ensure_ascii=True)
+
+    @tool("SectionMapTool")
+    def section_map_tool(spec: str = "") -> str:
+        """Return a duration-realistic section map for vocal or instrumental music."""
+        hint = " ".join([str(spec or ""), str(context.get("sanitized_concept") or context.get("concept") or "")])
+        duration = parse_duration_seconds(context.get("track_duration") or context.get("duration") or 180, 180)
+        return json.dumps(
+            {
+                "duration": int(duration),
+                "section_map": section_map_for(duration, hint, instrumental=is_sparse_lyric_genre(hint)),
+            },
+            ensure_ascii=True,
+        )
+
+    @tool("IterationPlanTool")
+    def iteration_plan_tool(goal: str = "") -> str:
+        """Return a compact human-centered ACE-Step iteration plan."""
+        return json.dumps(
+            {
+                "version": PROMPT_KIT_VERSION,
+                "iteration_plan": [
+                    "Generate one focused first pass.",
+                    "Listen for hook clarity, language/script drift, vocal intelligibility, low-end balance, and section realism.",
+                    "Revise one axis at a time: caption density, lyrics, section map, or generation settings.",
+                    "Use Cover/Repaint/Complete when source audio structure should be preserved.",
+                ],
+                "goal": str(goal or context.get("quality_target") or "hit"),
+            },
+            ensure_ascii=True,
+        )
+
+    @tool("TroubleshootingTool")
+    def troubleshooting_tool(issue: str = "") -> str:
+        """Return prompt-kit troubleshooting hints."""
+        key = str(issue or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if key and key in TROUBLESHOOTING_MATRIX:
+            hints = {key: TROUBLESHOOTING_MATRIX[key]}
+        else:
+            hints = TROUBLESHOOTING_MATRIX
+        return json.dumps({"version": PROMPT_KIT_VERSION, "hints": hints}, ensure_ascii=True)
+
+    @tool("ValidationChecklistTool")
+    def validation_checklist_tool(query: str = "") -> str:
+        """Return prompt-kit validation checks."""
+        return json.dumps(
+            {
+                "version": PROMPT_KIT_VERSION,
+                "validation_checklist": VALIDATION_CHECKLIST,
+                "metadata_fields": PROMPT_KIT_METADATA_FIELDS,
+            },
+            ensure_ascii=True,
+        )
+
+    @tool("NegativeControlTool")
+    def negative_control_tool(genre_hint: str = "") -> str:
+        """Return genre-aware negative control phrases."""
+        hint = genre_hint or context.get("sanitized_concept") or context.get("concept") or ""
+        return json.dumps(
+            {
+                "version": PROMPT_KIT_VERSION,
+                "negative_control": negative_control_for(hint, instrumental=is_sparse_lyric_genre(hint)),
+            },
+            ensure_ascii=True,
+        )
+
     return [
         model_advisor,
         model_portfolio_tool,
@@ -1507,4 +1783,11 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         mix_master,
         hit_score,
         track_repair,
+        language_preset_tool,
+        genre_module_tool,
+        section_map_tool,
+        iteration_plan_tool,
+        troubleshooting_tool,
+        validation_checklist_tool,
+        negative_control_tool,
     ]

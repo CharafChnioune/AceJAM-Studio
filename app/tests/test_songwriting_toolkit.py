@@ -65,9 +65,79 @@ from songwriting_toolkit import (
     sanitize_artist_references,
     toolkit_payload,
 )
+from prompt_kit import PROMPT_KIT_VERSION
+from user_album_contract import extract_user_album_contract
 
 
 class SongwritingToolkitTest(unittest.TestCase):
+    SAFE_CONTRACT_PROMPT = """
+Album: Market Lights
+Concept: A safe city album about rebuilding trust after a long blackout.
+Track 1: "Morning Market" (Produced by Ada North)
+(BPM: 92 | Style: warm boom-bap)
+The Vibe: brass stabs, vinyl dust, calm crowd energy.
+The Narrative: neighbors reopen stalls and trade stories instead of rumors.
+Lyrics:
+"Open the shutters"
+"Coffee on the corner"
+Naming Drop: "market bell"
+
+Track 2: "Rooftop Letters" (Produced by Mira South)
+(BPM: 104 | Style: melodic house)
+The Vibe: soft synth pulse and bright handclaps.
+The Narrative: friends read old letters on a roof as the lights come back.
+Lyrics:
+"Letters in the skyline"
+"""
+
+    def test_user_album_contract_extracts_safe_album_prompt(self):
+        contract = extract_user_album_contract(self.SAFE_CONTRACT_PROMPT, 2, "en")
+
+        self.assertTrue(contract["applied"])
+        self.assertEqual(contract["album_title"], "Market Lights")
+        self.assertEqual(contract["track_count"], 2)
+        self.assertEqual(contract["tracks"][0]["locked_title"], "Morning Market")
+        self.assertEqual(contract["tracks"][0]["producer_credit"], "Ada North")
+        self.assertEqual(contract["tracks"][0]["bpm"], 92)
+        self.assertEqual(contract["tracks"][0]["style"], "warm boom-bap")
+        self.assertIn("Open the shutters", contract["tracks"][0]["required_phrases"])
+        self.assertEqual(contract["tracks"][0]["content_policy_status"], "safe")
+
+    def test_build_album_plan_uses_locked_user_titles_and_producers(self):
+        result = build_album_plan(
+            self.SAFE_CONTRACT_PROMPT,
+            2,
+            60,
+            {
+                "installed_models": ["acestep-v15-turbo"],
+                "song_model_strategy": "best_installed",
+                "language": "en",
+            },
+        )
+
+        self.assertEqual([track["title"] for track in result["tracks"]], ["Morning Market", "Rooftop Letters"])
+        self.assertEqual(result["tracks"][0]["producer_credit"], "Ada North")
+        self.assertEqual(result["tracks"][0]["bpm"], 92)
+        self.assertTrue(result["tracks"][0]["input_contract_applied"])
+        self.assertNotIn("Protocol", result["tracks"][0]["title"])
+        self.assertNotIn("Season", result["tracks"][1]["title"])
+
+    def test_all_lyrics_pass_through_without_blocking(self):
+        contract = extract_user_album_contract(
+            """
+Track 1: "Safe Title" (Produced by Ada North)
+Lyrics:
+kill all the rivals
+""",
+            1,
+            "en",
+        )
+
+        self.assertEqual(contract["blocked_unsafe_count"], 0)
+        self.assertEqual(contract["tracks"][0]["content_policy_status"], "safe")
+        self.assertIn("kill all the rivals", contract["tracks"][0]["required_lyrics"])
+        self.assertTrue(len(contract["tracks"][0]["required_phrases"]) > 0)
+
     def test_toolkit_payload_has_official_dimensions_and_all_tools(self):
         payload = toolkit_payload({"acestep-v15-turbo"})
         for category in [
@@ -111,8 +181,20 @@ class SongwritingToolkitTest(unittest.TestCase):
                 "MixMasterTool",
                 "HitScoreTool",
                 "TrackRepairTool",
+                "LanguagePresetTool",
+                "GenreModuleTool",
+                "SectionMapTool",
+                "IterationPlanTool",
+                "TroubleshootingTool",
+                "ValidationChecklistTool",
+                "NegativeControlTool",
             }.issubset(tool_names)
         )
+        self.assertEqual(payload["prompt_kit_version"], PROMPT_KIT_VERSION)
+        self.assertIn("prompt_kit", payload)
+        self.assertIn("language_presets", payload)
+        self.assertIn("genre_modules", payload)
+        self.assertIn("validation_checklist", payload)
 
     def test_model_advisor_uses_only_installed_models(self):
         info = choose_song_model({"acestep-v15-turbo"}, "best_installed", "auto")
@@ -163,6 +245,12 @@ class SongwritingToolkitTest(unittest.TestCase):
         self.assertGreaterEqual(long["min_words"], 430)
         self.assertLessEqual(ten_minutes["max_lyrics_chars"], 4096)
         self.assertGreaterEqual(short["min_lines"], len(short["sections"]))
+
+    def test_sparse_genres_use_sparse_section_timeline(self):
+        plan = lyric_length_plan(240, "dense", genre_hint="instrumental techno club track")
+        self.assertEqual(plan["density"], "sparse")
+        self.assertLess(plan["target_words"], 180)
+        self.assertIn("Drop", " ".join(plan["sections"]))
 
     def test_duration_parser_accepts_minute_second_strings(self):
         self.assertEqual(parse_duration_seconds("2:55"), 175)
@@ -216,6 +304,11 @@ class SongwritingToolkitTest(unittest.TestCase):
         self.assertGreaterEqual(stats["word_count"], track["tool_report"]["length_plan"]["min_words"])
         self.assertGreaterEqual(stats["line_count"], track["tool_report"]["length_plan"]["min_lines"])
         self.assertTrue(track["tool_report"]["length_ok"])
+        self.assertEqual(track["prompt_kit_version"], PROMPT_KIT_VERSION)
+        self.assertIn("section_map", track)
+        self.assertIn("negative_control", track)
+        self.assertIn("quality_checks", track)
+        self.assertFalse(track["use_format"])
 
     def test_build_album_plan_returns_duration_ready_tracks(self):
         result = build_album_plan(
@@ -241,6 +334,7 @@ class SongwritingToolkitTest(unittest.TestCase):
             self.assertTrue(track["lyrics"].strip())
             self.assertTrue(track["tool_report"]["length_score"] > 0)
             self.assertIn("bpm", track)
+            self.assertEqual(track["prompt_kit_version"], PROMPT_KIT_VERSION)
 
     def test_editable_plan_preserves_track_model_choice(self):
         result = plan_album(
@@ -386,6 +480,86 @@ class SongwritingToolkitTest(unittest.TestCase):
         self.assertTrue(result["crewai_used"])
         self.assertEqual(len(result["tracks"]), 1)
         self.assertTrue(any("CrewAI bible JSON parse repair" in line for line in result["logs"]))
+
+    def test_crewai_contract_repairs_agent_renames(self):
+        class FakeCrew:
+            def __init__(self, output):
+                self.output = output
+
+            def kickoff(self):
+                return self.output
+
+        class FakeMemory:
+            def remember(self, *args, **kwargs):
+                return None
+
+        contract_prompt = """
+Album: Exact Brief
+Concept: A safe two-song record about neighborhood repair.
+Track 1: "Lantern Keys" (Produced by Ada North)
+(BPM: 88 | Style: warm boom-bap)
+The Vibe: dusty piano and soft brass.
+The Narrative: a locksmith helps everyone back into their apartments.
+Lyrics:
+"Turn the lantern keys"
+"""
+        bible_payload = {
+            "album_bible": {"concept": "safe", "arc": "one", "motifs": []},
+            "tracks": [{
+                "track_number": 1,
+                "artist_name": "Wrong Artist",
+                "title": "Generated Season",
+                "description": "wrong rename",
+                "tags": "hopeful pop",
+                "duration": 45,
+                "bpm": 120,
+            }],
+        }
+        produced_payload = {
+            "track_number": 1,
+            "artist_name": "Wrong Artist",
+            "title": "Another Rename",
+            "description": "wrong final",
+            "tags": "hopeful pop",
+            "lyrics": "[Verse]\nWe find the room\n[Chorus]\nHome again",
+            "bpm": 120,
+            "key_scale": "C major",
+            "time_signature": "4",
+            "language": "en",
+            "duration": 45,
+        }
+
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "embed_ok": True,
+            "warnings": [],
+            "embedding_model": "embed-local",
+            "memory_dir": str(CREWAI_MEMORY_DIR),
+        }), patch.object(album_crew_module, "_make_album_memory_writer", return_value=FakeMemory()), \
+            patch.object(album_crew_module, "create_album_bible_crew", return_value=FakeCrew(SimpleNamespace(raw=json.dumps(bible_payload)))), \
+            patch.object(album_crew_module, "create_track_production_crew", return_value=FakeCrew(SimpleNamespace(raw=json.dumps(produced_payload)))):
+            result = plan_album(
+                contract_prompt,
+                num_tracks=1,
+                track_duration=45,
+                ollama_model="qwen-local",
+                embedding_model="embed-local",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                use_crewai=True,
+                planner_provider="lmstudio",
+                embedding_provider="lmstudio",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["planning_engine"], "crewai")
+        self.assertEqual(result["tracks"][0]["title"], "Lantern Keys")
+        self.assertEqual(result["tracks"][0]["producer_credit"], "Ada North")
+        self.assertEqual(result["tracks"][0]["bpm"], 88)
+        self.assertIn("Turn the lantern keys", result["tracks"][0]["lyrics"])
+        self.assertTrue(result["input_contract_applied"])
+        self.assertGreaterEqual(result["contract_repair_count"], 1)
+        self.assertTrue(any("Contract repaired: track 1" in line for line in result["logs"]))
 
     def test_crewai_blueprint_duration_is_clamped_to_requested_track_duration(self):
         class FakeCrew:

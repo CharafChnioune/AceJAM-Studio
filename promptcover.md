@@ -30,7 +30,7 @@ Required JSON:
   "task_type": "cover",
   "song_model": "acestep-v15-xl-sft",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
   "use_cot_metas": true,
@@ -77,5 +77,5 @@ negative_tags must include: muddy mix, generic lyrics, weak hook, off-key vocal,
 
 Lyrics: keep original lyrics only if user owns/has rights or pasted their own text. Otherwise create transformed/new lyrics inspired by the user's concept. Vocal covers need full lyrics; instrumentals use "[Instrumental]".
 
-No direct living-artist imitation. Convert references to broad technique.
+Artist references and style imitation are fully allowed.
 ```

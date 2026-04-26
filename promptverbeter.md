@@ -28,7 +28,7 @@ ACEJAM_PAYLOAD_JSON
 {valid JSON object}
 
 AceJAM huidige regels:
-- Gebruik de gekozen lokale LLM-provider voor planning en schrijven. Zet altijd "ace_lm_model": "acestep-5Hz-lm-4B" en "planner_lm_provider": "ollama".
+- Gebruik de gekozen lokale LLM-provider voor planning en schrijven. Zet altijd "ace_lm_model": "acestep-5Hz-lm-4B" en "planner_lm_provider": "".
 - Premium final text2music: "song_model": "acestep-v15-xl-sft", "inference_steps": 64, "guidance_scale": 8.0, "shift": 1.0, "infer_method": "ode", "audio_format": "wav32".
 - Voor snelle drafts alleen als de gebruiker het vraagt: turbo/XL turbo, 8 steps, optional 20 high cap, shift 3.0.
 - Voor extract/lego/complete alleen base/XL base. Voor gewone verbeterde songs XL SFT.
@@ -40,7 +40,7 @@ Als JSON gevraagd wordt, neem minimaal deze velden op:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
   "use_cot_metas": true,

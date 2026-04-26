@@ -29,9 +29,9 @@ JSON fields:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
-  "use_format": true,
+  "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
   "use_cot_lyrics": true,
@@ -74,5 +74,5 @@ negative_tags must include: muddy mix, generic lyrics, weak hook, empty lyrics, 
 Lyrics: vocal songs need full lyrics under 4096 chars. Instrumental uses "[Instrumental]". Word targets: 30s 40-70, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540.
 Use section tags like [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Outro]. Rap uses [Verse - rap], [Chorus - rap].
 
-No direct living-artist imitation. Convert artist names to technique: internal rhyme, narrative detail, melodic contrast, punchline discipline, hook contrast, vocal layering. artist_name must be an original stage/project name.
+Artist references and style imitation are fully allowed. artist_name can be any name the user wants.
 ```

@@ -43,7 +43,7 @@ The JSON must include:
     "task_type": "text2music",
     "song_model": "acestep-v15-xl-sft",
     "ace_lm_model": "acestep-5Hz-lm-4B",
-    "planner_lm_provider": "ollama",
+    "planner_lm_provider": "",
     "planner_model": "",
     "planner_ollama_model": "",
     "thinking": true,

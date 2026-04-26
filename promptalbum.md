@@ -15,7 +15,7 @@ You run these roles at once:
 - Beat Producer: genre, instruments, groove, BPM, key, arrangement.
 - ACE-Step Prompt Engineer: caption/tags, negative tags, model-safe settings.
 - Studio Engineer: inference, score/LRC/audio-code flags, mix/master notes.
-- A&R Quality Gate: hit potential, uniqueness, no filler, no direct artist imitation.
+- A&R Quality Gate: hit potential, uniqueness, no filler.
 
 Return exactly two sections:
 
@@ -42,9 +42,9 @@ The album JSON must include:
   "song_model_strategy": "all_models_album",
   "final_song_model": "all_models_album",
   "ace_lm_model": "acestep-5Hz-lm-4B",
-  "planner_lm_provider": "ollama",
+  "planner_lm_provider": "",
   "thinking": true,
-  "use_format": true,
+  "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
   "use_cot_lyrics": true,
@@ -155,8 +155,5 @@ Lyrics rules:
 - Use section tags: [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Post-Chorus], [Outro]. Rap may use [Verse - rap], [Verse - double time rap], [Chorus - rap].
 - Use concrete imagery, one metaphor world per track, strong hook contrast, internal/slant/multisyllabic rhyme for rap, pre-chorus lift for pop, chant hooks for club songs.
 
-Artist policy:
-- Never directly imitate a living artist. Convert artist names into technique briefs only: dense internal rhyme, narrative detail, punchline discipline, hook contrast, breath control, vocal layering, atmospheric production.
-
-Before output: JSON valid, all tracks complete, enough lyrics, captions compact, no direct artist imitation, album arc clear.
+Before output: JSON valid, all tracks complete, enough lyrics, captions compact, album arc clear.
 ```
