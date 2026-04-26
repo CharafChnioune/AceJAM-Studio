@@ -147,6 +147,7 @@ from studio_core import (
     DOCS_BEST_LM_DEFAULTS,
     DOCS_BEST_SOURCE_TASK_LM_SKIPS,
     DOCS_BEST_TURBO_HIGH_CAP_STEPS,
+    DEFAULT_QUALITY_PROFILE,
     KNOWN_ACE_STEP_MODELS,
     MAX_BATCH_SIZE,
     OFFICIAL_ACE_STEP_MANIFEST,
@@ -165,6 +166,7 @@ from studio_core import (
     model_profiles_for_models,
     normalize_generation_text_fields,
     normalize_audio_format,
+    normalize_quality_profile,
     normalize_task_type,
     normalize_track_names,
     needs_vocal_lyrics,
@@ -175,6 +177,7 @@ from studio_core import (
     parse_timesteps,
     recommended_lm_model,
     recommended_song_model,
+    quality_profile_model_settings,
     safe_filename,
     safe_id,
     studio_ui_schema,
@@ -240,10 +243,10 @@ ACE_LM_DISABLED_DEFAULTS: dict[str, Any] = {
     "lm_temperature": 0.85,
     "lm_top_k": 0,
     "lm_top_p": 0.9,
-    "use_cot_caption": True,
-    "use_cot_language": True,
+    "use_cot_caption": False,
+    "use_cot_language": False,
     "use_cot_lyrics": False,
-    "use_cot_metas": True,
+    "use_cot_metas": False,
     "use_constrained_decoding": True,
     "constrained_decoding_debug": False,
 }
@@ -435,8 +438,8 @@ def _disable_studio_ace_lm(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _quality_default_steps(song_model: str) -> int:
-    return int(docs_best_model_settings(song_model)["inference_steps"])
+def _quality_default_steps(song_model: str, quality_profile: str | None = None) -> int:
+    return int(quality_profile_model_settings(song_model, quality_profile or DEFAULT_QUALITY_PROFILE)["inference_steps"])
 
 
 PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
@@ -684,6 +687,8 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             warnings.append("Auto score/LRC were turned off because official ACE-Step LM generation cannot use the in-process tensor cache.")
         normalized["auto_score"] = False
         normalized["auto_lrc"] = False
+    quality_profile = normalize_quality_profile(normalized.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    normalized["quality_profile"] = quality_profile
 
     if mode == "album":
         normalized.setdefault("song_model_strategy", "all_models_album")
@@ -713,7 +718,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             normalized["blocked_unsafe_count"] = int(user_album_contract.get("blocked_unsafe_count") or 0)
             if user_album_contract.get("album_title"):
                 normalized["album_title"] = user_album_contract.get("album_title")
-        album_defaults = docs_best_model_settings(ALBUM_FINAL_MODEL)
+        album_defaults = quality_profile_model_settings(ALBUM_FINAL_MODEL, quality_profile)
         normalized["audio_format"] = album_defaults["audio_format"]
         normalized["inference_steps"] = album_defaults["inference_steps"]
         normalized["guidance_scale"] = album_defaults["guidance_scale"]
@@ -748,6 +753,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
                     ),
                 )
                 track["ace_lm_model"] = normalized["ace_lm_model"]
+                track["quality_profile"] = quality_profile
                 track["thinking"] = False
                 track["use_format"] = False
                 track["use_cot_lyrics"] = False
@@ -818,7 +824,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     normalized.setdefault("vocal_language", "en")
     normalized.setdefault("seed", "-1")
     normalized.setdefault("use_random_seed", True)
-    mode_defaults = docs_best_model_settings(str(normalized.get("song_model") or ""))
+    mode_defaults = quality_profile_model_settings(str(normalized.get("song_model") or ""), quality_profile)
     normalized["inference_steps"] = mode_defaults["inference_steps"]
     normalized["guidance_scale"] = mode_defaults["guidance_scale"]
     normalized["shift"] = mode_defaults["shift"]
@@ -954,6 +960,26 @@ def _normalize_song_model(requested: str | None) -> str:
         return _default_acestep_checkpoint()
     if value.startswith("acestep-v15-"):
         return value
+    return _default_acestep_checkpoint()
+
+
+def _song_model_for_quality_profile(requested: str | None, quality_profile: str | None, task_type: str = "text2music") -> str:
+    value = (requested or "").strip()
+    profile = normalize_quality_profile(quality_profile)
+    if value and value != "auto":
+        return _normalize_song_model(value)
+    installed = _installed_acestep_models()
+    if normalize_task_type(task_type) in {"extract", "lego", "complete"}:
+        for candidate in ["acestep-v15-xl-base", "acestep-v15-base"]:
+            if candidate in installed:
+                return candidate
+        return "acestep-v15-xl-base"
+    if profile in {"chart_master", "balanced_pro"}:
+        return recommended_song_model(installed)
+    if profile == "preview_fast":
+        for candidate in ["acestep-v15-xl-turbo", "acestep-v15-turbo"]:
+            if candidate in installed:
+                return candidate
     return _default_acestep_checkpoint()
 
 
@@ -2281,10 +2307,19 @@ def _json_list(value: Any) -> list[Any]:
 
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
     strategy = str(payload.get("song_model_strategy") or "all_models_album")
-    requested_song_model = song_model if strategy == "selected" else "auto"
+    quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    payload_song_model = str(payload.get("requested_song_model") or payload.get("song_model") or "").strip()
+    selected_song_model = str(song_model or "").strip()
+    requested_song_model = (
+        selected_song_model
+        if selected_song_model and selected_song_model != "auto"
+        else payload_song_model
+    )
+    if strategy != "selected":
+        requested_song_model = "auto"
     installed_models = sorted(_installed_acestep_models())
-    default_model = ALBUM_FINAL_MODEL if strategy != "selected" else (song_model or ALBUM_FINAL_MODEL)
-    model_defaults = docs_best_model_settings(default_model)
+    default_model = ALBUM_FINAL_MODEL if strategy != "selected" else (requested_song_model or ALBUM_FINAL_MODEL)
+    model_defaults = quality_profile_model_settings(default_model, quality_profile)
     contract_source = "\n\n".join(
         part for part in [
             str(payload.get("user_prompt") or payload.get("prompt") or ""),
@@ -2303,7 +2338,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
             payload,
         )
     return {
-        "requested_song_model": requested_song_model,
+        "requested_song_model": requested_song_model or "auto",
         "song_model_strategy": strategy,
         "final_song_model": ALBUM_FINAL_MODEL,
         "prompt_kit_version": str(payload.get("prompt_kit_version") or PROMPT_KIT_VERSION),
@@ -2314,6 +2349,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "ace_lm_model": _requested_ace_lm_model(payload),
         "album_model_portfolio": album_model_portfolio(installed_models),
         "quality_target": str(payload.get("quality_target") or "hit"),
+        "quality_profile": quality_profile,
         "tag_packs": _json_list(payload.get("tag_packs")),
         "custom_tags": payload.get("custom_tags") or "",
         "negative_tags": payload.get("negative_tags") or "",
@@ -2652,7 +2688,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     payload = apply_ace_step_text_budget(payload, task_type=task_type)
     payload = _apply_studio_lm_policy(payload)
-    song_model = _normalize_song_model(get_param(payload, "song_model", payload.get("song_model")))
+    quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    song_model = _song_model_for_quality_profile(get_param(payload, "song_model", payload.get("song_model")), quality_profile, task_type)
     ensure_task_supported(song_model, task_type)
     if song_model in OFFICIAL_UNRELEASED_MODELS:
         raise ValueError(f"{song_model} is official but unreleased; it cannot be downloaded or used yet.")
@@ -2660,18 +2697,21 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if song_model in _downloadable_model_names():
             _start_model_download_or_raise(song_model, context=f"{task_type} generation")
         raise ValueError(f"{song_model} is not installed and is not in the known ACE-Step download list.")
-    batch_size = clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE)
+    is_album_track = bool(payload.get("album_metadata") or payload.get("album_id") or payload.get("track_variant"))
+    requested_batch_size = payload.get("batch_size")
+    default_batch_size = 3 if quality_profile == "chart_master" and task_type == "text2music" and not is_album_track else 1
+    batch_size = clamp_int(requested_batch_size, default_batch_size, 1, MAX_BATCH_SIZE)
     duration = clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX)
-    model_defaults = docs_best_model_settings(song_model)
+    model_defaults = quality_profile_model_settings(song_model, quality_profile)
     is_turbo = "turbo" in song_model
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
     if raw_steps in [None, "", "auto"]:
-        default_steps = _quality_default_steps(song_model)
+        default_steps = _quality_default_steps(song_model, quality_profile)
     else:
         try:
             default_steps = int(raw_steps)
         except (TypeError, ValueError):
-            default_steps = _quality_default_steps(song_model)
+            default_steps = _quality_default_steps(song_model, quality_profile)
     inference_steps = clamp_int(default_steps, default_steps, 1, 200)
     if is_turbo and inference_steps > DOCS_BEST_TURBO_HIGH_CAP_STEPS:
         inference_steps = min(inference_steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
@@ -2735,6 +2775,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     artist_name = _artist_name_from_payload(payload, title=title)
     parsed = {
         "ui_mode": str(payload.get("ui_mode") or task_type),
+        "quality_profile": quality_profile,
         "task_type": task_type,
         "caption": str(payload.get("caption") or ""),
         "global_caption": str(payload.get("global_caption") or ""),
@@ -2773,7 +2814,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
         "velocity_norm_threshold": clamp_float(payload.get("velocity_norm_threshold"), 0.0, 0.0, 20.0),
         "velocity_ema_factor": clamp_float(payload.get("velocity_ema_factor"), 0.0, 0.0, 1.0),
-        "use_adg": parse_bool(payload.get("use_adg"), False),
+        "use_adg": parse_bool(payload.get("use_adg"), bool(model_defaults.get("use_adg", False))),
         "cfg_interval_start": clamp_float(payload.get("cfg_interval_start"), 0.0, 0.0, 1.0),
         "cfg_interval_end": clamp_float(payload.get("cfg_interval_end"), 1.0, 0.0, 1.0),
         "timesteps": parse_timesteps(payload.get("timesteps")),
@@ -2800,10 +2841,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lm_top_p": clamp_float(payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if lm_quality_defaults else 0.9, 0.0, 1.0),
         "lm_negative_prompt": str(payload.get("lm_negative_prompt") or "NO USER INPUT"),
         "lm_backend": _normalize_lm_backend(payload.get("lm_backend")),
-        "use_cot_metas": parse_bool(payload.get("use_cot_metas"), True),
-        "use_cot_caption": parse_bool(payload.get("use_cot_caption"), True),
+        "use_cot_metas": parse_bool(payload.get("use_cot_metas"), lm_quality_defaults),
+        "use_cot_caption": parse_bool(payload.get("use_cot_caption"), lm_quality_defaults),
         "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), False),
-        "use_cot_language": parse_bool(payload.get("use_cot_language"), True),
+        "use_cot_language": parse_bool(payload.get("use_cot_language"), lm_quality_defaults),
         "allow_lm_batch": parse_bool(payload.get("allow_lm_batch"), False),
         "lm_batch_chunk_size": clamp_int(payload.get("lm_batch_chunk_size"), 8, 1, 64),
         "use_constrained_decoding": parse_bool(payload.get("use_constrained_decoding"), True),
@@ -3054,10 +3095,11 @@ def _lm_validation_status(payload: dict[str, Any], requires_lm: bool) -> dict[st
 
 def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_model: str, official_used: list[str]) -> dict[str, Any]:
     track_names = normalize_track_names(payload.get("track_names") or payload.get("track_name"))
+    quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_used)
     use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
-    model_defaults = docs_best_model_settings(song_model)
+    model_defaults = quality_profile_model_settings(song_model, quality_profile)
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     time_signature = str(get_param(payload, "time_signature", "") or "").strip()
     if time_signature:
@@ -3071,7 +3113,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
     is_turbo = "turbo" in song_model
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
     if raw_steps in [None, "", "auto"]:
-        default_steps = _quality_default_steps(song_model)
+        default_steps = _quality_default_steps(song_model, quality_profile)
     else:
         default_steps = int(raw_steps)
     inference_steps = clamp_int(default_steps, default_steps, 1, 200)
@@ -3081,6 +3123,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
     artist_name = _artist_name_from_payload(payload, title=title)
     return {
         "ui_mode": str(payload.get("ui_mode") or task_type),
+        "quality_profile": quality_profile,
         "task_type": task_type,
         "title": title,
         "artist_name": artist_name,
@@ -3098,7 +3141,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "key_scale": str(get_param(payload, "key_scale", "") or "").strip(),
         "time_signature": time_signature,
         "vocal_language": _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown")),
-        "batch_size": clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE),
+        "batch_size": clamp_int(payload.get("batch_size"), 3 if quality_profile == "chart_master" and task_type == "text2music" else 1, 1, MAX_BATCH_SIZE),
         "seed": str(payload.get("seeds") or payload.get("seed") or "-1"),
         "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
         "song_model": song_model,
@@ -3146,7 +3189,8 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     normalized_text = apply_ace_step_text_budget(normalized_text, task_type=task_type)
     normalized_text = _apply_studio_lm_policy(normalized_text)
-    song_model = _normalize_song_model(get_param(normalized_text, "song_model", normalized_text.get("song_model")))
+    quality_profile = normalize_quality_profile(normalized_text.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    song_model = _song_model_for_quality_profile(get_param(normalized_text, "song_model", normalized_text.get("song_model")), quality_profile, task_type)
     official_used = _active_official_fields(normalized_text, task_type, official_fields_used(normalized_text))
     preview = _preview_generation_payload(normalized_text, task_type, song_model, official_used)
     field_errors: dict[str, str] = {}
@@ -3173,7 +3217,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     requested_format = str(
         normalized_text.get("audio_format")
-        or (docs_best_model_settings(song_model)["audio_format"] if _quality_lm_controls_enabled(normalized_text, task_type) else "wav")
+        or (quality_profile_model_settings(song_model, quality_profile)["audio_format"] if _quality_lm_controls_enabled(normalized_text, task_type) else "wav")
     ).strip().lower().lstrip(".")
     if official_used and requested_format == "ogg":
         _set_field_error(
@@ -3935,15 +3979,17 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
 
 def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[str, Any], family_id: str) -> dict[str, Any]:
     model_name = str(model_item.get("model") or "")
-    model_defaults = docs_best_model_settings(model_name)
+    quality_profile = normalize_quality_profile(raw_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    model_defaults = quality_profile_model_settings(model_name, quality_profile)
     payload = dict(raw_payload or {})
     has_vocal_lyrics = bool(str(payload.get("lyrics") or "").strip() and str(payload.get("lyrics") or "").strip().lower() != "[instrumental]")
     payload.update(
         {
             "task_type": "text2music",
+            "quality_profile": quality_profile,
             "song_model": model_name,
             "batch_size": 1,
-            "inference_steps": int(model_item.get("default_steps") or _quality_default_steps(model_name)),
+            "inference_steps": int(model_item.get("default_steps") or _quality_default_steps(model_name, quality_profile)),
             "guidance_scale": float(model_item.get("default_guidance_scale") or model_defaults["guidance_scale"]),
             "shift": float(model_item.get("default_shift") or model_defaults["shift"]),
             "ace_lm_model": _requested_ace_lm_model(raw_payload),
@@ -3952,10 +3998,10 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
             "render_strategy": SONG_PORTFOLIO_STRATEGY,
             "thinking": parse_bool(raw_payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"] if not has_vocal_lyrics else False),
             "use_format": parse_bool(raw_payload.get("use_format"), DOCS_BEST_LM_DEFAULTS["use_format"] if not has_vocal_lyrics else False),
-            "use_cot_metas": parse_bool(raw_payload.get("use_cot_metas"), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
-            "use_cot_caption": parse_bool(raw_payload.get("use_cot_caption"), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
+            "use_cot_metas": parse_bool(raw_payload.get("use_cot_metas"), DOCS_BEST_LM_DEFAULTS["use_cot_metas"] if not has_vocal_lyrics else False),
+            "use_cot_caption": parse_bool(raw_payload.get("use_cot_caption"), DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if not has_vocal_lyrics else False),
             "use_cot_lyrics": parse_bool(raw_payload.get("use_cot_lyrics"), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if not has_vocal_lyrics else False),
-            "use_cot_language": parse_bool(raw_payload.get("use_cot_language"), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
+            "use_cot_language": parse_bool(raw_payload.get("use_cot_language"), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if not has_vocal_lyrics else False),
             "use_constrained_decoding": parse_bool(raw_payload.get("use_constrained_decoding"), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
             "lm_temperature": clamp_float(raw_payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
             "lm_cfg_scale": clamp_float(raw_payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"], 0.0, 10.0),
@@ -4454,7 +4500,11 @@ def generate_album(
         album_options = _album_options_from_payload(request_payload, song_model=song_model)
         planned_tracks = _json_list(request_payload.get("tracks") or request_payload.get("planned_tracks"))
         strategy = str(album_options.get("song_model_strategy") or "all_models_album")
-        album_models = album_models_for_strategy(strategy, _installed_acestep_models())
+        album_models = album_models_for_strategy(
+            strategy,
+            _installed_acestep_models(),
+            str(album_options.get("requested_song_model") or request_payload.get("song_model") or song_model or ""),
+        )
         if not album_models:
             raise RuntimeError(f"No album models resolved for strategy {strategy}.")
         missing_models = [item["model"] for item in album_models if item.get("model") not in _installed_acestep_models()]
@@ -4620,10 +4670,12 @@ def generate_album(
                     track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
                     track_lm_enabled = _requested_ace_lm_model({"ace_lm_model": track_lm_model}) != "none"
                     track_has_vocal_lyrics = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
-                    model_defaults = docs_best_model_settings(track_model)
+                    quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+                    model_defaults = quality_profile_model_settings(track_model, quality_profile)
                     generation_payload = {
                         "task_type": "text2music",
                         "ui_mode": "album",
+                        "quality_profile": quality_profile,
                         "artist_name": track_artist,
                         "title": track_title,
                         "description": track.get("description", ""),
@@ -4641,7 +4693,7 @@ def generate_album(
                         "global_caption": request_payload.get("global_caption") or concept,
                         "inference_steps": clamp_int(
                             model_render_settings.get("inference_steps", model_item.get("default_steps")),
-                            int(model_item.get("default_steps") or _quality_default_steps(track_model)),
+                            int(model_item.get("default_steps") or _quality_default_steps(track_model, quality_profile)),
                             1,
                             200,
                         ),
@@ -4659,7 +4711,7 @@ def generate_album(
                         ),
                         "infer_method": str(model_render_settings.get("infer_method") or track.get("infer_method") or request_payload.get("infer_method") or model_defaults["infer_method"]),
                         "sampler_mode": str(model_render_settings.get("sampler_mode") or track.get("sampler_mode") or request_payload.get("sampler_mode") or model_defaults["sampler_mode"]),
-                        "use_adg": parse_bool(model_render_settings.get("use_adg", track.get("use_adg", request_payload.get("use_adg"))), False),
+                        "use_adg": parse_bool(model_render_settings.get("use_adg", track.get("use_adg", request_payload.get("use_adg"))), bool(model_defaults.get("use_adg", False))),
                         "cfg_interval_start": clamp_float(model_render_settings.get("cfg_interval_start", track.get("cfg_interval_start", request_payload.get("cfg_interval_start"))), 0.0, 0.0, 1.0),
                         "cfg_interval_end": clamp_float(model_render_settings.get("cfg_interval_end", track.get("cfg_interval_end", request_payload.get("cfg_interval_end"))), 1.0, 0.0, 1.0),
                         "timesteps": model_render_settings.get("timesteps") or track.get("timesteps") or request_payload.get("timesteps") or "",
@@ -4677,10 +4729,10 @@ def generate_album(
                         "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
                         "lm_top_p": clamp_float(track.get("lm_top_p", request_payload.get("lm_top_p")), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if track_lm_enabled else 0.9, 0.0, 1.0),
                         "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
-                        "use_cot_metas": parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
-                        "use_cot_caption": parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
+                        "use_cot_metas": parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"] if track_lm_enabled and not track_has_vocal_lyrics else False),
+                        "use_cot_caption": parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled and not track_has_vocal_lyrics else False),
                         "use_cot_lyrics": parse_bool(track.get("use_cot_lyrics", False if track_has_vocal_lyrics else request_payload.get("use_cot_lyrics")), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if track_lm_enabled and not track_has_vocal_lyrics else False),
-                        "use_cot_language": parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
+                        "use_cot_language": parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if track_lm_enabled and not track_has_vocal_lyrics else False),
                         "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
                         "album_metadata": {
                             "album_family_id": album_family_id,
@@ -5405,7 +5457,11 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
         num_tracks = clamp_int(body.get("num_tracks"), 7, 1, 40)
         strategy = str(body.get("song_model_strategy") or "all_models_album")
-        expected_models = album_models_for_strategy(strategy, _installed_acestep_models())
+        expected_models = album_models_for_strategy(
+            strategy,
+            _installed_acestep_models(),
+            str(body.get("requested_song_model") or body.get("song_model") or ""),
+        )
         expected_count = len(expected_models) * num_tracks
         _set_album_job(job_id, expected_count=expected_count, status="Planning album", progress=2)
         request_body = dict(body)

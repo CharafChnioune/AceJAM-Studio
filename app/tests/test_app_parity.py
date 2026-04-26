@@ -56,7 +56,9 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("schema_parity", payload["manifest"])
         self.assertIn("settings_registry", payload["manifest"])
         self.assertEqual(payload["manifest"]["settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
-        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 50)
+        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 64)
+        self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
+        self.assertEqual(payload["manifest"]["quality_policy"]["default_profile"], "chart_master")
         self.assertEqual(payload["manifest"]["quality_policy"]["turbo_models"]["inference_steps"], 8)
 
     def test_official_response_wrapper_shape(self):
@@ -107,7 +109,8 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(normalized["thinking"])
         self.assertTrue(normalized["use_format"])
         self.assertTrue(normalized["sample_mode"] is False)
-        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["quality_profile"], "chart_master")
         self.assertEqual(normalized["runner_plan"], "official")
 
     def test_studio_generation_with_supplied_lyrics_leaves_ace_lm_format_off(self):
@@ -125,15 +128,20 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
         self.assertFalse(normalized["thinking"])
         self.assertFalse(normalized["use_format"])
+        self.assertFalse(normalized["use_cot_metas"])
+        self.assertFalse(normalized["use_cot_caption"])
         self.assertFalse(normalized["use_cot_lyrics"])
-        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertFalse(normalized["use_cot_language"])
+        self.assertEqual(normalized["inference_steps"], 64)
         self.assertEqual(normalized["guidance_scale"], 8.0)
-        self.assertEqual(normalized["shift"], 1.0)
+        self.assertEqual(normalized["shift"], 3.0)
+        self.assertTrue(normalized["use_adg"])
+        self.assertEqual(normalized["batch_size"], 3)
         self.assertEqual(normalized["sampler_mode"], "heun")
         self.assertEqual(normalized["audio_format"], "wav")
         self.assertEqual(normalized["runner_plan"], "fast")
 
-    def test_xl_sft_defaults_to_official_50_steps(self):
+    def test_xl_sft_defaults_to_chart_master_64_steps(self):
         payload = {
             "task_type": "text2music",
             "song_model": "acestep-v15-xl-sft",
@@ -146,7 +154,8 @@ class AppParityTest(unittest.TestCase):
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
             normalized = acejam_app._parse_generation_payload(payload)
 
-        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["shift"], 3.0)
         self.assertEqual(normalized["song_model"], "acestep-v15-xl-sft")
         self.assertEqual(normalized["duration"], 180)
 
@@ -476,6 +485,41 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("album_family_id", data)
         self.assertEqual(data["tracks"][0]["model_results"][0]["album_model"], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS[0])
 
+    def test_album_options_preserve_selected_model_from_payload(self):
+        opts = acejam_app._album_options_from_payload(
+            {
+                "song_model_strategy": "selected",
+                "song_model": "acestep-v15-xl-sft",
+                "requested_song_model": "acestep-v15-xl-sft",
+            },
+            song_model="auto",
+        )
+
+        self.assertEqual(opts["song_model_strategy"], "selected")
+        self.assertEqual(opts["requested_song_model"], "acestep-v15-xl-sft")
+
+    def test_generate_album_selected_model_queues_download_instead_of_empty_strategy_error(self):
+        request_payload = {
+            "song_model_strategy": "selected",
+            "song_model": "acestep-v15-xl-sft",
+            "requested_song_model": "acestep-v15-xl-sft",
+            "tracks": [],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}), \
+            patch.object(acejam_app, "_start_model_download", return_value={"id": "download-xl-sft", "status": "queued"}):
+            raw = acejam_app.generate_album(
+                concept="safe selected album",
+                num_tracks=1,
+                track_duration=30,
+                song_model="auto",
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertEqual(data["download_models"], ["acestep-v15-xl-sft"])
+        self.assertNotIn("No album models resolved", json.dumps(data))
+
     def test_album_download_filename_contains_track_title_and_model(self):
         filename = acejam_app._numbered_audio_filename(
             "My Big Hook!",
@@ -635,11 +679,11 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(all(not item["thinking"] for item in calls))
         self.assertTrue(all(not item["use_cot_lyrics"] for item in calls))
         self.assertEqual(calls[0]["inference_steps"], 8)
-        self.assertEqual(calls[2]["inference_steps"], 50)
+        self.assertEqual(calls[2]["inference_steps"], 64)
         self.assertEqual(calls[0]["guidance_scale"], 7.0)
         self.assertEqual(calls[2]["guidance_scale"], 8.0)
         self.assertEqual(calls[0]["shift"], 3.0)
-        self.assertEqual(calls[2]["shift"], 1.0)
+        self.assertEqual(calls[2]["shift"], 3.0)
         self.assertEqual(data["render_strategy"], "all_models_song")
 
     def test_delete_generated_outputs_preserves_uploads_and_lora(self):

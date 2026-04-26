@@ -162,25 +162,42 @@ OFFICIAL_TRAINING_FEATURES: dict[str, dict[str, Any]] = {
     "tensorboard_runs": {"status": "guarded", "endpoint": "/api/lora/status"},
 }
 
-DOCS_BEST_QUALITY_POLICY_VERSION = "docs-best-2026-04-26"
+DOCS_BEST_QUALITY_POLICY_VERSION = "chart-master-2026-04-26"
 DOCS_BEST_AUDIO_FORMAT = "wav32"
 DOCS_BEST_TURBO_STEPS = 8
 DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20
-DOCS_BEST_STANDARD_STEPS = 50
+BALANCED_PRO_STANDARD_STEPS = 50
+CHART_MASTER_STANDARD_STEPS = 64
+DOCS_BEST_STANDARD_STEPS = CHART_MASTER_STANDARD_STEPS
 DOCS_BEST_MODEL_STEPS = {
     "acestep-v15-turbo": 8,
     "acestep-v15-turbo-shift3": 8,
     "acestep-v15-turbo-rl": 8,
-    "acestep-v15-sft": 50,
-    "acestep-v15-base": 50,
+    "acestep-v15-sft": CHART_MASTER_STANDARD_STEPS,
+    "acestep-v15-base": CHART_MASTER_STANDARD_STEPS,
     "acestep-v15-xl-turbo": 8,
-    "acestep-v15-xl-sft": 50,
-    "acestep-v15-xl-base": 50,
+    "acestep-v15-xl-sft": CHART_MASTER_STANDARD_STEPS,
+    "acestep-v15-xl-base": CHART_MASTER_STANDARD_STEPS,
+}
+BALANCED_PRO_MODEL_STEPS = {
+    model: (DOCS_BEST_TURBO_STEPS if is_turbo else BALANCED_PRO_STANDARD_STEPS)
+    for model, is_turbo in {
+        "acestep-v15-turbo": True,
+        "acestep-v15-turbo-shift3": True,
+        "acestep-v15-turbo-rl": True,
+        "acestep-v15-sft": False,
+        "acestep-v15-base": False,
+        "acestep-v15-xl-turbo": True,
+        "acestep-v15-xl-sft": False,
+        "acestep-v15-xl-base": False,
+    }.items()
 }
 DOCS_BEST_TURBO_GUIDANCE = 7.0
 DOCS_BEST_STANDARD_GUIDANCE = 8.0
 DOCS_BEST_TURBO_SHIFT = 3.0
-DOCS_BEST_STANDARD_SHIFT = 1.0
+BALANCED_PRO_STANDARD_SHIFT = 1.0
+CHART_MASTER_STANDARD_SHIFT = 3.0
+DOCS_BEST_STANDARD_SHIFT = CHART_MASTER_STANDARD_SHIFT
 DOCS_BEST_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
 DOCS_BEST_DEFAULT_LM_BACKEND = "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "pt"
 ACE_STEP_SETTINGS_POLICY_VERSION = "ace-step-settings-parity-2026-04-26"
@@ -206,38 +223,198 @@ DOCS_BEST_LM_DEFAULTS: dict[str, Any] = {
     "lm_top_k": 0,
 }
 
+QUALITY_PROFILE_OFFICIAL_RAW = "official_raw"
+QUALITY_PROFILE_PREVIEW_FAST = "preview_fast"
+QUALITY_PROFILE_BALANCED_PRO = "balanced_pro"
+QUALITY_PROFILE_CHART_MASTER = "chart_master"
+DEFAULT_QUALITY_PROFILE = QUALITY_PROFILE_CHART_MASTER
+QUALITY_PROFILES = [
+    QUALITY_PROFILE_OFFICIAL_RAW,
+    QUALITY_PROFILE_PREVIEW_FAST,
+    QUALITY_PROFILE_BALANCED_PRO,
+    QUALITY_PROFILE_CHART_MASTER,
+]
+CHART_MASTER_SINGLE_TAKES = 3
+CHART_MASTER_ALBUM_TAKES = 1
+
+OFFICIAL_HELPER_FUNCTIONS = {
+    "generate_music": {"status": "supported", "feature": "main generation"},
+    "understand_music": {"status": "supported", "feature": "audio semantic-code understanding"},
+    "create_sample": {"status": "supported", "feature": "LM sample/caption/lyrics helper"},
+    "format_sample": {"status": "supported", "feature": "LM formatting helper"},
+}
+
+OFFICIAL_RESULT_FIELDS = {
+    "GenerationResult.success": "active",
+    "GenerationResult.error": "active",
+    "GenerationResult.status_message": "active",
+    "GenerationResult.extra_outputs": "active",
+    "GenerationResult.audios": "active",
+    "Audio.path": "active",
+    "Audio.tensor": "read_only",
+    "Audio.key": "active",
+    "Audio.sample_rate": "active",
+    "Audio.params": "active",
+}
+
 
 def is_turbo_song_model(song_model: Any) -> bool:
     normalized = str(song_model or "").strip().lower()
     return "turbo" in normalized
 
 
-def docs_best_model_settings(song_model: Any, *, high_turbo_cap: bool = False) -> dict[str, Any]:
-    """Return ACE-Step-calibrated quality defaults for the selected DiT model."""
-    turbo = is_turbo_song_model(song_model)
-    if turbo:
-        steps = DOCS_BEST_TURBO_HIGH_CAP_STEPS if high_turbo_cap else DOCS_BEST_TURBO_STEPS
-        guidance = DOCS_BEST_TURBO_GUIDANCE
-        shift = DOCS_BEST_TURBO_SHIFT
-    else:
-        steps = int(DOCS_BEST_MODEL_STEPS.get(str(song_model or "").strip(), DOCS_BEST_STANDARD_STEPS))
-        guidance = DOCS_BEST_STANDARD_GUIDANCE
-        shift = DOCS_BEST_STANDARD_SHIFT
+def is_base_song_model(song_model: Any) -> bool:
+    normalized = str(song_model or "").strip().lower()
+    return normalized.endswith("-base") or "-base" in normalized
+
+
+def normalize_quality_profile(value: Any) -> str:
+    normalized = str(value or DEFAULT_QUALITY_PROFILE).strip().lower().replace("-", "_")
+    aliases = {
+        "best": QUALITY_PROFILE_CHART_MASTER,
+        "chart": QUALITY_PROFILE_CHART_MASTER,
+        "chartmaster": QUALITY_PROFILE_CHART_MASTER,
+        "chart_master": QUALITY_PROFILE_CHART_MASTER,
+        "daily": QUALITY_PROFILE_BALANCED_PRO,
+        "balanced": QUALITY_PROFILE_BALANCED_PRO,
+        "balanced_pro": QUALITY_PROFILE_BALANCED_PRO,
+        "fast": QUALITY_PROFILE_PREVIEW_FAST,
+        "preview": QUALITY_PROFILE_PREVIEW_FAST,
+        "preview_fast": QUALITY_PROFILE_PREVIEW_FAST,
+        "official": QUALITY_PROFILE_OFFICIAL_RAW,
+        "official_raw": QUALITY_PROFILE_OFFICIAL_RAW,
+        "raw": QUALITY_PROFILE_OFFICIAL_RAW,
+    }
+    return aliases.get(normalized, DEFAULT_QUALITY_PROFILE)
+
+
+def _quality_profile_base_settings(profile: str) -> dict[str, Any]:
+    normalized = normalize_quality_profile(profile)
+    if normalized == QUALITY_PROFILE_OFFICIAL_RAW:
+        return {
+            "quality_profile": QUALITY_PROFILE_OFFICIAL_RAW,
+            "quality_preset": "official-raw-ace-step",
+            "inference_steps": 8,
+            "guidance_scale": 7.0,
+            "shift": 1.0,
+            "infer_method": "ode",
+            "sampler_mode": "euler",
+            "audio_format": "flac",
+            "use_adg": False,
+            "single_song_takes": 1,
+            "album_takes": 1,
+        }
+    if normalized == QUALITY_PROFILE_PREVIEW_FAST:
+        return {
+            "quality_profile": QUALITY_PROFILE_PREVIEW_FAST,
+            "quality_preset": "preview-fast-ace-step",
+            "inference_steps": DOCS_BEST_TURBO_STEPS,
+            "guidance_scale": DOCS_BEST_TURBO_GUIDANCE,
+            "shift": DOCS_BEST_TURBO_SHIFT,
+            "infer_method": "ode",
+            "sampler_mode": "heun",
+            "audio_format": "wav",
+            "use_adg": False,
+            "single_song_takes": 1,
+            "album_takes": 1,
+        }
+    if normalized == QUALITY_PROFILE_BALANCED_PRO:
+        return {
+            "quality_profile": QUALITY_PROFILE_BALANCED_PRO,
+            "quality_preset": "balanced-pro-2026-04-26",
+            "inference_steps": BALANCED_PRO_STANDARD_STEPS,
+            "guidance_scale": DOCS_BEST_STANDARD_GUIDANCE,
+            "shift": BALANCED_PRO_STANDARD_SHIFT,
+            "infer_method": "ode",
+            "sampler_mode": "heun",
+            "audio_format": DOCS_BEST_AUDIO_FORMAT,
+            "use_adg": False,
+            "single_song_takes": 1,
+            "album_takes": 1,
+        }
     return {
+        "quality_profile": QUALITY_PROFILE_CHART_MASTER,
         "quality_preset": DOCS_BEST_QUALITY_POLICY_VERSION,
-        "inference_steps": steps,
-        "guidance_scale": guidance,
-        "shift": shift,
+        "inference_steps": CHART_MASTER_STANDARD_STEPS,
+        "guidance_scale": DOCS_BEST_STANDARD_GUIDANCE,
+        "shift": CHART_MASTER_STANDARD_SHIFT,
         "infer_method": "ode",
         "sampler_mode": "heun",
         "audio_format": DOCS_BEST_AUDIO_FORMAT,
+        "use_adg": True,
+        "single_song_takes": CHART_MASTER_SINGLE_TAKES,
+        "album_takes": CHART_MASTER_ALBUM_TAKES,
+    }
+
+
+def quality_profile_model_settings(song_model: Any, quality_profile: Any = DEFAULT_QUALITY_PROFILE, *, high_turbo_cap: bool = False) -> dict[str, Any]:
+    """Return ACE-Step-calibrated defaults for one model/profile pair."""
+    profile = normalize_quality_profile(quality_profile)
+    settings = _quality_profile_base_settings(profile)
+    turbo = is_turbo_song_model(song_model)
+    if turbo:
+        settings["inference_steps"] = DOCS_BEST_TURBO_HIGH_CAP_STEPS if high_turbo_cap else DOCS_BEST_TURBO_STEPS
+        settings["guidance_scale"] = DOCS_BEST_TURBO_GUIDANCE
+        settings["shift"] = DOCS_BEST_TURBO_SHIFT
+        settings["use_adg"] = False
+        if profile == QUALITY_PROFILE_PREVIEW_FAST:
+            settings["audio_format"] = "wav"
+    elif profile == QUALITY_PROFILE_BALANCED_PRO:
+        settings["inference_steps"] = int(BALANCED_PRO_MODEL_STEPS.get(str(song_model or "").strip(), BALANCED_PRO_STANDARD_STEPS))
+    elif profile == QUALITY_PROFILE_CHART_MASTER:
+        settings["inference_steps"] = int(DOCS_BEST_MODEL_STEPS.get(str(song_model or "").strip(), CHART_MASTER_STANDARD_STEPS))
+        settings["use_adg"] = is_base_song_model(song_model)
+    return settings
+
+
+def docs_best_model_settings(song_model: Any, *, high_turbo_cap: bool = False) -> dict[str, Any]:
+    """Return AceJAM's default Chart Master settings for the selected DiT model."""
+    return quality_profile_model_settings(song_model, QUALITY_PROFILE_CHART_MASTER, high_turbo_cap=high_turbo_cap)
+
+
+def quality_profiles_payload() -> dict[str, Any]:
+    return {
+        QUALITY_PROFILE_OFFICIAL_RAW: {
+            "label": "Official raw",
+            "summary": "Literal ACE-Step defaults for parity/debugging.",
+            "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_OFFICIAL_RAW) for model in KNOWN_ACE_STEP_MODELS},
+            "single_song_takes": 1,
+            "album_takes": 1,
+        },
+        QUALITY_PROFILE_PREVIEW_FAST: {
+            "label": "Preview fast",
+            "summary": "Turbo-first draft profile for quick idea checks.",
+            "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_PREVIEW_FAST) for model in KNOWN_ACE_STEP_MODELS},
+            "preferred_model_order": ["acestep-v15-xl-turbo", "acestep-v15-turbo"],
+            "single_song_takes": 1,
+            "album_takes": 1,
+        },
+        QUALITY_PROFILE_BALANCED_PRO: {
+            "label": "Balanced pro",
+            "summary": "Previous AceJAM quality profile: 50-step SFT/Base renders.",
+            "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_BALANCED_PRO) for model in KNOWN_ACE_STEP_MODELS},
+            "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
+            "single_song_takes": 1,
+            "album_takes": 1,
+        },
+        QUALITY_PROFILE_CHART_MASTER: {
+            "label": "Chart Master",
+            "summary": "Default final-render profile: XL/SFT preference, 64 steps, lossless studio output.",
+            "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_CHART_MASTER) for model in KNOWN_ACE_STEP_MODELS},
+            "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
+            "single_song_takes": CHART_MASTER_SINGLE_TAKES,
+            "album_takes": CHART_MASTER_ALBUM_TAKES,
+        },
     }
 
 
 def docs_best_quality_policy() -> dict[str, Any]:
+    profiles = quality_profiles_payload()
     return {
         "version": DOCS_BEST_QUALITY_POLICY_VERSION,
-        "standard": "ACE-Step docs calibrated quality settings, not blind maximum sliders.",
+        "default_profile": DEFAULT_QUALITY_PROFILE,
+        "profiles": profiles,
+        "standard": "Chart Master defaults prioritize final-render quality over speed while keeping official raw defaults selectable.",
         "settings_policy_version": ACE_STEP_SETTINGS_POLICY_VERSION,
         "audio_format": DOCS_BEST_AUDIO_FORMAT,
         "model_step_defaults": dict(DOCS_BEST_MODEL_STEPS),
@@ -253,6 +430,15 @@ def docs_best_quality_policy() -> dict[str, Any]:
             "inference_steps": DOCS_BEST_STANDARD_STEPS,
             "guidance_scale": DOCS_BEST_STANDARD_GUIDANCE,
             "shift": DOCS_BEST_STANDARD_SHIFT,
+            "infer_method": "ode",
+            "sampler_mode": "heun",
+            "single_song_takes": CHART_MASTER_SINGLE_TAKES,
+            "album_takes": CHART_MASTER_ALBUM_TAKES,
+        },
+        "balanced_pro_models": {
+            "inference_steps": BALANCED_PRO_STANDARD_STEPS,
+            "guidance_scale": DOCS_BEST_STANDARD_GUIDANCE,
+            "shift": BALANCED_PRO_STANDARD_SHIFT,
             "infer_method": "ode",
             "sampler_mode": "heun",
         },
@@ -794,6 +980,7 @@ ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
 }
 
 ACEJAM_EXTENSION_DEFAULTS: dict[str, Any] = {
+    "quality_profile": DEFAULT_QUALITY_PROFILE,
     "ace_lm_model": DOCS_BEST_DEFAULT_LM_MODEL,
     "lm_backend": DOCS_BEST_DEFAULT_LM_BACKEND,
     "lm_repetition_penalty": 1.0,
@@ -814,7 +1001,7 @@ ACEJAM_EXTENSION_DEFAULTS: dict[str, Any] = {
 ACE_STEP_SETTING_SECTIONS: dict[str, list[str]] = {
     "core": ["task_type", "instruction", "caption", "global_caption", "lyrics", "instrumental"],
     "music_metadata": ["vocal_language", "bpm", "keyscale", "timesignature", "duration"],
-    "model_quality": ["inference_steps", "seed", "guidance_scale", "shift", "infer_method", "sampler_mode", "timesteps"],
+    "model_quality": ["quality_profile", "inference_steps", "seed", "guidance_scale", "shift", "infer_method", "sampler_mode", "timesteps"],
     "diffusion": [
         "use_adg",
         "cfg_interval_start",
@@ -926,9 +1113,11 @@ def _field_status(field: str) -> str:
         return "read_only_lm_output"
     if field == "use_cot_lyrics":
         return "reserved"
+    if field in OFFICIAL_ONLY_FIELDS:
+        return "official_only"
     if field in ACEJAM_EXTENSION_DEFAULTS:
-        return "acejam_extension"
-    return "supported"
+        return "advanced"
+    return "active"
 
 
 def _field_options(field: str) -> list[Any]:
@@ -942,6 +1131,7 @@ def _field_options(field: str) -> list[Any]:
         "vocal_language": ["unknown", "en", "zh", "ja", "ko", "es", "fr", "de", "it", "pt", "nl", "ar", "ru"],
         "lm_backend": ["mlx", "pt", "vllm"],
         "ace_lm_model": ACE_STEP_LM_MODELS,
+        "quality_profile": QUALITY_PROFILES,
     }
     return list(options.get(field, []))
 
@@ -979,9 +1169,10 @@ def _field_note(field: str) -> str:
         "caption": f"Official request budget: less than {ACE_STEP_CAPTION_CHAR_LIMIT} characters.",
         "lyrics": f"Official request budget: less than {ACE_STEP_LYRICS_CHAR_LIMIT} characters.",
         "duration": "Official range is 10-600 seconds; source-audio tasks lock duration to the source where ACE-Step does that internally.",
-        "inference_steps": "Docs: Turbo recommended 8; Base/SFT 32-64 for quality. AceJAM quality defaults use 50 for Base/SFT/XL SFT/Base.",
+        "quality_profile": "AceJAM profile selector: official_raw, preview_fast, balanced_pro, or chart_master. Chart Master is the default final-render profile.",
+        "inference_steps": "Docs: Turbo recommended 8; Base/SFT 32-64 for quality. Chart Master uses 64 for Base/SFT/XL SFT/Base; Balanced Pro keeps the previous 50-step preset.",
         "guidance_scale": "Only effective for non-turbo models.",
-        "shift": "Docs default is 1.0; API examples use 3.0 for Turbo. Custom timesteps override shift.",
+        "shift": "Official default is 1.0. Chart Master uses 3.0 for final renders. Custom timesteps override shift.",
         "timesteps": "Overrides inference_steps and shift when present.",
         "audio_format": "Official runner supports flac/mp3/opus/aac/wav/wav32; fast in-process runner supports a smaller subset.",
         "audio_cover_strength": "Higher values keep more source structure; lower values transform more freely.",
@@ -1033,10 +1224,12 @@ class AceStepSettingsRegistry:
             },
             "base_sft": {
                 "inference_steps_range": [32, 64],
-                "acejam_default_steps": DOCS_BEST_STANDARD_STEPS,
+                "chart_master_default_steps": CHART_MASTER_STANDARD_STEPS,
+                "balanced_pro_default_steps": BALANCED_PRO_STANDARD_STEPS,
                 "guidance_scale_range": [5.0, 9.0],
                 "acejam_default_guidance": DOCS_BEST_STANDARD_GUIDANCE,
-                "shift": DOCS_BEST_STANDARD_SHIFT,
+                "chart_master_shift": CHART_MASTER_STANDARD_SHIFT,
+                "balanced_pro_shift": BALANCED_PRO_STANDARD_SHIFT,
                 "effective_guidance": True,
             },
             "lm": {
@@ -1053,9 +1246,34 @@ class AceStepSettingsRegistry:
     def acejam_quality(cls) -> dict[str, Any]:
         return {
             "version": DOCS_BEST_QUALITY_POLICY_VERSION,
+            "default_profile": DEFAULT_QUALITY_PROFILE,
             "audio_format": DOCS_BEST_AUDIO_FORMAT,
             "models": {model: docs_best_model_settings(model) for model in KNOWN_ACE_STEP_MODELS},
+            "quality_profiles": quality_profiles_payload(),
             "lm_defaults": dict(DOCS_BEST_LM_DEFAULTS),
+        }
+
+    @classmethod
+    def coverage(cls) -> dict[str, Any]:
+        settings = cls.settings()
+        manifest_fields = set(OFFICIAL_GENERATION_PARAMS + OFFICIAL_GENERATION_CONFIG_FIELDS)
+        missing_fields = sorted(field for field in manifest_fields if field not in settings)
+        known_controls = set(settings)
+        known_controls.update(OFFICIAL_RUNTIME_CONTROLS)
+        known_controls.update(OFFICIAL_API_ENDPOINTS)
+        known_controls.update(OFFICIAL_HELPER_FUNCTIONS)
+        known_controls.update(OFFICIAL_RESULT_FIELDS)
+        return {
+            "status": "complete" if not missing_fields else "incomplete",
+            "missing_fields": missing_fields,
+            "missing_count": len(missing_fields),
+            "generation_params_count": len(OFFICIAL_GENERATION_PARAMS),
+            "generation_config_count": len(OFFICIAL_GENERATION_CONFIG_FIELDS),
+            "api_endpoints": copy.deepcopy(OFFICIAL_API_ENDPOINTS),
+            "runtime_controls": copy.deepcopy(OFFICIAL_RUNTIME_CONTROLS),
+            "helper_functions": copy.deepcopy(OFFICIAL_HELPER_FUNCTIONS),
+            "result_fields": copy.deepcopy(OFFICIAL_RESULT_FIELDS),
+            "known_control_count": len(known_controls),
         }
 
     @classmethod
@@ -1067,9 +1285,15 @@ class AceStepSettingsRegistry:
             "sections": copy.deepcopy(ACE_STEP_SETTING_SECTIONS),
             "profiles": {
                 "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
+                "official_raw": quality_profiles_payload()[QUALITY_PROFILE_OFFICIAL_RAW],
                 "docs_recommended": cls.docs_recommended(),
+                "preview_fast": quality_profiles_payload()[QUALITY_PROFILE_PREVIEW_FAST],
+                "balanced_pro": quality_profiles_payload()[QUALITY_PROFILE_BALANCED_PRO],
+                "chart_master": quality_profiles_payload()[QUALITY_PROFILE_CHART_MASTER],
                 "acejam_quality": cls.acejam_quality(),
             },
+            "default_quality_profile": DEFAULT_QUALITY_PROFILE,
+            "coverage": cls.coverage(),
             "task_policy": {
                 "all_tasks": list(ALL_TASKS),
                 "base_model_tasks": list(ALL_TASKS),
@@ -1097,6 +1321,7 @@ class AceStepSettingsRegistry:
         notes: list[str] = []
         active: list[str] = []
         ignored: list[str] = []
+        official_only: list[str] = []
         unsupported: list[str] = []
         read_only: list[str] = []
         for field in settings:
@@ -1104,29 +1329,35 @@ class AceStepSettingsRegistry:
                 continue
             status = "active"
             if field in ACE_STEP_READ_ONLY_LM_OUTPUT_FIELDS:
-                status = "read_only"
+                status = "read_only_lm_output"
             elif field == "use_cot_lyrics":
-                status = "reserved" if parse_bool(payload.get(field), False) else "inactive"
+                status = "reserved"
+            elif field == "duration" and task in ACE_STEP_SOURCE_LOCKED_DURATION_TASKS:
+                status = "source_locked"
             elif field in {"thinking", "use_cot_metas", "use_cot_caption", "use_cot_language"} and task in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
-                status = "ignored"
+                status = "ignored_for_task"
             elif field == "guidance_scale" and is_turbo_song_model(model):
-                status = "ignored"
-            elif field == "use_adg" and is_turbo_song_model(model):
-                status = "ignored"
+                status = "ignored_for_task"
+            elif field == "use_adg" and not is_base_song_model(model):
+                status = "ignored_for_task"
             elif field == "timesteps" and payload.get(field):
                 notes.append("timesteps_override_steps_shift")
             elif field == "audio_format":
                 fmt = str(payload.get(field) or "").lower()
                 if runner == "fast" and fmt and fmt not in SUPPORTED_AUDIO_FORMATS:
                     status = "unsupported"
+            elif field in OFFICIAL_ONLY_FIELDS and runner == "fast":
+                status = "official_only"
             if status == "active":
                 active.append(field)
-            elif status == "ignored":
+            elif status == "ignored_for_task":
                 ignored.append(field)
             elif status == "unsupported":
                 unsupported.append(field)
-            elif status == "read_only":
+            elif status == "read_only_lm_output":
                 read_only.append(field)
+            elif status == "official_only":
+                official_only.append(field)
             statuses[field] = status
         if task in ACE_STEP_SOURCE_LOCKED_DURATION_TASKS:
             notes.append("duration_source_locked")
@@ -1140,6 +1371,7 @@ class AceStepSettingsRegistry:
             "field_status": statuses,
             "active": sorted(active),
             "ignored": sorted(ignored),
+            "official_only": sorted(official_only),
             "unsupported": sorted(unsupported),
             "read_only": sorted(read_only),
             "notes": sorted(set(notes)),
@@ -1532,6 +1764,11 @@ def lm_model_profiles_for_models(models: list[str], installed_models: set[str] |
 def official_manifest() -> dict[str, Any]:
     """Return a copy of the official ACE-Step parity manifest."""
     manifest = copy.deepcopy(OFFICIAL_ACE_STEP_MANIFEST)
+    manifest["quality_profiles"] = copy.deepcopy(quality_profiles_payload())
+    manifest["default_quality_profile"] = DEFAULT_QUALITY_PROFILE
+    manifest["helper_functions"] = copy.deepcopy(OFFICIAL_HELPER_FUNCTIONS)
+    manifest["result_fields"] = copy.deepcopy(OFFICIAL_RESULT_FIELDS)
+    manifest["settings_coverage"] = AceStepSettingsRegistry.coverage()
     manifest["payload_aliases"] = copy.deepcopy(PARAM_ALIASES)
     manifest["acejam_extension_params"] = {
         "status": "supported",
@@ -1562,12 +1799,12 @@ def official_manifest() -> dict[str, Any]:
 
 def recommended_song_model(installed_models: set[str] | list[str] | None = None) -> str:
     installed = set(installed_models or [])
-    if "acestep-v15-turbo" in installed or not installed:
-        return "acestep-v15-turbo"
-    for candidate in ["acestep-v15-xl-turbo", "acestep-v15-sft", "acestep-v15-base", "acestep-v15-xl-base"]:
+    if not installed:
+        return "acestep-v15-xl-sft"
+    for candidate in ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base", "acestep-v15-xl-turbo", "acestep-v15-turbo"]:
         if candidate in installed:
             return candidate
-    return "acestep-v15-turbo"
+    return "acestep-v15-xl-sft"
 
 
 def recommended_lm_model(installed_models: set[str] | list[str] | None = None) -> str:
@@ -1664,6 +1901,8 @@ def official_fields_used(payload: dict[str, Any]) -> list[str]:
         if field not in payload:
             continue
         value = payload.get(field)
+        if field in {"thinking", "use_format", "use_cot_caption", "use_cot_language", "use_cot_lyrics", "use_cot_metas"} and not parse_bool(value, False):
+            continue
         if not _is_default_value(value, OFFICIAL_FIELD_DEFAULTS.get(field, "")):
             used.append(field)
     fmt = str(get_param(payload, "audio_format", payload.get("audio_format") or "wav")).strip().lower().lstrip(".")
@@ -1728,6 +1967,9 @@ def studio_ui_schema() -> dict[str, Any]:
         "payload_contract_version": "2026-04-26",
         "official_manifest_version": OFFICIAL_ACE_STEP_MANIFEST["manifest_version"],
         "settings_policy_version": settings_registry["version"],
+        "default_quality_profile": settings_registry["default_quality_profile"],
+        "quality_profiles": settings_registry["profiles"],
+        "ace_step_coverage": settings_registry["coverage"],
         "payload_validation_endpoint": "/api/payload/validate",
         "official_parity_endpoint": "/api/ace-step/parity",
         "ace_step_settings_registry": settings_registry,
@@ -1749,6 +1991,7 @@ def studio_ui_schema() -> dict[str, Any]:
             "song": ["title", "duration", "instrumental", "vocal_language", "caption", "lyrics", "reference_audio"],
             "music_metadata": ["bpm", "key_scale", "time_signature", "global_caption"],
             "generation": [
+                "quality_profile",
                 "batch_size",
                 "seed",
                 "use_random_seed",
@@ -1808,6 +2051,8 @@ def studio_ui_schema() -> dict[str, Any]:
         "defaults": dict(OFFICIAL_FIELD_DEFAULTS),
         "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
         "docs_recommended": settings_registry["profiles"]["docs_recommended"],
+        "chart_master": settings_registry["profiles"]["chart_master"],
+        "balanced_pro": settings_registry["profiles"]["balanced_pro"],
         "official_only_fields": sorted(OFFICIAL_ONLY_FIELDS),
         "fast_handler_fields": sorted(FAST_HANDLER_FIELDS),
         "official_runtime_controls": OFFICIAL_RUNTIME_CONTROLS,

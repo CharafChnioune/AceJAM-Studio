@@ -31,7 +31,7 @@ AceJAM current policy:
 - Album planning uses the selected local LLM provider. Set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
 - Default album strategy is "all_models_album": AceJAM renders the same album plan through all 7 ACE-Step models.
 - The portfolio is: acestep-v15-turbo, acestep-v15-turbo-shift3, acestep-v15-sft, acestep-v15-base, acestep-v15-xl-turbo, acestep-v15-xl-sft, acestep-v15-xl-base.
-- Per-track defaults should be Docs-best: non-turbo models 64 steps/guidance_scale 8.0/shift 1.0; turbo models 8 steps/guidance_scale 7.0/shift 3.0 with optional 20-step high cap; wav32 output.
+- Per-track defaults should be Docs-best: non-turbo models 64 steps/guidance_scale 8.0/shift 3.0; turbo models 8 steps/guidance_scale 7.0/shift 3.0 with optional 20-step high cap; wav32 output.
 
 The album JSON must include:
 {
@@ -47,16 +47,17 @@ The album JSON must include:
   "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
-  "use_cot_lyrics": true,
+  "use_cot_lyrics": false,
   "use_cot_language": true,
   "use_constrained_decoding": true,
-  "lm_temperature": 1.0,
-  "lm_cfg_scale": 10.0,
-  "lm_top_p": 1.0,
-  "lm_top_k": 40,
+  "lm_temperature": 0.85,
+  "lm_cfg_scale": 2.0,
+  "lm_top_p": 0.9,
+  "lm_top_k": 0,
   "planner_model": "",
   "planner_ollama_model": "",
   "quality_target": "award_ready",
+  "quality_profile": "chart_master",
   "tag_packs": [],
   "custom_tags": "",
   "negative_tags": "",
@@ -73,7 +74,7 @@ The album JSON must include:
   "use_random_seed": true,
   "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,
@@ -91,6 +92,7 @@ Each track must include:
   "role": "opener | single | escalation | breather | climax | cooldown | closer",
   "duration": 180,
   "song_model": "all_models_album",
+  "quality_profile": "chart_master",
   "caption": "",
   "tags": "",
   "negative_tags": "",
@@ -103,7 +105,7 @@ Each track must include:
   "seed": "-1",
   "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,

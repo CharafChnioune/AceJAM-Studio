@@ -209,6 +209,10 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "ValidationChecklistTool", "summary": "Returns prompt-kit quality gates for captions, lyrics, metadata, safety, and runtime support."},
     {"name": "NegativeControlTool", "summary": "Builds genre-aware negative control phrases for generation payloads."},
     {"name": "AceStepSettingsPolicyTool", "summary": "Returns official/default/docs-recommended/AceJAM settings policy for ACE-Step payloads."},
+    {"name": "ChartMasterProfileTool", "summary": "Returns final-render Chart Master defaults and take-count policy."},
+    {"name": "AceStepCoverageAuditTool", "summary": "Audits ACE-Step params, config, API endpoints, runtime controls, helpers, and result fields."},
+    {"name": "EffectiveSettingsTool", "summary": "Shows effective active/ignored/unsupported settings for a proposed payload."},
+    {"name": "AandRVariantPlanTool", "summary": "Plans multiple single-song takes for A&R selection while keeping album renders bounded."},
     {"name": "TaskApplicabilityTool", "summary": "Explains which ACE-Step controls are active, ignored, or source-locked for a task."},
     {"name": "ModelCompatibilityTool", "summary": "Checks model/task/settings compatibility before finalizing generation controls."},
 ]
@@ -578,12 +582,17 @@ def album_model_portfolio(installed_models: set[str] | list[str] | None = None) 
     return portfolio
 
 
-def album_models_for_strategy(strategy: str, installed_models: set[str] | list[str] | None = None) -> list[dict[str, Any]]:
+def album_models_for_strategy(
+    strategy: str,
+    installed_models: set[str] | list[str] | None = None,
+    requested_model: str | None = None,
+) -> list[dict[str, Any]]:
     if strategy == "all_models_album":
         return album_model_portfolio(installed_models)
     if strategy == "xl_sft_final":
         return [item for item in album_model_portfolio(installed_models) if item["model"] == ALBUM_FINAL_MODEL]
-    info = choose_song_model(installed_models or [], strategy, "auto")
+    requested = str(requested_model or "").strip()
+    info = choose_song_model(installed_models or [], strategy, requested if strategy == "selected" else "auto")
     model = str(info.get("model") or "").strip()
     if not model:
         return []
@@ -1145,6 +1154,7 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         "language": language,
         "duration": duration,
         "song_model": song_model,
+        "quality_profile": str(track.get("quality_profile") or options.get("quality_profile") or "chart_master"),
         "seed": seed_value,
         "inference_steps": inference_steps,
         "guidance_scale": guidance_scale,
@@ -1781,11 +1791,79 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         registry = ace_step_settings_registry()
         compact = {
             "version": registry["version"],
+            "default_quality_profile": registry.get("default_quality_profile"),
             "profiles": registry["profiles"],
+            "coverage": registry.get("coverage"),
             "task_policy": registry["task_policy"],
             "runner_support": registry["runner_support"],
         }
         return json.dumps(compact, ensure_ascii=True)
+
+    @tool("ChartMasterProfileTool")
+    def chart_master_profile_tool(song_model: str = "") -> str:
+        """Return AceJAM's final-render Chart Master defaults."""
+        registry = ace_step_settings_registry()
+        model = str(song_model or context.get("song_model") or ALBUM_FINAL_MODEL)
+        chart = registry["profiles"]["chart_master"]
+        model_settings = chart["models"].get(model) or chart["models"].get(ALBUM_FINAL_MODEL) or {}
+        return json.dumps(
+            {
+                "version": registry["version"],
+                "quality_profile": "chart_master",
+                "model": model,
+                "settings": model_settings,
+                "single_song_takes": chart.get("single_song_takes", 3),
+                "album_takes": chart.get("album_takes", 1),
+                "note": "Use Chart Master for final renders; use Preview Fast only for drafts.",
+            },
+            ensure_ascii=True,
+        )
+
+    @tool("AceStepCoverageAuditTool")
+    def ace_step_coverage_audit_tool(query: str = "") -> str:
+        """Return the full ACE-Step settings/API/helper/result coverage audit."""
+        registry = ace_step_settings_registry()
+        return json.dumps(registry.get("coverage", {}), ensure_ascii=True)
+
+    @tool("EffectiveSettingsTool")
+    def effective_settings_tool(settings_json: str = "") -> str:
+        """Return effective settings compliance for a proposed generation payload."""
+        try:
+            payload = json.loads(settings_json) if settings_json.strip().startswith("{") else {}
+        except Exception:
+            payload = {}
+        task = str(payload.get("task_type") or context.get("task_type") or "text2music")
+        model = str(payload.get("song_model") or context.get("song_model") or ALBUM_FINAL_MODEL)
+        runner = str(payload.get("runner_plan") or "official")
+        compliance = ace_step_settings_compliance(payload, task_type=task, song_model=model, runner_plan=runner)
+        return json.dumps(
+            {
+                "quality_profile": payload.get("quality_profile") or context.get("quality_profile") or "chart_master",
+                "compliance": compliance,
+                "note": "Fields marked ignored_for_task, source_locked, read_only_lm_output, reserved, official_only, or unsupported must not be treated as active controls.",
+            },
+            ensure_ascii=True,
+        )
+
+    @tool("AandRVariantPlanTool")
+    def ar_variant_plan_tool(song_model: str = "") -> str:
+        """Return take-count guidance for professional A&R selection."""
+        registry = ace_step_settings_registry()
+        chart = registry["profiles"]["chart_master"]
+        return json.dumps(
+            {
+                "quality_profile": "chart_master",
+                "single_song_takes": chart.get("single_song_takes", 3),
+                "album_takes": chart.get("album_takes", 1),
+                "selection_notes": [
+                    "Generate three single-song takes for final selection.",
+                    "Albums stay one take per track/model by default to avoid runaway render time.",
+                    "Choose the take with the strongest hook clarity, groove, vocal presence, and artifact-free mix.",
+                ],
+                "model": str(song_model or context.get("song_model") or ALBUM_FINAL_MODEL),
+            },
+            ensure_ascii=True,
+        )
 
     @tool("TaskApplicabilityTool")
     def task_applicability_tool(task_type: str = "") -> str:
@@ -1851,6 +1929,10 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         validation_checklist_tool,
         negative_control_tool,
         ace_step_settings_policy_tool,
+        chart_master_profile_tool,
+        ace_step_coverage_audit_tool,
+        effective_settings_tool,
+        ar_variant_plan_tool,
         task_applicability_tool,
         model_compatibility_tool,
     ]

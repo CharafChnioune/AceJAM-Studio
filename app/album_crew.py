@@ -61,7 +61,7 @@ from prompt_kit import (
     prompt_kit_payload,
     section_map_for,
 )
-from studio_core import docs_best_model_settings
+from studio_core import DEFAULT_QUALITY_PROFILE, docs_best_model_settings, normalize_quality_profile
 from user_album_contract import (
     USER_ALBUM_CONTRACT_VERSION,
     apply_user_album_contract_to_track,
@@ -1100,6 +1100,7 @@ def _coerce_options(
         contract = extract_user_album_contract(concept, num_tracks, language, opts)
     opts.setdefault("song_model_strategy", "all_models_album")
     opts.setdefault("quality_target", "hit")
+    opts["quality_profile"] = normalize_quality_profile(opts.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
     opts.setdefault("lyric_density", "dense")
     opts.setdefault("rhyme_density", 0.8)
     opts.setdefault("metaphor_density", 0.7)
@@ -1319,7 +1320,8 @@ def create_track_production_crew(
         "language_preset": lang_preset,
         "section_map": section_map_for(blueprint.get("duration") or track_duration, str(blueprint.get("tags") or blueprint.get("description") or "")),
         "docs_best_model_settings": ALBUM_FINAL_DOCS_BEST,
-        "settings_policy": "Use AceStepSettingsPolicyTool, TaskApplicabilityTool, and ModelCompatibilityTool. Keep unsupported/reserved/read-only settings out of active payloads.",
+        "quality_profile": opts.get("quality_profile"),
+        "settings_policy": "Use AceStepSettingsPolicyTool, ChartMasterProfileTool, AceStepCoverageAuditTool, EffectiveSettingsTool, TaskApplicabilityTool, and ModelCompatibilityTool. Keep unsupported/reserved/read-only settings out of active payloads.",
     }
     task_produce = _crew_task(
         description=(
@@ -1338,7 +1340,7 @@ def create_track_production_crew(
             "lyrics, bpm, key_scale, time_signature, language, duration, song_model, seed, inference_steps, "
             "guidance_scale, shift, infer_method, sampler_mode, audio_format, auto_score, auto_lrc, "
             "return_audio_codes, save_to_library, tool_notes, production_team, model_render_notes, "
-            "prompt_kit_version, settings_policy_version, settings_compliance, quality_checks, contract_compliance. "
+            "quality_profile, prompt_kit_version, settings_policy_version, settings_compliance, quality_checks, contract_compliance. "
             "Preserve the blueprint title and locked fields exactly. No markdown fences."
         ),
         expected_output="Strict JSON object for exactly one produced track.",
@@ -1445,6 +1447,7 @@ def create_album_crew(
             "model_advice": model_info,
             "album_model_portfolio": album_model_portfolio(opts.get("installed_models")),
             "quality_target": opts.get("quality_target"),
+            "quality_profile": opts.get("quality_profile"),
             "tag_packs": opts.get("tag_packs"),
             "custom_tags": opts.get("custom_tags"),
             "artist_reference_notes": opts.get("artist_reference_notes"),
@@ -1474,7 +1477,10 @@ def create_album_crew(
         "Use one emotional promise per song, one coherent metaphor world, concrete scene details (place, object, weather, body, action), "
         "a repeatable title-connected hook short enough to remember after one listen, "
         "language/script discipline, genre-module routing, and a duration-realistic section_map. "
-        "Use AceStepSettingsPolicyTool, TaskApplicabilityTool, and ModelCompatibilityTool for generation controls; "
+        "Default generation profile is chart_master: use 64-step SFT/Base final-render settings, wav32 output, "
+        "ADG only for Base/XL Base, and one album take per track/model unless the user explicitly asks for more. "
+        "Use AceStepSettingsPolicyTool, ChartMasterProfileTool, AceStepCoverageAuditTool, EffectiveSettingsTool, "
+        "AandRVariantPlanTool, TaskApplicabilityTool, and ModelCompatibilityTool for generation controls; "
         "do not invent settings, and do not treat read-only, reserved, ignored, or unsupported fields as active. "
         "Use the provided tools when useful. Output concrete, editable production data."
     )
@@ -1725,7 +1731,8 @@ def create_album_crew(
         description=(
             "Set editable generation controls for every track: seed, inference_steps, guidance_scale, shift, "
             "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library. "
-            "Use GenerationSettingsTool, PerModelSettingsTool, AlbumRenderMatrixTool, FilenamePlannerTool, "
+            "Use GenerationSettingsTool, PerModelSettingsTool, ChartMasterProfileTool, EffectiveSettingsTool, "
+            "AceStepCoverageAuditTool, AandRVariantPlanTool, AlbumRenderMatrixTool, FilenamePlannerTool, "
             "and MixMasterTool. Plan strong defaults; AceJAM will render every track once with each portfolio model. "
             f"{schema_rules}"
         ),
@@ -1739,6 +1746,7 @@ def create_album_crew(
             "Each object must include: track_number, artist_name, title, description, tags, lyrics, bpm, key_scale, "
             "time_signature, language, duration, song_model, seed, inference_steps, guidance_scale, shift, "
             "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library, "
+            "quality_profile, "
             "tool_notes, production_team, model_render_notes, prompt_kit_version, target_language, language_notes, "
             "genre_profile, genre_modules, section_map, lyric_density_notes, workflow_mode, negative_control, "
             "quality_checks, troubleshooting_hints, and anti_ai_rewrite_notes. "

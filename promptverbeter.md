@@ -29,7 +29,7 @@ ACEJAM_PAYLOAD_JSON
 
 AceJAM huidige regels:
 - Gebruik de gekozen lokale LLM-provider voor planning en schrijven. Zet altijd "ace_lm_model": "acestep-5Hz-lm-4B" en "planner_lm_provider": "".
-- Premium final text2music: "song_model": "acestep-v15-xl-sft", "inference_steps": 64, "guidance_scale": 8.0, "shift": 1.0, "infer_method": "ode", "audio_format": "wav32".
+- Premium final text2music: "song_model": "acestep-v15-xl-sft", "inference_steps": 64, "guidance_scale": 8.0, "shift": 3.0, "infer_method": "ode", "audio_format": "wav32".
 - Voor snelle drafts alleen als de gebruiker het vraagt: turbo/XL turbo, 8 steps, optional 20 high cap, shift 3.0.
 - Voor extract/lego/complete alleen base/XL base. Voor gewone verbeterde songs XL SFT.
 - Vocal songs mogen nooit lege lyrics hebben. Instrumental gebruikt exact "[Instrumental]".
@@ -39,19 +39,20 @@ Als JSON gevraagd wordt, neem minimaal deze velden op:
 {
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
+  "quality_profile": "chart_master",
   "ace_lm_model": "acestep-5Hz-lm-4B",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
   "use_cot_metas": true,
   "use_cot_caption": true,
-  "use_cot_lyrics": true,
+  "use_cot_lyrics": false,
   "use_cot_language": true,
   "use_constrained_decoding": true,
-  "lm_temperature": 1.0,
-  "lm_cfg_scale": 10.0,
-  "lm_top_p": 1.0,
-  "lm_top_k": 40,
+  "lm_temperature": 0.85,
+  "lm_cfg_scale": 2.0,
+  "lm_top_p": 0.9,
+  "lm_top_k": 0,
   "planner_model": "",
   "planner_ollama_model": "",
   "artist_name": "",
@@ -69,7 +70,7 @@ Als JSON gevraagd wordt, neem minimaal deze velden op:
   "seed": "-1",
   "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32"
 }

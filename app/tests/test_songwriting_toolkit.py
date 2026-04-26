@@ -234,6 +234,14 @@ kill all the rivals
         resolved = album_models_for_strategy("all_models_album", {"acestep-v15-turbo"})
         self.assertEqual([item["model"] for item in resolved], ALBUM_MODEL_PORTFOLIO_MODELS)
 
+    def test_selected_album_strategy_uses_requested_model_even_when_missing(self):
+        resolved = album_models_for_strategy("selected", {"acestep-v15-turbo"}, "acestep-v15-xl-sft")
+
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(resolved[0]["model"], "acestep-v15-xl-sft")
+        self.assertFalse(resolved[0]["installed"])
+        self.assertTrue(resolved[0]["download_required"])
+
     def test_artist_references_pass_through_unchanged(self):
         cleaned, notes = sanitize_artist_references("Dutch rap like Nas and Eminem")
         self.assertIn("Nas", cleaned)
@@ -331,9 +339,10 @@ kill all the rivals
         self.assertEqual(len(result["tracks"]), 3)
         for track in result["tracks"]:
             self.assertEqual(track["song_model"], ALBUM_FINAL_MODEL)
-            self.assertEqual(track["inference_steps"], 50)
+            self.assertEqual(track["inference_steps"], 64)
             self.assertEqual(track["guidance_scale"], 8.0)
-            self.assertEqual(track["shift"], 1.0)
+            self.assertEqual(track["shift"], 3.0)
+            self.assertEqual(track["quality_profile"], "chart_master")
             self.assertIn("production_team", track)
             self.assertIn("studio_engineer", track["production_team"])
             self.assertTrue(track["lyrics"].strip())

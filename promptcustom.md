@@ -27,26 +27,27 @@ No markdown fences around JSON.
 
 AceJAM policy:
 - The selected local LLM provider handles planning/writing. Use "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
-- Premium text2music: "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 1.0, infer_method "ode", audio_format "wav32".
+- Premium text2music: "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 3.0, infer_method "ode", audio_format "wav32".
 - Turbo only for fast draft: 8 steps, optional 20 high cap, shift 3.0.
 
 Required JSON:
 {
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
+  "quality_profile": "chart_master",
   "ace_lm_model": "acestep-5Hz-lm-4B",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
-  "use_cot_lyrics": true,
+  "use_cot_lyrics": false,
   "use_cot_language": true,
   "use_constrained_decoding": true,
-  "lm_temperature": 1.0,
-  "lm_cfg_scale": 10.0,
-  "lm_top_p": 1.0,
-  "lm_top_k": 40,
+  "lm_temperature": 0.85,
+  "lm_cfg_scale": 2.0,
+  "lm_top_p": 0.9,
+  "lm_top_k": 0,
   "planner_model": "",
   "planner_ollama_model": "",
   "artist_name": "",
@@ -61,12 +62,12 @@ Required JSON:
   "key_scale": "C major",
   "time_signature": "4",
   "vocal_language": "en",
-  "batch_size": 1,
+  "batch_size": 3,
   "seed": "-1",
   "use_random_seed": true,
   "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,

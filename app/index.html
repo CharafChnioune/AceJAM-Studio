@@ -990,9 +990,10 @@
           <div>
             <label for="quality-preset">Quality preset</label>
             <select id="quality-preset">
-              <option value="daily">Daily - XL Turbo when available</option>
-              <option value="fast">Fast - Turbo draft</option>
-              <option value="best" selected>Best - XL SFT detail</option>
+              <option value="chart_master" selected>Chart Master - final quality</option>
+              <option value="balanced_pro">Balanced Pro - 50-step quality</option>
+              <option value="preview_fast">Preview Fast - Turbo draft</option>
+              <option value="official_raw">Official Raw - ACE-Step defaults</option>
             </select>
           </div>
           <div>
@@ -1617,7 +1618,7 @@
               <option value="all_models_album">All 7 models</option>
               <option value="acestep-v15-turbo">Turbo (fast, 8 steps)</option>
               <option value="acestep-v15-turbo-shift3">Turbo Shift3 (dry timbre)</option>
-              <option value="acestep-v15-sft">SFT (detail, 50 steps)</option>
+              <option value="acestep-v15-sft">SFT (detail, 64 steps)</option>
               <option value="acestep-v15-base">Base (flexible)</option>
               <option value="acestep-v15-xl-turbo">XL Turbo (best fast)</option>
               <option value="acestep-v15-xl-sft" selected>XL SFT (highest quality)</option>
@@ -2236,21 +2237,23 @@
     const DOCS_BEST_AUDIO_FORMAT = "wav32";
     const DOCS_BEST_TURBO_STEPS = 8;
     const DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20;
-    const DOCS_BEST_STANDARD_STEPS = 50;
+    const BALANCED_PRO_STANDARD_STEPS = 50;
+    const DOCS_BEST_STANDARD_STEPS = 64;
     const DOCS_BEST_MODEL_STEPS = {
       "acestep-v15-turbo": 8,
       "acestep-v15-turbo-shift3": 8,
       "acestep-v15-turbo-rl": 8,
-      "acestep-v15-sft": 50,
-      "acestep-v15-base": 50,
+      "acestep-v15-sft": 64,
+      "acestep-v15-base": 64,
       "acestep-v15-xl-turbo": 8,
-      "acestep-v15-xl-sft": 50,
-      "acestep-v15-xl-base": 50
+      "acestep-v15-xl-sft": 64,
+      "acestep-v15-xl-base": 64
     };
     const DOCS_BEST_TURBO_GUIDANCE = 7;
     const DOCS_BEST_STANDARD_GUIDANCE = 8;
     const DOCS_BEST_TURBO_SHIFT = 3;
-    const DOCS_BEST_STANDARD_SHIFT = 1;
+    const BALANCED_PRO_STANDARD_SHIFT = 1;
+    const DOCS_BEST_STANDARD_SHIFT = 3;
     const taskForMode = { simple: "text2music", custom: "text2music", cover: "cover", repaint: "repaint", extract: "extract", lego: "lego", complete: "complete", album: "text2music" };
     const state = {
       mode: "simple",
@@ -2304,9 +2307,24 @@
     const plannerProviderForMode = (mode = state.mode) => normalizeProvider(mode === "album" ? ($("album-planner-provider")?.value || "ollama") : ($("planner-provider")?.value || "ollama"));
     const embeddingProviderForAlbum = () => normalizeProvider($("album-embed-provider")?.value || $("album-planner-provider")?.value || "ollama");
     const selectedPlannerModelForMode = (mode = state.mode) => mode === "album" ? ($("album-ollama")?.value || "") : ($("ollama-model")?.value || "");
-    function docsBestModelSettings(modelName) {
+    function selectedQualityProfile() {
+      return $("quality-preset")?.value || state.config?.ui_schema?.default_quality_profile || "chart_master";
+    }
+    function docsBestModelSettings(modelName, profileName = selectedQualityProfile()) {
       const name = String(modelName || "").toLowerCase();
       const turbo = name.includes("turbo");
+      const profile = String(profileName || "chart_master");
+      const registryModel = state.config?.ui_schema?.quality_profiles?.[profile]?.models?.[name];
+      if (registryModel) return registryModel;
+      if (profile === "official_raw") {
+        return { inference_steps: 8, turbo_high_cap_steps: 8, guidance_scale: 7, shift: 1, infer_method: "ode", sampler_mode: "euler", audio_format: "flac", use_adg: false, quality_profile: profile };
+      }
+      if (profile === "preview_fast") {
+        return { inference_steps: 8, turbo_high_cap_steps: 20, guidance_scale: 7, shift: 3, infer_method: "ode", sampler_mode: "heun", audio_format: "wav", use_adg: false, quality_profile: profile };
+      }
+      if (profile === "balanced_pro" && !turbo) {
+        return { inference_steps: BALANCED_PRO_STANDARD_STEPS, turbo_high_cap_steps: BALANCED_PRO_STANDARD_STEPS, guidance_scale: DOCS_BEST_STANDARD_GUIDANCE, shift: BALANCED_PRO_STANDARD_SHIFT, infer_method: "ode", sampler_mode: "heun", audio_format: DOCS_BEST_AUDIO_FORMAT, use_adg: false, quality_profile: profile };
+      }
       return {
         inference_steps: DOCS_BEST_MODEL_STEPS[name] || (turbo ? DOCS_BEST_TURBO_STEPS : DOCS_BEST_STANDARD_STEPS),
         turbo_high_cap_steps: turbo ? DOCS_BEST_TURBO_HIGH_CAP_STEPS : DOCS_BEST_STANDARD_STEPS,
@@ -2314,7 +2332,9 @@
         shift: turbo ? DOCS_BEST_TURBO_SHIFT : DOCS_BEST_STANDARD_SHIFT,
         infer_method: "ode",
         sampler_mode: "heun",
-        audio_format: DOCS_BEST_AUDIO_FORMAT
+        audio_format: DOCS_BEST_AUDIO_FORMAT,
+        use_adg: !turbo && name.includes("base"),
+        quality_profile: profile
       };
     }
     function selectedAlbumModelForDefaults() {
@@ -3014,7 +3034,13 @@
 
     function selectedActualSongModel() {
       const selected = $("song-model").value || "auto";
-      return selected === "auto" ? state.config?.default_song_model : selected;
+      if (selected !== "auto") return selected;
+      const profile = selectedQualityProfile();
+      if (profile === "preview_fast") {
+        return ["acestep-v15-xl-turbo", "acestep-v15-turbo"].find(modelOptionExists) || state.config?.default_song_model;
+      }
+      if (profile === "official_raw") return state.config?.default_song_model;
+      return state.config?.recommended_song_model || state.config?.default_song_model;
     }
 
     function maybeDownloadSelectedSongModel() {
@@ -3128,12 +3154,16 @@
 
     function applyModelDefaults(modelName) {
       const name = modelName === "auto" ? selectedActualSongModel() : modelName;
-      const defaults = docsBestModelSettings(name);
+      const defaults = docsBestModelSettings(name, selectedQualityProfile());
       $("steps").value = String(defaults.inference_steps);
       $("guidance").value = String(defaults.guidance_scale);
       $("shift").value = String(defaults.shift);
       $("infer-method").value = defaults.infer_method;
       $("sampler-mode").value = defaults.sampler_mode;
+      if ($("audio-format") && defaults.audio_format) $("audio-format").value = defaults.audio_format;
+      if ($("use-adg")) $("use-adg").checked = Boolean(defaults.use_adg);
+      const profile = state.config?.ui_schema?.quality_profiles?.[selectedQualityProfile()];
+      if ($("batch-size")) $("batch-size").value = String(profile?.single_song_takes || (selectedQualityProfile() === "chart_master" ? 3 : 1));
     }
 
     function applyAlbumModelDefaults() {
@@ -3148,13 +3178,15 @@
 
     function applyQualityPreset(preset) {
       const choices = {
-        fast: ["acestep-v15-turbo", "acestep-v15-xl-turbo"],
-        daily: ["acestep-v15-xl-turbo", "acestep-v15-turbo"],
-        best: ["acestep-v15-xl-sft", "acestep-v15-sft"]
+        preview_fast: ["acestep-v15-xl-turbo", "acestep-v15-turbo"],
+        balanced_pro: ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
+        chart_master: ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
+        official_raw: ["acestep-v15-turbo", "acestep-v15-xl-turbo", "acestep-v15-sft"]
       };
-      const modelName = (choices[preset] || choices.daily).find(modelOptionExists);
+      const normalizedPreset = preset === "best" ? "chart_master" : preset === "daily" ? "balanced_pro" : preset === "fast" ? "preview_fast" : preset;
+      const modelName = (choices[normalizedPreset] || choices.chart_master).find(modelOptionExists);
       if (modelName) {
-        selectSongModel(modelName, `${preset} quality`);
+        selectSongModel(modelName, `${normalizedPreset.replaceAll("_", " ")} quality`);
       } else {
         applyModelDefaults(selectedActualSongModel());
         updateAdvancedSummaries();
@@ -3441,6 +3473,8 @@
       const sections = registry.sections || {};
       const profiles = registry.profiles || {};
       const quality = profiles.acejam_quality || {};
+      const chart = profiles.chart_master || {};
+      const coverage = registry.coverage || {};
       const docs = profiles.docs_recommended || {};
       const sourceLocked = registry.task_policy?.source_locked_duration || [];
       const lmSkips = registry.task_policy?.lm_skips || [];
@@ -3454,17 +3488,19 @@
         const extra = available.length > 6 ? `<span class="badge">+${available.length - 6}</span>` : "";
         return `<div class="health-card"><strong>${esc(name.replaceAll("_", " "))}</strong><span>${available.length} setting(s)</span><small>${badges}${extra}</small></div>`;
       }).join("");
-      summary.textContent = `${registry.version}: official, docs and AceJAM quality profiles`;
+      summary.textContent = `${registry.version}: ${coverage.status || "coverage"} coverage, default ${registry.default_quality_profile || "chart_master"}`;
       target.innerHTML = `
         <div class="payload-checks">
           <div class="status-strip">
             <span class="badge ok">Registry ${esc(registry.version)}</span>
+            <span class="badge ${coverage.missing_count ? "warn" : "ok"}">Coverage ${esc(coverage.status || "unknown")}</span>
             <span class="badge">Official defaults kept separate</span>
-            <span class="badge ok">AceJAM quality ${esc(quality.version || "active")}</span>
+            <span class="badge ok">Default ${esc(registry.default_quality_profile || "chart_master")}</span>
+            <span class="badge ok">Chart Master takes ${esc(String(chart.single_song_takes || 3))}</span>
             <span class="badge">LM skips ${esc(lmSkips.join(", ") || "none")}</span>
             <span class="badge">Source locked ${esc(sourceLocked.join(", ") || "none")}</span>
           </div>
-          <div class="tiny">Turbo: ${esc(String(docs.turbo?.inference_steps || 8))} steps. Base/SFT docs range: ${esc((docs.base_sft?.inference_steps_range || [32, 64]).join("-"))}; AceJAM quality default: ${esc(String(docs.base_sft?.acejam_default_steps || 50))}. Payload review shows the final effective settings before generation.</div>
+          <div class="tiny">Turbo: ${esc(String(docs.turbo?.inference_steps || 8))} steps. Base/SFT docs range: ${esc((docs.base_sft?.inference_steps_range || [32, 64]).join("-"))}; Chart Master: ${esc(String(docs.base_sft?.chart_master_default_steps || 64))} steps; Balanced Pro: ${esc(String(docs.base_sft?.balanced_pro_default_steps || 50))} steps. Payload review shows the final effective settings before generation.</div>
           <div class="health-grid" style="margin-top:12px;">${sectionRows}</div>
         </div>
       `;
@@ -3733,8 +3769,8 @@
         state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(modelOptionLabel(name))}</option>`).join("");
       if ([...modelSelect.options].some((option) => option.value === selectedSongModel)) modelSelect.value = selectedSongModel;
       let selectedBestModelOnLoad = false;
-      if (selectedSongModel === "auto" && $("quality-preset")?.value === "best") {
-        const bestModel = ["acestep-v15-xl-sft", "acestep-v15-sft"].find((name) => [...modelSelect.options].some((option) => option.value === name));
+      if (selectedSongModel === "auto" && $("quality-preset")?.value === "chart_master") {
+        const bestModel = ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base"].find((name) => [...modelSelect.options].some((option) => option.value === name));
         if (bestModel) {
           modelSelect.value = bestModel;
           selectedBestModelOnLoad = true;
@@ -4061,7 +4097,10 @@
       setFieldValue("album-tracks", payload.num_tracks);
       setFieldValue("album-duration", payload.track_duration || payload.duration);
       setSelectValue("album-language", payload.language || payload.vocal_language);
-      setSelectValue("album-model-strategy", payload.song_model_strategy || "all_models_album");
+      const albumModelStrategy = payload.song_model_strategy === "selected"
+        ? (payload.requested_song_model || payload.song_model || payload.final_song_model || "acestep-v15-xl-sft")
+        : (payload.song_model_strategy || "all_models_album");
+      setSelectValue("album-model-strategy", albumModelStrategy);
       setSelectValue("album-quality", payload.quality_target);
       if (payload.inference_steps === undefined && payload.guidance_scale === undefined && payload.shift === undefined) {
         applyAlbumModelDefaults();
@@ -4387,6 +4426,7 @@
         valid: validation?.valid ?? null,
         runner: validation?.runner_plan || normalized.runner_plan,
         model: modelName,
+        quality_profile: normalized.quality_profile || selectedQualityProfile(),
         model_state: installed,
         caption_source: normalized.caption_source,
         lyrics_source: normalized.lyrics_source,
@@ -4674,6 +4714,7 @@
         duration: Number($("duration").value),
         batch_size: Number($("batch-size").value),
         song_model: $("song-model").value,
+        quality_profile: selectedQualityProfile(),
         ace_lm_model: activeLmModelFor(mode),
         planner_lm_provider: plannerProviderForMode(mode),
         planner_model: selectedPlannerModelForMode(mode),
@@ -5156,6 +5197,7 @@
         ace_lm_model: activeLmModelFor("album"),
         song_model_strategy: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : "selected",
         requested_song_model: $("album-model-strategy").value === "all_models_album" ? "auto" : $("album-model-strategy").value,
+        quality_profile: selectedQualityProfile(),
         quality_target: $("album-quality").value,
         structure_preset: $("album-structure").value,
         tag_packs: selectedAlbumTagPacks(),
@@ -5225,6 +5267,7 @@
         global_caption: defaults.global_caption || defaults.concept || "",
         batch_size: track.track_variants || defaults.track_variants || 1,
         song_model: track.song_model && track.song_model.startsWith("acestep-v15-") ? track.song_model : "acestep-v15-xl-sft",
+        quality_profile: track.quality_profile || defaults.quality_profile || selectedQualityProfile(),
         ace_lm_model: track.ace_lm_model || defaults.ace_lm_model || activeLmModelFor("album"),
         planner_lm_provider: defaults.planner_lm_provider || plannerProviderForMode("album"),
         embedding_lm_provider: defaults.embedding_lm_provider || embeddingProviderForAlbum(),
@@ -5353,6 +5396,7 @@
           concept: payload.concept,
           final_song_model: payload.final_song_model || "all_models_album",
           model_strategy: payload.song_model_strategy || $("album-model-strategy").value,
+          quality_profile: payload.quality_profile || selectedQualityProfile(),
           quality_target: payload.quality_target || $("album-quality").value,
           variants: payload.track_variants || $("album-variants").value,
           ace_lm_model: payload.ace_lm_model,
@@ -5979,7 +6023,11 @@
         updateAdvancedSummaries();
         renderReadinessStrips();
       });
-      $("quality-preset")?.addEventListener("change", () => applyQualityPreset($("quality-preset").value));
+      $("quality-preset")?.addEventListener("change", () => {
+        applyQualityPreset($("quality-preset").value);
+        applyAlbumModelDefaults();
+        renderAceStepSettingsPanel();
+      });
       $("ace-lm-model").addEventListener("change", () => {
         startModelDownload($("ace-lm-model").value, "ACE-Step LM selection");
         updateAllLmAdvice();

@@ -24,7 +24,7 @@ Do not wrap the JSON in markdown fences. Keep all JSON valid.
 AceJAM current policy:
 - Planning, writing, formatting, and creative decisions use the selected local LLM provider. Do not use ACE-Step LM.
 - Always set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
-- Premium final text2music default is "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 1.0, infer_method "ode", audio_format "wav32".
+- Premium final text2music default is "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 3.0, infer_method "ode", audio_format "wav32".
 - Use turbo models only if the user explicitly asks for fast draft: turbo/XL turbo use 8 steps, optional 20 high cap, and shift 3.0.
 - For extract, lego, or complete tasks use "acestep-v15-xl-base"; otherwise use XL SFT for finished vocal songs.
 
@@ -32,19 +32,20 @@ The JSON must include:
 {
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
+  "quality_profile": "chart_master",
   "ace_lm_model": "acestep-5Hz-lm-4B",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": false,
   "use_cot_metas": true,
   "use_cot_caption": true,
-  "use_cot_lyrics": true,
+  "use_cot_lyrics": false,
   "use_cot_language": true,
   "use_constrained_decoding": true,
-  "lm_temperature": 1.0,
-  "lm_cfg_scale": 10.0,
-  "lm_top_p": 1.0,
-  "lm_top_k": 40,
+  "lm_temperature": 0.85,
+  "lm_cfg_scale": 2.0,
+  "lm_top_p": 0.9,
+  "lm_top_k": 0,
   "planner_model": "",
   "planner_ollama_model": "",
   "artist_name": "",
@@ -59,12 +60,12 @@ The JSON must include:
   "key_scale": "C major",
   "time_signature": "4",
   "vocal_language": "en",
-  "batch_size": 1,
+  "batch_size": 3,
   "seed": "-1",
   "use_random_seed": true,
   "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,
