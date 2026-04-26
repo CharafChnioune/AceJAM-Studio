@@ -5043,7 +5043,7 @@
         planner_ollama_model: plannerProvider === "ollama" ? plannerModel : "",
         embedding_model: $("album-embed").value || (embedProvider === "ollama" ? state.config?.default_album_embedding_model : "") || "",
         language: $("album-language").value,
-        song_model: $("song-model").value,
+        song_model: $("album-model-strategy").value === "all_models_album" ? "auto" : $("album-model-strategy").value,
         final_song_model: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : $("album-model-strategy").value,
         ace_lm_model: activeLmModelFor("album"),
         song_model_strategy: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : "selected",
