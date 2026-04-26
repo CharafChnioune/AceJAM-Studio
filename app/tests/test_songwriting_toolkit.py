@@ -119,6 +119,8 @@ Lyrics:
         self.assertEqual(result["tracks"][0]["producer_credit"], "Ada North")
         self.assertEqual(result["tracks"][0]["bpm"], 92)
         self.assertTrue(result["tracks"][0]["input_contract_applied"])
+        self.assertEqual(result["tracks"][0]["settings_policy_version"], "ace-step-settings-parity-2026-04-26")
+        self.assertIn("settings_compliance", result["tracks"][0])
         self.assertNotIn("Protocol", result["tracks"][0]["title"])
         self.assertNotIn("Season", result["tracks"][1]["title"])
 
@@ -188,6 +190,9 @@ kill all the rivals
                 "TroubleshootingTool",
                 "ValidationChecklistTool",
                 "NegativeControlTool",
+                "AceStepSettingsPolicyTool",
+                "TaskApplicabilityTool",
+                "ModelCompatibilityTool",
             }.issubset(tool_names)
         )
         self.assertEqual(payload["prompt_kit_version"], PROMPT_KIT_VERSION)
@@ -195,6 +200,8 @@ kill all the rivals
         self.assertIn("language_presets", payload)
         self.assertIn("genre_modules", payload)
         self.assertIn("validation_checklist", payload)
+        self.assertIn("ace_step_settings_registry", payload)
+        self.assertEqual(payload["ace_step_settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
 
     def test_model_advisor_uses_only_installed_models(self):
         info = choose_song_model({"acestep-v15-turbo"}, "best_installed", "auto")
@@ -324,7 +331,7 @@ kill all the rivals
         self.assertEqual(len(result["tracks"]), 3)
         for track in result["tracks"]:
             self.assertEqual(track["song_model"], ALBUM_FINAL_MODEL)
-            self.assertEqual(track["inference_steps"], 64)
+            self.assertEqual(track["inference_steps"], 50)
             self.assertEqual(track["guidance_scale"], 8.0)
             self.assertEqual(track["shift"], 1.0)
             self.assertIn("production_team", track)

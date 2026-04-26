@@ -54,7 +54,9 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("api_key_enabled", payload["manifest"]["runtime"])
         self.assertIn("quality_policy", payload["manifest"])
         self.assertIn("schema_parity", payload["manifest"])
-        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 64)
+        self.assertIn("settings_registry", payload["manifest"])
+        self.assertEqual(payload["manifest"]["settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
+        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 50)
         self.assertEqual(payload["manifest"]["quality_policy"]["turbo_models"]["inference_steps"], 8)
 
     def test_official_response_wrapper_shape(self):
@@ -105,7 +107,7 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(normalized["thinking"])
         self.assertTrue(normalized["use_format"])
         self.assertTrue(normalized["sample_mode"] is False)
-        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["inference_steps"], 50)
         self.assertEqual(normalized["runner_plan"], "official")
 
     def test_studio_generation_with_supplied_lyrics_leaves_ace_lm_format_off(self):
@@ -124,12 +126,29 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(normalized["thinking"])
         self.assertFalse(normalized["use_format"])
         self.assertFalse(normalized["use_cot_lyrics"])
-        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["inference_steps"], 50)
         self.assertEqual(normalized["guidance_scale"], 8.0)
         self.assertEqual(normalized["shift"], 1.0)
         self.assertEqual(normalized["sampler_mode"], "heun")
         self.assertEqual(normalized["audio_format"], "wav")
         self.assertEqual(normalized["runner_plan"], "fast")
+
+    def test_xl_sft_defaults_to_official_50_steps(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "caption": "upbeat German schlager, bright brass, accordion",
+            "lyrics": "[Verse]\nHeute Nacht leuchtet die Stadt\n\n[Chorus]\nWir singen weiter",
+            "duration": 180,
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            normalized = acejam_app._parse_generation_payload(payload)
+
+        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertEqual(normalized["song_model"], "acestep-v15-xl-sft")
+        self.assertEqual(normalized["duration"], 180)
 
     def test_simple_custom_helpers_default_to_official_4b_lm(self):
         client = TestClient(acejam_app.app)
@@ -181,9 +200,9 @@ class AppParityTest(unittest.TestCase):
     def test_official_helper_lm_sampling_defaults_are_best_quality(self):
         params = acejam_app._official_aux_params({})
 
-        self.assertEqual(params["lm_temperature"], 1.0)
-        self.assertEqual(params["lm_top_k"], 40)
-        self.assertEqual(params["lm_top_p"], 1.0)
+        self.assertEqual(params["lm_temperature"], 0.85)
+        self.assertEqual(params["lm_top_k"], 0)
+        self.assertEqual(params["lm_top_p"], 0.9)
 
     def test_official_generation_payload_omits_lm_only_repetition_penalty(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
@@ -345,6 +364,8 @@ class AppParityTest(unittest.TestCase):
 
         self.assertNotIn("ace_lm_model", validation["field_errors"])
         self.assertEqual(validation["normalized_payload"]["ace_lm_model"], "none")
+        self.assertEqual(validation["settings_policy_version"], "ace-step-settings-parity-2026-04-26")
+        self.assertIn("settings_compliance", validation)
 
     def test_album_description_does_not_become_sample_query(self):
         payload = {
@@ -614,7 +635,7 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(all(not item["thinking"] for item in calls))
         self.assertTrue(all(not item["use_cot_lyrics"] for item in calls))
         self.assertEqual(calls[0]["inference_steps"], 8)
-        self.assertEqual(calls[2]["inference_steps"], 64)
+        self.assertEqual(calls[2]["inference_steps"], 50)
         self.assertEqual(calls[0]["guidance_scale"], 7.0)
         self.assertEqual(calls[2]["guidance_scale"], 8.0)
         self.assertEqual(calls[0]["shift"], 3.0)

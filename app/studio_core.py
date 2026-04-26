@@ -30,7 +30,9 @@ ACE_STEP_LM_MODELS = [
 
 ACE_STEP_MODEL_SOURCES = [
     "https://huggingface.co/ACE-Step/Ace-Step1.5",
+    "https://huggingface.co/ACE-Step/acestep-v15-sft",
     "https://huggingface.co/ACE-Step/acestep-v15-xl-turbo",
+    "https://huggingface.co/ACE-Step/acestep-v15-xl-sft",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md",
@@ -160,17 +162,28 @@ OFFICIAL_TRAINING_FEATURES: dict[str, dict[str, Any]] = {
     "tensorboard_runs": {"status": "guarded", "endpoint": "/api/lora/status"},
 }
 
-DOCS_BEST_QUALITY_POLICY_VERSION = "docs-best-2026-04-25"
+DOCS_BEST_QUALITY_POLICY_VERSION = "docs-best-2026-04-26"
 DOCS_BEST_AUDIO_FORMAT = "wav32"
 DOCS_BEST_TURBO_STEPS = 8
 DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20
-DOCS_BEST_STANDARD_STEPS = 64
+DOCS_BEST_STANDARD_STEPS = 50
+DOCS_BEST_MODEL_STEPS = {
+    "acestep-v15-turbo": 8,
+    "acestep-v15-turbo-shift3": 8,
+    "acestep-v15-turbo-rl": 8,
+    "acestep-v15-sft": 50,
+    "acestep-v15-base": 50,
+    "acestep-v15-xl-turbo": 8,
+    "acestep-v15-xl-sft": 50,
+    "acestep-v15-xl-base": 50,
+}
 DOCS_BEST_TURBO_GUIDANCE = 7.0
 DOCS_BEST_STANDARD_GUIDANCE = 8.0
 DOCS_BEST_TURBO_SHIFT = 3.0
 DOCS_BEST_STANDARD_SHIFT = 1.0
 DOCS_BEST_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
 DOCS_BEST_DEFAULT_LM_BACKEND = "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "pt"
+ACE_STEP_SETTINGS_POLICY_VERSION = "ace-step-settings-parity-2026-04-26"
 ACE_STEP_CAPTION_CHAR_LIMIT = 512
 ACE_STEP_LYRICS_CHAR_LIMIT = 4096
 ACE_STEP_DIT_LYRICS_TOKEN_LIMIT = 2048
@@ -184,12 +197,13 @@ DOCS_BEST_LM_DEFAULTS: dict[str, Any] = {
     "use_cot_metas": True,
     "use_cot_caption": True,
     "use_cot_language": True,
-    "use_cot_lyrics": True,
+    "use_cot_lyrics": False,
     "use_constrained_decoding": True,
-    "lm_cfg_scale": 10.0,
-    "lm_temperature": 1.0,
-    "lm_top_p": 1.0,
-    "lm_top_k": 40,
+    "lm_cfg_scale": 2.0,
+    "lm_api_cfg_scale": 2.5,
+    "lm_temperature": 0.85,
+    "lm_top_p": 0.9,
+    "lm_top_k": 0,
 }
 
 
@@ -206,7 +220,7 @@ def docs_best_model_settings(song_model: Any, *, high_turbo_cap: bool = False) -
         guidance = DOCS_BEST_TURBO_GUIDANCE
         shift = DOCS_BEST_TURBO_SHIFT
     else:
-        steps = DOCS_BEST_STANDARD_STEPS
+        steps = int(DOCS_BEST_MODEL_STEPS.get(str(song_model or "").strip(), DOCS_BEST_STANDARD_STEPS))
         guidance = DOCS_BEST_STANDARD_GUIDANCE
         shift = DOCS_BEST_STANDARD_SHIFT
     return {
@@ -224,7 +238,9 @@ def docs_best_quality_policy() -> dict[str, Any]:
     return {
         "version": DOCS_BEST_QUALITY_POLICY_VERSION,
         "standard": "ACE-Step docs calibrated quality settings, not blind maximum sliders.",
+        "settings_policy_version": ACE_STEP_SETTINGS_POLICY_VERSION,
         "audio_format": DOCS_BEST_AUDIO_FORMAT,
+        "model_step_defaults": dict(DOCS_BEST_MODEL_STEPS),
         "turbo_models": {
             "inference_steps": DOCS_BEST_TURBO_STEPS,
             "optional_high_cap_steps": DOCS_BEST_TURBO_HIGH_CAP_STEPS,
@@ -251,7 +267,8 @@ def docs_best_quality_policy() -> dict[str, Any]:
 
 
 OFFICIAL_ACE_STEP_MANIFEST: dict[str, Any] = {
-    "manifest_version": "2026-04-25",
+    "manifest_version": "2026-04-26",
+    "settings_policy_version": ACE_STEP_SETTINGS_POLICY_VERSION,
     "sources": ACE_STEP_MODEL_SOURCES,
     "status_values": ["supported", "guarded", "missing", "unreleased", "not_applicable"],
     "papers": [
@@ -353,6 +370,7 @@ OFFICIAL_ACE_STEP_MANIFEST: dict[str, Any] = {
     },
     "generation_params": {name: {"status": "supported"} for name in OFFICIAL_GENERATION_PARAMS},
     "generation_config": {name: {"status": "supported"} for name in OFFICIAL_GENERATION_CONFIG_FIELDS},
+    "settings_registry": {"status": "supported", "version": ACE_STEP_SETTINGS_POLICY_VERSION},
     "api_endpoints": OFFICIAL_API_ENDPOINTS,
     "runtime_controls": OFFICIAL_RUNTIME_CONTROLS,
     "training_features": OFFICIAL_TRAINING_FEATURES,
@@ -703,6 +721,438 @@ OFFICIAL_FIELD_DEFAULTS: dict[str, Any] = {
     "velocity_ema_factor": 0.0,
     "velocity_norm_threshold": 0.0,
 }
+
+ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
+    "task_type": "text2music",
+    "instruction": "Fill the audio semantic mask based on the given conditions:",
+    "reference_audio": None,
+    "src_audio": None,
+    "audio_codes": "",
+    "caption": "",
+    "global_caption": "",
+    "lyrics": "",
+    "instrumental": False,
+    "vocal_language": "unknown",
+    "bpm": None,
+    "keyscale": "",
+    "timesignature": "",
+    "duration": -1.0,
+    "enable_normalization": True,
+    "normalization_db": -1.0,
+    "fade_in_duration": 0.0,
+    "fade_out_duration": 0.0,
+    "latent_shift": 0.0,
+    "latent_rescale": 1.0,
+    "inference_steps": 8,
+    "seed": -1,
+    "guidance_scale": 7.0,
+    "use_adg": False,
+    "cfg_interval_start": 0.0,
+    "cfg_interval_end": 1.0,
+    "shift": 1.0,
+    "infer_method": "ode",
+    "sampler_mode": "euler",
+    "velocity_norm_threshold": 0.0,
+    "velocity_ema_factor": 0.0,
+    "timesteps": None,
+    "repainting_start": 0.0,
+    "repainting_end": -1.0,
+    "chunk_mask_mode": "auto",
+    "repaint_latent_crossfade_frames": 10,
+    "repaint_wav_crossfade_sec": 0.0,
+    "repaint_mode": "balanced",
+    "repaint_strength": 0.5,
+    "audio_cover_strength": 1.0,
+    "cover_noise_strength": 0.0,
+    "thinking": True,
+    "lm_temperature": 0.85,
+    "lm_cfg_scale": 2.0,
+    "lm_top_k": 0,
+    "lm_top_p": 0.9,
+    "lm_negative_prompt": "NO USER INPUT",
+    "use_cot_metas": True,
+    "use_cot_caption": True,
+    "use_cot_lyrics": False,
+    "use_cot_language": True,
+    "use_constrained_decoding": True,
+    "cot_bpm": None,
+    "cot_keyscale": "",
+    "cot_timesignature": "",
+    "cot_duration": None,
+    "cot_vocal_language": "unknown",
+    "cot_caption": "",
+    "cot_lyrics": "",
+    "batch_size": 2,
+    "allow_lm_batch": False,
+    "use_random_seed": True,
+    "seeds": None,
+    "lm_batch_chunk_size": 8,
+    "constrained_decoding_debug": False,
+    "audio_format": "flac",
+    "mp3_bitrate": "128k",
+    "mp3_sample_rate": 48000,
+}
+
+ACEJAM_EXTENSION_DEFAULTS: dict[str, Any] = {
+    "ace_lm_model": DOCS_BEST_DEFAULT_LM_MODEL,
+    "lm_backend": DOCS_BEST_DEFAULT_LM_BACKEND,
+    "lm_repetition_penalty": 1.0,
+    "sample_mode": False,
+    "sample_query": "",
+    "use_format": False,
+    "device": "auto",
+    "dtype": "auto",
+    "compile_model": False,
+    "use_flash_attention": "auto",
+    "offload_to_cpu": False,
+    "offload_dit_to_cpu": False,
+    "lm_device": "auto",
+    "lm_dtype": "auto",
+    "lm_offload_to_cpu": False,
+}
+
+ACE_STEP_SETTING_SECTIONS: dict[str, list[str]] = {
+    "core": ["task_type", "instruction", "caption", "global_caption", "lyrics", "instrumental"],
+    "music_metadata": ["vocal_language", "bpm", "keyscale", "timesignature", "duration"],
+    "model_quality": ["inference_steps", "seed", "guidance_scale", "shift", "infer_method", "sampler_mode", "timesteps"],
+    "diffusion": [
+        "use_adg",
+        "cfg_interval_start",
+        "cfg_interval_end",
+        "velocity_norm_threshold",
+        "velocity_ema_factor",
+        "latent_shift",
+        "latent_rescale",
+    ],
+    "source_edit_audio": [
+        "reference_audio",
+        "src_audio",
+        "audio_codes",
+        "audio_cover_strength",
+        "cover_noise_strength",
+        "repainting_start",
+        "repainting_end",
+        "chunk_mask_mode",
+        "repaint_mode",
+        "repaint_strength",
+        "repaint_latent_crossfade_frames",
+        "repaint_wav_crossfade_sec",
+    ],
+    "lm_cot": [
+        "ace_lm_model",
+        "lm_backend",
+        "thinking",
+        "use_format",
+        "sample_mode",
+        "sample_query",
+        "lm_temperature",
+        "lm_cfg_scale",
+        "lm_top_k",
+        "lm_top_p",
+        "lm_repetition_penalty",
+        "lm_negative_prompt",
+        "use_cot_metas",
+        "use_cot_caption",
+        "use_cot_lyrics",
+        "use_cot_language",
+        "use_constrained_decoding",
+        "cot_bpm",
+        "cot_keyscale",
+        "cot_timesignature",
+        "cot_duration",
+        "cot_vocal_language",
+        "cot_caption",
+        "cot_lyrics",
+    ],
+    "output": [
+        "batch_size",
+        "allow_lm_batch",
+        "use_random_seed",
+        "seeds",
+        "lm_batch_chunk_size",
+        "constrained_decoding_debug",
+        "audio_format",
+        "mp3_bitrate",
+        "mp3_sample_rate",
+        "enable_normalization",
+        "normalization_db",
+        "fade_in_duration",
+        "fade_out_duration",
+    ],
+    "runtime": [
+        "device",
+        "dtype",
+        "compile_model",
+        "use_flash_attention",
+        "offload_to_cpu",
+        "offload_dit_to_cpu",
+        "lm_device",
+        "lm_dtype",
+        "lm_offload_to_cpu",
+    ],
+}
+
+ACE_STEP_READ_ONLY_LM_OUTPUT_FIELDS = {
+    "cot_bpm",
+    "cot_keyscale",
+    "cot_timesignature",
+    "cot_duration",
+    "cot_vocal_language",
+    "cot_caption",
+    "cot_lyrics",
+}
+
+ACE_STEP_TASK_REQUIRED_FIELDS: dict[str, list[str]] = {
+    "text2music": ["caption_or_lyrics"],
+    "cover": ["src_audio", "caption"],
+    "repaint": ["src_audio", "caption", "repainting_start", "repainting_end"],
+    "extract": ["src_audio", "instruction"],
+    "lego": ["src_audio", "instruction", "track_name"],
+    "complete": ["src_audio", "instruction", "caption", "track_names"],
+}
+
+ACE_STEP_SOURCE_LOCKED_DURATION_TASKS = {"cover", "repaint", "lego", "extract"}
+
+
+def _field_section(field: str) -> str:
+    for section, fields in ACE_STEP_SETTING_SECTIONS.items():
+        if field in fields:
+            return section
+    return "other"
+
+
+def _field_status(field: str) -> str:
+    if field in ACE_STEP_READ_ONLY_LM_OUTPUT_FIELDS:
+        return "read_only_lm_output"
+    if field == "use_cot_lyrics":
+        return "reserved"
+    if field in ACEJAM_EXTENSION_DEFAULTS:
+        return "acejam_extension"
+    return "supported"
+
+
+def _field_options(field: str) -> list[Any]:
+    options: dict[str, list[Any]] = {
+        "task_type": ALL_TASKS,
+        "audio_format": sorted(OFFICIAL_AUDIO_FORMATS),
+        "infer_method": ["ode", "sde"],
+        "sampler_mode": ["euler", "heun"],
+        "chunk_mask_mode": ["auto", "explicit"],
+        "repaint_mode": ["balanced", "conservative", "aggressive"],
+        "vocal_language": ["unknown", "en", "zh", "ja", "ko", "es", "fr", "de", "it", "pt", "nl", "ar", "ru"],
+        "lm_backend": ["mlx", "pt", "vllm"],
+        "ace_lm_model": ACE_STEP_LM_MODELS,
+    }
+    return list(options.get(field, []))
+
+
+def _field_range(field: str) -> list[float] | None:
+    ranges: dict[str, list[float]] = {
+        "bpm": [30, 300],
+        "duration": [10, 600],
+        "inference_steps": [1, 200],
+        "guidance_scale": [1.0, 15.0],
+        "shift": [1.0, 5.0],
+        "cfg_interval_start": [0.0, 1.0],
+        "cfg_interval_end": [0.0, 1.0],
+        "audio_cover_strength": [0.0, 1.0],
+        "cover_noise_strength": [0.0, 1.0],
+        "repaint_strength": [0.0, 1.0],
+        "normalization_db": [-24.0, 0.0],
+        "fade_in_duration": [0.0, 20.0],
+        "fade_out_duration": [0.0, 20.0],
+        "latent_shift": [-2.0, 2.0],
+        "latent_rescale": [0.1, 3.0],
+        "lm_temperature": [0.0, 2.0],
+        "lm_cfg_scale": [0.0, 10.0],
+        "lm_top_k": [0, 200],
+        "lm_top_p": [0.0, 1.0],
+        "lm_repetition_penalty": [0.1, 4.0],
+        "batch_size": [1, MAX_BATCH_SIZE],
+        "lm_batch_chunk_size": [1, 64],
+    }
+    return ranges.get(field)
+
+
+def _field_note(field: str) -> str:
+    notes = {
+        "caption": f"Official request budget: less than {ACE_STEP_CAPTION_CHAR_LIMIT} characters.",
+        "lyrics": f"Official request budget: less than {ACE_STEP_LYRICS_CHAR_LIMIT} characters.",
+        "duration": "Official range is 10-600 seconds; source-audio tasks lock duration to the source where ACE-Step does that internally.",
+        "inference_steps": "Docs: Turbo recommended 8; Base/SFT 32-64 for quality. AceJAM quality defaults use 50 for Base/SFT/XL SFT/Base.",
+        "guidance_scale": "Only effective for non-turbo models.",
+        "shift": "Docs default is 1.0; API examples use 3.0 for Turbo. Custom timesteps override shift.",
+        "timesteps": "Overrides inference_steps and shift when present.",
+        "audio_format": "Official runner supports flac/mp3/opus/aac/wav/wav32; fast in-process runner supports a smaller subset.",
+        "audio_cover_strength": "Higher values keep more source structure; lower values transform more freely.",
+        "cover_noise_strength": "Vendor code: 0 is no cover/pure noise, 1 is closest to source. Keep 0 unless intentionally experimenting.",
+        "repaint_strength": "Vendor code: in balanced mode, 0.0 is aggressive and 1.0 is conservative.",
+        "thinking": "Official LM thinking is ignored for cover, repaint and extract.",
+        "use_cot_lyrics": "Reserved/future in ACE-Step docs; AceJAM keeps it off by default.",
+        "cot_caption": "Read-only value generated by the ACE-Step LM when COT is active.",
+        "cot_lyrics": "Read-only value generated by the ACE-Step LM when COT is active.",
+        "lm_backend": "macOS Apple Silicon uses MLX by default per ACE-Step macOS scripts.",
+    }
+    return notes.get(field, "")
+
+
+class AceStepSettingsRegistry:
+    """Central docs-parity registry for ACE-Step request, config, and runtime controls."""
+
+    version = ACE_STEP_SETTINGS_POLICY_VERSION
+
+    @classmethod
+    def settings(cls) -> dict[str, dict[str, Any]]:
+        fields = list(dict.fromkeys(OFFICIAL_GENERATION_PARAMS + OFFICIAL_GENERATION_CONFIG_FIELDS + list(ACEJAM_EXTENSION_DEFAULTS)))
+        settings: dict[str, dict[str, Any]] = {}
+        for field in fields:
+            settings[field] = {
+                "field": field,
+                "section": _field_section(field),
+                "status": _field_status(field),
+                "official_default": ACE_STEP_OFFICIAL_DEFAULTS.get(field),
+                "acejam_default": OFFICIAL_FIELD_DEFAULTS.get(field, ACEJAM_EXTENSION_DEFAULTS.get(field, ACE_STEP_OFFICIAL_DEFAULTS.get(field))),
+                "options": _field_options(field),
+                "range": _field_range(field),
+                "note": _field_note(field),
+                "official_generation_param": field in OFFICIAL_GENERATION_PARAMS,
+                "official_generation_config": field in OFFICIAL_GENERATION_CONFIG_FIELDS,
+                "acejam_extension": field in ACEJAM_EXTENSION_DEFAULTS,
+            }
+        return settings
+
+    @classmethod
+    def docs_recommended(cls) -> dict[str, Any]:
+        return {
+            "turbo": {
+                "inference_steps": DOCS_BEST_TURBO_STEPS,
+                "optional_high_cap_steps": DOCS_BEST_TURBO_HIGH_CAP_STEPS,
+                "shift": DOCS_BEST_TURBO_SHIFT,
+                "guidance_scale": DOCS_BEST_TURBO_GUIDANCE,
+                "effective_guidance": False,
+            },
+            "base_sft": {
+                "inference_steps_range": [32, 64],
+                "acejam_default_steps": DOCS_BEST_STANDARD_STEPS,
+                "guidance_scale_range": [5.0, 9.0],
+                "acejam_default_guidance": DOCS_BEST_STANDARD_GUIDANCE,
+                "shift": DOCS_BEST_STANDARD_SHIFT,
+                "effective_guidance": True,
+            },
+            "lm": {
+                "lm_temperature": 0.85,
+                "lm_top_p": 0.9,
+                "lm_top_k": 0,
+                "lm_cfg_scale_local": 2.0,
+                "lm_cfg_scale_api": 2.5,
+                "use_cot_lyrics": "reserved",
+            },
+        }
+
+    @classmethod
+    def acejam_quality(cls) -> dict[str, Any]:
+        return {
+            "version": DOCS_BEST_QUALITY_POLICY_VERSION,
+            "audio_format": DOCS_BEST_AUDIO_FORMAT,
+            "models": {model: docs_best_model_settings(model) for model in KNOWN_ACE_STEP_MODELS},
+            "lm_defaults": dict(DOCS_BEST_LM_DEFAULTS),
+        }
+
+    @classmethod
+    def as_dict(cls) -> dict[str, Any]:
+        return {
+            "version": cls.version,
+            "sources": ACE_STEP_MODEL_SOURCES,
+            "settings": cls.settings(),
+            "sections": copy.deepcopy(ACE_STEP_SETTING_SECTIONS),
+            "profiles": {
+                "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
+                "docs_recommended": cls.docs_recommended(),
+                "acejam_quality": cls.acejam_quality(),
+            },
+            "task_policy": {
+                "all_tasks": list(ALL_TASKS),
+                "base_model_tasks": list(ALL_TASKS),
+                "turbo_sft_tasks": list(STANDARD_TASKS),
+                "lm_uses": sorted(DOCS_BEST_LM_TASKS),
+                "lm_skips": sorted(DOCS_BEST_SOURCE_TASK_LM_SKIPS),
+                "source_locked_duration": sorted(ACE_STEP_SOURCE_LOCKED_DURATION_TASKS),
+                "required_fields": copy.deepcopy(ACE_STEP_TASK_REQUIRED_FIELDS),
+            },
+            "runner_support": {
+                "official_audio_formats": sorted(OFFICIAL_AUDIO_FORMATS),
+                "fast_audio_formats": sorted(SUPPORTED_AUDIO_FORMATS),
+                "caption_char_limit": ACE_STEP_CAPTION_CHAR_LIMIT,
+                "lyrics_char_limit": ACE_STEP_LYRICS_CHAR_LIMIT,
+            },
+        }
+
+    @classmethod
+    def compliance(cls, payload: dict[str, Any], *, task_type: str, song_model: str, runner_plan: str = "") -> dict[str, Any]:
+        task = normalize_task_type(task_type)
+        model = str(song_model or "").strip()
+        runner = str(runner_plan or payload.get("runner_plan") or "").strip() or "fast"
+        settings = cls.settings()
+        statuses: dict[str, str] = {}
+        notes: list[str] = []
+        active: list[str] = []
+        ignored: list[str] = []
+        unsupported: list[str] = []
+        read_only: list[str] = []
+        for field in settings:
+            if field not in payload:
+                continue
+            status = "active"
+            if field in ACE_STEP_READ_ONLY_LM_OUTPUT_FIELDS:
+                status = "read_only"
+            elif field == "use_cot_lyrics":
+                status = "reserved" if parse_bool(payload.get(field), False) else "inactive"
+            elif field in {"thinking", "use_cot_metas", "use_cot_caption", "use_cot_language"} and task in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
+                status = "ignored"
+            elif field == "guidance_scale" and is_turbo_song_model(model):
+                status = "ignored"
+            elif field == "use_adg" and is_turbo_song_model(model):
+                status = "ignored"
+            elif field == "timesteps" and payload.get(field):
+                notes.append("timesteps_override_steps_shift")
+            elif field == "audio_format":
+                fmt = str(payload.get(field) or "").lower()
+                if runner == "fast" and fmt and fmt not in SUPPORTED_AUDIO_FORMATS:
+                    status = "unsupported"
+            if status == "active":
+                active.append(field)
+            elif status == "ignored":
+                ignored.append(field)
+            elif status == "unsupported":
+                unsupported.append(field)
+            elif status == "read_only":
+                read_only.append(field)
+            statuses[field] = status
+        if task in ACE_STEP_SOURCE_LOCKED_DURATION_TASKS:
+            notes.append("duration_source_locked")
+        if task in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
+            notes.append("ace_step_lm_ignored_for_task")
+        return {
+            "version": cls.version,
+            "task_type": task,
+            "song_model": model,
+            "runner_plan": runner,
+            "field_status": statuses,
+            "active": sorted(active),
+            "ignored": sorted(ignored),
+            "unsupported": sorted(unsupported),
+            "read_only": sorted(read_only),
+            "notes": sorted(set(notes)),
+            "valid": not unsupported,
+        }
+
+
+def ace_step_settings_registry() -> dict[str, Any]:
+    return AceStepSettingsRegistry.as_dict()
+
+
+def ace_step_settings_compliance(payload: dict[str, Any], *, task_type: str, song_model: str, runner_plan: str = "") -> dict[str, Any]:
+    return AceStepSettingsRegistry.compliance(payload, task_type=task_type, song_model=song_model, runner_plan=runner_plan)
 
 PARAM_ALIASES: dict[str, list[str]] = {
     "ace_lm_model": ["ace_lm_model", "lm_model", "lm_model_path", "lmModel"],
@@ -1272,12 +1722,15 @@ def ordered_models(discovered: list[str]) -> list[str]:
 
 
 def studio_ui_schema() -> dict[str, Any]:
+    settings_registry = ace_step_settings_registry()
     return {
         "sources": ACE_STEP_MODEL_SOURCES,
-        "payload_contract_version": "2026-04-25",
+        "payload_contract_version": "2026-04-26",
         "official_manifest_version": OFFICIAL_ACE_STEP_MANIFEST["manifest_version"],
+        "settings_policy_version": settings_registry["version"],
         "payload_validation_endpoint": "/api/payload/validate",
         "official_parity_endpoint": "/api/ace-step/parity",
+        "ace_step_settings_registry": settings_registry,
         "audio_formats": sorted(OFFICIAL_AUDIO_FORMATS),
         "fast_audio_formats": sorted(SUPPORTED_AUDIO_FORMATS),
         "ace_step_text_budget": {
@@ -1353,6 +1806,8 @@ def studio_ui_schema() -> dict[str, Any]:
             "lm_repetition_penalty": [0.1, 4.0],
         },
         "defaults": dict(OFFICIAL_FIELD_DEFAULTS),
+        "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
+        "docs_recommended": settings_registry["profiles"]["docs_recommended"],
         "official_only_fields": sorted(OFFICIAL_ONLY_FIELDS),
         "fast_handler_fields": sorted(FAST_HANDLER_FIELDS),
         "official_runtime_controls": OFFICIAL_RUNTIME_CONTROLS,

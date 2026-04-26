@@ -192,6 +192,8 @@ class TrackProductionPayloadModel(_AceJamStructuredModel):
     tool_notes: Any = ""
     production_team: dict[str, Any] = Field(default_factory=dict)
     model_render_notes: Any = Field(default_factory=dict)
+    settings_policy_version: str = ""
+    settings_compliance: dict[str, Any] = Field(default_factory=dict)
 
 
 def _clip_text(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
@@ -1317,6 +1319,7 @@ def create_track_production_crew(
         "language_preset": lang_preset,
         "section_map": section_map_for(blueprint.get("duration") or track_duration, str(blueprint.get("tags") or blueprint.get("description") or "")),
         "docs_best_model_settings": ALBUM_FINAL_DOCS_BEST,
+        "settings_policy": "Use AceStepSettingsPolicyTool, TaskApplicabilityTool, and ModelCompatibilityTool. Keep unsupported/reserved/read-only settings out of active payloads.",
     }
     task_produce = _crew_task(
         description=(
@@ -1335,7 +1338,7 @@ def create_track_production_crew(
             "lyrics, bpm, key_scale, time_signature, language, duration, song_model, seed, inference_steps, "
             "guidance_scale, shift, infer_method, sampler_mode, audio_format, auto_score, auto_lrc, "
             "return_audio_codes, save_to_library, tool_notes, production_team, model_render_notes, "
-            "prompt_kit_version, quality_checks, contract_compliance. "
+            "prompt_kit_version, settings_policy_version, settings_compliance, quality_checks, contract_compliance. "
             "Preserve the blueprint title and locked fields exactly. No markdown fences."
         ),
         expected_output="Strict JSON object for exactly one produced track.",
@@ -1471,13 +1474,17 @@ def create_album_crew(
         "Use one emotional promise per song, one coherent metaphor world, concrete scene details (place, object, weather, body, action), "
         "a repeatable title-connected hook short enough to remember after one listen, "
         "language/script discipline, genre-module routing, and a duration-realistic section_map. "
+        "Use AceStepSettingsPolicyTool, TaskApplicabilityTool, and ModelCompatibilityTool for generation controls; "
+        "do not invent settings, and do not treat read-only, reserved, ignored, or unsupported fields as active. "
         "Use the provided tools when useful. Output concrete, editable production data."
     )
     schema_rules = (
         "Use machine-safe values only: duration must be numeric seconds (60-600), bpm must be 30-300, "
         "key_scale must be like C minor or F# major, time_signature must be 2, 3, 4, or 6, "
-        "infer_method must be ode or sde, sampler_mode must be euler or heun, audio_format must be wav/wav32/flac/ogg/mp3, "
-        "and seed must be numeric or -1. Put colorful phrases in description/tool_notes, never in these fields."
+        "infer_method must be ode or sde, sampler_mode must be euler or heun, audio_format must be wav/wav32/flac/ogg/mp3/opus/aac, "
+        "timesteps overrides inference_steps and shift when present, use_cot_lyrics is reserved/future, "
+        "and seed must be numeric or -1. Put colorful phrases in description/tool_notes, never in these fields. "
+        "Final JSON must include settings_compliance when generation settings are present."
     )
     cfg = dict(
         llm=llm,

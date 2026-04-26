@@ -1087,6 +1087,16 @@
           <div class="advanced-content" id="payload-review">No payload built yet.</div>
         </details>
 
+        <details class="section-block disclosure" id="ace-step-settings-overview">
+          <summary>
+            <span class="disclosure-title">
+              <strong>ACE-Step Settings</strong>
+              <small id="summary-ace-step-settings">Docs parity registry loading...</small>
+            </span>
+          </summary>
+          <div class="advanced-content" id="ace-step-settings-panel">Loading ACE-Step settings...</div>
+        </details>
+
         <details class="section-block disclosure advanced-group" data-advanced-group="custom-generation">
           <summary>
             <span class="disclosure-title">
@@ -1106,7 +1116,7 @@
               <input id="seed" type="text" value="-1" />
             </div>
             <div>
-              <label for="steps" data-tooltip="Diffusion steps. Docs-best uses 8 for Turbo, optional 20 high cap, and 64 for SFT/Base quality runs.">Steps</label>
+              <label for="steps" data-tooltip="Diffusion steps. Official dataclass default is 8; docs recommend 8 for Turbo and 32-64 for Base/SFT. AceJAM quality uses 50 for Base/SFT/XL SFT/Base.">Steps</label>
               <input id="steps" type="number" min="1" max="200" value="8" />
             </div>
             <div>
@@ -1199,22 +1209,22 @@
           </div>
           <div class="grid-3" style="margin-top:10px;">
             <div>
-              <label for="lm-temp" data-tooltip="Randomness of LM output. Higher = more creative, lower = more predictable.">LM temperature</label>
-              <input id="lm-temp" type="number" min="0" max="2" step="0.05" value="1" />
+              <label for="lm-temp" data-tooltip="Official ACE-Step LM default is 0.85. Higher = more creative, lower = more predictable.">LM temperature</label>
+              <input id="lm-temp" type="number" min="0" max="2" step="0.05" value="0.85" />
             </div>
             <div>
-              <label for="lm-cfg" data-tooltip="Classifier-free guidance for the language model. Higher = stricter adherence to prompt.">LM CFG</label>
-              <input id="lm-cfg" type="number" min="0" max="10" step="0.1" value="10" />
+              <label for="lm-cfg" data-tooltip="Official local LM default is 2.0; the REST API examples use 2.5. Higher = stricter adherence to prompt.">LM CFG</label>
+              <input id="lm-cfg" type="number" min="0" max="10" step="0.1" value="2" />
             </div>
             <div>
               <label for="lm-top-p">Top-p</label>
-              <input id="lm-top-p" type="number" min="0" max="1" step="0.05" value="1" />
+              <input id="lm-top-p" type="number" min="0" max="1" step="0.05" value="0.9" />
             </div>
           </div>
           <div class="grid-3" style="margin-top:10px;">
             <div>
               <label for="lm-top-k">Top-k</label>
-              <input id="lm-top-k" type="number" min="0" max="200" value="40" />
+              <input id="lm-top-k" type="number" min="0" max="200" value="0" />
             </div>
             <div>
               <label for="lm-repetition">Repeat penalty</label>
@@ -1234,7 +1244,7 @@
             <label class="check"><input type="checkbox" id="use-format" /> Format caption</label>
             <label class="check"><input type="checkbox" id="use-cot-metas" checked /> CoT metas</label>
             <label class="check"><input type="checkbox" id="use-cot-caption" checked /> CoT caption</label>
-            <label class="check"><input type="checkbox" id="use-cot-lyrics" /> CoT lyrics</label>
+            <label class="check"><input type="checkbox" id="use-cot-lyrics" /> CoT lyrics (reserved)</label>
             <label class="check"><input type="checkbox" id="use-cot-language" checked /> CoT language</label>
             <label class="check"><input type="checkbox" id="constrained-decoding" checked /> Constrained</label>
             <label class="check"><input type="checkbox" id="constrained-debug" /> Debug</label>
@@ -1366,7 +1376,7 @@
           <div class="advanced-content">
           <div class="grid-3">
             <div>
-              <label for="cover-noise-strength" data-tooltip="Added noise for cover generation. Higher = more divergent from source. 0 = closest to original.">Cover noise</label>
+              <label for="cover-noise-strength" data-tooltip="Vendor code: 0 means pure noise/no cover influence, 1 means closest to source. Keep 0 unless intentionally experimenting.">Cover noise</label>
               <input id="cover-noise-strength" type="number" min="0" max="1" step="0.05" value="0" />
             </div>
             <div>
@@ -1380,7 +1390,7 @@
           </div>
           <div class="grid-3" style="margin-top:10px;">
             <div>
-              <label for="repaint-strength" data-tooltip="How much to change the repainted section. 0 = minimal change, 1 = full replacement.">Repaint strength</label>
+              <label for="repaint-strength" data-tooltip="Vendor code: in balanced mode, 0 is aggressive and 1 is conservative. Higher preserves more of the source section.">Repaint strength</label>
               <input id="repaint-strength" type="number" min="0" max="1" step="0.05" value="0.5" />
             </div>
             <div>
@@ -1420,7 +1430,7 @@
         </div>
         <div class="step-card">
           <h3><span class="step-num">2</span>Remix behavior</h3>
-          <label for="cover-strength">Remix strength</label>
+          <label for="cover-strength" data-tooltip="Higher keeps more of the source structure; lower transforms more freely.">Source adherence</label>
           <input id="cover-strength" type="number" min="0" max="1" step="0.05" value="0.8" />
         </div>
         <div class="step-card">
@@ -1822,7 +1832,7 @@
           <div class="grid-3" style="margin-top:10px;">
             <div>
               <label for="album-inference-steps">Steps</label>
-              <input id="album-inference-steps" type="number" min="1" max="200" value="64" />
+              <input id="album-inference-steps" type="number" min="1" max="200" value="50" />
             </div>
             <div>
               <label for="album-guidance">Guidance</label>
@@ -2220,13 +2230,23 @@
 
   <script>
     const modes = ["simple", "custom", "cover", "repaint", "extract", "lego", "complete", "album", "lora", "library", "settings"];
-    const CLIENT_UI_VERSION = "acejam-text-budget-mlx-2026-04-26";
-    const CLIENT_PAYLOAD_CONTRACT_VERSION = "2026-04-25";
+    const CLIENT_UI_VERSION = "acejam-v0.5-settings-parity-2026-04-26";
+    const CLIENT_PAYLOAD_CONTRACT_VERSION = "2026-04-26";
     const DEFAULT_ACE_LM_MODEL = "acestep-5Hz-lm-4B";
     const DOCS_BEST_AUDIO_FORMAT = "wav32";
     const DOCS_BEST_TURBO_STEPS = 8;
     const DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20;
-    const DOCS_BEST_STANDARD_STEPS = 64;
+    const DOCS_BEST_STANDARD_STEPS = 50;
+    const DOCS_BEST_MODEL_STEPS = {
+      "acestep-v15-turbo": 8,
+      "acestep-v15-turbo-shift3": 8,
+      "acestep-v15-turbo-rl": 8,
+      "acestep-v15-sft": 50,
+      "acestep-v15-base": 50,
+      "acestep-v15-xl-turbo": 8,
+      "acestep-v15-xl-sft": 50,
+      "acestep-v15-xl-base": 50
+    };
     const DOCS_BEST_TURBO_GUIDANCE = 7;
     const DOCS_BEST_STANDARD_GUIDANCE = 8;
     const DOCS_BEST_TURBO_SHIFT = 3;
@@ -2288,7 +2308,7 @@
       const name = String(modelName || "").toLowerCase();
       const turbo = name.includes("turbo");
       return {
-        inference_steps: turbo ? DOCS_BEST_TURBO_STEPS : DOCS_BEST_STANDARD_STEPS,
+        inference_steps: DOCS_BEST_MODEL_STEPS[name] || (turbo ? DOCS_BEST_TURBO_STEPS : DOCS_BEST_STANDARD_STEPS),
         turbo_high_cap_steps: turbo ? DOCS_BEST_TURBO_HIGH_CAP_STEPS : DOCS_BEST_STANDARD_STEPS,
         guidance_scale: turbo ? DOCS_BEST_TURBO_GUIDANCE : DOCS_BEST_STANDARD_GUIDANCE,
         shift: turbo ? DOCS_BEST_TURBO_SHIFT : DOCS_BEST_STANDARD_SHIFT,
@@ -2297,7 +2317,11 @@
         audio_format: DOCS_BEST_AUDIO_FORMAT
       };
     }
-    function albumDocsBestSettings() { return docsBestModelSettings("acestep-v15-xl-sft"); }
+    function selectedAlbumModelForDefaults() {
+      const selected = $("album-model-strategy")?.value || "all_models_album";
+      return selected === "all_models_album" ? "acestep-v15-xl-sft" : selected;
+    }
+    function albumDocsBestSettings() { return docsBestModelSettings(selectedAlbumModelForDefaults()); }
     function fmtBytes(bytes) {
       const value = Number(bytes || 0);
       if (!value) return "0 B";
@@ -2458,7 +2482,7 @@
         `${controlValue("custom-ace-lm-model") && controlValue("custom-ace-lm-model") !== "none" ? `ACE-Step LM ${controlValue("custom-ace-lm-model")}` : "Ollama planner active, ACE-Step LM off"}`,
         defaultsChanged({
           "custom-ace-lm-model": DEFAULT_ACE_LM_MODEL, "lm-backend": defaultLmBackend(), thinking: false, "sample-query": "", "lm-negative": "NO USER INPUT",
-          "lm-temp": "1", "lm-cfg": "10", "lm-top-p": "1", "lm-top-k": "40", "lm-repetition": "1", "lm-batch-chunk": "8",
+          "lm-temp": "0.85", "lm-cfg": "2", "lm-top-p": "0.9", "lm-top-k": "0", "lm-repetition": "1", "lm-batch-chunk": "8",
           "allow-lm-batch": false, "sample-mode": false, "use-format": false, "use-cot-metas": true,
           "use-cot-caption": true, "use-cot-lyrics": false, "use-cot-language": true, "constrained-decoding": true, "constrained-debug": false
         })
@@ -3112,6 +3136,16 @@
       $("sampler-mode").value = defaults.sampler_mode;
     }
 
+    function applyAlbumModelDefaults() {
+      const defaults = albumDocsBestSettings();
+      $("album-inference-steps").value = String(defaults.inference_steps);
+      $("album-guidance").value = String(defaults.guidance_scale);
+      $("album-shift").value = String(defaults.shift);
+      if ([...$("album-audio-format").options].some((option) => option.value === defaults.audio_format || option.textContent === defaults.audio_format)) {
+        $("album-audio-format").value = defaults.audio_format;
+      }
+    }
+
     function applyQualityPreset(preset) {
       const choices = {
         fast: ["acestep-v15-turbo", "acestep-v15-xl-turbo"],
@@ -3378,6 +3412,7 @@
       const params = schema.generation_params || {};
       const config = schema.generation_config || {};
       const policy = manifest.quality_policy || state.config?.ui_schema?.quality_policy || {};
+      const registry = manifest.settings_registry || state.config?.ui_schema?.ace_step_settings_registry || {};
       const lmPolicy = manifest.lm_task_policy || policy.lm_task_policy || {};
       const unsupported = [
         ...(params.unsupported_by_vendor || []),
@@ -3386,10 +3421,53 @@
       target.innerHTML = [
         `<span class="badge ok">Backend ${esc(runtime.backend || "PyTorch")}</span>`,
         `<span class="badge ok">Preset ${esc(policy.version || "docs-best")}</span>`,
+        `<span class="badge ok">Settings ${esc(registry.version || "registry")}</span>`,
         `<span class="badge ${unsupported.length ? "warn" : "ok"}">${unsupported.length ? `${unsupported.length} guarded field(s)` : "schema aligned"}</span>`,
         `<span class="badge">LM skips ${esc((lmPolicy.skips_lm_for_source_tasks || []).join(", ") || "source tasks")}</span>`,
         `<span class="badge">4B LM ${esc((runtime.installed_lm_models || []).includes(DEFAULT_ACE_LM_MODEL) ? "installed" : "download needed")}</span>`
       ].join("");
+    }
+
+    function renderAceStepSettingsPanel() {
+      const target = $("ace-step-settings-panel");
+      const summary = $("summary-ace-step-settings");
+      if (!target || !summary) return;
+      const registry = state.config?.ui_schema?.ace_step_settings_registry;
+      if (!registry?.settings) {
+        target.textContent = "ACE-Step settings registry is not available yet.";
+        summary.textContent = "Registry unavailable";
+        return;
+      }
+      const sections = registry.sections || {};
+      const profiles = registry.profiles || {};
+      const quality = profiles.acejam_quality || {};
+      const docs = profiles.docs_recommended || {};
+      const sourceLocked = registry.task_policy?.source_locked_duration || [];
+      const lmSkips = registry.task_policy?.lm_skips || [];
+      const sectionRows = Object.entries(sections).map(([name, fields]) => {
+        const available = (fields || []).filter((field) => registry.settings[field]);
+        const badges = available.slice(0, 6).map((field) => {
+          const item = registry.settings[field] || {};
+          const badgeClass = item.status === "reserved" || item.status === "read_only_lm_output" ? "warn" : "ok";
+          return `<span class="badge ${badgeClass}" title="${esc(item.note || item.status || "")}">${esc(field)}</span>`;
+        }).join("");
+        const extra = available.length > 6 ? `<span class="badge">+${available.length - 6}</span>` : "";
+        return `<div class="health-card"><strong>${esc(name.replaceAll("_", " "))}</strong><span>${available.length} setting(s)</span><small>${badges}${extra}</small></div>`;
+      }).join("");
+      summary.textContent = `${registry.version}: official, docs and AceJAM quality profiles`;
+      target.innerHTML = `
+        <div class="payload-checks">
+          <div class="status-strip">
+            <span class="badge ok">Registry ${esc(registry.version)}</span>
+            <span class="badge">Official defaults kept separate</span>
+            <span class="badge ok">AceJAM quality ${esc(quality.version || "active")}</span>
+            <span class="badge">LM skips ${esc(lmSkips.join(", ") || "none")}</span>
+            <span class="badge">Source locked ${esc(sourceLocked.join(", ") || "none")}</span>
+          </div>
+          <div class="tiny">Turbo: ${esc(String(docs.turbo?.inference_steps || 8))} steps. Base/SFT docs range: ${esc((docs.base_sft?.inference_steps_range || [32, 64]).join("-"))}; AceJAM quality default: ${esc(String(docs.base_sft?.acejam_default_steps || 50))}. Payload review shows the final effective settings before generation.</div>
+          <div class="health-grid" style="margin-top:12px;">${sectionRows}</div>
+        </div>
+      `;
     }
 
     function updateLmModeNote() {
@@ -3630,6 +3708,7 @@
 
     async function loadConfig() {
       const selectedSongModel = $("song-model")?.value || "auto";
+      const firstConfigLoad = !state.config;
       const selectedLmValues = {};
       for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
         selectedLmValues[id] = $(id)?.value || "";
@@ -3653,10 +3732,16 @@
       modelSelect.innerHTML = `<option value="auto">Auto (${esc(modelOptionLabel(state.config.default_song_model))})</option>` +
         state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(modelOptionLabel(name))}</option>`).join("");
       if ([...modelSelect.options].some((option) => option.value === selectedSongModel)) modelSelect.value = selectedSongModel;
+      let selectedBestModelOnLoad = false;
       if (selectedSongModel === "auto" && $("quality-preset")?.value === "best") {
         const bestModel = ["acestep-v15-xl-sft", "acestep-v15-sft"].find((name) => [...modelSelect.options].some((option) => option.value === name));
-        if (bestModel) modelSelect.value = bestModel;
+        if (bestModel) {
+          modelSelect.value = bestModel;
+          selectedBestModelOnLoad = true;
+        }
       }
+      if (firstConfigLoad || selectedBestModelOnLoad) applyModelDefaults(selectedActualSongModel());
+      if (firstConfigLoad) applyAlbumModelDefaults();
       const lmOptions = (state.config.lm_models || ["auto", "none"]).map((name) => `<option value="${esc(name)}">${esc(lmOptionLabel(name))}</option>`).join("");
       for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
 	        $(id).innerHTML = lmOptions;
@@ -3733,6 +3818,7 @@
       renderAceLmManager(state.config.ace_lm || {});
       renderSettingsHealthCards();
       renderAceStepParityCard();
+      renderAceStepSettingsPanel();
       loadOutputStatus();
       updateCapability();
       updateAllLmAdvice();
@@ -3915,6 +4001,9 @@
       setSelectValue("time-signature", payload.time_signature || payload.timesignature);
       setSelectValue("language", payload.vocal_language || payload.language);
       setSelectValue("song-model", payload.song_model);
+      if (payload.song_model && payload.inference_steps === undefined && payload.guidance_scale === undefined && payload.shift === undefined) {
+        applyModelDefaults(payload.song_model);
+      }
       setFieldValue("seed", payload.seed || payload.seeds);
       setFieldValue("steps", payload.inference_steps);
       setFieldValue("guidance", payload.guidance_scale);
@@ -3974,6 +4063,9 @@
       setSelectValue("album-language", payload.language || payload.vocal_language);
       setSelectValue("album-model-strategy", payload.song_model_strategy || "all_models_album");
       setSelectValue("album-quality", payload.quality_target);
+      if (payload.inference_steps === undefined && payload.guidance_scale === undefined && payload.shift === undefined) {
+        applyAlbumModelDefaults();
+      }
       setFieldValue("album-custom-tags", payload.custom_tags);
       setFieldValue("album-negative-tags", payload.negative_tags);
       setSelectValue("album-structure", payload.structure_preset);
@@ -4311,6 +4403,8 @@
         reference_status: validation?.reference_status,
         lm_model: validation?.lm_model,
         ace_step_text_budget: normalized.ace_step_text_budget || validation?.normalized_payload?.ace_step_text_budget,
+        settings_policy_version: validation?.settings_policy_version || normalized.settings_policy_version,
+        settings_compliance: validation?.settings_compliance || normalized.settings_compliance,
         field_errors: validation?.field_errors || {},
         warnings: validation?.payload_warnings || normalized.payload_warnings || [],
       };
@@ -4323,7 +4417,8 @@
         readinessChip("tags", preview.tag_list.length || normalized.caption ? "ready" : "warn", preview.tag_list.length ? `${preview.tag_list.length} tags` : "caption"),
         readinessChip("model", installed === "installed" ? "ready" : "warn", installed),
         readinessChip("runner", preview.runner === "official" ? "warn" : "ready", preview.runner || "fast"),
-        readinessChip("task", taskSupported ? "ready" : "warn", taskSupported ? "compatible" : "blocked")
+        readinessChip("task", taskSupported ? "ready" : "warn", taskSupported ? "compatible" : "blocked"),
+        readinessChip("settings", preview.settings_compliance?.valid === false ? "warn" : "ready", preview.settings_policy_version || "registry")
       ].join("");
       const humanIssues = [
         fieldErrorsText(fieldErrors),
@@ -4429,10 +4524,10 @@
         use_cot_lyrics: $("use-cot-lyrics")?.checked ?? false,
         use_cot_language: $("use-cot-language")?.checked ?? true,
         use_constrained_decoding: $("constrained-decoding")?.checked ?? true,
-        lm_temperature: Number($("lm-temp")?.value || 1),
-        lm_cfg_scale: Number($("lm-cfg")?.value || 10),
-        lm_top_k: Number($("lm-top-k")?.value || 40),
-        lm_top_p: Number($("lm-top-p")?.value || 1),
+        lm_temperature: Number($("lm-temp")?.value || 0.85),
+        lm_cfg_scale: Number($("lm-cfg")?.value || 2),
+        lm_top_k: Number($("lm-top-k")?.value || 0),
+        lm_top_p: Number($("lm-top-p")?.value || 0.9),
         lm_repetition_penalty: Number($("lm-repetition")?.value || 1),
         lm_backend: $("lm-backend")?.value || defaultLmBackend()
       };
@@ -5152,10 +5247,10 @@
         sample_mode: track.sample_mode ?? defaults.sample_mode ?? false,
         sample_query: track.sample_query || defaults.sample_query || "",
         use_format: track.use_format ?? defaults.use_format ?? false,
-        lm_temperature: track.lm_temperature ?? defaults.lm_temperature ?? 1,
-        lm_cfg_scale: track.lm_cfg_scale ?? defaults.lm_cfg_scale ?? 10,
-        lm_top_k: track.lm_top_k ?? defaults.lm_top_k ?? 40,
-        lm_top_p: track.lm_top_p ?? defaults.lm_top_p ?? 1,
+        lm_temperature: track.lm_temperature ?? defaults.lm_temperature ?? 0.85,
+        lm_cfg_scale: track.lm_cfg_scale ?? defaults.lm_cfg_scale ?? 2,
+        lm_top_k: track.lm_top_k ?? defaults.lm_top_k ?? 0,
+        lm_top_p: track.lm_top_p ?? defaults.lm_top_p ?? 0.9,
         lm_repetition_penalty: track.lm_repetition_penalty ?? defaults.lm_repetition_penalty ?? 1,
         lm_negative_prompt: track.lm_negative_prompt || defaults.lm_negative_prompt || "NO USER INPUT",
         lm_backend: track.lm_backend || defaults.lm_backend || defaultLmBackend(),
@@ -5904,6 +5999,7 @@
         });
       });
       $("album-model-strategy").addEventListener("change", () => {
+        applyAlbumModelDefaults();
         updateCapability();
         updateAdvancedSummaries();
         renderAlbumModelPortfolio();

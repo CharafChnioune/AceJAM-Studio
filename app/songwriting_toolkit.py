@@ -22,7 +22,7 @@ from prompt_kit import (
     prompt_kit_payload,
     section_map_for,
 )
-from studio_core import docs_best_model_settings
+from studio_core import ace_step_settings_compliance, ace_step_settings_registry, docs_best_model_settings
 from user_album_contract import (
     USER_ALBUM_CONTRACT_VERSION,
     apply_user_album_contract_to_tracks,
@@ -208,6 +208,9 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "TroubleshootingTool", "summary": "Maps common ACE-Step failures to compact repair instructions."},
     {"name": "ValidationChecklistTool", "summary": "Returns prompt-kit quality gates for captions, lyrics, metadata, safety, and runtime support."},
     {"name": "NegativeControlTool", "summary": "Builds genre-aware negative control phrases for generation payloads."},
+    {"name": "AceStepSettingsPolicyTool", "summary": "Returns official/default/docs-recommended/AceJAM settings policy for ACE-Step payloads."},
+    {"name": "TaskApplicabilityTool", "summary": "Explains which ACE-Step controls are active, ignored, or source-locked for a task."},
+    {"name": "ModelCompatibilityTool", "summary": "Checks model/task/settings compatibility before finalizing generation controls."},
 ]
 
 BANNED_CLICHES = [
@@ -939,8 +942,18 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
         "negative_control_present": "pass",
         "runtime_fields_supported_or_advisory": "pass",
     }
+    settings_compliance = ace_step_settings_compliance(
+        track,
+        task_type=str(track.get("task_type") or options.get("task_type") or "text2music"),
+        song_model=str(track.get("song_model") or options.get("song_model") or ALBUM_FINAL_MODEL),
+        runner_plan=str(track.get("runner_plan") or "official"),
+    )
+    if not settings_compliance.get("valid", True) or settings_compliance.get("unsupported"):
+        quality_checks["runtime_fields_supported_or_advisory"] = "review"
     return {
         "prompt_kit_version": PROMPT_KIT_VERSION,
+        "settings_policy_version": settings_compliance["version"],
+        "settings_compliance": settings_compliance,
         "length_plan": plan,
         "lyric_stats": stats,
         "length_ok": length_ok and char_ok and section_coverage >= 0.72,
@@ -1214,6 +1227,13 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
             normalized[field] = kit_defaults[field]
     normalized["vocal_language"] = str(track.get("vocal_language") or kit_defaults.get("vocal_language") or language)
     normalized["instrumental"] = instrumental
+    normalized["settings_compliance"] = ace_step_settings_compliance(
+        normalized,
+        task_type=str(options.get("task_type") or "text2music"),
+        song_model=song_model,
+        runner_plan=str(normalized.get("runner_plan") or "official"),
+    )
+    normalized["settings_policy_version"] = normalized["settings_compliance"]["version"]
     normalized["tool_report"] = quality_report(normalized, options)
     normalized["quality_checks"] = {
         **dict(normalized.get("quality_checks") or {}),
@@ -1305,6 +1325,7 @@ def toolkit_payload(installed_models: set[str] | list[str] | None = None) -> dic
         "troubleshooting_matrix": TROUBLESHOOTING_MATRIX,
         "validation_checklist": VALIDATION_CHECKLIST,
         "advanced_generation_settings": ADVANCED_GENERATION_ADVISORY,
+        "ace_step_settings_registry": ace_step_settings_registry(),
         "sources": OFFICIAL_SOURCES,
         "tag_taxonomy": TAG_TAXONOMY,
         "lyric_meta_tags": LYRIC_META_TAGS,
@@ -1754,6 +1775,50 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
             ensure_ascii=True,
         )
 
+    @tool("AceStepSettingsPolicyTool")
+    def ace_step_settings_policy_tool(query: str = "") -> str:
+        """Return the ACE-Step docs parity settings registry."""
+        registry = ace_step_settings_registry()
+        compact = {
+            "version": registry["version"],
+            "profiles": registry["profiles"],
+            "task_policy": registry["task_policy"],
+            "runner_support": registry["runner_support"],
+        }
+        return json.dumps(compact, ensure_ascii=True)
+
+    @tool("TaskApplicabilityTool")
+    def task_applicability_tool(task_type: str = "") -> str:
+        """Return task-specific ACE-Step setting applicability."""
+        task = str(task_type or context.get("task_type") or "text2music").strip() or "text2music"
+        registry = ace_step_settings_registry()
+        return json.dumps(
+            {
+                "version": registry["version"],
+                "task_type": task,
+                "required_fields": registry["task_policy"]["required_fields"].get(task, []),
+                "lm_ignored": task in set(registry["task_policy"]["lm_skips"]),
+                "duration_source_locked": task in set(registry["task_policy"]["source_locked_duration"]),
+                "note": "Do not ask agents to fill fields marked read-only, reserved, ignored, or unsupported for the task.",
+            },
+            ensure_ascii=True,
+        )
+
+    @tool("ModelCompatibilityTool")
+    def model_compatibility_tool(settings_json: str = "") -> str:
+        """Validate model/task/settings compatibility from compact JSON."""
+        try:
+            payload = json.loads(settings_json) if settings_json.strip().startswith("{") else {}
+        except Exception:
+            payload = {}
+        task = str(payload.get("task_type") or context.get("task_type") or "text2music")
+        model = str(payload.get("song_model") or context.get("song_model") or ALBUM_FINAL_MODEL)
+        runner = str(payload.get("runner_plan") or "official")
+        return json.dumps(
+            ace_step_settings_compliance(payload, task_type=task, song_model=model, runner_plan=runner),
+            ensure_ascii=True,
+        )
+
     return [
         model_advisor,
         model_portfolio_tool,
@@ -1785,4 +1850,7 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         troubleshooting_tool,
         validation_checklist_tool,
         negative_control_tool,
+        ace_step_settings_policy_tool,
+        task_applicability_tool,
+        model_compatibility_tool,
     ]

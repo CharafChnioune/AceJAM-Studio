@@ -40,8 +40,8 @@ LORA_EXPORTS_DIR = DATA_DIR / "loras"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
-APP_UI_VERSION = "acejam-v0.5-2026-04-26"
-PAYLOAD_CONTRACT_VERSION = "2026-04-25"
+APP_UI_VERSION = "acejam-v0.5-settings-parity-2026-04-26"
+PAYLOAD_CONTRACT_VERSION = "2026-04-26"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
 DEFAULT_ALBUM_EMBEDDING_MODEL = "nomic-embed-text:latest"
@@ -151,6 +151,7 @@ from studio_core import (
     MAX_BATCH_SIZE,
     OFFICIAL_ACE_STEP_MANIFEST,
     OFFICIAL_UNRELEASED_MODELS,
+    ace_step_settings_compliance,
     build_task_instruction,
     clamp_float,
     clamp_int,
@@ -2732,7 +2733,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     title = str(payload.get("title") or "").strip() or "Untitled"
     artist_name = _artist_name_from_payload(payload, title=title)
-    return {
+    parsed = {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "task_type": task_type,
         "caption": str(payload.get("caption") or ""),
@@ -2801,7 +2802,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lm_backend": _normalize_lm_backend(payload.get("lm_backend")),
         "use_cot_metas": parse_bool(payload.get("use_cot_metas"), True),
         "use_cot_caption": parse_bool(payload.get("use_cot_caption"), True),
-        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), lm_quality_defaults),
+        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), False),
         "use_cot_language": parse_bool(payload.get("use_cot_language"), True),
         "allow_lm_batch": parse_bool(payload.get("allow_lm_batch"), False),
         "lm_batch_chunk_size": clamp_int(payload.get("lm_batch_chunk_size"), 8, 1, 64),
@@ -2833,6 +2834,15 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "requires_official_runner": use_official,
         "runner_plan": "official" if use_official else "fast",
     }
+    settings_compliance = ace_step_settings_compliance(
+        parsed,
+        task_type=task_type,
+        song_model=song_model,
+        runner_plan=parsed["runner_plan"],
+    )
+    parsed["settings_policy_version"] = settings_compliance["version"]
+    parsed["settings_compliance"] = settings_compliance
+    return parsed
 
 
 def _slice_batch_tensor(value: Any, index: int) -> Any:
@@ -3255,6 +3265,14 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
             _set_field_error(field_errors, "payload", parse_error)
 
     valid = not field_errors
+    settings_compliance = ace_step_settings_compliance(
+        normalized_payload,
+        task_type=task_type,
+        song_model=song_model,
+        runner_plan=normalized_payload.get("runner_plan") or ("official" if official_used else "fast"),
+    )
+    normalized_payload["settings_policy_version"] = settings_compliance["version"]
+    normalized_payload["settings_compliance"] = settings_compliance
     return {
         "success": True,
         "valid": valid,
@@ -3264,6 +3282,8 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "tag_list": list(normalized_payload.get("tag_list") or normalized_text.get("tag_list") or []),
         "runner_plan": normalized_payload.get("runner_plan") or ("official" if official_used else "fast"),
         "official_fields": list(normalized_payload.get("official_fields") or official_used),
+        "settings_policy_version": settings_compliance["version"],
+        "settings_compliance": _jsonable(settings_compliance),
         "model": {
             "name": song_model,
             "installed": installed,
@@ -3553,9 +3573,9 @@ def _official_aux_params(body: dict[str, Any]) -> dict[str, Any]:
         "keyscale": str(get_param(body, "key_scale", "") or ""),
         "timesignature": str(get_param(body, "time_signature", "") or ""),
         "duration": clamp_float(get_param(body, "duration", body.get("audio_duration")), 60.0, DURATION_MIN, DURATION_MAX),
-        "lm_temperature": clamp_float(body.get("lm_temperature") or body.get("temperature"), 1.0, 0.0, 2.0),
-        "lm_top_k": clamp_int(body.get("lm_top_k") or body.get("top_k"), 40, 0, 200),
-        "lm_top_p": clamp_float(body.get("lm_top_p") or body.get("top_p"), 1.0, 0.0, 1.0),
+        "lm_temperature": clamp_float(body.get("lm_temperature") or body.get("temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
+        "lm_top_k": clamp_int(body.get("lm_top_k") or body.get("top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"], 0, 200),
+        "lm_top_p": clamp_float(body.get("lm_top_p") or body.get("top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"], 0.0, 1.0),
         "repetition_penalty": clamp_float(body.get("lm_repetition_penalty") or body.get("repetition_penalty"), 1.0, 0.1, 4.0),
         "use_constrained_decoding": parse_bool(body.get("use_constrained_decoding"), True),
         "constrained_decoding_debug": parse_bool(body.get("constrained_decoding_debug"), False),
@@ -5114,6 +5134,7 @@ def _official_parity_payload(request: Request | None = None) -> dict[str, Any]:
         "api_key_enabled": bool(os.environ.get("ACESTEP_API_KEY", "").strip()),
     }
     manifest["quality_policy"] = docs_best_quality_policy()
+    manifest["settings_registry"] = studio_ui_schema().get("ace_step_settings_registry", {})
     manifest["schema_parity"] = schema_parity
     manifest["lm_task_policy"] = docs_best_quality_policy()["lm_task_policy"]
     manifest["recommended_actions"] = recommended_actions

@@ -9,6 +9,8 @@ from studio_core import (
     MODEL_PROFILES,
     OFFICIAL_ACE_STEP_MANIFEST,
     OFFICIAL_UNRELEASED_MODELS,
+    ace_step_settings_compliance,
+    ace_step_settings_registry,
     build_task_instruction,
     docs_best_model_settings,
     ensure_task_supported,
@@ -204,12 +206,59 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(schema["official_parity_endpoint"], "/api/ace-step/parity")
         self.assertIn("runtime", schema["custom_sections"])
         self.assertEqual(schema["quality_policy"]["turbo_models"]["inference_steps"], 8)
-        self.assertEqual(schema["quality_policy"]["sft_base_models"]["inference_steps"], 64)
+        self.assertEqual(schema["quality_policy"]["sft_base_models"]["inference_steps"], 50)
+        self.assertEqual(schema["payload_contract_version"], "2026-04-26")
+        self.assertEqual(schema["settings_policy_version"], "ace-step-settings-parity-2026-04-26")
+        self.assertIn("ace_step_settings_registry", schema)
+
+    def test_ace_step_settings_registry_covers_official_fields(self):
+        registry = ace_step_settings_registry()
+        settings = registry["settings"]
+        manifest = official_manifest()
+        for field in manifest["generation_params"]:
+            with self.subTest(field=field):
+                self.assertIn(field, settings)
+        for field in manifest["generation_config"]:
+            with self.subTest(field=field):
+                self.assertIn(field, settings)
+        self.assertEqual(registry["profiles"]["official_defaults"]["sampler_mode"], "euler")
+        self.assertEqual(registry["profiles"]["official_defaults"]["audio_format"], "flac")
+        self.assertEqual(registry["profiles"]["docs_recommended"]["lm"]["lm_temperature"], 0.85)
+        self.assertEqual(registry["profiles"]["docs_recommended"]["lm"]["lm_top_k"], 0)
+        self.assertEqual(registry["profiles"]["docs_recommended"]["lm"]["lm_top_p"], 0.9)
+        self.assertEqual(registry["settings"]["use_cot_lyrics"]["status"], "reserved")
+        self.assertEqual(registry["settings"]["cot_caption"]["status"], "read_only_lm_output")
+
+    def test_settings_compliance_marks_ignored_and_overrides(self):
+        compliance = ace_step_settings_compliance(
+            {
+                "guidance_scale": 8.0,
+                "use_adg": True,
+                "thinking": True,
+                "timesteps": [1.0, 0.5, 0.0],
+                "audio_format": "mp3",
+            },
+            task_type="cover",
+            song_model="acestep-v15-turbo",
+            runner_plan="fast",
+        )
+        self.assertFalse(compliance["valid"])
+        self.assertIn("guidance_scale", compliance["ignored"])
+        self.assertIn("use_adg", compliance["ignored"])
+        self.assertIn("thinking", compliance["ignored"])
+        self.assertIn("audio_format", compliance["unsupported"])
+        self.assertIn("timesteps_override_steps_shift", compliance["notes"])
+        self.assertIn("duration_source_locked", compliance["notes"])
 
     def test_docs_best_model_settings(self):
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["inference_steps"], 8)
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["guidance_scale"], 7.0)
-        self.assertEqual(docs_best_model_settings("acestep-v15-xl-sft")["inference_steps"], 64)
+        self.assertEqual(docs_best_model_settings("acestep-v15-turbo-shift3")["inference_steps"], 8)
+        self.assertEqual(docs_best_model_settings("acestep-v15-sft")["inference_steps"], 50)
+        self.assertEqual(docs_best_model_settings("acestep-v15-base")["inference_steps"], 50)
+        self.assertEqual(docs_best_model_settings("acestep-v15-xl-turbo")["inference_steps"], 8)
+        self.assertEqual(docs_best_model_settings("acestep-v15-xl-sft")["inference_steps"], 50)
+        self.assertEqual(docs_best_model_settings("acestep-v15-xl-base")["inference_steps"], 50)
         self.assertEqual(docs_best_model_settings("acestep-v15-xl-sft")["shift"], 1.0)
 
     def test_safe_id(self):
