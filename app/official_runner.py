@@ -73,30 +73,60 @@ def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
 
 
 def _patch_mlx_thread_stream(handler_cls: Any) -> None:
-    """Patch MLX diffusion to set the Metal stream at the start of each call.
+    """Bypass the threading timeout wrapper when MLX is the DiT backend.
 
-    MLX Metal streams are thread-local. The diffusion timeout mechanism runs
-    generation in a child thread, but MLX was initialized in the main thread.
-    Fix: wrap _mlx_run_diffusion to call mx.set_default_device(mx.gpu) first.
+    MLX Metal GPU streams are NOT thread-safe — mx.eval() cannot be called from
+    a child thread (causes "There is no Stream(gpu, 0) in current thread").
+    Since MLX on Apple Silicon is fast enough, timeout monitoring is unnecessary.
+
+    Fix: replace the thread+join pattern with a direct call on the main thread
+    when MLX is the active backend.
     """
     try:
-        from acestep.core.generation.handler.diffusion import DiffusionMixin
+        from acestep.core.generation.handler.generate_music_execute import (
+            GenerateMusicExecuteMixin,
+            _DEFAULT_GENERATION_TIMEOUT,
+        )
     except ImportError:
         return
 
-    _orig_mlx_run = getattr(DiffusionMixin, "_mlx_run_diffusion", None)
-    if _orig_mlx_run is None:
-        return
+    import threading as _threading
+    from loguru import logger as _logger
 
-    def _patched_mlx_run(self, *args, **kwargs):
+    _orig = GenerateMusicExecuteMixin._run_generate_music_service_with_progress
+
+    def _patched_run_with_progress(self, *args, **kwargs):
+        use_mlx = getattr(self, "use_mlx_dit", False) and getattr(self, "mlx_decoder", None) is not None
+        if not use_mlx:
+            return _orig(self, *args, **kwargs)
+
+        # MLX path: monkey-patch threading.Thread to run target directly (no thread)
+        _RealThread = _threading.Thread
+
+        class _DirectCallThread:
+            """Fake Thread that runs target() directly on the calling thread."""
+            def __init__(self, target=None, name=None, daemon=None, **kw):
+                self._target = target
+                self._alive = False
+            def start(self):
+                self._alive = True
+                if self._target:
+                    self._target()
+                self._alive = False
+            def join(self, timeout=None):
+                pass
+            def is_alive(self):
+                return self._alive
+
+        # Only replace Thread for the duration of this call
+        _threading.Thread = _DirectCallThread
         try:
-            import mlx.core as mx
-            mx.set_default_device(mx.gpu)
-        except Exception:
-            pass
-        return _orig_mlx_run(self, *args, **kwargs)
+            _logger.info("[generate_music] MLX active — bypassing thread wrapper (running on main thread).")
+            return _orig(self, *args, **kwargs)
+        finally:
+            _threading.Thread = _RealThread
 
-    DiffusionMixin._mlx_run_diffusion = _patched_mlx_run
+    GenerateMusicExecuteMixin._run_generate_music_service_with_progress = _patched_run_with_progress
 
 
 def _none_if_auto(value: Any) -> Any:
