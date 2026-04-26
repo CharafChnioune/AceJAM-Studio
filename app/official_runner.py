@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import inspect
+import platform
 import sys
 import traceback
 from pathlib import Path
@@ -127,7 +128,9 @@ def _run(request_path: Path, response_path: Path) -> None:
     )
     from acestep.llm_inference import LLMHandler
 
-    _disable_acestep_mlx_backends(AceStepHandler)
+    _is_apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
+    if not _is_apple_silicon:
+        _disable_acestep_mlx_backends(AceStepHandler)
 
     save_dir = Path(request.get("save_dir") or response_path.parent)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +214,7 @@ def _run(request_path: Path, response_path: Path) -> None:
         compile_model=_bool_or_auto(request.get("compile_model", False)),
         offload_to_cpu=_bool_or_auto(request.get("offload_to_cpu", False)),
         offload_dit_to_cpu=_bool_or_auto(request.get("offload_dit_to_cpu", False)),
-        use_mlx_dit=False,
+        use_mlx_dit=_is_apple_silicon,
     )
     if not ready:
         raise RuntimeError(status)

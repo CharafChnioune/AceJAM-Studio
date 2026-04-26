@@ -29,6 +29,8 @@ torchao>=0.16.0,<0.17.0; platform_machine != "aarch64"
 torchao; platform_machine == "aarch64"
 xxhash
 huggingface_hub>=0.20.0
+mlx>=0.25.2; sys_platform == "darwin" and platform_machine == "arm64"
+mlx-lm>=0.20.0; sys_platform == "darwin" and platform_machine == "arm64"
 ollama>=0.6.1
 crewai>=1.14.3
 crewai-tools>=1.14.3

@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import platform
 import shutil
 import subprocess
 import sys
@@ -52,7 +53,8 @@ ALBUM_EMBEDDING_FALLBACK_MODELS = [
 ALBUM_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
-ACE_LM_BACKEND_DEFAULT = "pt"
+_IS_APPLE_SILICON = sys.platform == "darwin" and platform.machine() == "arm64"
+ACE_LM_BACKEND_DEFAULT = "mlx" if _IS_APPLE_SILICON else "pt"
 ACE_LM_PRIVATE_UPLOAD_CONFIRM = "PRIVATE_HF_UPLOAD"
 ACE_LM_CLEANUP_CONFIRM = "DELETE_ORIGINAL_ACE_LM_AFTER_SMOKE"
 ACE_LM_SMOKE_CONFIRM = "ACE_LM_SMOKE_PASSED"
@@ -305,7 +307,7 @@ def _normalize_lm_backend(value: Any) -> str:
     backend = str(value or ACE_LM_BACKEND_DEFAULT).strip().lower()
     if backend == "auto":
         return ACE_LM_BACKEND_DEFAULT
-    return backend if backend in {"pt", "vllm"} else ACE_LM_BACKEND_DEFAULT
+    return backend if backend in {"pt", "vllm", "mlx"} else ACE_LM_BACKEND_DEFAULT
 
 
 def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
@@ -981,7 +983,10 @@ print(f"[startup] Model storage: {STORAGE_PATH}")
 ACE_STEP_CHECKPOINT = _default_acestep_checkpoint()
 print(f"[startup] ACE-Step checkpoint: {ACE_STEP_CHECKPOINT}")
 
-_disable_acestep_mlx_backends(AceStepHandler)
+if not _IS_APPLE_SILICON:
+    _disable_acestep_mlx_backends(AceStepHandler)
+else:
+    print("[startup] Apple Silicon detected: MLX backends enabled for DiT and VAE")
 handler = AceStepHandler(persistent_storage_path=STORAGE_PATH)
 handler_lock = threading.Lock()
 ACTIVE_ACE_STEP_MODEL = ACE_STEP_CHECKPOINT
