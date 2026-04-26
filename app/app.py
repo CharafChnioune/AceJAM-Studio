@@ -6688,6 +6688,13 @@ async def api_create_album_job(request: Request):
         return JSONResponse({"success": False, "error": str(exc), "logs": [str(exc)]}, status_code=400)
 
 
+@app.get("/api/album/jobs")
+async def api_album_jobs_list():
+    jobs = _album_job_snapshot(None)
+    jobs.sort(key=lambda j: str(j.get("started_at") or j.get("finished_at") or ""), reverse=True)
+    return JSONResponse({"success": True, "jobs": jobs})
+
+
 @app.get("/api/album/jobs/{job_id}")
 async def api_album_job_status(job_id: str):
     job = _album_job_snapshot(job_id)

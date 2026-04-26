@@ -134,6 +134,30 @@
       border-radius: 50%; animation: spin 0.6s linear infinite;
       vertical-align: middle; margin-right: 6px;
     }
+    /* Job tracker badge */
+    .job-tracker {
+      margin-top: 10px; display: flex; flex-direction: column; gap: 5px;
+    }
+    .job-badge {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 8px; border-radius: 5px;
+      font-size: 11px; line-height: 1.3;
+      cursor: pointer; transition: background 0.2s;
+      border: 1px solid var(--line); background: rgba(255,255,255,0.02);
+    }
+    .job-badge:hover { background: rgba(255,255,255,0.06); }
+    .job-badge.running { border-color: rgba(242,198,109,0.45); color: var(--accent-2); }
+    .job-badge.succeeded { border-color: rgba(127,210,155,0.45); color: var(--ok); }
+    .job-badge.failed { border-color: rgba(238,123,112,0.45); color: var(--danger); }
+    .job-badge.queued { border-color: rgba(160,170,190,0.35); color: var(--muted); }
+    .job-badge .jb-icon { flex-shrink: 0; font-size: 13px; }
+    .job-badge .jb-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .job-badge .jb-pct { flex-shrink: 0; font-weight: 600; font-size: 11px; }
+    .job-badge .jb-spinner {
+      display: inline-block; width: 10px; height: 10px;
+      border: 1.5px solid currentColor; border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite; flex-shrink: 0;
+    }
     .file-url-banner,
     .stale-ui-banner {
       display: none;
@@ -845,6 +869,7 @@
       <div class="subbrand">ACE-Step 1.5</div>
       <nav class="nav" id="nav"></nav>
       <div class="status" id="status">Loading studio...</div>
+      <div class="job-tracker" id="job-tracker"></div>
     </aside>
 
     <main class="workspace">
@@ -2560,6 +2585,132 @@
       el.querySelector(".toast-dismiss").addEventListener("click", handle.dismiss);
       if (duration > 0) timer = setTimeout(handle.dismiss, duration);
       return handle;
+    }
+
+    /* ── Persistent job tracking ── */
+    const JOB_STORAGE_KEY = "acejam:activeJobs";
+
+    function saveActiveJobs() {
+      const payload = {};
+      if (state.activeAlbumPlanJobId) payload.albumPlanJobId = state.activeAlbumPlanJobId;
+      if (state.activeAlbumJobId) payload.albumJobId = state.activeAlbumJobId;
+      if (state.activeLoraJob) payload.loraJobId = state.activeLoraJob;
+      if (Object.keys(payload).length) {
+        payload.savedAt = new Date().toISOString();
+        try { localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload)); } catch {}
+      } else {
+        try { localStorage.removeItem(JOB_STORAGE_KEY); } catch {}
+      }
+      renderJobBadges();
+    }
+
+    function loadSavedJobs() {
+      try {
+        const raw = localStorage.getItem(JOB_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch { return null; }
+    }
+
+    function clearSavedJob(key) {
+      const saved = loadSavedJobs();
+      if (!saved) return;
+      delete saved[key];
+      if (Object.keys(saved).filter((k) => k !== "savedAt").length === 0) {
+        try { localStorage.removeItem(JOB_STORAGE_KEY); } catch {}
+      } else {
+        try { localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(saved)); } catch {}
+      }
+    }
+
+    const _jobBadgeCache = {};
+
+    function renderJobBadges() {
+      const container = $("job-tracker");
+      if (!container) return;
+      const badges = [];
+      const addBadge = (id, label, jobState, progress, targetMode) => {
+        if (!id) return;
+        const s = String(jobState || "queued").toLowerCase();
+        const iconMap = { running: "", queued: "\u25F7", succeeded: "\u2713", failed: "\u2715" };
+        const icon = s === "running" ? `<span class="jb-spinner"></span>` : `<span class="jb-icon">${iconMap[s] || "\u25CB"}</span>`;
+        const pct = s === "running" && progress > 0 ? `<span class="jb-pct">${Math.round(progress)}%</span>` : "";
+        badges.push(`<div class="job-badge ${esc(s)}" data-mode="${esc(targetMode)}" data-job-id="${esc(id)}" title="Click to view">${icon}<span class="jb-text">${esc(label)}</span>${pct}</div>`);
+      };
+      if (state.activeAlbumPlanJobId) {
+        const c = _jobBadgeCache[state.activeAlbumPlanJobId] || {};
+        addBadge(state.activeAlbumPlanJobId, `Plan ${state.activeAlbumPlanJobId.slice(0,6)}`, c.state || "running", c.progress || 0, "album");
+      }
+      if (state.activeAlbumJobId) {
+        const c = _jobBadgeCache[state.activeAlbumJobId] || {};
+        addBadge(state.activeAlbumJobId, `Album ${state.activeAlbumJobId.slice(0,6)}`, c.state || "running", c.progress || 0, "album");
+      }
+      if (state.activeLoraJob) {
+        const c = _jobBadgeCache[state.activeLoraJob] || {};
+        addBadge(state.activeLoraJob, `LoRA ${String(state.activeLoraJob).slice(0,6)}`, c.state || "running", c.progress || 0, "lora");
+      }
+      container.innerHTML = badges.join("");
+      container.querySelectorAll(".job-badge").forEach((el) => {
+        el.addEventListener("click", () => setMode(el.dataset.mode));
+      });
+    }
+
+    function updateJobBadgeState(jobId, jobState, progress) {
+      if (!jobId) return;
+      _jobBadgeCache[jobId] = { state: jobState, progress: progress || 0 };
+      renderJobBadges();
+    }
+
+    async function loadActiveJobs() {
+      const saved = loadSavedJobs();
+      if (!saved) return;
+      if (saved.albumPlanJobId && !state.activeAlbumPlanJobId) {
+        try {
+          const data = await api(`/api/album/jobs/${encodeURIComponent(saved.albumPlanJobId)}`, null, { method: "GET" });
+          const job = data.job || {};
+          if (["queued", "running"].includes(job.state)) {
+            state.activeAlbumPlanJobId = saved.albumPlanJobId;
+            renderAlbumJob(job);
+            updateJobBadgeState(saved.albumPlanJobId, job.state, job.progress);
+            setStatus("Resumed album plan job. Progress updating.", "busy");
+            if (state.mode !== "album") toast("Album plan job still running.", "busy", 4000);
+            pollAlbumPlanJob(saved.albumPlanJobId);
+          } else {
+            updateJobBadgeState(saved.albumPlanJobId, job.state, job.progress);
+            clearSavedJob("albumPlanJobId");
+            if (job.state === "succeeded") toast("Album plan finished while you were away.", "ok");
+            else if (job.state === "failed") toast("Album plan job failed.", "error");
+          }
+        } catch { clearSavedJob("albumPlanJobId"); }
+      }
+      if (saved.albumJobId && !state.activeAlbumJobId) {
+        try {
+          const data = await api(`/api/album/jobs/${encodeURIComponent(saved.albumJobId)}`, null, { method: "GET" });
+          const job = data.job || {};
+          if (["queued", "running"].includes(job.state)) {
+            state.activeAlbumJobId = saved.albumJobId;
+            renderAlbumJob(job);
+            updateJobBadgeState(saved.albumJobId, job.state, job.progress);
+            setStatus("Resumed album generation job. Progress updating.", "busy");
+            if (state.mode !== "album") toast("Album generation still running.", "busy", 4000);
+            pollAlbumJob(saved.albumJobId);
+          } else {
+            updateJobBadgeState(saved.albumJobId, job.state, job.progress);
+            clearSavedJob("albumJobId");
+            if (job.state === "succeeded") {
+              const result = job.result || {};
+              if (result.album_id) state.lastAlbumId = result.album_id;
+              if (result.album_family_id) state.lastAlbumFamilyId = result.album_family_id;
+              if (result.tracks?.length) renderAlbumPlan(result.tracks);
+              if (result.audios?.length) renderResults({ ...result, active_song_model: result.tracks?.[0]?.active_song_model || "" });
+              toast("Album generated while you were away!", "ok");
+            } else if (job.state === "failed") toast("Album generation job failed.", "error");
+          }
+        } catch { clearSavedJob("albumJobId"); }
+      }
+      if (saved.loraJobId && !state.activeLoraJob) {
+        clearSavedJob("loraJobId");
+      }
+      renderJobBadges();
     }
 
     /* ── Generation progress bar ── */
@@ -5201,21 +5352,31 @@
       const contractApplied = Boolean(job.input_contract_applied || result.input_contract_applied);
       const contractRepairs = Number(job.contract_repair_count || result.contract_repair_count || 0);
       const blockedUnsafe = Number(job.blocked_unsafe_count || result.blocked_unsafe_count || 0);
+      const stateIcon = job.state === "succeeded" ? "\u2713" : job.state === "failed" ? "\u2715" : job.state === "running" ? "\u25B6" : "\u25F7";
+      const elapsed = job.started_at ? (() => {
+        const end = job.finished_at ? new Date(job.finished_at) : new Date();
+        const secs = Math.max(0, Math.round((end - new Date(job.started_at)) / 1000));
+        const m = Math.floor(secs / 60), s = secs % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+      })() : "";
       const parts = [
-        `Job ${job.id || ""}: ${job.state || "unknown"} · ${job.status || ""} · ${Math.round(Number(job.progress || 0))}%`,
+        `${stateIcon} Job ${job.id || ""}: ${(job.state || "unknown").toUpperCase()} · ${job.status || ""} · ${Math.round(Number(job.progress || 0))}%${elapsed ? ` · ${elapsed}` : ""}`,
+        job.finished_at ? `Finished: ${new Date(job.finished_at).toLocaleString()}` : "",
         `Engine: ${engine} · ${engineStatus}`,
         promptKitVersion ? `Prompt Kit: ${promptKitVersion}` : "",
-        contractApplied ? `Input Contract: applied · Repairs: ${contractRepairs} · Blocked unsafe items: ${blockedUnsafe}` : "",
+        contractApplied ? `Input Contract: applied · Repairs: ${contractRepairs}` : "",
         `Planner: ${job.planner_provider || "local"} / ${job.planner_model || "unknown"} · Embedding: ${job.embedding_provider || "local"} / ${job.embedding_model || "unknown"} · Memory: ${job.memory_enabled ? "on" : "off"}`,
         crewaiLogFile ? `CrewAI log file: ${crewaiLogFile}` : "",
         job.current_model_album ? `Model album: ${job.current_model_album}` : "",
         job.current_track ? `Track: ${job.current_track}` : "",
         isPlan ? `Planned: ${job.planned_count || 0}/${job.expected_count || "?"}` : `Generated: ${job.generated_count || 0}/${job.expected_count || "?"}`,
+        job.download_url ? `Download: ${job.download_url}` : "",
         ...(job.errors || []).map((item) => `ERROR: ${item}`),
         "---",
         ...logs.slice(-120)
       ].filter(Boolean);
       $("album-log").textContent = parts.join("\n");
+      updateJobBadgeState(job.id, job.state, job.progress);
     }
 
     async function pollAlbumPlanJob(jobId) {
@@ -5223,6 +5384,7 @@
       const data = await api(`/api/album/jobs/${encodeURIComponent(jobId)}`, null, { method: "GET" });
       const job = data.job || {};
       renderAlbumJob(job);
+      updateJobBadgeState(jobId, job.state, job.progress);
       if (["queued", "running"].includes(job.state)) {
         state.albumPlanJobTimer = setTimeout(() => pollAlbumPlanJob(jobId).catch((err) => {
           $("album-log").textContent += `\n${err.message}`;
@@ -5231,6 +5393,9 @@
         return;
       }
       setBusy(false);
+      state.activeAlbumPlanJobId = null;
+      clearSavedJob("albumPlanJobId");
+      saveActiveJobs();
       const result = job.result || {};
       if (job.state === "succeeded" && result.success !== false) {
         renderAlbumJob(job);
@@ -5249,6 +5414,7 @@
       const data = await api(`/api/album/jobs/${encodeURIComponent(jobId)}`, null, { method: "GET" });
       const job = data.job || {};
       renderAlbumJob(job);
+      updateJobBadgeState(jobId, job.state, job.progress);
       if (["queued", "running"].includes(job.state)) {
         state.albumJobTimer = setTimeout(() => pollAlbumJob(jobId).catch((err) => {
           $("album-log").textContent += `\n${err.message}`;
@@ -5257,6 +5423,9 @@
         return;
       }
       setBusy(false);
+      state.activeAlbumJobId = null;
+      clearSavedJob("albumJobId");
+      saveActiveJobs();
       const result = job.result || {};
       if (result.album_id) state.lastAlbumId = result.album_id;
       if (result.album_family_id) state.lastAlbumFamilyId = result.album_family_id;
@@ -5441,6 +5610,7 @@
         }
         if (!data.success) throw new Error(data.error || "Could not start album planning job");
         state.activeAlbumPlanJobId = data.job_id;
+        saveActiveJobs();
         renderAlbumJob(data.job);
         setStatus("Album planning job running. Progress will update here.", "busy");
         if (state.albumPlanJobTimer) clearTimeout(state.albumPlanJobTimer);
@@ -5467,8 +5637,9 @@
         }
         if (!data.success) throw new Error(data.error || "Could not start album job");
         state.activeAlbumJobId = data.job_id;
+        saveActiveJobs();
         renderAlbumJob(data.job);
-        setStatus("Album job running. Keep AceJAM open; progress will update here.", "busy");
+        setStatus("Album job running. Progress will update even after refresh.", "busy");
         if (state.albumJobTimer) clearTimeout(state.albumJobTimer);
         state.albumJobTimer = setTimeout(() => pollAlbumJob(data.job_id), 1000);
       } catch (err) {
@@ -5543,6 +5714,7 @@
       }
       if (trainer.active_job) {
         state.activeLoraJob = trainer.active_job.id;
+        saveActiveJobs();
         scheduleLoraPoll();
       }
     }
@@ -5602,6 +5774,7 @@
         max_duration: 240
       });
       state.activeLoraJob = data.job.id;
+      saveActiveJobs();
       $("tensor-dir").value = data.job.paths?.tensor_output || "";
       $("lora-log").textContent = JSON.stringify(data, null, 2);
       scheduleLoraPoll();
@@ -5633,6 +5806,7 @@
       try {
         const data = await api("/api/lora/train", loraTrainPayload());
         state.activeLoraJob = data.job.id;
+        saveActiveJobs();
         $("lora-log").textContent = JSON.stringify(data, null, 2);
         scheduleLoraPoll();
       } catch (err) {
@@ -5650,6 +5824,7 @@
         granularity: "module"
       });
       state.activeLoraJob = data.job.id;
+      saveActiveJobs();
       $("lora-log").textContent = JSON.stringify(data, null, 2);
       scheduleLoraPoll();
     }
@@ -5666,6 +5841,7 @@
       const data = await api(`/api/lora/jobs/${state.activeLoraJob}`);
       const log = await api(`/api/lora/jobs/${state.activeLoraJob}/log`);
       const job = data.job;
+      updateJobBadgeState(state.activeLoraJob, job.state, job.progress || 0);
       $("lora-log").textContent = `${job.kind} ${job.state}\\n\\n${log.log || ""}`;
       if (job.kind === "preprocess" && job.result?.tensor_output) {
         $("tensor-dir").value = job.result.tensor_output;
@@ -5677,6 +5853,8 @@
         scheduleLoraPoll();
       } else {
         state.activeLoraJob = null;
+        clearSavedJob("loraJobId");
+        saveActiveJobs();
         await loadLoraStatus();
       }
     }
@@ -5891,7 +6069,7 @@
       setMode("simple");
     } else {
       bindEvents();
-      Promise.all([loadConfig(), loadOllama(), loadAceLmStatus(), loadLibrary(), loadLoraStatus()]).then(() => setMode("simple")).catch((err) => setStatus(err.message, "error"));
+      Promise.all([loadConfig(), loadOllama(), loadAceLmStatus(), loadLibrary(), loadLoraStatus()]).then(() => { setMode("simple"); loadActiveJobs(); }).catch((err) => setStatus(err.message, "error"));
     }
   </script>
 </body>
