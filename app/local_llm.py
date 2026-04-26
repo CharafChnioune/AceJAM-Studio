@@ -200,6 +200,23 @@ def _lmstudio_loaded_names(item: dict[str, Any]) -> list[str]:
     return [name for name in names if name]
 
 
+def _lmstudio_loaded_context_length(item: dict[str, Any]) -> int:
+    loaded = item.get("loaded_instances") or item.get("loadedInstances") or item.get("instances") or []
+    contexts: list[int] = []
+    if isinstance(loaded, list):
+        for instance in loaded:
+            if not isinstance(instance, dict):
+                continue
+            config = instance.get("config") if isinstance(instance.get("config"), dict) else {}
+            value = instance.get("context_length") or instance.get("contextLength") or config.get("context_length") or config.get("contextLength")
+            try:
+                if value:
+                    contexts.append(int(value))
+            except (TypeError, ValueError):
+                continue
+    return max(contexts) if contexts else 0
+
+
 def lmstudio_model_catalog() -> dict[str, Any]:
     native = lmstudio_native_base_url()
     try:
@@ -217,6 +234,7 @@ def lmstudio_model_catalog() -> dict[str, Any]:
                 continue
             kind = _lmstudio_model_kind(raw, name)
             loaded_instances = _lmstudio_loaded_names(raw)
+            loaded_context_length = _lmstudio_loaded_context_length(raw)
             loaded = bool(raw.get("loaded") or raw.get("is_loaded") or loaded_instances)
             if loaded and not loaded_instances:
                 loaded_instances = [name]
@@ -236,6 +254,7 @@ def lmstudio_model_catalog() -> dict[str, Any]:
                     "quantization_level": str(quant or ""),
                     "architecture": str(raw.get("architecture") or raw.get("arch") or ""),
                     "context_length": raw.get("context_length") or raw.get("contextLength") or raw.get("max_context_length") or "",
+                    "loaded_context_length": loaded_context_length,
                     "reasoning": bool(raw.get("reasoning") or raw.get("is_reasoning_model") or False),
                     "loaded": loaded,
                     "loaded_instances": loaded_instances,
@@ -305,14 +324,38 @@ def lmstudio_load_model(model_name: str, kind: str = "chat", context_length: int
     model = str(model_name or "").strip()
     if not model:
         raise LocalLLMError("LM Studio model name is required.")
-    payload: dict[str, Any] = {"model": model, "model_key": model}
+    payload: dict[str, Any] = {"model": model}
     if context_length:
         payload["context_length"] = int(context_length)
-    try:
-        data = _http_json("POST", f"{lmstudio_native_base_url()}/models/load", payload, timeout=120)
-    except LocalLLMError:
-        data = _http_json("POST", f"{lmstudio_native_base_url()}/models/{urllib.parse.quote(model, safe='')}/load", payload, timeout=120)
+        payload["echo_load_config"] = True
+    data = _http_json("POST", f"{lmstudio_native_base_url()}/models/load", payload, timeout=120)
     return {"success": True, "provider": "lmstudio", "model": model, "kind": kind, "response": data}
+
+
+def _lmstudio_openai_chat_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    allowed = {
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "max_completion_tokens",
+        "max_tokens",
+        "metadata",
+        "n",
+        "presence_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "stream_options",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p",
+        "repeat_penalty",
+        "user",
+    }
+    return {key: value for key, value in (options or {}).items() if key in allowed and value is not None}
 
 
 def lmstudio_unload_model(model_name: str) -> dict[str, Any]:
@@ -378,9 +421,7 @@ def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: d
         "messages": messages,
         "stream": False,
     }
-    for key, value in (options or {}).items():
-        if value is not None:
-            payload[key] = value
+    payload.update(_lmstudio_openai_chat_options(options))
     if json_format:
         payload.setdefault("response_format", {"type": "json_object"})
     data = _http_json("POST", f"{lmstudio_api_base_url()}/chat/completions", payload, timeout=600)

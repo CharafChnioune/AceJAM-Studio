@@ -203,11 +203,36 @@ VALID_KEY_ROOTS = {"C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", 
 SUPPORTED_AUDIO_FORMATS = {"wav", "flac", "ogg", "mp3", "opus", "aac", "wav32"}
 SUPPORTED_INFER_METHODS = {"ode", "sde"}
 SUPPORTED_SAMPLERS = {"euler", "heun"}
+NULLISH_TEXT = {"", "auto", "none", "null", "nil", "n/a", "na"}
+
+
+def _is_nullish(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in NULLISH_TEXT
+
+
+def _number_or_default(value: Any, default: Any) -> Any:
+    return default if _is_nullish(value) else value
+
+
+def _float_or_default(value: Any, default: Any) -> float:
+    raw = _number_or_default(value, default)
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    match = re.search(r"-?\d+(?:\.\d+)?", str(raw or ""))
+    if match:
+        return float(match.group(0))
+    if raw is not default:
+        return _float_or_default(default, 0.0)
+    return 0.0
+
+
+def _int_or_default(value: Any, default: Any) -> int:
+    return int(_float_or_default(value, default))
 
 
 def parse_duration_seconds(value: Any, default: float = 120.0) -> float:
     """Parse album durations from seconds, m:ss, h:mm:ss, or loose text."""
-    if value in [None, "", "auto"]:
+    if _is_nullish(value):
         return float(default)
     if isinstance(value, (int, float)):
         return max(10.0, min(600.0, float(value)))
@@ -288,9 +313,9 @@ def normalize_sampler_mode(value: Any) -> str:
 
 
 def normalize_seed_value(value: Any) -> tuple[str, str]:
-    text = str(value or "-1").strip()
-    if not text or text == "auto":
+    if _is_nullish(value):
         return "-1", ""
+    text = str(value).strip()
     if re.fullmatch(r"-?\d+(?:\s*,\s*-?\d+)*", text):
         return text, ""
     stable = zlib.crc32(text.encode("utf-8")) % 2_147_483_647
@@ -388,7 +413,7 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
         return ["Intro", "Verse - rap" if rap else "Verse", "Build", "Chorus", "Drop", "Verse", "Bridge", "Final Chorus", "Outro"]
     if preset == "cinematic":
         return ["Intro", "Verse 1", "Pre-Chorus", "Chorus - anthemic", "Verse 2", "Bridge", "Final Chorus", "Outro"]
-    dur = int(float(duration or 120))
+    dur = _int_or_default(duration, 120)
     if dur <= 45:
         return ["Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Outro"]
     if dur <= 90:
@@ -945,8 +970,8 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         if raw.lower() not in {t.lower() for t in tags} and len(tags) < 12:
             tags.append(raw)
     bpm_strategy = str(options.get("bpm_strategy") or "varied")
-    if track.get("bpm") not in [None, "", "auto"]:
-        bpm = int(float(track.get("bpm")))
+    if not _is_nullish(track.get("bpm")):
+        bpm = _int_or_default(track.get("bpm"), 92)
     elif bpm_strategy == "slow":
         bpm = 72 + (index % 3) * 4
     elif bpm_strategy == "club":
@@ -994,10 +1019,10 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
             "multi_album": True,
         }
     model_defaults = docs_best_model_settings(song_model)
-    inference_steps = int(float(track.get("inference_steps") or options.get("inference_steps") or model_defaults["inference_steps"]))
-    guidance_scale = float(track.get("guidance_scale") or options.get("guidance_scale") or model_defaults["guidance_scale"])
-    shift = float(track.get("shift") or options.get("shift") or model_defaults["shift"])
-    seed_value, seed_note = normalize_seed_value(track.get("seed") or options.get("seed") or "-1")
+    inference_steps = _int_or_default(track.get("inference_steps"), _number_or_default(options.get("inference_steps"), model_defaults["inference_steps"]))
+    guidance_scale = _float_or_default(track.get("guidance_scale"), _number_or_default(options.get("guidance_scale"), model_defaults["guidance_scale"]))
+    shift = _float_or_default(track.get("shift"), _number_or_default(options.get("shift"), model_defaults["shift"]))
+    seed_value, seed_note = normalize_seed_value(_number_or_default(track.get("seed"), options.get("seed") or "-1"))
     tool_notes = " ".join(split_terms([note for note in [track.get("tool_notes"), seed_note] if note]))
     normalized = {
         "track_number": int(track.get("track_number") or index + 1),
@@ -1217,9 +1242,9 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
                 "song_model": ALBUM_FINAL_MODEL,
                 "album_model_portfolio": album_model_portfolio(context.get("installed_models")),
                 "seed": str(context.get("seed") or "-1"),
-                "inference_steps": int(float(context.get("inference_steps") or final_defaults["inference_steps"])),
-                "guidance_scale": float(context.get("guidance_scale") or final_defaults["guidance_scale"]),
-                "shift": float(context.get("shift") or final_defaults["shift"]),
+                "inference_steps": _int_or_default(context.get("inference_steps"), final_defaults["inference_steps"]),
+                "guidance_scale": _float_or_default(context.get("guidance_scale"), final_defaults["guidance_scale"]),
+                "shift": _float_or_default(context.get("shift"), final_defaults["shift"]),
                 "infer_method": str(context.get("infer_method") or final_defaults["infer_method"]),
                 "sampler_mode": str(context.get("sampler_mode") or final_defaults["sampler_mode"]),
                 "audio_format": str(context.get("audio_format") or final_defaults["audio_format"]),
@@ -1451,9 +1476,9 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
             "lyrics": lyrics,
             "song_model": ALBUM_FINAL_MODEL,
             "album_model_portfolio": album_model_portfolio(context.get("installed_models")),
-            "inference_steps": int(float(payload.get("inference_steps") or context.get("inference_steps") or final_defaults["inference_steps"])),
-            "guidance_scale": float(payload.get("guidance_scale") or context.get("guidance_scale") or final_defaults["guidance_scale"]),
-            "shift": float(payload.get("shift") or context.get("shift") or final_defaults["shift"]),
+            "inference_steps": _int_or_default(payload.get("inference_steps"), _number_or_default(context.get("inference_steps"), final_defaults["inference_steps"])),
+            "guidance_scale": _float_or_default(payload.get("guidance_scale"), _number_or_default(context.get("guidance_scale"), final_defaults["guidance_scale"])),
+            "shift": _float_or_default(payload.get("shift"), _number_or_default(context.get("shift"), final_defaults["shift"])),
         }
         repaired["quality_report"] = quality_report(repaired, context)
         return json.dumps(repaired)

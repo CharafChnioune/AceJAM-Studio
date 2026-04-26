@@ -407,6 +407,10 @@ class AppParityTest(unittest.TestCase):
             "logs": ["planned"],
             "planner_model": acejam_app.DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
             "embedding_model": acejam_app.DEFAULT_ALBUM_EMBEDDING_MODEL,
+            "planning_engine": "crewai",
+            "crewai_used": True,
+            "toolbelt_fallback": False,
+            "crewai_output_log_file": "/tmp/album_plan_planjob123.json",
         }
 
         with patch.object(acejam_app, "_run_album_plan_from_payload", return_value=fake_result):
@@ -417,6 +421,10 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(job["job_type"], "album_plan")
         self.assertEqual(job["planned_count"], 2)
         self.assertEqual(job["result"]["tracks"][0]["title"], "One")
+        self.assertEqual(job["planning_engine"], "crewai")
+        self.assertTrue(job["crewai_used"])
+        self.assertFalse(job["toolbelt_fallback"])
+        self.assertEqual(job["crewai_output_log_file"], "/tmp/album_plan_planjob123.json")
 
     def test_song_portfolio_renders_every_model_with_model_defaults(self):
         calls = []

@@ -18,7 +18,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import soundfile as sf
@@ -5165,7 +5165,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         _cleanup_accelerator_memory()
 
 
-def _run_album_plan_from_payload(body: dict[str, Any]) -> dict[str, Any]:
+def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[str], None] | None = None) -> dict[str, Any]:
     concept = str(body.get("concept") or "")
     num_tracks = int(body.get("num_tracks") or 5)
     track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
@@ -5200,6 +5200,8 @@ def _run_album_plan_from_payload(body: dict[str, Any]) -> dict[str, Any]:
         input_tracks=_json_list(body.get("tracks")) or None,
         planner_provider=planner_provider,
         embedding_provider=embedding_provider,
+        log_callback=log_callback,
+        crewai_output_log_file=str(body.get("crewai_output_log_file") or ""),
     )
     result["planner_model"] = planner_model
     result["planner_provider"] = planner_provider
@@ -5213,6 +5215,22 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
+    toolbelt_only = parse_bool(body.get("toolbelt_only"), False)
+    requested_engine = "deterministic toolbelt" if toolbelt_only else "CrewAI"
+    crewai_output_log_file = str(body.get("crewai_output_log_file") or "")
+    if not toolbelt_only and not crewai_output_log_file:
+        from album_crew import crewai_output_log_path as _crewai_output_log_path
+
+        crewai_output_log_file = str(_crewai_output_log_path(job_id))
+        body = {**body, "crewai_output_log_file": crewai_output_log_file}
+    start_logs = [
+        f"Album plan job {job_id} started.",
+        f"Planning engine requested: {requested_engine}.",
+        f"Planner: {provider_label(planner_provider)} ({planner_model})",
+        f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
+    ]
+    if crewai_output_log_file:
+        start_logs.append(f"CrewAI output log file: {crewai_output_log_file}")
     _set_album_job(
         job_id,
         state="running",
@@ -5224,17 +5242,31 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         planner_provider=planner_provider,
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
-        memory_enabled=not parse_bool(body.get("toolbelt_only"), False),
+        crewai_output_log_file=crewai_output_log_file,
+        memory_enabled=not toolbelt_only,
         started_at=datetime.now(timezone.utc).isoformat(),
         finished_at=None,
-        logs=[
-            f"Album plan job {job_id} started.",
-            f"Planner: {planner_model}",
-            f"Embedding: {embedding_model}",
-        ],
+        logs=start_logs,
     )
     try:
-        result = _run_album_plan_from_payload(body)
+        def _stream_plan_log(line: str) -> None:
+            compact = str(line).replace("\n", " ")[:700]
+            updates: dict[str, Any] = {}
+            lower = compact.lower()
+            if "planning compact album bible with crewai" in lower:
+                updates.update(status="CrewAI album bible running", progress=15)
+            elif "crewai compact bible planned" in lower:
+                updates.update(status="CrewAI track blueprints ready", progress=45)
+            elif "producing track" in lower:
+                updates.update(status="CrewAI track production running", progress=55)
+            elif "crewai produced" in lower:
+                updates.update(status="CrewAI plan ready", progress=95)
+            elif "fell back to deterministic toolbelt" in lower or "toolbelt fallback planned" in lower:
+                updates.update(status="Deterministic toolbelt fallback", progress=90)
+            print(f"[album_plan_job][{job_id}] {compact}", file=sys.__stdout__, flush=True)
+            _album_job_log(job_id, compact, **updates)
+
+        result = _run_album_plan_from_payload(body, log_callback=_stream_plan_log)
         tracks = result.get("tracks") or []
         success = bool(result.get("success", True)) and bool(tracks)
         _set_album_job(
@@ -5247,6 +5279,10 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             errors=[] if success else [result.get("error") or "Album planning failed"],
             planner_model=str(result.get("planner_model") or planner_model),
             embedding_model=str(result.get("embedding_model") or embedding_model),
+            planning_engine=str(result.get("planning_engine") or requested_engine.lower()),
+            crewai_used=bool(result.get("crewai_used")),
+            toolbelt_fallback=bool(result.get("toolbelt_fallback")),
+            crewai_output_log_file=str(result.get("crewai_output_log_file") or crewai_output_log_file),
             expected_count=len(tracks),
             planned_count=len(tracks),
             finished_at=datetime.now(timezone.utc).isoformat(),
@@ -5260,6 +5296,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             progress=100,
             errors=[str(exc)],
             logs=[traceback.format_exc()],
+            crewai_output_log_file=crewai_output_log_file,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
     finally:

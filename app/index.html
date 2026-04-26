@@ -1660,13 +1660,13 @@
           </summary>
           <div class="advanced-content">
           <div class="grid-2">
-          <div class="control-note">CrewAI planning uses Ollama. ACE-Step 4B LM is the default for official generation controls.</div>
+          <div class="control-note">CrewAI planning uses the selected local planner provider. ACE-Step 4B LM is the default for official generation controls.</div>
           <div hidden>
             <label for="album-ace-lm-model">ACE-Step LM</label>
             <select id="album-ace-lm-model"></select>
           </div>
         </div>
-        <div class="control-note">If an Ollama model produces raw <code>&lt;think&gt;</code> text, AceJAM strips it and uses deterministic fallback planning instead of calling any cloud service.</div>
+        <div class="control-note">If the local planner cannot complete, AceJAM marks the deterministic fallback explicitly in the job log instead of hiding the engine switch.</div>
         <div class="lm-advice" id="album-lm-advice" hidden></div>
           </div>
         </details>
@@ -5178,9 +5178,18 @@
       if (!job) return;
       const logs = job.logs || [];
       const isPlan = job.job_type === "album_plan";
+      const result = job.result || {};
+      const engine = job.planning_engine || result.planning_engine || (job.memory_enabled ? "crewai_requested" : "toolbelt");
+      const engineText = String(engine || "").toLowerCase();
+      const engineStatus = result.crewai_used || job.crewai_used
+        ? "CrewAI used"
+        : (result.toolbelt_fallback || job.toolbelt_fallback ? "toolbelt fallback" : (engineText.includes("toolbelt") ? "toolbelt used" : "pending"));
+      const crewaiLogFile = job.crewai_output_log_file || result.crewai_output_log_file || "";
       const parts = [
         `Job ${job.id || ""}: ${job.state || "unknown"} · ${job.status || ""} · ${Math.round(Number(job.progress || 0))}%`,
-        `Planner: ${job.planner_model || "unknown"} · Embedding: ${job.embedding_model || "unknown"} · Memory: ${job.memory_enabled ? "on" : "off"}`,
+        `Engine: ${engine} · ${engineStatus}`,
+        `Planner: ${job.planner_provider || "local"} / ${job.planner_model || "unknown"} · Embedding: ${job.embedding_provider || "local"} / ${job.embedding_model || "unknown"} · Memory: ${job.memory_enabled ? "on" : "off"}`,
+        crewaiLogFile ? `CrewAI log file: ${crewaiLogFile}` : "",
         job.current_model_album ? `Model album: ${job.current_model_album}` : "",
         job.current_track ? `Track: ${job.current_track}` : "",
         isPlan ? `Planned: ${job.planned_count || 0}/${job.expected_count || "?"}` : `Generated: ${job.generated_count || 0}/${job.expected_count || "?"}`,
@@ -5206,7 +5215,7 @@
       setBusy(false);
       const result = job.result || {};
       if (job.state === "succeeded" && result.success !== false) {
-        $("album-log").textContent = (result.logs || []).join("\n") || $("album-log").textContent;
+        renderAlbumJob(job);
         renderAlbumPlan(result.tracks || []);
         setStatus("Album plan ready. Edit tracks, then generate.", "ok");
         toast("Album plan ready. Edit tracks, then generate.", "ok");

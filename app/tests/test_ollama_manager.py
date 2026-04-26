@@ -98,7 +98,7 @@ class OllamaManagerTest(unittest.TestCase):
             self.assertIn("/api/v1/models", url)
             return {
                 "models": [
-                    {"key": "qwen-local", "type": "llm", "format": "gguf", "quantization": "Q4_K_M", "loaded_instances": [{"identifier": "qwen-local"}]},
+                    {"key": "qwen-local", "type": "llm", "format": "gguf", "quantization": "Q4_K_M", "loaded_instances": [{"identifier": "qwen-local", "config": {"context_length": 8192}}]},
                     {"key": "embed-local", "type": "embedding", "format": "gguf"},
                 ]
             }
@@ -110,6 +110,46 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(data["chat_models"], ["qwen-local"])
         self.assertEqual(data["embedding_models"], ["embed-local"])
         self.assertEqual(data["loaded_models"], ["qwen-local"])
+        self.assertEqual(data["details"][0]["loaded_context_length"], 8192)
+
+    def test_lmstudio_load_model_sets_context_with_native_payload(self):
+        calls = []
+
+        def fake_http(method, url, payload=None, timeout=30.0):
+            calls.append((method, url, payload, timeout))
+            return {"status": "loaded", "load_config": {"context_length": 32768}}
+
+        with patch.object(local_llm, "_http_json", side_effect=fake_http):
+            result = local_llm.lmstudio_load_model("qwen-local", kind="chat", context_length=32768)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(calls[0][0], "POST")
+        self.assertIn("/api/v1/models/load", calls[0][1])
+        self.assertEqual(calls[0][2]["model"], "qwen-local")
+        self.assertNotIn("model_key", calls[0][2])
+        self.assertEqual(calls[0][2]["context_length"], 32768)
+        self.assertTrue(calls[0][2]["echo_load_config"])
+
+    def test_lmstudio_chat_filters_non_openai_options(self):
+        seen_payloads = []
+
+        def fake_http(method, url, payload=None, timeout=30.0):
+            seen_payloads.append(payload)
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+        with patch.object(local_llm, "_http_json", side_effect=fake_http):
+            result = local_llm.lmstudio_chat(
+                "qwen-local",
+                [{"role": "user", "content": "Reply OK."}],
+                options={"temperature": 0.1, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.1, "num_ctx": 32768},
+            )
+
+        self.assertEqual(result, "OK")
+        self.assertEqual(seen_payloads[0]["temperature"], 0.1)
+        self.assertEqual(seen_payloads[0]["top_p"], 0.8)
+        self.assertEqual(seen_payloads[0]["top_k"], 20)
+        self.assertEqual(seen_payloads[0]["repeat_penalty"], 1.1)
+        self.assertNotIn("num_ctx", seen_payloads[0])
 
     def test_api_local_llm_test_uses_lmstudio_chat(self):
         client = TestClient(acejam_app.app)

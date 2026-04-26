@@ -8,6 +8,8 @@ generation still has usable tags, lyrics, metadata, and model advice.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -15,13 +17,21 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+# CrewAI telemetry attempts to attach custom Memory objects as OpenTelemetry
+# attributes. AceJAM uses local compact monitor logs instead.
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
+os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from local_llm import (
     embed as local_llm_embed,
     lmstudio_api_base_url,
+    lmstudio_load_model,
     lmstudio_model_catalog,
     normalize_provider,
     ollama_host,
@@ -72,12 +82,22 @@ CREWAI_TASK_MAX_RETRIES = int(os.environ.get("ACEJAM_CREWAI_TASK_MAX_RETRIES", "
 CREWAI_LLM_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LLM_MAX_TOKENS", "12000"))
 CREWAI_LLM_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_LLM_CONTEXT_WINDOW", "32768"))
 CREWAI_LLM_NUM_PREDICT = int(os.environ.get("ACEJAM_CREWAI_LLM_NUM_PREDICT", str(CREWAI_LLM_MAX_TOKENS)))
+CREWAI_LMSTUDIO_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LMSTUDIO_MAX_TOKENS", str(CREWAI_LLM_MAX_TOKENS)))
+CREWAI_LMSTUDIO_DISABLE_THINKING = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_DISABLE_THINKING", "1").lower() in {"1", "true", "yes"}
+CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE", "/no_think").strip()
+CREWAI_LMSTUDIO_NO_THINK_PREFILL = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_NO_THINK_PREFILL", "")
+CREWAI_LMSTUDIO_PIN_CONTEXT = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_PIN_CONTEXT", "1").lower() in {"1", "true", "yes"}
+CREWAI_LMSTUDIO_CRASH_RETRIES = int(os.environ.get("ACEJAM_CREWAI_LMSTUDIO_CRASH_RETRIES", "1"))
 CREWAI_MEMORY_CONTENT_LIMIT = int(os.environ.get("ACEJAM_CREWAI_MEMORY_CONTENT_LIMIT", "1500"))
 CREWAI_PROMPT_BUDGET_CHARS = int(os.environ.get("ACEJAM_CREWAI_PROMPT_BUDGET_CHARS", "24000"))
 CREWAI_RESPECT_CONTEXT_WINDOW = os.environ.get("ACEJAM_CREWAI_RESPECT_CONTEXT_WINDOW", "0").lower() in {"1", "true", "yes"}
-CREWAI_DEBUG_LLM_RESPONSES = os.environ.get("ACEJAM_CREWAI_DEBUG_LLM_RESPONSES", "1").lower() not in {"0", "false", "no"}
+CREWAI_DEBUG_LLM_RESPONSES = os.environ.get("ACEJAM_CREWAI_DEBUG_LLM_RESPONSES", "0").lower() in {"1", "true", "yes"}
+CREWAI_VERBOSE = os.environ.get("ACEJAM_CREWAI_VERBOSE", "1").lower() in {"1", "true", "yes"}
+CREWAI_CAPTURE_STDIO = os.environ.get("ACEJAM_CREWAI_CAPTURE_STDIO", "1").lower() in {"1", "true", "yes"}
 CREWAI_LIVE_TOOLS = os.environ.get("ACEJAM_CREWAI_LIVE_TOOLS", "0").lower() in {"1", "true", "yes"}
+CREWAI_LOG_DIR = DATA_DIR / "crewai_logs"
 CREWAI_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+CREWAI_LOG_DIR.mkdir(parents=True, exist_ok=True)
 ALBUM_FINAL_DOCS_BEST = docs_best_model_settings(ALBUM_FINAL_MODEL)
 
 LANG_NAMES = {
@@ -164,6 +184,92 @@ def _clip_text(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+def _monitor_preview(value: Any, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return _clip_text(text, limit)
+
+
+def _safe_job_id(value: Any) -> str:
+    job_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "manual").strip())
+    return (job_id or "manual")[:80]
+
+
+def crewai_output_log_path(job_id: Any) -> Path:
+    return CREWAI_LOG_DIR / f"album_plan_{_safe_job_id(job_id)}.json"
+
+
+def _crewai_step_callback(logs: list[str] | None = None):
+    def _callback(step: Any) -> None:
+        kind = type(step).__name__
+        tool = _monitor_preview(getattr(step, "tool", "") or getattr(step, "tool_name", ""), 80)
+        tool_suffix = f" tool={tool}" if tool else ""
+        line = f"CrewAI step: {kind}{tool_suffix}"
+        if logs is not None:
+            logs.append(line)
+        else:
+            print(f"[album_crew][crewai] {line}", flush=True)
+
+    return _callback
+
+
+def _safe_crewai_output_preview(raw: Any, limit: int = 220) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    cleaned = re.sub(r"^```(?:json|text)?\s*", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        lowered = cleaned.lower()
+        if '"lyrics"' in lowered or "[verse" in lowered or "[chorus" in lowered or "[outro" in lowered:
+            return "content_preview_redacted=lyrics_or_full_track_text"
+        return _monitor_preview(cleaned, limit)
+    if isinstance(parsed, dict):
+        has_lyrics = "lyrics" in parsed or "lyrics_content" in parsed
+        pieces = []
+        for key in ("track_number", "title", "duration", "bpm"):
+            if parsed.get(key) not in (None, ""):
+                pieces.append(f"{key}={_monitor_preview(parsed.get(key), 70)}")
+        if has_lyrics:
+            pieces.append("lyrics=redacted")
+        if pieces:
+            return ", ".join(pieces)
+    return _monitor_preview(cleaned, limit)
+
+
+def _crewai_task_callback(logs: list[str] | None = None):
+    def _callback(output: Any) -> None:
+        agent = _monitor_preview(getattr(output, "agent", ""), 90) or "agent"
+        raw = str(getattr(output, "raw", "") or "")
+        preview = _safe_crewai_output_preview(raw)
+        suffix = f" preview={preview}" if preview else ""
+        line = f"CrewAI task completed: agent={agent} output_chars={len(raw)}{suffix}"
+        if logs is not None:
+            logs.append(line)
+        else:
+            print(f"[album_crew][crewai] {line}", flush=True)
+
+    return _callback
+
+
+def _kickoff_crewai_compact(crew: Any, logs: list[str], label: str, output_log_file: str | None = None) -> Any:
+    if not CREWAI_CAPTURE_STDIO:
+        return crew.kickoff()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            return crew.kickoff()
+    finally:
+        captured = "\n".join(part for part in (stdout.getvalue(), stderr.getvalue()) if part)
+        if captured.strip():
+            lines = len(captured.splitlines())
+            chars = len(captured)
+            suffix = f"; full verbose log: {output_log_file}" if output_log_file else ""
+            logs.append(f"CrewAI verbose captured for {label}: {lines} lines, {chars} chars{suffix}.")
+
+
 def _compact_json(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
     try:
         text = json.dumps(value, ensure_ascii=True, default=str, separators=(",", ":"))
@@ -205,6 +311,30 @@ def _task_output_json_dict(output: Any) -> dict[str, Any]:
                 return dumped
     raw = getattr(output, "raw", None)
     return _json_object_from_text(str(raw if raw is not None else output))
+
+
+def _task_output_raw_text(output: Any) -> str:
+    parts: list[str] = []
+    tasks_output = getattr(output, "tasks_output", None)
+    if isinstance(tasks_output, list):
+        for item in tasks_output:
+            raw = getattr(item, "raw", None)
+            if raw is not None:
+                parts.append(str(raw))
+    raw = getattr(output, "raw", None)
+    if raw is not None:
+        parts.append(str(raw))
+    if not parts and output is not None:
+        parts.append(str(output))
+    return "\n\n".join(part for part in parts if part)
+
+
+def _lyric_like_text(raw: str) -> str:
+    text = _strip_thinking_blocks(raw)
+    match = re.search(r"\[(?:Intro|Verse|Pre-Chorus|Chorus|Bridge|Final Chorus|Outro|Ad-libs?)[^\]]*\]", text, flags=re.I)
+    if match:
+        return text[match.start():]
+    return text
 
 
 def _compact_track_memory_record(track: dict[str, Any], *, include_lyrics_excerpt: bool = False) -> tuple[str, dict[str, Any]]:
@@ -404,6 +534,29 @@ def preflight_album_local_llm(
     chat_ok = False
     embed_ok = False
     selected_embedding = str(embedding_model or "").strip()
+
+    def _lmstudio_detail(catalog: dict[str, Any], model: str) -> dict[str, Any]:
+        for item in catalog.get("details") or []:
+            if isinstance(item, dict) and str(item.get("name") or item.get("model") or "") == model:
+                return item
+        return {}
+
+    def _load_lmstudio_if_needed(model: str, kind: str, catalog: dict[str, Any], requested_context: int | None = None) -> None:
+        detail = _lmstudio_detail(catalog, model)
+        loaded = bool(detail.get("loaded") or model in set(catalog.get("loaded_models") or []))
+        loaded_context = int(detail.get("loaded_context_length") or 0)
+        pinned_context = requested_context if CREWAI_LMSTUDIO_PIN_CONTEXT else None
+        needs_context_reload = bool(pinned_context and loaded and loaded_context != pinned_context)
+        if not loaded or needs_context_reload:
+            lmstudio_load_model(model, kind=kind, context_length=pinned_context if kind == "chat" else None)
+            if needs_context_reload:
+                warnings.append(
+                    f"Reloaded LM Studio {kind} model {model} with context_length={requested_context} "
+                    f"(was {loaded_context or 'unknown'})."
+                )
+            else:
+                warnings.append(f"Loaded LM Studio {kind} model {model} before CrewAI preflight.")
+
     try:
         catalog = lmstudio_model_catalog() if provider_name == "lmstudio" else {"ready": True, "chat_models": ollama_model_names()}
         if not catalog.get("ready"):
@@ -411,6 +564,8 @@ def preflight_album_local_llm(
         elif planner_model not in set(catalog.get("chat_models") or catalog.get("models") or []):
             errors.append(f"Planner model {planner_model} is not available in {provider_label(provider_name)}.")
         else:
+            if provider_name == "lmstudio":
+                _load_lmstudio_if_needed(planner_model, "chat", catalog, CREWAI_LLM_CONTEXT_WINDOW)
             test = local_llm_test_model(provider_name, planner_model, "chat")
             chat_ok = bool(test.get("success"))
     except Exception as exc:
@@ -430,6 +585,8 @@ def preflight_album_local_llm(
                 else:
                     errors.append(f"No embedding model is available in {provider_label(embed_provider)}.")
             if selected_embedding:
+                if embed_provider == "lmstudio":
+                    _load_lmstudio_if_needed(selected_embedding, "embedding", embed_catalog)
                 vector = local_llm_embed(embed_provider, selected_embedding, "AceJAM album memory test")
                 embed_ok = bool(vector)
                 if not embed_ok:
@@ -619,49 +776,115 @@ def _search_web(query: str) -> str:
         return f"Search failed: {exc}"
 
 
+def _crewai_llm_kwargs(model_name: str, provider: str = "ollama") -> dict[str, Any]:
+    provider_name = normalize_provider(provider)
+    if provider_name == "lmstudio":
+        return {
+            "model": str(model_name or "").strip(),
+            "provider": "openai",
+            "base_url": lmstudio_api_base_url(),
+            "api_key": os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
+            "temperature": 0.72,
+            "top_p": 0.92,
+            "max_tokens": CREWAI_LMSTUDIO_MAX_TOKENS,
+            "timeout": CREWAI_LLM_TIMEOUT_SECONDS,
+        }
+    return {
+        "model": str(model_name or "").strip(),
+        "provider": "ollama",
+        "base_url": OLLAMA_BASE_URL,
+        "api_base": _ollama_v1_base_url(),
+        "temperature": 0.72,
+        "top_p": 0.92,
+        "max_tokens": CREWAI_LLM_MAX_TOKENS,
+        "additional_params": {
+            "extra_body": {
+                "options": {
+                    "num_ctx": CREWAI_LLM_CONTEXT_WINDOW,
+                    "num_predict": CREWAI_LLM_NUM_PREDICT,
+                }
+            },
+        },
+        "timeout": CREWAI_LLM_TIMEOUT_SECONDS,
+    }
+
+
+def _lmstudio_no_think_text(value: str) -> str:
+    directive = CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE
+    if not CREWAI_LMSTUDIO_DISABLE_THINKING or not directive or directive in value:
+        return value
+    return f"{directive}\n{value}"
+
+
+def _lmstudio_no_think_messages(value: Any) -> Any:
+    if not CREWAI_LMSTUDIO_DISABLE_THINKING or not CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE:
+        return value
+    if isinstance(value, str):
+        return _lmstudio_no_think_text(value)
+    if not isinstance(value, list):
+        return value
+    copied: list[Any] = []
+    user_index: int | None = None
+    for item in value:
+        if isinstance(item, dict):
+            next_item = dict(item)
+            if user_index is None and str(next_item.get("role") or "").lower() == "user":
+                user_index = len(copied)
+            copied.append(next_item)
+        else:
+            copied.append(item)
+    if any(
+        isinstance(item, dict)
+        and isinstance(item.get("content"), str)
+        and CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE in item["content"]
+        for item in copied
+    ):
+        return copied
+    if user_index is not None and isinstance(copied[user_index], dict) and isinstance(copied[user_index].get("content"), str):
+        copied[user_index]["content"] = _lmstudio_no_think_text(str(copied[user_index].get("content") or ""))
+    else:
+        copied.insert(0, {"role": "user", "content": CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE})
+    prefill = CREWAI_LMSTUDIO_NO_THINK_PREFILL
+    if prefill and not any(isinstance(item, dict) and item.get("content") == prefill for item in copied):
+        copied.append({"role": "assistant", "content": prefill})
+    return copied
+
+
+def _lmstudio_no_think_args(
+    call_args: tuple[Any, ...],
+    call_kwargs: dict[str, Any],
+    provider_name: str,
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    if normalize_provider(provider_name) != "lmstudio":
+        return call_args, call_kwargs
+    next_args = list(call_args)
+    next_kwargs = dict(call_kwargs)
+    if next_args:
+        next_args[0] = _lmstudio_no_think_messages(next_args[0])
+    elif "messages" in next_kwargs:
+        next_kwargs["messages"] = _lmstudio_no_think_messages(next_kwargs["messages"])
+    elif "prompt" in next_kwargs and isinstance(next_kwargs["prompt"], str):
+        next_kwargs["prompt"] = _lmstudio_no_think_text(str(next_kwargs["prompt"]))
+    return tuple(next_args), next_kwargs
+
+
+def _is_lmstudio_model_crash(value: Any) -> bool:
+    text = str(value or "").lower()
+    return "model has crashed" in text or "exit code: null" in text
+
+
 def _make_llm(model_name: str, provider: str = "ollama"):
     from crewai import LLM
 
     provider_name = normalize_provider(provider)
-    if provider_name == "lmstudio":
-        llm = LLM(
-            model=f"openai/{model_name}",
-            provider="openai",
-            base_url=lmstudio_api_base_url(),
-            api_base=lmstudio_api_base_url(),
-            api_key=os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
-            temperature=0.72,
-            top_p=0.92,
-            max_tokens=CREWAI_LLM_MAX_TOKENS,
-            context_window_size=CREWAI_LLM_CONTEXT_WINDOW,
-            additional_params={
-                "num_ctx": CREWAI_LLM_CONTEXT_WINDOW,
-                "num_predict": CREWAI_LLM_NUM_PREDICT,
-            },
-            timeout=CREWAI_LLM_TIMEOUT_SECONDS,
-        )
-    else:
-        llm = LLM(
-            model=model_name,
-            provider="ollama",
-            base_url=OLLAMA_BASE_URL,
-            api_base=_ollama_v1_base_url(),
-            temperature=0.72,
-            top_p=0.92,
-            max_tokens=CREWAI_LLM_MAX_TOKENS,
-            context_window_size=CREWAI_LLM_CONTEXT_WINDOW,
-            additional_params={
-                "num_ctx": CREWAI_LLM_CONTEXT_WINDOW,
-                "num_predict": CREWAI_LLM_NUM_PREDICT,
-            },
-            timeout=CREWAI_LLM_TIMEOUT_SECONDS,
-        )
+    llm = LLM(**_crewai_llm_kwargs(model_name, provider_name))
     # Qwen/Ollama models often emit raw <think> content. If CrewAI sends native
     # OpenAI-style tool schemas to Ollama, that content can crash Ollama's tool
     # parser before AceJAM gets a fallback. Keep tools available through CrewAI's
     # text tool loop, but do not advertise native function-calling support.
     llm.supports_function_calling = lambda: False
     original_call = llm.call
+    object.__setattr__(llm, "_acejam_original_call", original_call)
 
     def _debug_print_response(label: str, value: Any, attempt: int) -> None:
         if not CREWAI_DEBUG_LLM_RESPONSES:
@@ -679,22 +902,52 @@ def _make_llm(model_name: str, provider: str = "ollama"):
 
     def _patched_call(*args, **kwargs):
         last_result: Any = None
-        for attempt in range(CREWAI_EMPTY_RESPONSE_RETRIES + 1):
+        crash_retries = 0
+        total_attempts = max(CREWAI_EMPTY_RESPONSE_RETRIES + 1, CREWAI_LMSTUDIO_CRASH_RETRIES + 1)
+        for attempt in range(total_attempts):
             try:
-                result = original_call(*args, **kwargs)
+                call_args, call_kwargs = _lmstudio_no_think_args(args, kwargs, provider_name)
+                result = getattr(llm, "_acejam_original_call")(*call_args, **call_kwargs)
             except Exception as exc:
                 text = str(exc)
                 if "OpenAI API call failed" in text:
-                    text = text.replace("OpenAI API call failed", f"Local Ollama/LiteLLM call failed for {model_name}")
+                    text = text.replace("OpenAI API call failed", f"{provider_label(provider_name)} CrewAI call failed for {model_name}")
                 if "context length" in text.lower() or "input length" in text.lower():
-                    text += (
-                        f" [AceJAM limit: num_ctx={CREWAI_LLM_CONTEXT_WINDOW}, "
-                        f"num_predict={CREWAI_LLM_NUM_PREDICT}. CrewAI auto-summarization is disabled by default.]"
+                    if provider_name == "lmstudio":
+                        text += (
+                            f" [AceJAM limit: context_window={CREWAI_LLM_CONTEXT_WINDOW}, "
+                            f"max_tokens={CREWAI_LMSTUDIO_MAX_TOKENS}; LM Studio context is set through /api/v1/models/load.]"
+                        )
+                    else:
+                        text += (
+                            f" [AceJAM limit: num_ctx={CREWAI_LLM_CONTEXT_WINDOW}, "
+                            f"num_predict={CREWAI_LLM_NUM_PREDICT}. CrewAI auto-summarization is disabled by default.]"
+                        )
+                if provider_name == "lmstudio" and _is_lmstudio_model_crash(text) and crash_retries < CREWAI_LMSTUDIO_CRASH_RETRIES:
+                    crash_retries += 1
+                    print(
+                        f"[album_crew][llm][lmstudio-crash-retry] model={model_name} "
+                        f"retry={crash_retries}/{CREWAI_LMSTUDIO_CRASH_RETRIES}; reloading via /api/v1/models/load",
+                        flush=True,
                     )
+                    try:
+                        lmstudio_load_model(
+                            str(model_name or ""),
+                            kind="chat",
+                            context_length=CREWAI_LLM_CONTEXT_WINDOW if CREWAI_LMSTUDIO_PIN_CONTEXT else None,
+                        )
+                    except Exception as reload_exc:
+                        print(
+                            f"[album_crew][llm][lmstudio-reload-failed] model={model_name} "
+                            f"{type(reload_exc).__name__}: {_monitor_preview(reload_exc, 260)}",
+                            flush=True,
+                        )
+                    time.sleep(min(CREWAI_EMPTY_RESPONSE_RETRY_DELAY, 2.0))
+                    continue
                 print(
                     f"\n[album_crew][llm][exception] provider={provider_name} model={model_name} "
-                    f"attempt={attempt + 1}/{CREWAI_EMPTY_RESPONSE_RETRIES + 1} "
-                    f"{type(exc).__name__}: {text}\n",
+                    f"attempt={attempt + 1}/{total_attempts} "
+                    f"{type(exc).__name__}: {_monitor_preview(text, 420)}\n",
                     flush=True,
                 )
                 raise
@@ -711,8 +964,9 @@ def _make_llm(model_name: str, provider: str = "ollama"):
                 f"attempt={attempt + 1}/{CREWAI_EMPTY_RESPONSE_RETRIES + 1}; retrying={attempt < CREWAI_EMPTY_RESPONSE_RETRIES}",
                 flush=True,
             )
-            if attempt < CREWAI_EMPTY_RESPONSE_RETRIES:
-                time.sleep(CREWAI_EMPTY_RESPONSE_RETRY_DELAY)
+            if attempt >= CREWAI_EMPTY_RESPONSE_RETRIES:
+                break
+            time.sleep(CREWAI_EMPTY_RESPONSE_RETRY_DELAY)
         fallback = _empty_response_fallback_text(model_name)
         _debug_print_response("empty-response-fallback", fallback, CREWAI_EMPTY_RESPONSE_RETRIES)
         return fallback
@@ -756,14 +1010,18 @@ def _json_from_text(raw: str) -> list[dict[str, Any]]:
             return [item for item in parsed["tracks"] if isinstance(item, dict)]
     except json.JSONDecodeError:
         pass
-    match = re.search(r"\[[\s\S]*\]", text)
-    if match:
+    if text.lstrip().startswith(("[", "{")):
+        raise ValueError("Crew result did not contain a valid JSON track array")
+    decoder = json.JSONDecoder()
+    for match in reversed(list(re.finditer(r"[\[{]", text))):
         try:
-            parsed = json.loads(match.group(0))
+            parsed, _end = decoder.raw_decode(text[match.start():])
             if isinstance(parsed, list):
                 return [item for item in parsed if isinstance(item, dict)]
+            if isinstance(parsed, dict) and isinstance(parsed.get("tracks"), list):
+                return [item for item in parsed["tracks"] if isinstance(item, dict)]
         except json.JSONDecodeError:
-            pass
+            continue
     raise ValueError("Crew result did not contain a valid JSON track array")
 
 
@@ -779,9 +1037,14 @@ def _json_object_from_text(raw: str) -> dict[str, Any]:
             return parsed[0]
     except json.JSONDecodeError:
         pass
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        parsed = json.loads(match.group(0))
+    if text.lstrip().startswith(("{", "[")):
+        raise ValueError("Crew result did not contain a valid JSON object")
+    decoder = json.JSONDecoder()
+    for match in reversed(list(re.finditer(r"\{", text))):
+        try:
+            parsed, _end = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
         if isinstance(parsed, dict):
             return parsed
     raise ValueError("Crew result did not contain a valid JSON object")
@@ -844,6 +1107,9 @@ def create_album_crew(
     options: dict[str, Any] | None = None,
     planner_provider: str = "ollama",
     embedding_provider: str = "ollama",
+    step_callback: Callable[[Any], Any] | None = None,
+    task_callback: Callable[[Any], Any] | None = None,
+    output_log_file: str | None = None,
 ):
     from crewai import Agent, Crew, Process
 
@@ -896,12 +1162,13 @@ def create_album_crew(
     )
     cfg = dict(
         llm=llm,
-        verbose=True,
+        verbose=CREWAI_VERBOSE,
         allow_delegation=False,
         max_iter=CREWAI_AGENT_MAX_ITER,
         max_execution_time=None,
         max_retry_limit=CREWAI_AGENT_MAX_RETRY_LIMIT,
         respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
+        step_callback=step_callback,
     )
 
     executive_producer = Agent(
@@ -1089,7 +1356,8 @@ def create_album_crew(
             f"for {int(track_duration)} seconds, unless the track is explicitly instrumental. "
             f"For planning, song_model may be {ALBUM_FINAL_MODEL}; final audio generation will render all models: "
             f"{', '.join(ALBUM_MODEL_PORTFOLIO_MODELS)}. "
-            "Also include tool_notes when you changed an artist reference into technique language. JSON array only."
+            "Also include tool_notes when you changed an artist reference into technique language. JSON array only. "
+            "Do not include analysis, thoughts, markdown fences, or prose. The first character must be [ and the last character must be ]."
         ),
         expected_output="Valid JSON array of album tracks only.",
         agent=quality_editor,
@@ -1120,7 +1388,10 @@ def create_album_crew(
         process=Process.sequential,
         memory=_make_album_memory(ollama_model, embedding_model, read_only=True, planner_provider=planner_provider, embedding_provider=embedding_provider),
         embedder=_local_embedder_config(embedding_provider, embedding_model),
-        verbose=True,
+        verbose=CREWAI_VERBOSE,
+        step_callback=step_callback,
+        task_callback=task_callback,
+        output_log_file=output_log_file,
     )
 
 
@@ -1134,6 +1405,9 @@ def create_album_bible_crew(
     options: dict[str, Any] | None = None,
     planner_provider: str = "ollama",
     embedding_provider: str = "ollama",
+    step_callback: Callable[[Any], Any] | None = None,
+    task_callback: Callable[[Any], Any] | None = None,
+    output_log_file: str | None = None,
 ):
     from crewai import Agent, Crew, Process
 
@@ -1150,12 +1424,13 @@ def create_album_bible_crew(
     tools = make_crewai_tools({**opts, "web_inspiration": ""}) if CREWAI_LIVE_TOOLS else []
     cfg = dict(
         llm=llm,
-        verbose=True,
+        verbose=CREWAI_VERBOSE,
         allow_delegation=False,
         max_iter=CREWAI_AGENT_MAX_ITER,
         max_execution_time=None,
         max_retry_limit=CREWAI_AGENT_MAX_RETRY_LIMIT,
         respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
+        step_callback=step_callback,
     )
     producer = Agent(
         role="Executive Producer and Album Bible Architect",
@@ -1198,12 +1473,13 @@ def create_album_bible_crew(
             "\"tags\":\"compact ACE-Step sonic tags\",\"bpm\":90,\"key_scale\":\"C minor\","
             "\"time_signature\":\"4\",\"duration\":180,\"hook_promise\":\"...\",\"performance_brief\":\"...\"}]}.\n"
             "Do not call tools. No full lyrics in this phase. Invent original artist/project names only; never use real artist names from references. "
-            "Use concise captions/tags with genre, mood, instruments, timbre, production, vocals, rhythm, and dynamics."
+            "Use concise captions/tags with genre, mood, instruments, timbre, production, vocals, rhythm, and dynamics. "
+            "Do not include analysis, thoughts, markdown fences, or prose. The first character must be { and the last character must be }."
         ),
         expected_output="Strict JSON album_bible plus compact track blueprints.",
         agent=prompt_engineer,
         context=[bible_task],
-        output_json=AlbumBiblePayloadModel,
+        output_json=None if normalize_provider(planner_provider) == "lmstudio" else AlbumBiblePayloadModel,
     )
     return Crew(
         agents=[producer, prompt_engineer],
@@ -1211,7 +1487,10 @@ def create_album_bible_crew(
         process=Process.sequential,
         memory=_make_album_memory(ollama_model, embedding_model, read_only=True, planner_provider=planner_provider, embedding_provider=embedding_provider),
         embedder=_local_embedder_config(embedding_provider, embedding_model),
-        verbose=True,
+        verbose=CREWAI_VERBOSE,
+        step_callback=step_callback,
+        task_callback=task_callback,
+        output_log_file=output_log_file,
     )
 
 
@@ -1226,6 +1505,9 @@ def create_track_production_crew(
     options: dict[str, Any] | None = None,
     planner_provider: str = "ollama",
     embedding_provider: str = "ollama",
+    step_callback: Callable[[Any], Any] | None = None,
+    task_callback: Callable[[Any], Any] | None = None,
+    output_log_file: str | None = None,
 ):
     from crewai import Agent, Crew, Process
 
@@ -1268,12 +1550,13 @@ def create_track_production_crew(
     tools = make_crewai_tools(tool_context) if CREWAI_LIVE_TOOLS else []
     cfg = dict(
         llm=llm,
-        verbose=True,
+        verbose=CREWAI_VERBOSE,
         allow_delegation=False,
         max_iter=CREWAI_AGENT_MAX_ITER,
         max_execution_time=None,
         max_retry_limit=CREWAI_AGENT_MAX_RETRY_LIMIT,
         respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
+        step_callback=step_callback,
     )
     producer = Agent(
         role="Track Production Team",
@@ -1314,12 +1597,13 @@ def create_track_production_crew(
             "key_scale, time_signature, language, duration, song_model, seed, inference_steps, guidance_scale, shift, "
             "infer_method, sampler_mode, audio_format, auto_score, auto_lrc, return_audio_codes, save_to_library, "
             "tool_notes, production_team, model_render_notes. artist_name must be an original stage/project name, never a real artist reference. "
-            "Do not call tools. Do not wrap in markdown."
+            "Do not call tools. Do not include analysis, thoughts, markdown fences, or prose. "
+            "The first character must be { and the last character must be }."
         ),
         expected_output="One valid JSON object for a single track.",
         agent=finalizer,
         context=[production_task],
-        output_json=TrackProductionPayloadModel,
+        output_json=None if normalize_provider(planner_provider) == "lmstudio" else TrackProductionPayloadModel,
     )
     return Crew(
         agents=[producer, finalizer],
@@ -1327,8 +1611,27 @@ def create_track_production_crew(
         process=Process.sequential,
         memory=_make_album_memory(ollama_model, embedding_model, read_only=True, planner_provider=planner_provider, embedding_provider=embedding_provider),
         embedder=_local_embedder_config(embedding_provider, embedding_model),
-        verbose=True,
+        verbose=CREWAI_VERBOSE,
+        step_callback=step_callback,
+        task_callback=task_callback,
+        output_log_file=output_log_file,
     )
+
+
+class _AlbumPlanLogs(list[str]):
+    def __init__(self, callback: Callable[[str], None] | None = None):
+        super().__init__()
+        self._callback = callback
+
+    def append(self, item: object) -> None:
+        line = str(item)
+        super().append(line)
+        if self._callback:
+            self._callback(line)
+
+    def extend(self, items) -> None:
+        for item in items:
+            self.append(item)
 
 
 def plan_album(
@@ -1343,11 +1646,14 @@ def plan_album(
     input_tracks: list[dict[str, Any]] | None = None,
     planner_provider: str = "ollama",
     embedding_provider: str = "ollama",
+    log_callback: Callable[[str], None] | None = None,
+    crewai_output_log_file: str | None = None,
 ) -> dict[str, Any]:
-    logs: list[str] = []
+    logs: list[str] = _AlbumPlanLogs(log_callback)
+    crewai_error = ""
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
     lang_name = LANG_NAMES.get(language, language)
-    logs.append(f"Concept: {opts['sanitized_concept']}")
+    logs.append(f"Concept preview: {_monitor_preview(opts['sanitized_concept'], 220)}")
     logs.append(f"Language: {lang_name}")
     logs.append(f"Tracks: {num_tracks} x {int(track_duration)}s")
     planner_provider = normalize_provider(planner_provider or "ollama")
@@ -1356,11 +1662,12 @@ def plan_album(
     embedding_model = str(embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL).strip()
     logs.append(f"Planner LM: {provider_label(planner_provider)} ({ollama_model}); ACE-Step LM is not used for album agents.")
     logs.append(f"Embedding: {provider_label(embedding_provider)} ({embedding_model}).")
+    completion_cap = CREWAI_LMSTUDIO_MAX_TOKENS if planner_provider == "lmstudio" else CREWAI_LLM_NUM_PREDICT
     logs.append(
         "CrewAI runtime: "
         f"timeout={CREWAI_LLM_TIMEOUT_SECONDS}s, "
         f"num_ctx={CREWAI_LLM_CONTEXT_WINDOW}, "
-        f"num_predict={CREWAI_LLM_NUM_PREDICT}, "
+        f"completion_cap={completion_cap}, "
         f"agent_iter={CREWAI_AGENT_MAX_ITER}, "
         f"agent_retries={CREWAI_AGENT_MAX_RETRY_LIMIT}, "
         f"task_retries={CREWAI_TASK_MAX_RETRIES}, "
@@ -1389,7 +1696,17 @@ def plan_album(
             logs.append(f"Final model download required before generation: {model_info.get('error')}")
         else:
             logs.append(f"ERROR: {model_info.get('error')}")
-            return {"tracks": [], "logs": logs, "success": False, "error": model_info.get("error"), "toolkit": toolkit_payload(opts.get("installed_models"))}
+            return {
+                "tracks": [],
+                "logs": logs,
+                "success": False,
+                "error": model_info.get("error"),
+                "planning_engine": "none",
+                "crewai_used": False,
+                "toolbelt_fallback": False,
+                "crewai_output_log_file": str(crewai_output_log_file or ""),
+                "toolkit": toolkit_payload(opts.get("installed_models")),
+            }
 
     if input_tracks:
         tracks = normalize_album_tracks(input_tracks, opts)
@@ -1398,12 +1715,23 @@ def plan_album(
             "tracks": tracks,
             "logs": logs,
             "success": True,
+            "planning_engine": "editable_plan",
+            "crewai_used": False,
+            "toolbelt_fallback": False,
+            "crewai_output_log_file": str(crewai_output_log_file or ""),
             "toolkit": toolkit_payload(opts.get("installed_models")),
             "toolkit_report": {"model_advice": model_info, "artist_reference_notes": opts.get("artist_reference_notes", [])},
         }
 
     if use_crewai:
         try:
+            crewai_log_file = str(crewai_output_log_file or "").strip()
+            if crewai_log_file:
+                Path(crewai_log_file).parent.mkdir(parents=True, exist_ok=True)
+                logs.append(f"CrewAI output log file: {crewai_log_file}")
+            step_callback = _crewai_step_callback(logs)
+            task_callback = _crewai_task_callback(logs)
+            logs.append("CrewAI preflight starting.")
             preflight = preflight_album_local_llm(planner_provider, ollama_model, embedding_provider, embedding_model)
             logs.append(f"CrewAI memory: enabled at {preflight['memory_dir']} with local providers only.")
             logs.append(f"{provider_label(planner_provider)} preflight: planner chat={preflight['chat_ok']}, embedding={preflight['embed_ok']}.")
@@ -1419,20 +1747,31 @@ def plan_album(
                 f"(max {CREWAI_MEMORY_CONTENT_LIMIT} chars each)."
             )
             logs.append(f"Planning compact album bible with CrewAI and {provider_label(planner_provider)} model {ollama_model}...")
-            bible_crew = create_album_bible_crew(concept, num_tracks, track_duration, ollama_model, language, embedding_model, opts, planner_provider, embedding_provider)
-
-            def _task_callback(output):
-                desc = getattr(output, "description", "")[:90]
-                raw = getattr(output, "raw", "")
-                agent = getattr(output, "agent", "")
-                logs.append(f"[{agent or 'agent'}] {desc}")
-                if raw:
-                    logs.append("  " + raw[:240].replace("\n", " ") + "...")
-
-            for task in bible_crew.tasks:
-                task.callback = _task_callback
-            bible_result = bible_crew.kickoff()
-            bible_payload = _task_output_json_dict(bible_result)
+            bible_crew = create_album_bible_crew(
+                concept,
+                num_tracks,
+                track_duration,
+                ollama_model,
+                language,
+                embedding_model,
+                opts,
+                planner_provider,
+                embedding_provider,
+                step_callback=step_callback,
+                task_callback=task_callback,
+                output_log_file=crewai_log_file or None,
+            )
+            bible_result = _kickoff_crewai_compact(
+                bible_crew,
+                logs,
+                "compact album bible",
+                crewai_log_file or None,
+            )
+            try:
+                bible_payload = _task_output_json_dict(bible_result)
+            except Exception as parse_exc:
+                logs.append(f"CrewAI bible JSON parse repair: {_monitor_preview(parse_exc, 320)}")
+                bible_payload = build_album_plan(concept, num_tracks, track_duration, opts)
             album_bible = bible_payload.get("album_bible") if isinstance(bible_payload.get("album_bible"), dict) else {
                 "concept": opts["sanitized_concept"],
                 "arc": str(bible_payload.get("arc") or ""),
@@ -1442,6 +1781,9 @@ def plan_album(
             if not blueprints:
                 blueprints = build_album_plan(concept, num_tracks, track_duration, opts)["tracks"]
             blueprints = blueprints[:num_tracks]
+            for index, blueprint in enumerate(blueprints):
+                blueprint["track_number"] = int(blueprint.get("track_number") or index + 1)
+                blueprint["duration"] = track_duration
             logs.append(f"CrewAI compact bible planned {len(blueprints)} track blueprint(s).")
             _remember_album_bible(album_memory_writer, album_bible, blueprints, logs)
             produced_tracks: list[dict[str, Any]] = []
@@ -1461,15 +1803,43 @@ def plan_album(
                     opts,
                     planner_provider,
                     embedding_provider,
+                    step_callback=step_callback,
+                    task_callback=task_callback,
+                    output_log_file=crewai_log_file or None,
                 )
-                for task in track_crew.tasks:
-                    task.callback = _task_callback
                 try:
-                    track_result = track_crew.kickoff()
-                    produced = _task_output_json_dict(track_result)
+                    track_result = _kickoff_crewai_compact(
+                        track_crew,
+                        logs,
+                        f"track {index + 1}",
+                        crewai_log_file or None,
+                    )
                 except Exception as track_exc:
-                    logs.append(f"Track {index + 1} CrewAI production fallback repair: {track_exc}")
+                    if planner_provider == "lmstudio" or _is_lmstudio_model_crash(track_exc):
+                        raise RuntimeError(
+                            f"Track {index + 1} CrewAI production failed after LM Studio retry: "
+                            f"{_monitor_preview(track_exc, 360)}"
+                        ) from track_exc
+                    logs.append(f"Track {index + 1} CrewAI production fallback repair: {_monitor_preview(track_exc, 360)}")
                     produced = blueprint
+                else:
+                    try:
+                        produced = _task_output_json_dict(track_result)
+                    except Exception as parse_exc:
+                        raw_text = _task_output_raw_text(track_result)
+                        produced = {
+                            **blueprint,
+                            "lyrics": _lyric_like_text(raw_text),
+                            "language": language,
+                            "tool_notes": (
+                                f"CrewAI JSON finalizer repair for track {index + 1}: "
+                                f"{_monitor_preview(parse_exc, 220)}"
+                            ),
+                        }
+                        logs.append(
+                            f"Track {index + 1} CrewAI JSON repair used production text: "
+                            f"{_monitor_preview(parse_exc, 260)}"
+                        )
                 produced_tracks.append(produced)
             tracks = normalize_album_tracks(produced_tracks[:num_tracks], opts)
             failed_quality = [
@@ -1486,6 +1856,10 @@ def plan_album(
                 "tracks": tracks,
                 "logs": logs,
                 "success": True,
+                "planning_engine": "crewai",
+                "crewai_used": True,
+                "toolbelt_fallback": False,
+                "crewai_output_log_file": crewai_log_file,
                 "toolkit": toolkit_payload(opts.get("installed_models")),
                 "toolkit_report": {
                     "model_advice": model_info,
@@ -1506,7 +1880,8 @@ def plan_album(
                 },
             }
         except Exception as exc:
-            logs.append(f"CrewAI planning fell back to deterministic toolbelt: {exc}")
+            crewai_error = str(exc)
+            logs.append(f"CrewAI planning fell back to deterministic toolbelt: {crewai_error}")
 
     fallback = build_album_plan(concept, num_tracks, track_duration, opts)
     logs.append(f"Toolbelt fallback planned {len(fallback['tracks'])} tracks.")
@@ -1514,6 +1889,11 @@ def plan_album(
         "tracks": fallback["tracks"],
         "logs": logs,
         "success": True,
+        "planning_engine": "toolbelt",
+        "crewai_used": False,
+        "toolbelt_fallback": bool(use_crewai),
+        "crewai_error": crewai_error,
+        "crewai_output_log_file": str(crewai_output_log_file or ""),
         "toolkit": toolkit_payload(opts.get("installed_models")),
         "toolkit_report": fallback.get("toolkit_report", {}),
     }
