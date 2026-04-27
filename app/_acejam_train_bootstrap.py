@@ -8,11 +8,19 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _VENDOR = _SCRIPT_DIR / "vendor" / "ACE-Step-1.5"
 _NANO_VLLM = _VENDOR / "acestep" / "third_parts" / "nano-vllm"
 
-for p in [str(_VENDOR), str(_NANO_VLLM)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-    if p not in os.environ.get("PYTHONPATH", ""):
-        os.environ["PYTHONPATH"] = p + os.pathsep + os.environ.get("PYTHONPATH", "")
+# Force these paths to be FIRST in sys.path and invalidate any cached acestep imports
+for p in [str(_NANO_VLLM), str(_VENDOR)]:
+    while p in sys.path:
+        sys.path.remove(p)
+    sys.path.insert(0, p)
+
+# Remove any cached acestep modules so they reload from our vendor path
+for key in list(sys.modules.keys()):
+    if key == "acestep" or key.startswith("acestep."):
+        del sys.modules[key]
+
+# Also set PYTHONPATH for any child processes
+os.environ["PYTHONPATH"] = str(_VENDOR) + os.pathsep + str(_NANO_VLLM) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 # Replace torchaudio.load with soundfile.read
 # torchaudio 2.9+ ignores backend= parameter and demands torchcodec/FFmpeg
@@ -47,7 +55,10 @@ try:
 except ImportError:
     pass
 
-# Run the actual ACE-Step training CLI
-import runpy
+# Run the actual ACE-Step training CLI by directly executing the file
 sys.argv = sys.argv[1:]
-runpy.run_module("acestep.training_v2.cli.train_fixed", run_name="__main__")
+_target = _VENDOR / "acestep" / "training_v2" / "cli" / "train_fixed.py"
+if not _target.is_file():
+    print(f"[FAIL] Training CLI not found: {_target}", file=sys.stderr)
+    sys.exit(1)
+exec(compile(_target.read_text(encoding="utf-8"), str(_target), "exec"), {"__name__": "__main__", "__file__": str(_target)})
