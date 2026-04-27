@@ -1019,24 +1019,32 @@ class AceTrainingManager:
         # Write a training bootstrap script that patches torchaudio + VARIANT_DIR_MAP
         # before running the actual ACE-Step training CLI. This runs as a subprocess.
         bootstrap = self.base_dir / "_acejam_train_bootstrap.py"
+        vendor_path = str(self.vendor_dir)
+        nano_vllm_path = str(self.vendor_dir / "acestep" / "third_parts" / "nano-vllm")
         bootstrap.write_text(
-            "\"\"\"AceJAM training bootstrap: patches torchaudio and variant map before ACE-Step training.\"\"\"\n"
-            "import torchaudio, sys, runpy\n"
-            "# Patch torchaudio to use soundfile backend (avoids torchcodec/FFmpeg)\n"
-            "_orig = torchaudio.load\n"
-            "def _sf(f,*a,**k):\n"
-            "    if 'backend' not in k: k['backend']='soundfile'\n"
-            "    try: return _orig(f,*a,**k)\n"
-            "    except: k.pop('backend',None); return _orig(f,*a,**k)\n"
-            "torchaudio.load = _sf\n"
+            "\"\"\"AceJAM training bootstrap: patches before ACE-Step training.\"\"\"\n"
+            "import sys, os\n"
+            f"for p in [{vendor_path!r}, {nano_vllm_path!r}]:\n"
+            "    if p not in sys.path: sys.path.insert(0, p)\n"
+            "    if p not in os.environ.get('PYTHONPATH',''):\n"
+            "        os.environ['PYTHONPATH'] = p + os.pathsep + os.environ.get('PYTHONPATH','')\n"
+            "# Replace torchaudio.load with soundfile (torchaudio 2.9 ignores backend= and demands torchcodec)\n"
+            "import torch, soundfile, numpy, torchaudio\n"
+            "def _soundfile_load(filepath, *a, **kw):\n"
+            "    kw.pop('backend', None)\n"
+            "    data, sr = soundfile.read(str(filepath), dtype='float32')\n"
+            "    t = torch.from_numpy(data if len(data.shape)==1 else data.T).float()\n"
+            "    if t.dim()==1: t = t.unsqueeze(0)\n"
+            "    return t, sr\n"
+            "torchaudio.load = _soundfile_load\n"
             "# Patch VARIANT_DIR_MAP for XL models\n"
             "try:\n"
             "    from acestep.training_v2.cli.args import VARIANT_DIR_MAP\n"
             "    for k,v in {'turbo_shift3':'acestep-v15-turbo-shift3','xl_turbo':'acestep-v15-xl-turbo','xl_base':'acestep-v15-xl-base','xl_sft':'acestep-v15-xl-sft'}.items():\n"
             "        VARIANT_DIR_MAP.setdefault(k,v)\n"
             "except: pass\n"
-            "# Run the actual training CLI\n"
-            "sys.argv = sys.argv[1:]  # Remove bootstrap script from argv\n"
+            "import runpy\n"
+            "sys.argv = sys.argv[1:]\n"
             "runpy.run_module('acestep.training_v2.cli.train_fixed', run_name='__main__')\n",
             encoding="utf-8",
         )
