@@ -2021,7 +2021,8 @@ def plan_album(
         fallback_plan = None
         try:
             bible_payload = _task_output_json_dict(bible_result)
-            album_bible = dict(bible_payload.get("album_bible") or {})
+            raw_bible = bible_payload.get("album_bible")
+            album_bible = raw_bible if isinstance(raw_bible, dict) else {"concept": str(raw_bible or opts["sanitized_concept"])}
             blueprints = [item for item in (bible_payload.get("tracks") or []) if isinstance(item, dict)]
         except Exception as parse_exc:
             logs.append(f"CrewAI bible JSON parse repair: {_monitor_preview(parse_exc, 320)}")
@@ -2074,6 +2075,8 @@ def plan_album(
                 lyrics = _lyric_like_text(raw_text)
                 track_payload = {**blueprint, "lyrics": lyrics}
                 logs.append(f"CrewAI JSON repair used production text for track {index + 1}.")
+            if not isinstance(track_payload, dict):
+                track_payload = {"lyrics": str(track_payload), "tool_notes": "Non-dict crew output coerced to lyrics."}
             merged = {**blueprint, **track_payload}
             merged["track_number"] = int(blueprint.get("track_number") or index + 1)
             merged["duration"] = parse_duration_seconds(blueprint.get("duration") or track_duration, track_duration)
