@@ -826,7 +826,6 @@ class AceTrainingManager:
                 str(self.base_dir / "_acejam_train_bootstrap.py"),
                 "--plain",
                 "--yes",
-                "fixed",
                 "--checkpoint-dir",
                 str(self.checkpoint_dir),
                 "--model-variant",
