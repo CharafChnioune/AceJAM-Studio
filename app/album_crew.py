@@ -498,9 +498,22 @@ def preflight_album_ollama(ollama_model: str, embedding_model: str) -> dict[str,
 
 def _strip_thinking_blocks(raw: Any) -> str:
     text = str(raw or "")
-    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"<think>[\s\S]*", "", text, flags=re.IGNORECASE)
-    return text.replace("</think>", "").strip()
+    # Extract content INSIDE think blocks in case the model puts all output there
+    think_content = ""
+    for match in re.finditer(r"<think>([\s\S]*?)</think>", text, flags=re.IGNORECASE):
+        think_content += match.group(1)
+    # Also capture unclosed think block content
+    unclosed = re.search(r"<think>([\s\S]*)", text, flags=re.IGNORECASE)
+    if unclosed and "</think>" not in unclosed.group(1).lower():
+        think_content += unclosed.group(1)
+    # Strip think blocks from the text
+    stripped = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    stripped = re.sub(r"<think>[\s\S]*", "", stripped, flags=re.IGNORECASE)
+    stripped = stripped.replace("</think>", "").strip()
+    # If stripping left nothing useful but think blocks had content, use that content
+    if not stripped and think_content.strip():
+        stripped = think_content.strip()
+    return stripped
 
 
 def _empty_response_fallback_text(model_name: str) -> str:
