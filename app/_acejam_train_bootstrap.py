@@ -64,6 +64,36 @@ try:
 except ImportError:
     pass
 
+# Fix MPS precision: MPS does not support FP16 GradScaler (unscale_grads fails)
+# Patch _select_fabric_precision to use 32-true on MPS instead of 16-mixed
+try:
+    import acestep.training_v2.fixed_lora_module as _flm
+    import acestep.training.trainer as _trainer
+
+    def _fixed_precision(device_type: str) -> str:
+        if device_type in ("cuda", "xpu"):
+            return "bf16-mixed"
+        return "32-true"  # MPS and CPU both use fp32
+
+    _flm._select_fabric_precision = _fixed_precision
+    _trainer._select_fabric_precision = _fixed_precision
+except (ImportError, AttributeError):
+    pass
+
+# Fix MPS gradient clipping: MPS can produce NaN gradients on first steps
+# Patch torch.nn.utils.clip_grad_norm_ to allow non-finite norms
+try:
+    import torch.nn.utils as _tnu
+    _orig_clip = _tnu.clip_grad_norm_
+
+    def _safe_clip(parameters, max_norm, **kwargs):
+        kwargs["error_if_nonfinite"] = False
+        return _orig_clip(parameters, max_norm, **kwargs)
+
+    _tnu.clip_grad_norm_ = _safe_clip
+except (ImportError, AttributeError):
+    pass
+
 # Run the actual ACE-Step training CLI by directly executing the file
 sys.argv = sys.argv[1:]
 _target = _VENDOR / "acestep" / "training_v2" / "cli" / "train_fixed.py"
