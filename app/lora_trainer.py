@@ -227,6 +227,15 @@ class AceTrainingManager:
                 + ", ".join(missing)
                 + ". Run Pinokio Install/Update to install training extras."
             )
+        # Patch vendor VARIANT_DIR_MAP to include XL models (upstream only has turbo/base/sft)
+        try:
+            from acestep.training_v2.cli.args import VARIANT_DIR_MAP
+            VARIANT_DIR_MAP.setdefault("turbo_shift3", "acestep-v15-turbo-shift3")
+            VARIANT_DIR_MAP.setdefault("xl_turbo", "acestep-v15-xl-turbo")
+            VARIANT_DIR_MAP.setdefault("xl_base", "acestep-v15-xl-base")
+            VARIANT_DIR_MAP.setdefault("xl_sft", "acestep-v15-xl-sft")
+        except ImportError:
+            pass
 
     def active_job(self) -> dict[str, Any] | None:
         with self._lock:
