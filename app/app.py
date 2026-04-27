@@ -1056,6 +1056,35 @@ def _release_models_for_training() -> None:
         _release_handler_state()
 
 
+def _unload_llm_models_for_generation() -> None:
+    """Unload Ollama and LM Studio models to free unified memory for audio generation."""
+    # Unload all Ollama models by sending keep_alive=0
+    try:
+        import ollama as _ollama_client
+        client = _ollama_client.Client(host=ollama_host())
+        response = client.list()
+        for model in response.models:
+            try:
+                client.generate(model=model.model, prompt="", keep_alive=0)
+            except Exception:
+                pass
+        print("[generate_album] Unloaded Ollama models to free memory.", flush=True)
+    except Exception as exc:
+        print(f"[generate_album] Ollama unload skipped: {exc}", flush=True)
+    # Unload LM Studio models
+    try:
+        catalog = lmstudio_model_catalog()
+        for model in catalog.get("loaded_models", []):
+            try:
+                lmstudio_unload_model(str(model))
+            except Exception:
+                pass
+        if catalog.get("loaded_models"):
+            print("[generate_album] Unloaded LM Studio models to free memory.", flush=True)
+    except Exception:
+        pass
+
+
 training_manager = AceTrainingManager(
     base_dir=BASE_DIR,
     data_dir=DATA_DIR,
@@ -4578,6 +4607,9 @@ def generate_album(
         )
         logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
         logs.append("---")
+        # Free unified memory: unload LLM models before heavy audio generation
+        _unload_llm_models_for_generation()
+        logs.append("LLM models unloaded to maximize memory for audio generation.")
         logs.append("Phase 2: Generating every track through the album model portfolio...")
         _album_job_log(
             album_job_id,
