@@ -40,7 +40,7 @@ LORA_EXPORTS_DIR = DATA_DIR / "loras"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
-APP_UI_VERSION = "acejam-v0.5-settings-parity-2026-04-26"
+APP_UI_VERSION = "acejam-v0.5-bpm-key-audit-2026-04-27"
 PAYLOAD_CONTRACT_VERSION = "2026-04-26"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
@@ -141,18 +141,23 @@ from studio_core import (
     ACE_STEP_CAPTION_CHAR_LIMIT,
     ACE_STEP_LYRICS_CHAR_LIMIT,
     ACE_STEP_LM_MODELS,
+    PRO_AUDIO_TARGETS,
+    PRO_QUALITY_AUDIT_VERSION,
     ALLOWED_AUDIO_EXTENSIONS,
     DOCS_BEST_AUDIO_FORMAT,
     DOCS_BEST_DEFAULT_LM_MODEL,
     DOCS_BEST_LM_DEFAULTS,
     DOCS_BEST_SOURCE_TASK_LM_SKIPS,
     DOCS_BEST_TURBO_HIGH_CAP_STEPS,
+    DEFAULT_BPM,
+    DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
     KNOWN_ACE_STEP_MODELS,
     MAX_BATCH_SIZE,
     OFFICIAL_ACE_STEP_MANIFEST,
     OFFICIAL_UNRELEASED_MODELS,
     ace_step_settings_compliance,
+    ace_step_settings_registry,
     build_task_instruction,
     clamp_float,
     clamp_int,
@@ -161,11 +166,13 @@ from studio_core import (
     docs_best_quality_policy,
     ensure_task_supported,
     get_param,
+    hit_readiness_report,
     lm_model_profiles_for_models,
     model_label,
     model_profiles_for_models,
     normalize_generation_text_fields,
     normalize_audio_format,
+    normalize_key_scale,
     normalize_quality_profile,
     normalize_task_type,
     normalize_track_names,
@@ -175,13 +182,16 @@ from studio_core import (
     ordered_models,
     parse_bool,
     parse_timesteps,
+    pro_quality_policy,
     recommended_lm_model,
     recommended_song_model,
     quality_profile_model_settings,
+    runtime_planner_report,
     safe_filename,
     safe_id,
     studio_ui_schema,
     supported_tasks_for_model,
+    VALID_KEY_SCALES,
 )
 
 
@@ -818,8 +828,8 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["lyrics"] = "[Instrumental]"
     normalized.setdefault("lyrics", "")
     normalized.setdefault("duration", 180)
-    normalized.setdefault("bpm", 120)
-    normalized.setdefault("key_scale", "C major")
+    normalized.setdefault("bpm", DEFAULT_BPM)
+    normalized.setdefault("key_scale", DEFAULT_KEY_SCALE)
     normalized.setdefault("time_signature", "4")
     normalized.setdefault("vocal_language", "en")
     normalized.setdefault("seed", "-1")
@@ -2455,6 +2465,42 @@ def _merge_nested_generation_metadata(payload: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
+def _payload_has_any(payload: dict[str, Any], keys: list[str]) -> bool:
+    return any(key in payload for key in keys)
+
+
+def _bpm_from_payload(payload: dict[str, Any]) -> int | None:
+    if not _payload_has_any(payload, ["bpm"]):
+        return DEFAULT_BPM
+    value = payload.get("bpm")
+    if value is None or str(value).strip().lower() in {"", "auto", "none", "n/a", "na"}:
+        return None
+    return clamp_int(value, DEFAULT_BPM, BPM_MIN, BPM_MAX)
+
+
+def _key_scale_from_payload(payload: dict[str, Any]) -> str:
+    key_fields = ["key_scale", "keyscale", "keyScale", "key"]
+    if not _payload_has_any(payload, key_fields):
+        return DEFAULT_KEY_SCALE
+    return normalize_key_scale(get_param(payload, "key_scale", ""))
+
+
+def _time_signature_from_payload(payload: dict[str, Any]) -> str:
+    time_fields = ["time_signature", "timesignature", "timeSignature"]
+    if not _payload_has_any(payload, time_fields):
+        return "4"
+    value = str(get_param(payload, "time_signature", "") or "").strip()
+    if value.lower() in {"auto", "none", "n/a", "na"}:
+        return ""
+    if value:
+        try:
+            if int(float(value)) in VALID_TIME_SIGNATURES:
+                return str(int(float(value)))
+        except ValueError:
+            return ""
+    return ""
+
+
 def _merge_song_album_metadata(song_id: str, extra: dict[str, Any]) -> None:
     if not song_id:
         return
@@ -2745,15 +2791,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if is_turbo and inference_steps > DOCS_BEST_TURBO_HIGH_CAP_STEPS:
         inference_steps = min(inference_steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
 
-    bpm_value = payload.get("bpm")
-    bpm = None if bpm_value in [None, "", "auto", "Auto"] else clamp_int(bpm_value, 120, BPM_MIN, BPM_MAX)
-    time_signature = str(get_param(payload, "time_signature", "") or "").strip()
-    if time_signature:
-        try:
-            if int(float(time_signature)) not in VALID_TIME_SIGNATURES:
-                time_signature = ""
-        except ValueError:
-            time_signature = ""
+    bpm = _bpm_from_payload(payload)
+    time_signature = _time_signature_from_payload(payload)
 
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_fields_used(payload))
@@ -2817,7 +2856,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "instrumental": instrumental,
         "duration": duration,
         "bpm": bpm,
-        "key_scale": str(get_param(payload, "key_scale", "") or "").strip(),
+        "key_scale": _key_scale_from_payload(payload),
         "time_signature": time_signature,
         "vocal_language": vocal_language,
         "batch_size": batch_size,
@@ -2912,6 +2951,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     parsed["settings_policy_version"] = settings_compliance["version"]
     parsed["settings_compliance"] = settings_compliance
+    _attach_pro_preflight(parsed)
     return parsed
 
 
@@ -3130,15 +3170,8 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
     use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
     model_defaults = quality_profile_model_settings(song_model, quality_profile)
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
-    time_signature = str(get_param(payload, "time_signature", "") or "").strip()
-    if time_signature:
-        try:
-            if int(float(time_signature)) not in VALID_TIME_SIGNATURES:
-                time_signature = ""
-        except ValueError:
-            time_signature = ""
-    bpm_value = payload.get("bpm")
-    bpm = None if bpm_value in [None, "", "auto", "Auto"] else clamp_int(bpm_value, 120, BPM_MIN, BPM_MAX)
+    time_signature = _time_signature_from_payload(payload)
+    bpm = _bpm_from_payload(payload)
     is_turbo = "turbo" in song_model
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
     if raw_steps in [None, "", "auto"]:
@@ -3167,7 +3200,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "instrumental": parse_bool(payload.get("instrumental"), False),
         "duration": clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX),
         "bpm": bpm,
-        "key_scale": str(get_param(payload, "key_scale", "") or "").strip(),
+        "key_scale": _key_scale_from_payload(payload),
         "time_signature": time_signature,
         "vocal_language": _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown")),
         "batch_size": clamp_int(payload.get("batch_size"), 3 if quality_profile == "chart_master" and task_type == "text2music" else 1, 1, MAX_BATCH_SIZE),
@@ -3221,8 +3254,14 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     quality_profile = normalize_quality_profile(normalized_text.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
     song_model = _song_model_for_quality_profile(get_param(normalized_text, "song_model", normalized_text.get("song_model")), quality_profile, task_type)
     official_used = _active_official_fields(normalized_text, task_type, official_fields_used(normalized_text))
-    preview = _preview_generation_payload(normalized_text, task_type, song_model, official_used)
     field_errors: dict[str, str] = {}
+    try:
+        preview = _preview_generation_payload(normalized_text, task_type, song_model, official_used)
+    except ValueError as exc:
+        _set_field_error(field_errors, "key_scale", str(exc))
+        preview_payload = dict(normalized_text)
+        preview_payload["key_scale"] = "auto"
+        preview = _preview_generation_payload(preview_payload, task_type, song_model, official_used)
     if text_budget_error:
         _set_field_error(field_errors, "lyrics", text_budget_error)
 
@@ -3346,6 +3385,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     normalized_payload["settings_policy_version"] = settings_compliance["version"]
     normalized_payload["settings_compliance"] = settings_compliance
+    _attach_pro_preflight(normalized_payload)
     return {
         "success": True,
         "valid": valid,
@@ -3357,6 +3397,10 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "official_fields": list(normalized_payload.get("official_fields") or official_used),
         "settings_policy_version": settings_compliance["version"],
         "settings_compliance": _jsonable(settings_compliance),
+        "hit_readiness": _jsonable(normalized_payload.get("hit_readiness") or {}),
+        "effective_settings": _jsonable(normalized_payload.get("effective_settings") or {}),
+        "settings_coverage": _jsonable(normalized_payload.get("settings_coverage") or {}),
+        "runtime_planner": _jsonable(normalized_payload.get("runtime_planner") or {}),
         "model": {
             "name": song_model,
             "installed": installed,
@@ -3504,6 +3548,324 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
     }
 
 
+def _generation_metadata_audit(params: dict[str, Any], official_request: dict[str, Any] | None = None) -> dict[str, Any]:
+    request_params = dict((official_request or {}).get("params") or {})
+    effective = request_params or {
+        "bpm": params.get("bpm"),
+        "keyscale": params.get("key_scale"),
+        "timesignature": params.get("time_signature"),
+        "duration": params.get("duration"),
+    }
+    required = {
+        "bpm": effective.get("bpm"),
+        "keyscale": effective.get("keyscale"),
+        "duration": effective.get("duration"),
+        "timesignature": effective.get("timesignature"),
+    }
+    missing = [key for key, value in required.items() if value in [None, ""]]
+    return {
+        "metadata_present": not missing,
+        "missing": missing,
+        "bpm": {"value": effective.get("bpm"), "present": effective.get("bpm") not in [None, ""]},
+        "keyscale": {"value": effective.get("keyscale"), "present": effective.get("keyscale") not in [None, ""]},
+        "duration": {"value": effective.get("duration"), "present": effective.get("duration") not in [None, ""]},
+        "timesignature": {"value": effective.get("timesignature"), "present": effective.get("timesignature") not in [None, ""]},
+        "song_model": params.get("song_model"),
+        "lm_backend": params.get("lm_backend"),
+        "inference_steps": params.get("inference_steps"),
+        "guidance_scale": params.get("guidance_scale"),
+        "shift": params.get("shift"),
+        "audio_format": params.get("audio_format"),
+        "take_count": params.get("batch_size"),
+        "source_lyrics_char_count": (params.get("ace_step_text_budget") or {}).get("source_lyrics_char_count"),
+        "runtime_lyrics_char_count": (params.get("ace_step_text_budget") or {}).get("runtime_lyrics_char_count"),
+        "lyrics_overflow_action": (params.get("ace_step_text_budget") or {}).get("lyrics_overflow_action"),
+    }
+
+
+def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
+    fields = [
+        "quality_profile",
+        "task_type",
+        "song_model",
+        "ace_lm_model",
+        "lm_backend",
+        "duration",
+        "bpm",
+        "key_scale",
+        "time_signature",
+        "batch_size",
+        "inference_steps",
+        "guidance_scale",
+        "shift",
+        "infer_method",
+        "sampler_mode",
+        "use_adg",
+        "timesteps",
+        "audio_format",
+        "runner_plan",
+    ]
+    return {
+        "version": PRO_QUALITY_AUDIT_VERSION,
+        "fields": {field: _jsonable(params.get(field)) for field in fields if field in params},
+        "text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+        "settings_policy_version": params.get("settings_policy_version"),
+        "settings_compliance": _jsonable(params.get("settings_compliance") or {}),
+    }
+
+
+def _attach_pro_preflight(params: dict[str, Any]) -> dict[str, Any]:
+    params["hit_readiness"] = hit_readiness_report(
+        params,
+        task_type=params.get("task_type"),
+        song_model=str(params.get("song_model") or ""),
+        runner_plan=str(params.get("runner_plan") or ""),
+    )
+    params["runtime_planner"] = runtime_planner_report(
+        params,
+        task_type=params.get("task_type"),
+        song_model=str(params.get("song_model") or ""),
+        quality_profile=str(params.get("quality_profile") or DEFAULT_QUALITY_PROFILE),
+    )
+    registry = ace_step_settings_registry()
+    params["settings_coverage"] = _jsonable(registry.get("coverage") or {})
+    params["effective_settings"] = _effective_settings_summary(params)
+    return params
+
+
+def _estimate_bpm_from_audio(samples: np.ndarray, sample_rate: int) -> float | None:
+    if sample_rate <= 0 or samples.size < sample_rate * 4:
+        return None
+    mono = np.asarray(samples, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    mono = np.nan_to_num(mono, nan=0.0, posinf=0.0, neginf=0.0)
+    frame = 2048
+    hop = 512
+    if mono.size < frame * 4:
+        return None
+    usable = mono[: mono.size - (mono.size % hop)]
+    if usable.size < frame * 4:
+        return None
+    starts = range(0, usable.size - frame + 1, hop)
+    rms = np.array([float(np.sqrt(np.mean(np.square(usable[start : start + frame])))) for start in starts], dtype=np.float32)
+    if rms.size < 16 or float(rms.max(initial=0.0)) <= 1e-5:
+        return None
+    novelty = np.maximum(np.diff(rms), 0.0)
+    if novelty.size < 8 or float(novelty.max(initial=0.0)) <= 1e-5:
+        return None
+    novelty = novelty - float(novelty.mean())
+    ac = np.correlate(novelty, novelty, mode="full")[novelty.size - 1 :]
+    if ac.size < 4 or float(ac[0]) <= 1e-8:
+        return None
+    min_bpm, max_bpm = 60.0, 180.0
+    min_lag = max(1, int(round((60.0 / max_bpm) * sample_rate / hop)))
+    max_lag = min(ac.size - 1, int(round((60.0 / min_bpm) * sample_rate / hop)))
+    if max_lag <= min_lag:
+        return None
+    region = ac[min_lag : max_lag + 1]
+    best_offset = int(np.argmax(region))
+    best_lag = min_lag + best_offset
+    strength = float(region[best_offset] / max(ac[0], 1e-8))
+    if strength < 0.08:
+        return None
+    return round(float(60.0 * sample_rate / (hop * best_lag)), 1)
+
+
+def _audio_quality_audit(path: Path, params: dict[str, Any], *, seed: str = "") -> dict[str, Any]:
+    requested_duration = float(params.get("duration") or 0.0)
+    targets = PRO_AUDIO_TARGETS
+    try:
+        data, sample_rate = sf.read(str(path), always_2d=True, dtype="float32")
+        if data.size == 0:
+            raise ValueError("audio file is empty")
+        mono = data.mean(axis=1)
+        abs_mono = np.abs(mono)
+        peak = float(abs_mono.max(initial=0.0))
+        rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
+        rms_db = round(20.0 * np.log10(max(rms, 1e-12)), 2)
+        duration = round(float(len(mono) / sample_rate), 3) if sample_rate else 0.0
+        clip_percent = round(float(np.mean(abs_mono >= float(targets["clip_linear_threshold"])) * 100.0), 5)
+        threshold = max(0.001, peak * 0.01)
+        non_silent = np.flatnonzero(abs_mono > threshold)
+        if non_silent.size:
+            leading_silence = round(float(non_silent[0] / sample_rate), 3)
+            trailing_silence = round(float((len(mono) - non_silent[-1] - 1) / sample_rate), 3)
+        else:
+            leading_silence = duration
+            trailing_silence = duration
+        duration_delta = round(duration - requested_duration, 3) if requested_duration else 0.0
+        duration_tolerance = max(float(targets["duration_tolerance_seconds"]), requested_duration * float(targets["duration_tolerance_ratio"]))
+        estimated_bpm = _estimate_bpm_from_audio(mono, int(sample_rate))
+        issues: list[str] = []
+        if requested_duration and abs(duration_delta) > duration_tolerance:
+            issues.append("duration_mismatch")
+        if peak < float(targets["peak_linear_min"]):
+            issues.append("low_peak")
+        if peak > float(targets["peak_linear_max"]):
+            issues.append("near_clip_peak")
+        if clip_percent > float(targets["clip_percent_max"]):
+            issues.append("clipping")
+        if max(leading_silence, trailing_silence) > float(targets["silence_edge_seconds_warn"]):
+            issues.append("edge_silence")
+        return {
+            "version": PRO_QUALITY_AUDIT_VERSION,
+            "status": "pass" if not issues else "warn",
+            "path": str(path),
+            "filename": path.name,
+            "format": path.suffix.lower().lstrip("."),
+            "sample_rate": int(sample_rate),
+            "channels": int(data.shape[1]),
+            "duration_seconds": duration,
+            "requested_duration_seconds": requested_duration,
+            "duration_delta_seconds": duration_delta,
+            "duration_tolerance_seconds": round(duration_tolerance, 3),
+            "peak": round(peak, 6),
+            "peak_dbfs": round(20.0 * np.log10(max(peak, 1e-12)), 2),
+            "rms_dbfs": rms_db,
+            "clip_percent": clip_percent,
+            "leading_silence_seconds": leading_silence,
+            "trailing_silence_seconds": trailing_silence,
+            "estimated_bpm": estimated_bpm,
+            "estimated_keyscale": None,
+            "key_analysis_status": "not_analyzed",
+            "seed": seed,
+            "issues": issues,
+        }
+    except Exception as exc:
+        return {
+            "version": PRO_QUALITY_AUDIT_VERSION,
+            "status": "warn",
+            "path": str(path),
+            "filename": path.name,
+            "error": str(exc),
+            "issues": ["audio_analysis_failed"],
+        }
+
+
+def _metadata_adherence(params: dict[str, Any], metadata_audit: dict[str, Any], audio_audit: dict[str, Any]) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def add(check_id: str, status: str, requested: Any, actual: Any, detail: str = "") -> None:
+        checks.append({"id": check_id, "status": status, "requested": requested, "actual": actual, "detail": detail})
+
+    requested_duration = float(params.get("duration") or 0.0)
+    actual_duration = audio_audit.get("duration_seconds")
+    tolerance = float(audio_audit.get("duration_tolerance_seconds") or max(2.0, requested_duration * 0.05))
+    duration_ok = bool(actual_duration is not None and (not requested_duration or abs(float(actual_duration) - requested_duration) <= tolerance))
+    add("duration", "pass" if duration_ok else "warn", requested_duration, actual_duration, f"tolerance {round(tolerance, 3)}s")
+
+    requested_bpm = params.get("bpm")
+    estimated_bpm = audio_audit.get("estimated_bpm")
+    if requested_bpm in [None, ""]:
+        add("bpm", "warn", requested_bpm, estimated_bpm, "BPM is Auto/missing")
+    elif estimated_bpm is None:
+        add("bpm", "not_analyzed", requested_bpm, estimated_bpm, "BPM analyzer could not infer a stable tempo")
+    else:
+        delta = abs(float(estimated_bpm) - float(requested_bpm))
+        add("bpm", "pass" if delta <= float(PRO_AUDIO_TARGETS["bpm_tolerance"]) else "warn", requested_bpm, estimated_bpm, f"delta {round(delta, 2)} BPM")
+
+    requested_key = params.get("key_scale")
+    add(
+        "key_scale",
+        "not_analyzed" if requested_key else "warn",
+        requested_key,
+        audio_audit.get("estimated_keyscale"),
+        "Key estimation is not bundled; requested key is still passed to ACE-Step",
+    )
+    add("time_signature", "pass" if params.get("time_signature") not in [None, ""] else "warn", params.get("time_signature"), None, "conditioning metadata")
+    add("request_metadata", "pass" if metadata_audit.get("metadata_present") else "warn", "present", metadata_audit.get("missing"), "")
+    statuses = [check["status"] for check in checks]
+    if any(status == "warn" for status in statuses):
+        overall = "warn"
+    elif any(status == "not_analyzed" for status in statuses):
+        overall = "pass_with_unanalyzed_fields"
+    else:
+        overall = "pass"
+    return {"version": PRO_QUALITY_AUDIT_VERSION, "status": overall, "checks": checks}
+
+
+def _score_take(audio: dict[str, Any], hit_readiness: dict[str, Any], metadata_audit: dict[str, Any]) -> tuple[int, list[str], str]:
+    score = 100
+    reasons: list[str] = []
+    audio_audit = audio.get("audio_quality_audit") or {}
+    adherence = audio.get("metadata_adherence") or {}
+    if audio_audit.get("status") != "pass":
+        issues = list(audio_audit.get("issues") or [])
+        score -= min(35, 8 * len(issues))
+        reasons.extend(issues[:4])
+    if adherence.get("status") == "warn":
+        score -= 10
+        reasons.append("metadata_adherence_warn")
+    if not metadata_audit.get("metadata_present"):
+        score -= 12
+        reasons.append("request_metadata_missing")
+    readiness_status = hit_readiness.get("status")
+    if readiness_status == "warn":
+        score -= 8
+        reasons.append("hit_readiness_warn")
+    elif readiness_status == "review":
+        score -= 20
+        reasons.append("hit_readiness_review")
+    if audio_audit.get("peak") and 0.45 <= float(audio_audit.get("peak") or 0) <= float(PRO_AUDIO_TARGETS["peak_linear_max"]):
+        reasons.append("strong_peak_headroom")
+    if not reasons:
+        reasons.append("clean_audio_and_metadata")
+    score = max(0, min(100, int(score)))
+    status = "pass" if score >= 85 else "warn" if score >= 70 else "rerender_suggested"
+    return score, reasons, status
+
+
+def _build_pro_quality_audit(
+    params: dict[str, Any],
+    audios: list[dict[str, Any]],
+    metadata_audit: dict[str, Any],
+    hit_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    take_scores: list[dict[str, Any]] = []
+    for audio in audios:
+        score, reasons, status = _score_take(audio, hit_readiness, metadata_audit)
+        audio["pro_quality_score"] = score
+        audio["pro_quality_status"] = status
+        take_scores.append(
+            {
+                "audio_id": audio.get("id"),
+                "filename": audio.get("filename"),
+                "score": score,
+                "status": status,
+                "reasons": reasons,
+            }
+        )
+    recommended = max(take_scores, key=lambda item: item["score"], default=None)
+    if recommended:
+        for audio in audios:
+            audio["is_recommended_take"] = audio.get("id") == recommended.get("audio_id")
+    suggestions: list[str] = []
+    if recommended and recommended["score"] < 85:
+        suggestions.append("Regenerate with a new seed or review prompt/lyrics before final release.")
+    if not metadata_audit.get("metadata_present"):
+        suggestions.append("Keep BPM/key/time signature locked before rendering.")
+    if hit_readiness.get("status") != "pass":
+        suggestions.append("Improve hook clarity, sections, or runtime text budget before the next take.")
+    status = "pass"
+    if recommended and recommended["score"] < 70:
+        status = "rerender_suggested"
+    elif suggestions:
+        status = "warn"
+    return {
+        "version": PRO_QUALITY_AUDIT_VERSION,
+        "status": status,
+        "quality_profile": params.get("quality_profile"),
+        "single_song_takes": params.get("batch_size"),
+        "recommended_take": recommended,
+        "take_scores": take_scores,
+        "hit_readiness": _jsonable(hit_readiness),
+        "metadata_audit": _jsonable(metadata_audit),
+        "audio_targets": dict(PRO_AUDIO_TARGETS),
+        "rerender_suggestions": suggestions,
+    }
+
+
 def _redact_official_runner_log_line(line: str) -> str:
     """Keep official ACE-Step subprocess logs compact in Pinokio terminals."""
     if "formatted_prompt_with_cot=" in line:
@@ -3642,9 +4004,9 @@ def _official_aux_params(body: dict[str, Any]) -> dict[str, Any]:
         "sample_query": str(get_param(body, "sample_query", body.get("query") or body.get("prompt") or body.get("description") or "") or ""),
         "instrumental": parse_bool(body.get("instrumental"), False),
         "vocal_language": _language_for_generation(str(get_param(body, "vocal_language", body.get("language") or "unknown") or "unknown")),
-        "bpm": None if str(body.get("bpm") or "").strip().lower() in {"", "auto"} else clamp_int(body.get("bpm"), 120, BPM_MIN, BPM_MAX),
-        "keyscale": str(get_param(body, "key_scale", "") or ""),
-        "timesignature": str(get_param(body, "time_signature", "") or ""),
+        "bpm": _bpm_from_payload(body),
+        "keyscale": _key_scale_from_payload(body),
+        "timesignature": _time_signature_from_payload(body),
         "duration": clamp_float(get_param(body, "duration", body.get("audio_duration")), 60.0, DURATION_MIN, DURATION_MAX),
         "lm_temperature": clamp_float(body.get("lm_temperature") or body.get("temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
         "lm_top_k": clamp_int(body.get("lm_top_k") or body.get("top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"], 0, 200),
@@ -3745,7 +4107,15 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     with handler_lock:
         _release_handler_state()
 
-    official = _run_official_runner_request(_official_request_payload(params, official_dir), result_dir)
+    official_request = _official_request_payload(params, official_dir)
+    metadata_audit = _generation_metadata_audit(params, official_request)
+    hit_readiness = params.get("hit_readiness") or hit_readiness_report(
+        params,
+        task_type=params.get("task_type"),
+        song_model=params.get("song_model"),
+        runner_plan=params.get("runner_plan"),
+    )
+    official = _run_official_runner_request(official_request, result_dir)
     if not official.get("success"):
         raise RuntimeError(official.get("error") or "Official ACE-Step generation failed")
 
@@ -3756,6 +4126,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         audio_id = f"take-{index + 1}"
         audio_params = audio.get("params") or {}
         seed_text = str(audio_params.get("seed") or params["seed"] or "-1")
+        audio_audit = _audio_quality_audit(path, params, seed=seed_text)
+        adherence = _metadata_adherence(params, metadata_audit, audio_audit)
         item = {
             "id": audio_id,
             "result_id": result_id,
@@ -3769,6 +4141,10 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "runner": "official",
             "payload_warnings": params["payload_warnings"],
             "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+            "generation_metadata_audit": metadata_audit,
+            "audio_quality_audit": _jsonable(audio_audit),
+            "metadata_adherence": _jsonable(adherence),
+            "hit_readiness": _jsonable(hit_readiness),
         }
         if params["return_audio_codes"] and audio_params.get("audio_codes"):
             item["audio_codes"] = audio_params["audio_codes"]
@@ -3785,6 +4161,10 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                     "lyrics_source": params["lyrics_source"],
                     "payload_warnings": params["payload_warnings"],
                     "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+                    "generation_metadata_audit": _jsonable(metadata_audit),
+                    "audio_quality_audit": _jsonable(audio_audit),
+                    "metadata_adherence": _jsonable(adherence),
+                    "hit_readiness": _jsonable(hit_readiness),
                     "runner_plan": params["runner_plan"],
                     "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
@@ -3815,19 +4195,54 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             item["library_url"] = entry["audio_url"]
         audios.append(item)
 
+    pro_quality_audit = _build_pro_quality_audit(params, audios, metadata_audit, hit_readiness)
+    recommended_take = pro_quality_audit.get("recommended_take")
     meta = {
         "id": result_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "active_song_model": params["song_model"],
+        "success": True,
         "runner": "official",
         "runner_plan": params["runner_plan"],
         "ui_mode": params["ui_mode"],
+        "title": params["title"],
+        "artist_name": params["artist_name"],
+        "quality_profile": params["quality_profile"],
+        "task_type": params["task_type"],
+        "song_model": params["song_model"],
+        "bpm": params["bpm"],
+        "key_scale": params["key_scale"],
+        "time_signature": params["time_signature"],
+        "duration": params["duration"],
+        "batch_size": params["batch_size"],
+        "inference_steps": params["inference_steps"],
+        "guidance_scale": params["guidance_scale"],
+        "shift": params["shift"],
+        "infer_method": params["infer_method"],
+        "sampler_mode": params["sampler_mode"],
+        "use_adg": params["use_adg"],
+        "audio_format": params["audio_format"],
+        "lm_backend": params["lm_backend"],
+        "thinking": params["thinking"],
+        "use_format": params["use_format"],
+        "use_cot_metas": params["use_cot_metas"],
+        "use_cot_caption": params["use_cot_caption"],
+        "use_cot_language": params["use_cot_language"],
+        "use_cot_lyrics": params["use_cot_lyrics"],
         "tags": params["caption"],
         "tag_list": params["tag_list"],
         "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
         "payload_warnings": params["payload_warnings"],
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "official_features": params["official_fields"],
+        "generation_metadata_audit": _jsonable(metadata_audit),
+        "hit_readiness": _jsonable(hit_readiness),
+        "effective_settings": _jsonable(params.get("effective_settings") or _effective_settings_summary(params)),
+        "settings_coverage": _jsonable(params.get("settings_coverage") or ace_step_settings_registry().get("coverage") or {}),
+        "runtime_planner": _jsonable(params.get("runtime_planner") or runtime_planner_report(params)),
+        "pro_quality_audit": _jsonable(pro_quality_audit),
+        "recommended_take": _jsonable(recommended_take),
+        "rerender_suggestions": _jsonable(pro_quality_audit.get("rerender_suggestions") or []),
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
         "time_costs": _jsonable(official.get("time_costs", {})),
         "lm_metadata": _jsonable(official.get("lm_metadata")),
@@ -3842,6 +4257,26 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "official_features": params["official_fields"],
         "audios": audios,
         "params": meta["params"],
+        "bpm": params["bpm"],
+        "key_scale": params["key_scale"],
+        "time_signature": params["time_signature"],
+        "duration": params["duration"],
+        "song_model": params["song_model"],
+        "quality_profile": params["quality_profile"],
+        "batch_size": params["batch_size"],
+        "inference_steps": params["inference_steps"],
+        "guidance_scale": params["guidance_scale"],
+        "shift": params["shift"],
+        "audio_format": params["audio_format"],
+        "lm_backend": params["lm_backend"],
+        "generation_metadata_audit": metadata_audit,
+        "hit_readiness": hit_readiness,
+        "effective_settings": meta["effective_settings"],
+        "settings_coverage": meta["settings_coverage"],
+        "runtime_planner": meta["runtime_planner"],
+        "pro_quality_audit": pro_quality_audit,
+        "recommended_take": recommended_take,
+        "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
         "ace_step_text_budget": meta["ace_step_text_budget"],
     }
@@ -3893,6 +4328,13 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     result_dir = RESULTS_DIR / result_id
     result_dir.mkdir(parents=True, exist_ok=True)
     extra = result.get("extra_outputs") or {}
+    metadata_audit = _generation_metadata_audit(params)
+    hit_readiness = params.get("hit_readiness") or hit_readiness_report(
+        params,
+        task_type=params.get("task_type"),
+        song_model=params.get("song_model"),
+        runner_plan=params.get("runner_plan"),
+    )
     seed_values = [item.strip() for item in str(extra.get("seed_value") or params["seed"]).split(",")]
     audios = []
 
@@ -3907,6 +4349,8 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             seed_int = int(seed_text)
         except (TypeError, ValueError):
             seed_int = 42
+        audio_audit = _audio_quality_audit(path, params, seed=seed_text)
+        adherence = _metadata_adherence(params, metadata_audit, audio_audit)
 
         item = {
             "id": audio_id,
@@ -3921,6 +4365,10 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             "runner": "fast",
             "payload_warnings": params["payload_warnings"],
             "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+            "generation_metadata_audit": metadata_audit,
+            "audio_quality_audit": _jsonable(audio_audit),
+            "metadata_adherence": _jsonable(adherence),
+            "hit_readiness": _jsonable(hit_readiness),
         }
         if params["auto_lrc"]:
             item["lrc"] = _calculate_lrc(item_extra, params["duration"], params["vocal_language"], params["inference_steps"], seed_int)
@@ -3942,6 +4390,10 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
                     "lyrics_source": params["lyrics_source"],
                     "payload_warnings": params["payload_warnings"],
                     "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+                    "generation_metadata_audit": _jsonable(metadata_audit),
+                    "audio_quality_audit": _jsonable(audio_audit),
+                    "metadata_adherence": _jsonable(adherence),
+                    "hit_readiness": _jsonable(hit_readiness),
                     "runner_plan": params["runner_plan"],
                     "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
@@ -3972,18 +4424,46 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             item["library_url"] = entry["audio_url"]
         audios.append(item)
 
+    pro_quality_audit = _build_pro_quality_audit(params, audios, metadata_audit, hit_readiness)
+    recommended_take = pro_quality_audit.get("recommended_take")
     meta = {
         "id": result_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "active_song_model": active_song_model,
+        "success": True,
         "runner": "fast",
         "runner_plan": params["runner_plan"],
         "ui_mode": params["ui_mode"],
+        "title": params["title"],
+        "artist_name": params["artist_name"],
+        "quality_profile": params["quality_profile"],
+        "task_type": params["task_type"],
+        "song_model": active_song_model,
+        "bpm": params["bpm"],
+        "key_scale": params["key_scale"],
+        "time_signature": params["time_signature"],
+        "duration": params["duration"],
+        "batch_size": params["batch_size"],
+        "inference_steps": params["inference_steps"],
+        "guidance_scale": params["guidance_scale"],
+        "shift": params["shift"],
+        "infer_method": params["infer_method"],
+        "sampler_mode": params["sampler_mode"],
+        "use_adg": params["use_adg"],
+        "audio_format": params["audio_format"],
         "tags": params["caption"],
         "tag_list": params["tag_list"],
         "lyrics": params["lyrics"],
         "payload_warnings": params["payload_warnings"],
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+        "generation_metadata_audit": _jsonable(metadata_audit),
+        "hit_readiness": _jsonable(hit_readiness),
+        "effective_settings": _jsonable(params.get("effective_settings") or _effective_settings_summary(params)),
+        "settings_coverage": _jsonable(params.get("settings_coverage") or ace_step_settings_registry().get("coverage") or {}),
+        "runtime_planner": _jsonable(params.get("runtime_planner") or runtime_planner_report(params)),
+        "pro_quality_audit": _jsonable(pro_quality_audit),
+        "recommended_take": _jsonable(recommended_take),
+        "rerender_suggestions": _jsonable(pro_quality_audit.get("rerender_suggestions") or []),
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
         "time_costs": _jsonable(extra.get("time_costs", {})),
         "audios": audios,
@@ -4000,6 +4480,25 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "audios": audios,
         "params": meta["params"],
         "runner": "fast",
+        "bpm": params["bpm"],
+        "key_scale": params["key_scale"],
+        "time_signature": params["time_signature"],
+        "duration": params["duration"],
+        "song_model": active_song_model,
+        "quality_profile": params["quality_profile"],
+        "batch_size": params["batch_size"],
+        "inference_steps": params["inference_steps"],
+        "guidance_scale": params["guidance_scale"],
+        "shift": params["shift"],
+        "audio_format": params["audio_format"],
+        "generation_metadata_audit": metadata_audit,
+        "hit_readiness": hit_readiness,
+        "effective_settings": meta["effective_settings"],
+        "settings_coverage": meta["settings_coverage"],
+        "runtime_planner": meta["runtime_planner"],
+        "pro_quality_audit": pro_quality_audit,
+        "recommended_take": recommended_take,
+        "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
         "ace_step_text_budget": meta["ace_step_text_budget"],
         "time_costs": meta["time_costs"],
@@ -4452,6 +4951,9 @@ def config() -> str:
             "prompt_kit": prompt_kit_payload(),
             "active_song_model": ACTIVE_ACE_STEP_MODEL,
             "default_song_model": _default_acestep_checkpoint(),
+            "default_bpm": DEFAULT_BPM,
+            "default_key_scale": DEFAULT_KEY_SCALE,
+            "valid_keyscales": VALID_KEY_SCALES,
             "default_planner_lm_provider": "ollama",
             "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
             "default_album_embedding_model": DEFAULT_ALBUM_EMBEDDING_MODEL,
@@ -4714,8 +5216,8 @@ def generate_album(
                         "caption": track.get("tags") or track.get("caption") or "",
                         "lyrics": track.get("lyrics", ""),
                         "duration": track.get("duration") or track_duration,
-                        "bpm": track.get("bpm") or request_payload.get("bpm"),
-                        "key_scale": track.get("key_scale") or request_payload.get("key_scale") or "",
+                        "bpm": track.get("bpm") or request_payload.get("bpm") or DEFAULT_BPM,
+                        "key_scale": track.get("key_scale") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE,
                         "time_signature": track.get("time_signature") or request_payload.get("time_signature") or "4",
                         "vocal_language": track.get("language") or request_payload.get("vocal_language") or language,
                         "batch_size": variants,
@@ -5108,6 +5610,51 @@ def _runtime_progress_snapshot() -> dict[str, Any]:
     return progress
 
 
+def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
+    items = [item for item in (files or []) if isinstance(item, dict)]
+    count = len(items)
+    labeled = sum(1 for item in items if str(item.get("caption") or "").strip())
+    lyrics_ready = sum(1 for item in items if str(item.get("lyrics") or "").strip())
+    durations = [clamp_float(item.get("duration"), 0.0, 0.0, 600.0) for item in items]
+    durations = [value for value in durations if value > 0]
+    total_duration = round(sum(durations), 2)
+    avg_duration = round(total_duration / len(durations), 2) if durations else 0.0
+    languages = sorted({str(item.get("language") or "unknown") for item in items})
+    score = 0
+    checks = []
+
+    def add(check_id: str, ok: bool, detail: str, points: int) -> None:
+        nonlocal score
+        if ok:
+            score += points
+        checks.append({"id": check_id, "status": "pass" if ok else "warn", "detail": detail, "points": points})
+
+    add("sample_count", count >= 8, f"{count} audio sample(s)", 25)
+    add("caption_labels", count > 0 and labeled == count, f"{labeled}/{count} captioned", 25)
+    add("lyrics_labels", count > 0 and lyrics_ready == count, f"{lyrics_ready}/{count} lyrics/instrumental labels", 15)
+    add("duration_total", total_duration >= 300, f"{total_duration}s total", 20)
+    add("duration_shape", not durations or 5 <= avg_duration <= 300, f"{avg_duration}s average", 10)
+    add("language_metadata", bool(languages), ", ".join(languages[:6]) or "unknown", 5)
+    status = "ready" if score >= 85 else "usable" if score >= 65 else "needs_work"
+    return {
+        "version": PRO_QUALITY_AUDIT_VERSION,
+        "status": status,
+        "score": min(100, score),
+        "sample_count": count,
+        "labeled_count": labeled,
+        "lyrics_ready_count": lyrics_ready,
+        "total_duration_seconds": total_duration,
+        "average_duration_seconds": avg_duration,
+        "languages": languages,
+        "checks": checks,
+        "audition_plan": {
+            "adapter_scales": [0.3, 0.6, 0.8, 1.0],
+            "compare_to_baseline": True,
+            "recommended_seed_count": 2,
+        },
+    }
+
+
 def _model_runtime_status(name: str) -> dict[str, Any]:
     download_job = _model_download_job(name)
     unreleased = name in OFFICIAL_UNRELEASED_MODELS
@@ -5387,6 +5934,7 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
         "default_album_embedding_model": DEFAULT_ALBUM_EMBEDDING_MODEL,
         "official_runner": _official_runner_status(),
+        "pro_quality_policy": pro_quality_policy(),
         "ace_lm": _ace_lm_status_payload(),
         "trainer": training_manager.status(),
     }
@@ -6576,6 +7124,7 @@ async def api_lora_status():
             **handler.get_lora_status(),
             "trainer": training_manager.status(),
             "adapters": training_manager.list_adapters(),
+            "pro_audition_policy": _lora_dataset_health([])["audition_plan"],
         }
     )
 
@@ -6620,6 +7169,7 @@ async def api_lora_dataset_scan(request: Request):
     try:
         body = await request.json()
         data = training_manager.scan_dataset(Path(str(body.get("path") or "")))
+        data["dataset_health"] = _lora_dataset_health(data.get("files") or [])
         return JSONResponse({"success": True, **data})
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
@@ -6681,7 +7231,7 @@ async def api_lora_dataset_autolabel(request: Request):
                 except Exception as official_exc:
                     fallback["official_error"] = str(official_exc)
             labels.append(fallback)
-        return JSONResponse({"success": True, "labels": labels})
+        return JSONResponse({"success": True, "labels": labels, "dataset_health": _lora_dataset_health(labels)})
     except ModelDownloadStarted as exc:
         return JSONResponse(_download_started_payload(exc.model_name, exc.job))
 
@@ -6730,6 +7280,7 @@ async def api_lora_dataset_save(request: Request):
             dataset_id=str(body.get("dataset_id") or ""),
             metadata=body.get("metadata") or {},
         )
+        data["dataset_health"] = _lora_dataset_health(entries)
         return JSONResponse({"success": True, **data})
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)

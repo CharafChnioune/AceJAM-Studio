@@ -141,6 +141,161 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["audio_format"], "wav")
         self.assertEqual(normalized["runner_plan"], "fast")
 
+    def test_text2music_defaults_and_key_aliases_reach_official_request(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "bright pop, crisp drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "key_scale": "Am",
+                    "audio_format": "wav32",
+                }
+            )
+
+        self.assertEqual(params["bpm"], acejam_app.DEFAULT_BPM)
+        self.assertEqual(params["key_scale"], acejam_app.DEFAULT_KEY_SCALE)
+        self.assertEqual(params["time_signature"], "4")
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+        self.assertEqual(request["params"]["bpm"], 95)
+        self.assertEqual(request["params"]["keyscale"], "A minor")
+        self.assertEqual(request["params"]["timesignature"], "4")
+
+    def test_auto_key_stays_empty_for_ace_step_payload(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "bright pop, crisp drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "bpm": "auto",
+                    "key_scale": "auto",
+                    "audio_format": "wav32",
+                }
+            )
+
+        self.assertIsNone(params["bpm"])
+        self.assertEqual(params["key_scale"], "")
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+        self.assertIsNone(request["params"]["bpm"])
+        self.assertEqual(request["params"]["keyscale"], "")
+
+    def test_invalid_key_validation_returns_field_error(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}):
+            validation = acejam_app._validate_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-turbo",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nA line for the beat\n\n[Chorus]\nHook for the street",
+                    "key_scale": "H minor",
+                    "ace_lm_model": "none",
+                }
+            )
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("key_scale", validation["field_errors"])
+        self.assertIn("Unsupported ACE-Step key scale", validation["field_errors"]["key_scale"])
+
+    def test_generation_metadata_audit_flags_missing_legacy_request_metadata(self):
+        params = {
+            "bpm": 95,
+            "key_scale": "A minor",
+            "time_signature": "4",
+            "duration": 180,
+            "song_model": "acestep-v15-xl-sft",
+            "lm_backend": "mlx",
+            "inference_steps": 64,
+            "guidance_scale": 8.0,
+            "shift": 3.0,
+            "audio_format": "wav32",
+            "batch_size": 3,
+            "ace_step_text_budget": {
+                "source_lyrics_char_count": 100,
+                "runtime_lyrics_char_count": 80,
+                "lyrics_overflow_action": "none",
+            },
+        }
+
+        audit = acejam_app._generation_metadata_audit(
+            params,
+            {"params": {"bpm": None, "keyscale": "", "duration": 180, "timesignature": "4"}},
+        )
+
+        self.assertFalse(audit["metadata_present"])
+        self.assertEqual(audit["missing"], ["bpm", "keyscale"])
+        self.assertFalse(audit["bpm"]["present"])
+        self.assertFalse(audit["keyscale"]["present"])
+
+    def test_audio_quality_audit_and_take_recommendation(self):
+        params = {
+            "quality_profile": "chart_master",
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "caption": "bright pop, crisp drums",
+            "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+            "duration": 2.0,
+            "bpm": 120,
+            "key_scale": "A minor",
+            "time_signature": "4",
+            "batch_size": 2,
+            "inference_steps": 64,
+            "lm_backend": "mlx",
+            "settings_compliance": {"valid": True, "version": "unit"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sr = 48000
+            t = acejam_app.np.linspace(0, 2.0, sr * 2, endpoint=False)
+            clean = (0.45 * acejam_app.np.sin(2 * acejam_app.np.pi * 440 * t)).astype("float32")
+            quiet = (0.02 * acejam_app.np.sin(2 * acejam_app.np.pi * 440 * t)).astype("float32")
+            clean_path = root / "clean.wav"
+            quiet_path = root / "quiet.wav"
+            acejam_app.sf.write(str(clean_path), clean, sr)
+            acejam_app.sf.write(str(quiet_path), quiet, sr)
+
+            clean_audit = acejam_app._audio_quality_audit(clean_path, params, seed="1")
+            quiet_audit = acejam_app._audio_quality_audit(quiet_path, params, seed="2")
+
+        metadata = acejam_app._generation_metadata_audit(params)
+        readiness = acejam_app.hit_readiness_report(params, task_type="text2music", song_model="acestep-v15-xl-sft")
+        audios = [
+            {"id": "take-1", "filename": "clean.wav", "audio_quality_audit": clean_audit, "metadata_adherence": acejam_app._metadata_adherence(params, metadata, clean_audit)},
+            {"id": "take-2", "filename": "quiet.wav", "audio_quality_audit": quiet_audit, "metadata_adherence": acejam_app._metadata_adherence(params, metadata, quiet_audit)},
+        ]
+        pro = acejam_app._build_pro_quality_audit(params, audios, metadata, readiness)
+
+        self.assertEqual(clean_audit["status"], "pass")
+        self.assertIn("low_peak", quiet_audit["issues"])
+        self.assertEqual(pro["recommended_take"]["audio_id"], "take-1")
+        self.assertTrue(audios[0]["is_recommended_take"])
+
+    def test_payload_validation_exposes_pro_quality_preflight(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}):
+            validation = acejam_app._validate_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-turbo",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nA line for the beat\n\n[Chorus]\nHook for the street",
+                    "ace_lm_model": "none",
+                }
+            )
+
+        self.assertIn("hit_readiness", validation)
+        self.assertIn("runtime_planner", validation)
+        self.assertIn("effective_settings", validation)
+        self.assertEqual(validation["hit_readiness"]["version"], acejam_app.PRO_QUALITY_AUDIT_VERSION)
+        self.assertEqual(validation["settings_coverage"].get("status"), "complete")
+
     def test_xl_sft_defaults_to_chart_master_64_steps(self):
         payload = {
             "task_type": "text2music",
@@ -314,6 +469,17 @@ class AppParityTest(unittest.TestCase):
 
         self.assertNotIn("user secrets", acejam_app._redact_official_runner_log_line(prompt_line))
         self.assertIn("redacted", acejam_app._redact_official_runner_log_line(codes_line))
+
+    def test_ui_uses_keyscale_selects_and_bpm_default(self):
+        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('<input id="bpm" type="number" min="30" max="300" value="95"', html)
+        self.assertIn('<select id="key-scale"', html)
+        self.assertIn('data-field="key_scale" data-key-scale-select', html)
+        self.assertIn('data-field="keyscale" data-key-scale-select', html)
+        self.assertIn("Pro Quality", html)
+        self.assertIn("lora-health-grid", html)
+        self.assertNotIn('id="key-scale" type="text"', html)
 
     def test_official_runner_stream_redacts_conditioning_prompt_blocks(self):
         state = {}

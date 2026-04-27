@@ -191,6 +191,8 @@ kill all the rivals
                 "ValidationChecklistTool",
                 "NegativeControlTool",
                 "AceStepSettingsPolicyTool",
+                "HitReadinessTool",
+                "RuntimePlannerTool",
                 "TaskApplicabilityTool",
                 "ModelCompatibilityTool",
             }.issubset(tool_names)
@@ -400,6 +402,8 @@ kill all the rivals
             self.assertIn("XLModelPolicyTool", names)
             self.assertIn("GenerationSettingsTool", names)
             self.assertIn("ConflictCheckerTool", names)
+            self.assertIn("HitReadinessTool", names)
+            self.assertIn("RuntimePlannerTool", names)
 
     def test_album_plan_fallback_injects_tool_reports(self):
         result = plan_album(

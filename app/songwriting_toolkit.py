@@ -22,7 +22,14 @@ from prompt_kit import (
     prompt_kit_payload,
     section_map_for,
 )
-from studio_core import ace_step_settings_compliance, ace_step_settings_registry, docs_best_model_settings
+from studio_core import (
+    ace_step_settings_compliance,
+    ace_step_settings_registry,
+    docs_best_model_settings,
+    hit_readiness_report,
+    pro_quality_policy,
+    runtime_planner_report,
+)
 from user_album_contract import (
     USER_ALBUM_CONTRACT_VERSION,
     apply_user_album_contract_to_tracks,
@@ -212,6 +219,8 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "ChartMasterProfileTool", "summary": "Returns final-render Chart Master defaults and take-count policy."},
     {"name": "AceStepCoverageAuditTool", "summary": "Audits ACE-Step params, config, API endpoints, runtime controls, helpers, and result fields."},
     {"name": "EffectiveSettingsTool", "summary": "Shows effective active/ignored/unsupported settings for a proposed payload."},
+    {"name": "HitReadinessTool", "summary": "Checks caption, lyrics, metadata, and runtime budgets before ACE-Step renders."},
+    {"name": "RuntimePlannerTool", "summary": "Estimates model/backend/take-count runtime risk before final generation."},
     {"name": "AandRVariantPlanTool", "summary": "Plans multiple single-song takes for A&R selection while keeping album renders bounded."},
     {"name": "TaskApplicabilityTool", "summary": "Explains which ACE-Step controls are active, ignored, or source-locked for a task."},
     {"name": "ModelCompatibilityTool", "summary": "Checks model/task/settings compatibility before finalizing generation controls."},
@@ -966,10 +975,27 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
     )
     if not settings_compliance.get("valid", True) or settings_compliance.get("unsupported"):
         quality_checks["runtime_fields_supported_or_advisory"] = "review"
+    hit_readiness = hit_readiness_report(
+        {**track, "settings_compliance": settings_compliance},
+        task_type=str(track.get("task_type") or options.get("task_type") or "text2music"),
+        song_model=str(track.get("song_model") or options.get("song_model") or ALBUM_FINAL_MODEL),
+        runner_plan=str(track.get("runner_plan") or "official"),
+    )
+    runtime_plan = runtime_planner_report(
+        {**track, "settings_compliance": settings_compliance},
+        task_type=str(track.get("task_type") or options.get("task_type") or "text2music"),
+        song_model=str(track.get("song_model") or options.get("song_model") or ALBUM_FINAL_MODEL),
+        quality_profile=str(track.get("quality_profile") or options.get("quality_profile") or "chart_master"),
+    )
+    if hit_readiness.get("status") == "review":
+        quality_checks["hook_has_title_or_emotional_promise"] = "review"
     return {
         "prompt_kit_version": PROMPT_KIT_VERSION,
         "settings_policy_version": settings_compliance["version"],
         "settings_compliance": settings_compliance,
+        "pro_quality_policy": pro_quality_policy(),
+        "hit_readiness": hit_readiness,
+        "runtime_planner": runtime_plan,
         "length_plan": plan,
         "lyric_stats": stats,
         "length_ok": length_ok and char_ok and section_coverage >= 0.72,
@@ -1852,6 +1878,44 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
             ensure_ascii=True,
         )
 
+    @tool("HitReadinessTool")
+    def hit_readiness_tool(settings_json: str = "") -> str:
+        """Return pre-render hit readiness gates for a proposed ACE-Step payload."""
+        try:
+            payload = json.loads(settings_json) if settings_json.strip().startswith("{") else {}
+        except Exception:
+            payload = {}
+        task = str(payload.get("task_type") or context.get("task_type") or "text2music")
+        model = str(payload.get("song_model") or context.get("song_model") or ALBUM_FINAL_MODEL)
+        runner = str(payload.get("runner_plan") or "official")
+        return json.dumps(
+            hit_readiness_report(payload, task_type=task, song_model=model, runner_plan=runner),
+            ensure_ascii=True,
+        )
+
+    @tool("RuntimePlannerTool")
+    def runtime_planner_tool(settings_json: str = "") -> str:
+        """Return render ETA and memory-risk guidance for a proposed ACE-Step payload."""
+        try:
+            payload = json.loads(settings_json) if settings_json.strip().startswith("{") else {}
+        except Exception:
+            payload = {}
+        task = str(payload.get("task_type") or context.get("task_type") or "text2music")
+        model = str(payload.get("song_model") or context.get("song_model") or ALBUM_FINAL_MODEL)
+        quality_profile = str(payload.get("quality_profile") or context.get("quality_profile") or "chart_master")
+        return json.dumps(
+            {
+                "runtime_planner": runtime_planner_report(
+                    payload,
+                    task_type=task,
+                    song_model=model,
+                    quality_profile=quality_profile,
+                ),
+                "pro_quality_policy": pro_quality_policy(),
+            },
+            ensure_ascii=True,
+        )
+
     @tool("AandRVariantPlanTool")
     def ar_variant_plan_tool(song_model: str = "") -> str:
         """Return take-count guidance for professional A&R selection."""
@@ -1939,6 +2003,8 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         chart_master_profile_tool,
         ace_step_coverage_audit_tool,
         effective_settings_tool,
+        hit_readiness_tool,
+        runtime_planner_tool,
         ar_variant_plan_tool,
         task_applicability_tool,
         model_compatibility_tool,

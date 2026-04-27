@@ -7,7 +7,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from acestep.constants import TASK_INSTRUCTIONS, TASK_TYPES, TASK_TYPES_BASE, TASK_TYPES_TURBO, TRACK_NAMES
+from acestep.constants import (
+    BPM_MAX,
+    BPM_MIN,
+    KEYSCALE_ACCIDENTALS,
+    KEYSCALE_MODES,
+    KEYSCALE_NOTES,
+    TASK_INSTRUCTIONS,
+    TASK_TYPES,
+    TASK_TYPES_BASE,
+    TASK_TYPES_TURBO,
+    TRACK_NAMES,
+    VALID_KEYSCALES,
+)
 
 KNOWN_ACE_STEP_MODELS = [
     "acestep-v15-turbo",
@@ -44,6 +56,17 @@ ACE_STEP_MODEL_SOURCES = [
 STANDARD_TASKS = ["text2music", "cover", "repaint"]
 ALL_TASKS = ["text2music", "cover", "repaint", "extract", "lego", "complete"]
 OFFICIAL_UNRELEASED_MODELS = {"acestep-v15-turbo-rl"}
+DEFAULT_BPM = 95
+DEFAULT_KEY_SCALE = "A minor"
+KEYSCALE_AUTO_VALUE = "auto"
+VALID_KEY_SCALES = [
+    f"{note}{accidental} {mode}"
+    for note in KEYSCALE_NOTES
+    for accidental in KEYSCALE_ACCIDENTALS
+    for mode in KEYSCALE_MODES
+    if f"{note}{accidental} {mode}" in VALID_KEYSCALES
+]
+VALID_KEY_SCALE_SET = set(VALID_KEY_SCALES)
 
 OFFICIAL_GENERATION_PARAMS = [
     "task_type",
@@ -201,6 +224,7 @@ DOCS_BEST_STANDARD_SHIFT = CHART_MASTER_STANDARD_SHIFT
 DOCS_BEST_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
 DOCS_BEST_DEFAULT_LM_BACKEND = "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "pt"
 ACE_STEP_SETTINGS_POLICY_VERSION = "ace-step-settings-parity-2026-04-26"
+PRO_QUALITY_AUDIT_VERSION = "ace-step-pro-quality-audit-2026-04-27"
 ACE_STEP_CAPTION_CHAR_LIMIT = 512
 ACE_STEP_LYRICS_CHAR_LIMIT = 4096
 ACE_STEP_DIT_LYRICS_TOKEN_LIMIT = 2048
@@ -221,6 +245,18 @@ DOCS_BEST_LM_DEFAULTS: dict[str, Any] = {
     "lm_temperature": 0.85,
     "lm_top_p": 0.9,
     "lm_top_k": 0,
+}
+PRO_AUDIO_TARGETS: dict[str, Any] = {
+    "peak_dbfs_target": -1.0,
+    "peak_linear_target": 0.8913,
+    "peak_linear_min": 0.25,
+    "peak_linear_max": 0.98,
+    "clip_linear_threshold": 0.999,
+    "clip_percent_max": 0.01,
+    "duration_tolerance_seconds": 2.0,
+    "duration_tolerance_ratio": 0.05,
+    "silence_edge_seconds_warn": 3.0,
+    "bpm_tolerance": 6.0,
 }
 
 QUALITY_PROFILE_OFFICIAL_RAW = "official_raw"
@@ -1098,7 +1134,7 @@ ACE_STEP_TASK_REQUIRED_FIELDS: dict[str, list[str]] = {
     "complete": ["src_audio", "instruction", "caption", "track_names"],
 }
 
-ACE_STEP_SOURCE_LOCKED_DURATION_TASKS = {"cover", "repaint", "lego", "extract"}
+ACE_STEP_SOURCE_LOCKED_DURATION_TASKS = {"cover", "repaint", "lego", "extract", "complete"}
 
 
 def _field_section(field: str) -> str:
@@ -1129,6 +1165,8 @@ def _field_options(field: str) -> list[Any]:
         "chunk_mask_mode": ["auto", "explicit"],
         "repaint_mode": ["balanced", "conservative", "aggressive"],
         "vocal_language": ["unknown", "en", "zh", "ja", "ko", "es", "fr", "de", "it", "pt", "nl", "ar", "ru"],
+        "keyscale": [KEYSCALE_AUTO_VALUE, *VALID_KEY_SCALES],
+        "key_scale": [KEYSCALE_AUTO_VALUE, *VALID_KEY_SCALES],
         "lm_backend": ["mlx", "pt", "vllm"],
         "ace_lm_model": ACE_STEP_LM_MODELS,
         "quality_profile": QUALITY_PROFILES,
@@ -1138,7 +1176,7 @@ def _field_options(field: str) -> list[Any]:
 
 def _field_range(field: str) -> list[float] | None:
     ranges: dict[str, list[float]] = {
-        "bpm": [30, 300],
+        "bpm": [BPM_MIN, BPM_MAX],
         "duration": [10, 600],
         "inference_steps": [1, 200],
         "guidance_scale": [1.0, 15.0],
@@ -1309,6 +1347,7 @@ class AceStepSettingsRegistry:
                 "caption_char_limit": ACE_STEP_CAPTION_CHAR_LIMIT,
                 "lyrics_char_limit": ACE_STEP_LYRICS_CHAR_LIMIT,
             },
+            "pro_quality": pro_quality_policy(),
         }
 
     @classmethod
@@ -1385,6 +1424,169 @@ def ace_step_settings_registry() -> dict[str, Any]:
 
 def ace_step_settings_compliance(payload: dict[str, Any], *, task_type: str, song_model: str, runner_plan: str = "") -> dict[str, Any]:
     return AceStepSettingsRegistry.compliance(payload, task_type=task_type, song_model=song_model, runner_plan=runner_plan)
+
+
+def pro_quality_policy() -> dict[str, Any]:
+    return {
+        "version": PRO_QUALITY_AUDIT_VERSION,
+        "default_profile": DEFAULT_QUALITY_PROFILE,
+        "single_song_takes": CHART_MASTER_SINGLE_TAKES,
+        "album_takes": CHART_MASTER_ALBUM_TAKES,
+        "audio_targets": dict(PRO_AUDIO_TARGETS),
+        "checks": [
+            "caption_budget",
+            "lyrics_budget",
+            "lyrics_presence",
+            "hook_or_chorus",
+            "section_map",
+            "metadata_presence",
+            "settings_compliance",
+            "runtime_cost",
+            "audio_quality",
+            "metadata_adherence",
+        ],
+    }
+
+
+def _quality_status_from_score(score: int, *, failure: bool = False) -> str:
+    if failure:
+        return "review"
+    if score >= 85:
+        return "pass"
+    if score >= 70:
+        return "warn"
+    return "review"
+
+
+def hit_readiness_report(payload: dict[str, Any], *, task_type: str | None = None, song_model: str = "", runner_plan: str = "") -> dict[str, Any]:
+    task = normalize_task_type(task_type or payload.get("task_type"))
+    caption = str(payload.get("caption") or "")
+    lyrics = str(payload.get("lyrics") or "")
+    instrumental = parse_bool(payload.get("instrumental"), lyrics.strip().lower() == "[instrumental]")
+    sample_mode = parse_bool(payload.get("sample_mode"), False) or bool(str(payload.get("sample_query") or "").strip())
+    checks: list[dict[str, Any]] = []
+
+    def add(check_id: str, status: str, detail: str, points: int = 0) -> None:
+        checks.append({"id": check_id, "status": status, "detail": detail, "points": points})
+
+    caption_len = len(caption)
+    add(
+        "caption_budget",
+        "pass" if caption_len <= ACE_STEP_CAPTION_CHAR_LIMIT else "fail",
+        f"{caption_len}/{ACE_STEP_CAPTION_CHAR_LIMIT} chars",
+        12,
+    )
+
+    lyrics_len = len(lyrics)
+    if instrumental or task in DOCS_BEST_SOURCE_TASK_LM_SKIPS:
+        add("lyrics_budget", "pass", "lyrics not required for this mode", 10)
+    else:
+        add(
+            "lyrics_budget",
+            "pass" if lyrics_len <= ACE_STEP_LYRICS_CHAR_LIMIT else "fail",
+            f"{lyrics_len}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars",
+            12,
+        )
+
+    vocal_lyrics = has_vocal_lyrics(lyrics)
+    if task == "text2music" and not instrumental and not sample_mode:
+        add("lyrics_presence", "pass" if vocal_lyrics else "fail", "vocal lyrics present" if vocal_lyrics else "vocal lyrics missing", 16)
+    else:
+        add("lyrics_presence", "pass", "not required for this mode", 8)
+
+    hook_hits = len(re.findall(r"(?im)^\s*\[(?:chorus|hook|refrain)", lyrics))
+    add("hook_or_chorus", "pass" if instrumental or hook_hits else "warn", f"{hook_hits} hook/chorus section(s)", 10)
+
+    section_hits = len(INLINE_LYRIC_SECTION_RE.findall(lyrics))
+    expected_sections = 2 if task == "text2music" and not instrumental else 0
+    add("section_map", "pass" if section_hits >= expected_sections else "warn", f"{section_hits} section tag(s)", 10)
+
+    meta_leak_count = sum(1 for line in lyrics.splitlines() if _META_LEAK_LINE_RE.search(line.strip()))
+    add("no_meta_leakage", "pass" if meta_leak_count == 0 else "fail", f"{meta_leak_count} meta/planning line(s)", 14)
+
+    metadata_present = bool(payload.get("bpm") not in [None, ""] and payload.get("key_scale") not in [None, ""] and payload.get("time_signature") not in [None, ""])
+    add("metadata_presence", "pass" if metadata_present else "warn", "BPM/key/time present" if metadata_present else "metadata is auto or missing", 8)
+
+    settings = payload.get("settings_compliance") or {}
+    settings_valid = settings.get("valid", True) is not False
+    add("settings_compliance", "pass" if settings_valid else "warn", settings.get("version") or ACE_STEP_SETTINGS_POLICY_VERSION, 10)
+
+    score = 0
+    failure = False
+    for check in checks:
+        status = check["status"]
+        points = int(check.get("points") or 0)
+        if status == "pass":
+            score += points
+        elif status == "warn":
+            score += max(0, int(points * 0.55))
+        else:
+            failure = True
+    max_score = sum(int(check.get("points") or 0) for check in checks) or 1
+    normalized_score = int(round(score / max_score * 100))
+    issues = [f"{check['id']}: {check['detail']}" for check in checks if check["status"] != "pass"]
+    return {
+        "version": PRO_QUALITY_AUDIT_VERSION,
+        "status": _quality_status_from_score(normalized_score, failure=failure),
+        "score": normalized_score,
+        "task_type": task,
+        "song_model": str(song_model or payload.get("song_model") or ""),
+        "runner_plan": str(runner_plan or payload.get("runner_plan") or ""),
+        "checks": checks,
+        "issues": issues,
+        "caption_char_count": caption_len,
+        "lyrics_char_count": lyrics_len,
+        "section_count": section_hits,
+        "hook_count": hook_hits,
+    }
+
+
+def runtime_planner_report(payload: dict[str, Any], *, task_type: str | None = None, song_model: str = "", quality_profile: str | None = None) -> dict[str, Any]:
+    task = normalize_task_type(task_type or payload.get("task_type"))
+    model = str(song_model or payload.get("song_model") or "").strip()
+    profile = normalize_quality_profile(quality_profile or payload.get("quality_profile"))
+    defaults = quality_profile_model_settings(model, profile)
+    duration = clamp_float(payload.get("duration"), 180.0, 10.0, 600.0)
+    steps = clamp_int(payload.get("inference_steps"), int(defaults.get("inference_steps") or CHART_MASTER_STANDARD_STEPS), 1, 200)
+    takes = clamp_int(payload.get("batch_size"), CHART_MASTER_SINGLE_TAKES if profile == QUALITY_PROFILE_CHART_MASTER and task == "text2music" else 1, 1, MAX_BATCH_SIZE)
+    lowered = model.lower()
+    model_factor = 1.0
+    if "xl" in lowered:
+        model_factor = 1.65
+    elif "base" in lowered or "sft" in lowered:
+        model_factor = 1.2
+    if "turbo" in lowered:
+        model_factor *= 0.45
+    backend = str(payload.get("lm_backend") or DOCS_BEST_DEFAULT_LM_BACKEND)
+    backend_factor = 0.9 if backend == "mlx" else 1.15 if backend == "pt" and sys.platform == "darwin" else 1.0
+    estimated_seconds = int(max(20, round(duration * steps * takes * model_factor * backend_factor / 27.0)))
+    if estimated_seconds > 1800:
+        risk = "high"
+    elif estimated_seconds > 600:
+        risk = "medium"
+    else:
+        risk = "low"
+    notes = []
+    if profile == QUALITY_PROFILE_CHART_MASTER and takes >= 3:
+        notes.append("chart_master_multi_take")
+    if risk == "high":
+        notes.append("long_final_render")
+    if task in ACE_STEP_SOURCE_LOCKED_DURATION_TASKS:
+        notes.append("source_audio_task")
+    return {
+        "version": PRO_QUALITY_AUDIT_VERSION,
+        "task_type": task,
+        "song_model": model,
+        "quality_profile": profile,
+        "duration": duration,
+        "steps": steps,
+        "takes": takes,
+        "backend": backend,
+        "estimated_seconds": estimated_seconds,
+        "estimated_minutes": round(estimated_seconds / 60.0, 1),
+        "risk": risk,
+        "notes": notes,
+    }
 
 PARAM_ALIASES: dict[str, list[str]] = {
     "ace_lm_model": ["ace_lm_model", "lm_model", "lm_model_path", "lmModel"],
@@ -1877,6 +2079,33 @@ def parse_timesteps(value: Any) -> list[float] | None:
     return parsed or None
 
 
+def normalize_key_scale(value: Any, *, default: str | None = None) -> str:
+    """Normalize user-facing key aliases to ACE-Step's constrained keyscale values."""
+    if value is None:
+        return default or ""
+    text = str(value).strip()
+    if not text or text.lower() in {"auto", "none", "n/a", "na"}:
+        return default or ""
+    match = re.fullmatch(r"([A-Ga-g])\s*([#b♯♭]?)\s*(major|minor|maj|min|m)?", text)
+    if match:
+        note = match.group(1).upper()
+        accidental = match.group(2) or ""
+        mode_text = (match.group(3) or "major").lower()
+        mode = "minor" if mode_text in {"minor", "min", "m"} else "major"
+        candidate = f"{note}{accidental} {mode}"
+        if candidate in VALID_KEY_SCALE_SET:
+            return candidate
+    parts = text.split()
+    if len(parts) == 2:
+        note_part = parts[0][:1].upper() + parts[0][1:]
+        mode_part = parts[1].lower()
+        if mode_part in {"major", "minor"}:
+            candidate = f"{note_part} {mode_part}"
+            if candidate in VALID_KEY_SCALE_SET:
+                return candidate
+    raise ValueError(f"Unsupported ACE-Step key scale: {text}. Choose Auto or one of the official keyscales.")
+
+
 def get_param(payload: dict[str, Any], canonical: str, default: Any = None) -> Any:
     names = PARAM_ALIASES.get(canonical, [canonical])
     for name in names:
@@ -1973,6 +2202,9 @@ def studio_ui_schema() -> dict[str, Any]:
         "payload_validation_endpoint": "/api/payload/validate",
         "official_parity_endpoint": "/api/ace-step/parity",
         "ace_step_settings_registry": settings_registry,
+        "default_bpm": DEFAULT_BPM,
+        "default_key_scale": DEFAULT_KEY_SCALE,
+        "valid_keyscales": VALID_KEY_SCALES,
         "audio_formats": sorted(OFFICIAL_AUDIO_FORMATS),
         "fast_audio_formats": sorted(SUPPORTED_AUDIO_FORMATS),
         "ace_step_text_budget": {
@@ -2029,7 +2261,7 @@ def studio_ui_schema() -> dict[str, Any]:
             ],
         },
         "ranges": {
-            "bpm": [30, 300],
+            "bpm": [BPM_MIN, BPM_MAX],
             "duration": [10, 600],
             "inference_steps": [1, 200],
             "guidance_scale": [1.0, 15.0],
@@ -2049,6 +2281,10 @@ def studio_ui_schema() -> dict[str, Any]:
             "lm_repetition_penalty": [0.1, 4.0],
         },
         "defaults": dict(OFFICIAL_FIELD_DEFAULTS),
+        "options": {
+            "key_scale": [KEYSCALE_AUTO_VALUE, *VALID_KEY_SCALES],
+            "time_signature": [2, 3, 4, 6],
+        },
         "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
         "docs_recommended": settings_registry["profiles"]["docs_recommended"],
         "chart_master": settings_registry["profiles"]["chart_master"],

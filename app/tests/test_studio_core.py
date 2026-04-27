@@ -4,23 +4,28 @@ from studio_core import (
     ACE_STEP_CAPTION_CHAR_LIMIT,
     ACE_STEP_LYRICS_CHAR_LIMIT,
     ACE_STEP_LM_MODELS,
+    DEFAULT_BPM,
+    DEFAULT_KEY_SCALE,
     KNOWN_ACE_STEP_MODELS,
     LM_MODEL_PROFILES,
     MODEL_PROFILES,
     OFFICIAL_ACE_STEP_MANIFEST,
     OFFICIAL_UNRELEASED_MODELS,
+    PRO_QUALITY_AUDIT_VERSION,
     ace_step_settings_compliance,
     ace_step_settings_registry,
     build_task_instruction,
     docs_best_model_settings,
     ensure_task_supported,
     apply_ace_step_text_budget,
+    hit_readiness_report,
     lm_model_profile,
     lm_model_profiles_for_models,
     model_profile,
     model_profiles_for_models,
     needs_vocal_lyrics,
     normalize_generation_text_fields,
+    normalize_key_scale,
     normalize_task_type,
     official_fields_used,
     official_manifest,
@@ -28,9 +33,11 @@ from studio_core import (
     parse_timesteps,
     recommended_lm_model,
     recommended_song_model,
+    runtime_planner_report,
     safe_id,
     studio_ui_schema,
     supported_tasks_for_model,
+    VALID_KEY_SCALES,
 )
 
 
@@ -117,6 +124,20 @@ class StudioCoreTest(unittest.TestCase):
     def test_timesteps(self):
         self.assertEqual(parse_timesteps("1, 0.5, 0"), [1.0, 0.5, 0.0])
         self.assertIsNone(parse_timesteps(""))
+
+    def test_official_keyscale_registry_and_aliases(self):
+        self.assertEqual(DEFAULT_BPM, 95)
+        self.assertEqual(DEFAULT_KEY_SCALE, "A minor")
+        self.assertEqual(len(VALID_KEY_SCALES), 70)
+        for key in ["A minor", "C major", "F# minor", "F♯ minor", "Bb major", "B♭ major"]:
+            self.assertIn(key, VALID_KEY_SCALES)
+
+        self.assertEqual(normalize_key_scale("Am"), "A minor")
+        self.assertEqual(normalize_key_scale("C Major"), "C major")
+        self.assertEqual(normalize_key_scale("F# Minor"), "F# minor")
+        self.assertEqual(normalize_key_scale("auto"), "")
+        with self.assertRaises(ValueError):
+            normalize_key_scale("H major")
 
     def test_text2music_vocal_lyrics_guard(self):
         self.assertTrue(needs_vocal_lyrics(task_type="text2music", instrumental=False, lyrics=""))
@@ -209,6 +230,12 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(schema["quality_policy"]["sft_base_models"]["inference_steps"], 64)
         self.assertEqual(schema["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
         self.assertEqual(schema["default_quality_profile"], "chart_master")
+        self.assertEqual(schema["default_bpm"], 95)
+        self.assertEqual(schema["default_key_scale"], "A minor")
+        self.assertEqual(len(schema["valid_keyscales"]), 70)
+        self.assertEqual(schema["ranges"]["bpm"], [30, 300])
+        self.assertEqual(schema["options"]["key_scale"][0], "auto")
+        self.assertIn("A minor", schema["options"]["key_scale"])
         self.assertEqual(schema["ace_step_coverage"]["status"], "complete")
         self.assertEqual(schema["payload_contract_version"], "2026-04-26")
         self.assertEqual(schema["settings_policy_version"], "ace-step-settings-parity-2026-04-26")
@@ -235,6 +262,8 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(registry["profiles"]["docs_recommended"]["lm"]["lm_top_p"], 0.9)
         self.assertEqual(registry["settings"]["use_cot_lyrics"]["status"], "reserved")
         self.assertEqual(registry["settings"]["cot_caption"]["status"], "read_only_lm_output")
+        self.assertEqual(registry["pro_quality"]["version"], PRO_QUALITY_AUDIT_VERSION)
+        self.assertIn("complete", registry["task_policy"]["source_locked_duration"])
 
     def test_settings_compliance_marks_ignored_and_overrides(self):
         compliance = ace_step_settings_compliance(
@@ -256,6 +285,32 @@ class StudioCoreTest(unittest.TestCase):
         self.assertIn("audio_format", compliance["unsupported"])
         self.assertIn("timesteps_override_steps_shift", compliance["notes"])
         self.assertIn("duration_source_locked", compliance["notes"])
+
+    def test_hit_readiness_and_runtime_planner_reports(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "quality_profile": "chart_master",
+            "caption": "German schlager, bright brass, accordion sparkle",
+            "lyrics": "[Verse]\nHeute Nacht klingt die Stadt\n\n[Chorus]\nWir singen weiter",
+            "bpm": 95,
+            "key_scale": "A minor",
+            "time_signature": "4",
+            "duration": 180,
+            "batch_size": 3,
+            "inference_steps": 64,
+            "lm_backend": "mlx",
+        }
+
+        readiness = hit_readiness_report(payload, task_type="text2music", song_model="acestep-v15-xl-sft")
+        planner = runtime_planner_report(payload, task_type="text2music", song_model="acestep-v15-xl-sft")
+
+        self.assertEqual(readiness["version"], PRO_QUALITY_AUDIT_VERSION)
+        self.assertGreaterEqual(readiness["score"], 80)
+        self.assertIn(readiness["status"], {"pass", "warn"})
+        self.assertEqual(planner["takes"], 3)
+        self.assertEqual(planner["steps"], 64)
+        self.assertIn(planner["risk"], {"medium", "high"})
 
     def test_docs_best_model_settings(self):
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["inference_steps"], 8)

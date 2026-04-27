@@ -502,10 +502,6 @@ def _strip_thinking_blocks(raw: Any) -> str:
     think_content = ""
     for match in re.finditer(r"<think>([\s\S]*?)</think>", text, flags=re.IGNORECASE):
         think_content += match.group(1)
-    # Also capture unclosed think block content
-    unclosed = re.search(r"<think>([\s\S]*)", text, flags=re.IGNORECASE)
-    if unclosed and "</think>" not in unclosed.group(1).lower():
-        think_content += unclosed.group(1)
     # Strip think blocks from the text
     stripped = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
     stripped = re.sub(r"<think>[\s\S]*", "", stripped, flags=re.IGNORECASE)

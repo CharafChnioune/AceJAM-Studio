@@ -1064,11 +1064,11 @@
           <div class="grid-3">
             <div>
               <label for="bpm">BPM</label>
-              <input id="bpm" type="number" min="30" max="300" placeholder="auto" />
+              <input id="bpm" type="number" min="30" max="300" value="95" />
             </div>
             <div>
               <label for="key-scale">Key</label>
-              <input id="key-scale" type="text" placeholder="C major" />
+              <select id="key-scale"></select>
             </div>
             <div>
               <label for="time-signature">Time</label>
@@ -1908,6 +1908,7 @@
           <button class="secondary" id="dataset-save">Save JSON</button>
           <label class="check" hidden><input type="checkbox" id="dataset-official-labels" /> Legacy LM labels</label>
         </div>
+        <div class="health-grid" id="lora-health-grid" style="margin-top:10px;"></div>
         <div class="grid-3" style="margin-top:10px;">
           <div>
             <label for="dataset-tag">Trigger tag</label>
@@ -2258,7 +2259,7 @@
 
   <script>
     const modes = ["simple", "custom", "cover", "repaint", "extract", "lego", "complete", "album", "lora", "library", "settings"];
-    const CLIENT_UI_VERSION = "acejam-v0.5-settings-parity-2026-04-26";
+    const CLIENT_UI_VERSION = "acejam-v0.5-bpm-key-audit-2026-04-27";
     const CLIENT_PAYLOAD_CONTRACT_VERSION = "2026-04-26";
     const DEFAULT_ACE_LM_MODEL = "acestep-5Hz-lm-4B";
     const DOCS_BEST_AUDIO_FORMAT = "wav32";
@@ -2281,6 +2282,8 @@
     const DOCS_BEST_TURBO_SHIFT = 3;
     const BALANCED_PRO_STANDARD_SHIFT = 1;
     const DOCS_BEST_STANDARD_SHIFT = 3;
+    const DEFAULT_BPM = 95;
+    const DEFAULT_KEY_SCALE = "A minor";
     const taskForMode = { simple: "text2music", custom: "text2music", cover: "cover", repaint: "repaint", extract: "extract", lego: "lego", complete: "complete", album: "text2music" };
     const state = {
       mode: "simple",
@@ -2329,6 +2332,29 @@
 
     const $ = (id) => document.getElementById(id);
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const keyScaleOptions = () => state.config?.valid_keyscales || state.config?.ui_schema?.valid_keyscales || [];
+    function selectedKeyScaleValue(value, fallback = DEFAULT_KEY_SCALE) {
+      const raw = String(value ?? "").trim();
+      if (!raw) return fallback;
+      if (raw.toLowerCase() === "auto") return "auto";
+      return raw;
+    }
+    function keyScaleOptionsHtml(selected = DEFAULT_KEY_SCALE, includeAuto = true) {
+      const chosen = selectedKeyScaleValue(selected);
+      const options = keyScaleOptions();
+      const auto = includeAuto ? `<option value="auto"${chosen === "auto" ? " selected" : ""}>Auto</option>` : "";
+      return auto + options.map((key) => `<option value="${esc(key)}"${chosen === key ? " selected" : ""}>${esc(key)}</option>`).join("");
+    }
+    function hydrateKeyScaleSelect(select, selected = DEFAULT_KEY_SCALE, includeAuto = true) {
+      if (!select) return;
+      const current = selectedKeyScaleValue(selected || select.value || DEFAULT_KEY_SCALE);
+      select.innerHTML = keyScaleOptionsHtml(current, includeAuto);
+      if ([...select.options].some((option) => option.value === current)) select.value = current;
+    }
+    function hydrateAllKeyScaleSelects(root = document) {
+      root.querySelectorAll("select[data-key-scale-select]").forEach((select) => hydrateKeyScaleSelect(select, select.dataset.selected || select.value || DEFAULT_KEY_SCALE));
+      hydrateKeyScaleSelect($("key-scale"), $("key-scale")?.value || DEFAULT_KEY_SCALE);
+    }
     const normalizeProvider = (value) => String(value || "ollama").toLowerCase().replace("_", "-").includes("lmstudio") || String(value || "").toLowerCase().includes("lm studio") ? "lmstudio" : "ollama";
     const providerLabel = (provider) => normalizeProvider(provider) === "lmstudio" ? "LM Studio" : "Ollama";
     const plannerProviderForMode = (mode = state.mode) => normalizeProvider(mode === "album" ? ($("album-planner-provider")?.value || "ollama") : ($("planner-provider")?.value || "ollama"));
@@ -3824,6 +3850,8 @@
       for (const id of ["language", "album-language"]) {
         $(id).innerHTML = languages.map((lang) => `<option value="${esc(lang)}"${lang === "en" ? " selected" : ""}>${esc(lang)}</option>`).join("");
       }
+      if ($("bpm") && !$("bpm").value) $("bpm").value = String(state.config.default_bpm || DEFAULT_BPM);
+      hydrateAllKeyScaleSelects();
       for (const id of ["extract-track", "lego-track"]) {
         $(id).innerHTML = state.config.track_names.map((track) => `<option value="${esc(track)}">${esc(track)}</option>`).join("");
       }
@@ -4047,6 +4075,38 @@
       }
     }
 
+    function normalizeKeyScaleForSelect(value, fallback = DEFAULT_KEY_SCALE) {
+      const raw = String(value ?? "").trim();
+      const options = keyScaleOptions();
+      if (!raw) return fallback;
+      if (raw.toLowerCase() === "auto") return "auto";
+      if (options.includes(raw)) return raw;
+      const compact = raw.replace(/\s+/g, "");
+      const match = compact.match(/^([A-Ga-g])([#b♯♭]?)(m|major|minor)$/i);
+      if (match) {
+        const note = match[1].toUpperCase();
+        const accidental = match[2] || "";
+        const mode = match[3].toLowerCase() === "m" ? "minor" : match[3].toLowerCase();
+        const candidate = `${note}${accidental} ${mode}`;
+        if (options.includes(candidate)) return candidate;
+      }
+      const words = raw.replace(/\s+/g, " ").split(" ");
+      if (words.length === 2) {
+        const note = words[0].charAt(0).toUpperCase() + words[0].slice(1);
+        const mode = words[1].toLowerCase();
+        const candidate = `${note} ${mode}`;
+        if (options.includes(candidate)) return candidate;
+      }
+      return fallback;
+    }
+
+    function setKeyScaleSelectValue(id, value, fallback = DEFAULT_KEY_SCALE) {
+      const select = $(id);
+      if (!select) return;
+      const normalized = normalizeKeyScaleForSelect(value, fallback);
+      hydrateKeyScaleSelect(select, normalized);
+    }
+
     function captionFromPayload(payload) {
       if (Array.isArray(payload.tags)) return payload.tags.filter(Boolean).join(", ");
       return String(payload.caption || payload.tags || "").trim();
@@ -4059,8 +4119,8 @@
       setFieldValue("caption", caption);
       setFieldValue("lyrics", payload.lyrics);
       setFieldValue("duration", payload.duration);
-      setFieldValue("bpm", payload.bpm);
-      setFieldValue("key-scale", payload.key_scale || payload.keyscale || payload.key);
+      setFieldValue("bpm", payload.bpm ?? DEFAULT_BPM);
+      setKeyScaleSelectValue("key-scale", payload.key_scale || payload.keyscale || payload.key || DEFAULT_KEY_SCALE);
       setSelectValue("time-signature", payload.time_signature || payload.timesignature);
       setSelectValue("language", payload.vocal_language || payload.language);
       setSelectValue("song-model", payload.song_model);
@@ -4472,6 +4532,10 @@
         ace_step_text_budget: normalized.ace_step_text_budget || validation?.normalized_payload?.ace_step_text_budget,
         settings_policy_version: validation?.settings_policy_version || normalized.settings_policy_version,
         settings_compliance: validation?.settings_compliance || normalized.settings_compliance,
+        hit_readiness: validation?.hit_readiness || normalized.hit_readiness,
+        runtime_planner: validation?.runtime_planner || normalized.runtime_planner,
+        effective_settings: validation?.effective_settings || normalized.effective_settings,
+        settings_coverage: validation?.settings_coverage || normalized.settings_coverage,
         field_errors: validation?.field_errors || {},
         warnings: validation?.payload_warnings || normalized.payload_warnings || [],
       };
@@ -4485,7 +4549,9 @@
         readinessChip("model", installed === "installed" ? "ready" : "warn", installed),
         readinessChip("runner", preview.runner === "official" ? "warn" : "ready", preview.runner || "fast"),
         readinessChip("task", taskSupported ? "ready" : "warn", taskSupported ? "compatible" : "blocked"),
-        readinessChip("settings", preview.settings_compliance?.valid === false ? "warn" : "ready", preview.settings_policy_version || "registry")
+        readinessChip("settings", preview.settings_compliance?.valid === false ? "warn" : "ready", preview.settings_policy_version || "registry"),
+        readinessChip("hit", preview.hit_readiness?.status === "pass" ? "ready" : "warn", preview.hit_readiness?.score !== undefined ? `${preview.hit_readiness.score}/100` : "readiness"),
+        readinessChip("runtime", preview.runtime_planner?.risk === "high" ? "warn" : "ready", preview.runtime_planner?.estimated_minutes ? `${preview.runtime_planner.estimated_minutes} min` : "planner")
       ].join("");
       const humanIssues = [
         fieldErrorsText(fieldErrors),
@@ -4564,8 +4630,8 @@
       $("title").value = data.title || $("title").value || "Untitled";
       $("caption").value = Array.isArray(data.tags) ? data.tags.join(", ") : (data.tags || $("caption").value);
       $("lyrics").value = data.lyrics || $("lyrics").value;
-      $("bpm").value = data.bpm || $("bpm").value;
-      $("key-scale").value = data.key_scale || $("key-scale").value;
+      $("bpm").value = data.bpm || $("bpm").value || DEFAULT_BPM;
+      setKeyScaleSelectValue("key-scale", data.key_scale || $("key-scale").value || DEFAULT_KEY_SCALE);
       $("time-signature").value = data.time_signature || $("time-signature").value || "4";
       $("language").value = data.language || $("language").value || "en";
       $("custom-instrumental").checked = instrumental;
@@ -4701,8 +4767,8 @@
         if (handleDownloadStarted(data, "format", () => formatSample())) return;
         $("caption").value = Array.isArray(data.tags) ? data.tags.join(", ") : (data.tags || $("caption").value);
         $("lyrics").value = data.lyrics || $("lyrics").value;
-        $("bpm").value = data.bpm || $("bpm").value;
-        $("key-scale").value = data.key_scale || $("key-scale").value;
+        $("bpm").value = data.bpm || $("bpm").value || DEFAULT_BPM;
+        setKeyScaleSelectValue("key-scale", data.key_scale || $("key-scale").value || DEFAULT_KEY_SCALE);
         $("time-signature").value = data.time_signature || $("time-signature").value;
         updateAdvancedSummaries();
         setStatus("Formatted.", "ok");
@@ -4749,8 +4815,8 @@
         ollama_model: plannerProviderForMode(mode) === "ollama" ? selectedPlannerModelForMode(mode) : "",
         seed: $("seed").value,
         use_random_seed: $("use-random-seed").checked,
-        bpm: $("bpm").value,
-        key_scale: $("key-scale").value,
+        bpm: $("bpm").value || DEFAULT_BPM,
+        key_scale: $("key-scale").value || DEFAULT_KEY_SCALE,
         time_signature: $("time-signature").value,
         vocal_language: $("language").value,
         global_caption: $("global-caption").value,
@@ -4907,6 +4973,19 @@
         const resultId = audio.result_id || data.result_id || "";
         const payloadKey = `${resultId || "result"}:${audio.id || "take"}`;
         const displayTitle = audio.artist_name ? `${audio.artist_name} - ${audio.title || "Untitled"}` : (audio.title || "Untitled");
+        const audit = audio.generation_metadata_audit || data.generation_metadata_audit || data.params?.generation_metadata_audit || {};
+        const proAudit = audio.pro_quality_audit || data.pro_quality_audit || {};
+        const audioAudit = audio.audio_quality_audit || {};
+        const adherence = audio.metadata_adherence || {};
+        const recommended = data.recommended_take || proAudit.recommended_take || {};
+        const isBestTake = Boolean(audio.is_recommended_take || (recommended.audio_id && recommended.audio_id === audio.id));
+        const qualityScore = audio.pro_quality_score ?? recommended.score ?? "";
+        const proStrip = [
+          readinessChip("Pro Quality", audio.pro_quality_status === "rerender_suggested" ? "warn" : "ready", qualityScore === "" ? (proAudit.status || "audit") : `${qualityScore}/100`),
+          readinessChip("Best Take", isBestTake ? "ready" : "warn", isBestTake ? "recommended" : (recommended.audio_id || "review")),
+          readinessChip("Audio", audioAudit.status === "pass" ? "ready" : "warn", audioAudit.status || "analyzed"),
+          readinessChip("Metadata", adherence.status === "warn" ? "warn" : "ready", adherence.status || "checked")
+        ].join("");
         state.resultPayloads[payloadKey] = {
           ...(data.params || state.lastPayload || {}),
           ui_mode: (data.params || state.lastPayload || {}).ui_mode || state.mode,
@@ -4917,6 +4996,7 @@
         <div class="result-card new-result" data-result="${esc(resultId)}" data-audio="${esc(audio.id)}" data-payload-key="${esc(payloadKey)}">
           <div class="result-title">${esc(displayTitle)}</div>
           <div class="meta">${esc(audio.album_model_label || audio.album_model || data.active_song_model)} \u00b7 seed ${esc(audio.seed)}</div>
+          <div class="readiness-strip">${proStrip}</div>
           ${createPlayerHtml(audio.audio_url)}
           <div class="row">
             <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:34px;padding:0 13px;border-radius:6px;font-weight:650;font-size:inherit;border:1px solid var(--line);background:var(--panel-2);color:var(--text);transition:all var(--transition);" href="${esc(audio.download_url)}" download="${esc(audio.filename || "")}">Download</a>
@@ -4929,7 +5009,7 @@
           </div>
           <details ${audio.lrc || audio.score || audio.audio_codes ? "open" : ""}>
             <summary>Details</summary>
-            <pre>${esc(JSON.stringify({ result_id: resultId, runner: audio.runner || data.runner, payload_warnings: audio.payload_warnings || data.payload_warnings, score: audio.score, lrc: audio.lrc, audio_codes: audio.audio_codes }, null, 2))}</pre>
+            <pre>${esc(JSON.stringify({ result_id: resultId, runner: audio.runner || data.runner, bpm: data.bpm || data.params?.bpm, key_scale: data.key_scale || data.params?.key_scale, duration: data.duration || data.params?.duration, pro_quality_audit: proAudit, audio_quality_audit: audioAudit, metadata_adherence: adherence, hit_readiness: audio.hit_readiness || data.hit_readiness, metadata_audit: audit, recommended_take: recommended, rerender_suggestions: data.rerender_suggestions || proAudit.rerender_suggestions, payload_warnings: audio.payload_warnings || data.payload_warnings, score: audio.score, lrc: audio.lrc, audio_codes: audio.audio_codes }, null, 2))}</pre>
           </details>
         </div>
       `;
@@ -5017,7 +5097,7 @@
               <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:30px;padding:0 10px;border-radius:6px;font-weight:600;font-size:0.85em;border:1px solid var(--line);background:var(--panel-2);color:var(--text);" href="${esc(song.audio_url || "")}" download="${esc(song.audio_file || "")}">Download</a>
               ${compact ? "" : `<button class="danger" style="height:30px;font-size:0.85em;" data-delete="${esc(song.id)}" data-title="${esc(song.title || "")}">Delete</button>`}
               ${albumDeleteControls}
-              ${compact ? "" : `<details style="margin-left:auto;"><summary style="font-size:0.8em;cursor:pointer;">Meta</summary><pre style="font-size:0.75em;max-height:200px;overflow:auto;">${esc(JSON.stringify({title: song.title, model: song.song_model, bpm: song.bpm, key: song.key_scale, duration: song.duration, language: song.language, tags: song.tags}, null, 2))}</pre></details>`}
+              ${compact ? "" : `<details style="margin-left:auto;"><summary style="font-size:0.8em;cursor:pointer;">Meta</summary><pre style="font-size:0.75em;max-height:200px;overflow:auto;">${esc(JSON.stringify({title: song.title, model: song.song_model, bpm: song.bpm, key: song.key_scale, duration: song.duration, language: song.language, tags: song.tags, metadata_audit: song.generation_metadata_audit}, null, 2))}</pre></details>`}
             </div>
           </div>
         </div>
@@ -5302,6 +5382,8 @@
         concept: $("album-concept").value,
         num_tracks: Number($("album-tracks").value),
         track_duration: Number($("album-duration").value),
+        bpm: DEFAULT_BPM,
+        key_scale: DEFAULT_KEY_SCALE,
         planner_lm_provider: plannerProvider,
         embedding_lm_provider: embedProvider,
         planner_model: plannerModel,
@@ -5377,8 +5459,8 @@
         caption: track.tags || track.caption || "",
         lyrics: track.lyrics || "",
         duration: track.duration || defaults.track_duration,
-        bpm: track.bpm || "",
-        key_scale: track.key_scale || "",
+        bpm: track.bpm || defaults.bpm || DEFAULT_BPM,
+        key_scale: track.key_scale || defaults.key_scale || DEFAULT_KEY_SCALE,
         time_signature: track.time_signature || "4",
         vocal_language: track.language || defaults.language,
         global_caption: defaults.global_caption || defaults.concept || "",
@@ -5778,7 +5860,7 @@
               <span class="badge">${esc(modelResults.length ? `${modelResults.length} model renders` : "7 model albums")}</span>
             </div>
             <h3>${esc(track.artist_name ? `${track.artist_name} - ${track.title || `Track ${index + 1}`}` : (track.title || `Track ${index + 1}`))}</h3>
-            <div class="meta">${esc(track.duration || $("album-duration").value || "auto")}s · ${esc(track.bpm || "auto")} BPM · ${esc(track.key_scale || "auto key")} · ${esc(track.time_signature || "4")}/4</div>
+            <div class="meta">${esc(track.duration || $("album-duration").value || "auto")}s · ${esc(track.bpm || DEFAULT_BPM)} BPM · ${esc(track.key_scale || DEFAULT_KEY_SCALE)} · ${esc(track.time_signature || "4")}/4</div>
             <div class="readiness-strip">
               ${readinessChip("lyrics", report.words >= report.minWords ? "ready" : "warn", `${report.words}/${report.minWords} words`)}
               ${readinessChip("sections", report.sections >= report.targetSections ? "ready" : "warn", `${report.sections}/${report.targetSections}`)}
@@ -5820,8 +5902,8 @@
           <td><textarea data-field="tags">${esc(track.tags || "")}</textarea></td>
           <td><textarea data-field="lyrics">${esc(track.lyrics || "")}</textarea></td>
           <td><input data-field="duration" type="number" min="10" max="600" value="${esc(track.duration || $("album-duration").value || "")}" /></td>
-          <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(track.bpm || "")}" /></td>
-          <td><input data-field="key_scale" value="${esc(track.key_scale || "")}" /></td>
+          <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(track.bpm || DEFAULT_BPM)}" /></td>
+          <td><select data-field="key_scale" data-key-scale-select data-selected="${esc(track.key_scale || DEFAULT_KEY_SCALE)}">${keyScaleOptionsHtml(track.key_scale || DEFAULT_KEY_SCALE)}</select></td>
           <td><input data-field="time_signature" value="${esc(track.time_signature || "4")}" /></td>
           <td><input data-field="song_model" value="${esc($("album-model-strategy").value === "all_models_album" ? "all 7 models" : $("album-model-strategy").value)}" readonly title="Model selected in album settings." /></td>
           <td><input data-field="seed" value="${esc(track.seed || $("album-seed").value || "-1")}" /></td>
@@ -5842,6 +5924,7 @@
           <td><div class="album-report">${esc(reportText(track))}</div></td>
         </tr>
       `).join("");
+      hydrateAllKeyScaleSelects(body);
       body.querySelectorAll("[data-field]").forEach((input) => {
         const updateTrack = () => {
           const row = input.closest("tr");
@@ -5945,11 +6028,12 @@
           </td>
           <td><textarea data-field="caption">${esc(item.caption || "")}</textarea></td>
           <td><textarea data-field="lyrics">${esc(item.lyrics || "[Instrumental]")}</textarea></td>
-          <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(item.bpm || "")}" /></td>
-          <td><input data-field="keyscale" type="text" value="${esc(item.keyscale || item.key_scale || "")}" /></td>
+          <td><input data-field="bpm" type="number" min="30" max="300" value="${esc(item.bpm || DEFAULT_BPM)}" /></td>
+          <td><select data-field="keyscale" data-key-scale-select data-selected="${esc(item.keyscale || item.key_scale || DEFAULT_KEY_SCALE)}">${keyScaleOptionsHtml(item.keyscale || item.key_scale || DEFAULT_KEY_SCALE)}</select></td>
           <td><input data-field="language" type="text" value="${esc(item.language || "unknown")}" /></td>
         </tr>
       `).join("");
+      hydrateAllKeyScaleSelects(tbody);
     }
 
     function collectDatasetEntries() {
@@ -5987,10 +6071,30 @@
       }
     }
 
+    function renderLoraHealth(health = null) {
+      const target = $("lora-health-grid");
+      if (!target) return;
+      const report = health || state.loraDatasetHealth || state.config?.lora_status?.dataset_health || null;
+      const audition = state.config?.lora_status?.pro_audition_policy || report?.audition_plan || {};
+      if (!report) {
+        target.innerHTML = `
+          <div class="health-card"><strong>Dataset health</strong><span>waiting</span><small>Scan or label a dataset.</small></div>
+          <div class="health-card"><strong>Audition plan</strong><span>${esc((audition.adapter_scales || [0.3,0.6,0.8,1]).join(", "))}</span><small>Compare adapter scales against baseline.</small></div>
+        `;
+        return;
+      }
+      target.innerHTML = `
+        <div class="health-card"><strong>Dataset health</strong><span>${esc(report.status || "review")} · ${esc(String(report.score ?? "?"))}/100</span><small>${esc(report.sample_count || 0)} samples, ${esc(report.total_duration_seconds || 0)}s total</small></div>
+        <div class="health-card"><strong>Labels</strong><span>${esc(report.labeled_count || 0)}/${esc(report.sample_count || 0)} captioned</span><small>${esc(report.lyrics_ready_count || 0)} lyrics/instrumental labels</small></div>
+        <div class="health-card"><strong>Audition plan</strong><span>${esc((report.audition_plan?.adapter_scales || audition.adapter_scales || []).join(", ") || "0.3, 0.6, 0.8, 1")}</span><small>Baseline comparison enabled.</small></div>
+      `;
+    }
+
     async function loadLoraStatus() {
       const data = await api("/api/lora/status");
       if (state.config) state.config.lora_status = data;
       renderTrainerReady(data);
+      renderLoraHealth(data.dataset_health);
       renderSettingsHealthCards();
       return data;
     }
@@ -5999,7 +6103,9 @@
       const data = await api("/api/lora/dataset/scan", { path: $("dataset-path").value });
       state.datasetFiles = data.files || [];
       state.datasetId = data.dataset_id;
+      state.loraDatasetHealth = data.dataset_health;
       renderDatasetTable(state.datasetFiles);
+      renderLoraHealth(data.dataset_health);
       $("lora-log").textContent = JSON.stringify(data, null, 2);
     }
 
@@ -6013,7 +6119,9 @@
       });
       if (handleDownloadStarted(data, "trainer labels", () => labelDataset())) return;
       state.datasetFiles = data.labels || [];
+      state.loraDatasetHealth = data.dataset_health;
       renderDatasetTable(state.datasetFiles);
+      renderLoraHealth(data.dataset_health);
       $("lora-log").textContent = JSON.stringify(data, null, 2);
     }
 
@@ -6029,7 +6137,9 @@
       });
       state.datasetId = data.dataset_id;
       state.datasetJson = data.dataset_path;
+      state.loraDatasetHealth = data.dataset_health;
       $("lora-dataset-json").value = data.dataset_path;
+      renderLoraHealth(data.dataset_health);
       $("lora-log").textContent = JSON.stringify(data, null, 2);
     }
 
@@ -6253,7 +6363,7 @@
       /* ── Inline field validation on blur ── */
       const fieldRules = {
         "duration": { min: 10, max: 600, label: "Duration must be 10-600s" },
-        "bpm": { min: 30, max: 300, label: "BPM must be 30-300 or empty", allowEmpty: true },
+        "bpm": { min: 30, max: 300, label: "BPM must be 30-300", allowEmpty: false },
         "album-duration": { min: 10, max: 600, label: "Duration must be 10-600s" },
         "album-tracks": { min: 1, max: 30, label: "1-30 tracks" }
       };
