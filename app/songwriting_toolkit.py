@@ -710,50 +710,57 @@ def _fallback_lines(language: str, section: str, title: str, terms: list[str], m
     subject = terms[count % len(terms)] if terms else "moment"
     accent = terms[(count + 1) % len(terms)] if len(terms) > 1 else "city"
     hook = re.sub(r"[^A-Za-z0-9 ']", "", title).strip() or "All The Way Up"
+    # Use count to rotate through different line templates for variety across tracks
+    variant = count % 4
     if language == "nl":
+        nl_chorus = [
+            [f"{hook} blijft hangen in de nacht", f"Elke stap klinkt harder dan gedacht", f"Wij bouwen vuur uit koude steen", f"Tot de hele straat met ons mee beweegt"],
+            [f"{hook} breekt door het plafond", f"Geen weg terug van deze grond", f"De bass slaat aan, het dak gaat af", f"Tot de speakers barsten in de stad"],
+            [f"{hook} snijdt door de ruis", f"Vanuit het donker naar het licht thuis", f"Wij dragen goud in elke wond", f"En de hele buurt voelt wat ik vond"],
+            [f"{hook} rolt door het beton", f"Geen slaap tot de volgende zon", f"De mic staat aan, de wereld stopt", f"Tot de laatste bar is afgedropt"],
+        ]
+        nl_verse = [
+            [f"Half drie, {subject} op mijn jas", f"{accent.capitalize()} in mijn hoofd, ik geef geen pas", f"Elke bar heeft tanden in de beat", f"Ik maak van druk een kroon die niemand ziet"],
+            [f"Vijf uur, de stad voelt dicht en koud", f"{subject.capitalize()} ligt zwaar maar ik hou vast", f"Elke lijn wordt scherper dan de vorige", f"Van {accent} bouw ik iets onmogelijks"],
+            [f"De nacht breekt open, {subject} brandt", f"{accent.capitalize()} echo's door een leeg land", f"Pen op papier, de ink is bloed", f"Elk woord bewijst dat ik het nog kan"],
+            [f"Zeven hoog, {subject} in de wind", f"{accent.capitalize()} droomt van wat ik ooit begin", f"De straat is stil maar ik schreeuw door", f"Van onderaf recht naar het koor"],
+        ]
         if "Chorus" in section:
-            return [
-                f"{hook} blijft hangen in de nacht",
-                f"Elke stap klinkt harder dan gedacht",
-                f"Wij bouwen vuur uit koude steen",
-                f"Tot de hele straat met ons mee beweegt",
-            ]
+            return nl_chorus[variant]
         if "Bridge" in section:
-            return [
-                f"Even stil, de kamer ademt mee",
-                f"{metaphor.capitalize()} trekt een lijn door wat ik deed",
-            ]
-        return [
-            f"Half drie, {subject} op mijn jas",
-            f"{accent.capitalize()} in mijn hoofd, ik geef geen pas",
-            f"Elke bar heeft tanden in de beat",
-            f"Ik maak van druk een kroon die niemand ziet",
-        ]
-    if "Chorus" in section:
-        return [
-            f"{hook} rings out in the room",
-            f"We turn pressure into perfume",
-            f"Hands up when the low end blooms",
-            f"One more night and we break through",
-        ]
-    if "Bridge" in section:
-        return [
-            f"The {metaphor} bends but it never breaks",
-            f"I hear the truth in the breath it takes",
-        ]
-    if rap:
-        return [
-            f"Back door click with the {subject} on tilt",
-            f"Cold chain swing where the old doubt built",
-            f"Big dream stitched in a small room quilt",
-            f"Every rhyme hits clean, no filler, no guilt",
-        ]
-    return [
-        f"Morning finds the {subject} on the floor",
-        f"{accent.capitalize()} light is leaning through the door",
-        f"I kept the receipt from the life before",
-        f"Now I want the sound and nothing more",
+            return [f"Even stil, de kamer ademt mee", f"{metaphor.capitalize()} trekt een lijn door wat ik deed"]
+        return nl_verse[variant]
+    en_chorus = [
+        [f"{hook} rings out in the room", f"We turn pressure into perfume", f"Hands up when the low end blooms", f"One more night and we break through"],
+        [f"{hook} echoes off the wall", f"We built this thing from nothing at all", f"Feel the ground shake when the bass calls", f"We don't stop until the curtain falls"],
+        [f"{hook} cuts right through the noise", f"We traded silence for a louder voice", f"Every scar became a choice", f"Now the whole block hears us rejoice"],
+        [f"{hook} hits different in the dark", f"We lit a fire from a single spark", f"No turning back once we made our mark", f"The city knows us by the art"],
     ]
+    en_bridge = [
+        [f"The {metaphor} bends but it never breaks", f"I hear the truth in the breath it takes"],
+        [f"Somewhere between the {metaphor} and the rain", f"I found the part that kills the pain"],
+        [f"They said the {metaphor} would crack the frame", f"But I rebuilt it and changed the game"],
+        [f"Under the {metaphor}, the silence spoke", f"And every chain around me broke"],
+    ]
+    en_rap = [
+        [f"Back door click with the {subject} on tilt", f"Cold chain swing where the old doubt built", f"Big dream stitched in a small room quilt", f"Every rhyme hits clean, no filler, no guilt"],
+        [f"Street lamp buzz and the {subject} glows", f"Pocket full of bars that nobody knows", f"Stack the lines up, watch the pressure grow", f"From the concrete up, that's how we flow"],
+        [f"Three AM, {subject} on my mind", f"Pen hits paper, leave the doubt behind", f"Every verse I spit is one of a kind", f"From the bottom up, we climb and grind"],
+        [f"Dead end road but the {subject} speaks", f"Mic check one two, hear the floorboard creak", f"No handouts, built this week by week", f"Crown heavy but I never feel weak"],
+    ]
+    en_vocal = [
+        [f"Morning finds the {subject} on the floor", f"{accent.capitalize()} light is leaning through the door", f"I kept the receipt from the life before", f"Now I want the sound and nothing more"],
+        [f"Midnight paints the {subject} in the glass", f"{accent.capitalize()} breeze reminds me time moves fast", f"I held on tight but I couldn't last", f"Now I build a future from the past"],
+        [f"Sunrise burns the {subject} clean", f"{accent.capitalize()} shadows fade from what I've seen", f"Every wound becomes a place I've been", f"Now I write the ending to this scene"],
+        [f"Twilight carries {subject} through the air", f"{accent.capitalize()} noise dissolves and I don't care", f"I stripped it down, left the bones laid bare", f"Now the music is my only prayer"],
+    ]
+    if "Chorus" in section:
+        return en_chorus[variant]
+    if "Bridge" in section:
+        return en_bridge[variant]
+    if rap:
+        return en_rap[variant]
+    return en_vocal[variant]
 
 
 def build_fallback_lyrics(
