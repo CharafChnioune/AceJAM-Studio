@@ -37,6 +37,7 @@ RESULTS_DIR = DATA_DIR / "results"
 ALBUMS_DIR = DATA_DIR / "albums"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
+LORA_IMPORTS_DIR = DATA_DIR / "lora_imports"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
@@ -68,6 +69,7 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+LORA_IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 os.environ.setdefault("HF_MODULES_CACHE", str(MODEL_CACHE_DIR / "hf_modules"))
 os.environ.setdefault("MPLCONFIGDIR", str(MODEL_CACHE_DIR / "matplotlib"))
@@ -77,7 +79,7 @@ if NANO_VLLM_DIR.exists():
     sys.path.insert(0, str(NANO_VLLM_DIR))
 
 import torch
-from fastapi import File, HTTPException, Request, UploadFile
+from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from gradio import Server
 
@@ -1066,6 +1068,36 @@ def _release_models_for_training() -> None:
         _release_handler_state()
 
 
+def _activate_trained_adapter(adapter_path: Path, scale: float = 1.0) -> dict[str, Any]:
+    adapter_path = adapter_path.expanduser().resolve()
+    metadata_path = adapter_path / "acejam_adapter.json"
+    metadata: dict[str, Any] = {}
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            metadata = {}
+    try:
+        with handler_lock:
+            if metadata.get("song_model"):
+                _ensure_song_model(str(metadata.get("song_model")))
+            status_msg = handler.load_lora(str(adapter_path))
+            if status_msg.startswith("❌"):
+                return {"success": False, "status": status_msg, "path": str(adapter_path)}
+            scale_msg = handler.set_lora_scale(float(scale))
+            use_msg = handler.set_use_lora(True)
+            return {
+                "success": not str(use_msg).startswith("❌"),
+                "path": str(adapter_path),
+                "status": status_msg,
+                "scale_status": scale_msg,
+                "use_status": use_msg,
+                **handler.get_lora_status(),
+            }
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "path": str(adapter_path)}
+
+
 def _unload_llm_models_for_generation() -> None:
     """Unload Ollama and LM Studio models to free unified memory for audio generation."""
     # Unload all Ollama models by sending keep_alive=0
@@ -1100,6 +1132,7 @@ training_manager = AceTrainingManager(
     data_dir=DATA_DIR,
     model_cache_dir=MODEL_CACHE_DIR,
     release_models=_release_models_for_training,
+    adapter_ready=_activate_trained_adapter,
 )
 
 
@@ -1110,6 +1143,62 @@ def _ensure_training_idle() -> None:
             f"ACE-Step trainer is busy with {active_job['kind']} job {active_job['id']}. "
             "Wait for it to finish or stop it before generation."
         )
+
+
+def _safe_lora_upload_relative_path(filename: str) -> Path:
+    text = str(filename or "").replace("\\", "/").strip().lstrip("/")
+    parts = []
+    for part in Path(text).parts:
+        if part in {"", ".", ".."}:
+            continue
+        if ":" in part:
+            continue
+        parts.append(part)
+    if not parts:
+        parts = [f"upload-{uuid.uuid4().hex[:8]}"]
+    return Path(*parts)
+
+
+def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
+    path = str(payload.get("lora_adapter_path") or payload.get("lora_path") or payload.get("lora_name_or_path") or "").strip()
+    name = str(payload.get("lora_adapter_name") or payload.get("adapter_name") or "").strip()
+    use_lora = parse_bool(payload.get("use_lora"), bool(path) or parse_bool(payload.get("lora_use"), False))
+    scale = clamp_float(payload.get("lora_scale", payload.get("lora_weight")), 1.0, 0.0, 1.0)
+    model_variant = str(payload.get("adapter_model_variant") or "").strip()
+    return {
+        "use_lora": use_lora,
+        "lora_adapter_path": path,
+        "lora_adapter_name": name,
+        "lora_scale": scale,
+        "adapter_model_variant": model_variant,
+    }
+
+
+def _apply_lora_request(params: dict[str, Any]) -> dict[str, Any]:
+    if not params.get("use_lora"):
+        try:
+            status = handler.set_use_lora(False)
+            return {"success": not status.startswith("❌"), "status": status, **handler.get_lora_status()}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+    adapter_path = str(params.get("lora_adapter_path") or "").strip()
+    if not adapter_path:
+        raise RuntimeError("Use adapter is enabled, but no adapter was selected.")
+    status_msg = handler.load_lora(adapter_path)
+    if status_msg.startswith("❌"):
+        raise RuntimeError(status_msg)
+    scale_msg = handler.set_lora_scale(float(params.get("lora_scale") or 1.0))
+    use_msg = handler.set_use_lora(True)
+    if str(use_msg).startswith("❌"):
+        raise RuntimeError(use_msg)
+    return {
+        "success": True,
+        "path": adapter_path,
+        "status": status_msg,
+        "scale_status": scale_msg,
+        "use_status": use_msg,
+        **handler.get_lora_status(),
+    }
 
 
 def _initialize_acestep_handler(config_path: str) -> tuple[str, bool]:
@@ -2841,6 +2930,9 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     title = str(payload.get("title") or "").strip() or "Untitled"
     artist_name = _artist_name_from_payload(payload, title=title)
+    lora_request = _lora_adapter_request(payload)
+    if lora_request["use_lora"] and not lora_request["lora_adapter_path"]:
+        raise ValueError("Use adapter is enabled but no LoRA adapter was selected")
     parsed = {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "quality_profile": quality_profile,
@@ -2896,6 +2988,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "title": title,
         "artist_name": artist_name,
         "description": str(payload.get("description") or "").strip(),
+        **lora_request,
         "album_metadata": payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {},
         "track_names": track_names,
         "thinking": parse_bool(payload.get("thinking"), lm_quality_defaults),
@@ -3467,6 +3560,11 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "song_model": params["song_model"],
         "lm_model": lm_model,
         "requires_lm": needs_lm,
+        "use_lora": params.get("use_lora", False),
+        "lora_adapter_path": params.get("lora_adapter_path", ""),
+        "lora_adapter_name": params.get("lora_adapter_name", ""),
+        "lora_scale": params.get("lora_scale", 1.0),
+        "adapter_model_variant": params.get("adapter_model_variant", ""),
         "device": params["device"],
         "dtype": params["dtype"],
         "use_flash_attention": params["use_flash_attention"],
@@ -3577,6 +3675,9 @@ def _generation_metadata_audit(params: dict[str, Any], official_request: dict[st
         "shift": params.get("shift"),
         "audio_format": params.get("audio_format"),
         "take_count": params.get("batch_size"),
+        "use_lora": params.get("use_lora"),
+        "lora_adapter_path": params.get("lora_adapter_path"),
+        "lora_scale": params.get("lora_scale"),
         "source_lyrics_char_count": (params.get("ace_step_text_budget") or {}).get("source_lyrics_char_count"),
         "runtime_lyrics_char_count": (params.get("ace_step_text_budget") or {}).get("runtime_lyrics_char_count"),
         "lyrics_overflow_action": (params.get("ace_step_text_budget") or {}).get("lyrics_overflow_action"),
@@ -3603,6 +3704,11 @@ def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
         "use_adg",
         "timesteps",
         "audio_format",
+        "use_lora",
+        "lora_adapter_name",
+        "lora_adapter_path",
+        "lora_scale",
+        "adapter_model_variant",
         "runner_plan",
     ]
     return {
@@ -4118,6 +4224,11 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     official = _run_official_runner_request(official_request, result_dir)
     if not official.get("success"):
         raise RuntimeError(official.get("error") or "Official ACE-Step generation failed")
+    official_lora_status = official.get("lora_status") or {
+        "active": bool(params.get("use_lora")),
+        "path": params.get("lora_adapter_path", ""),
+        "scale": params.get("lora_scale", 1.0),
+    }
 
     audios: list[dict[str, Any]] = []
     for index, audio in enumerate(official.get("audios", [])):
@@ -4145,6 +4256,14 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "audio_quality_audit": _jsonable(audio_audit),
             "metadata_adherence": _jsonable(adherence),
             "hit_readiness": _jsonable(hit_readiness),
+            "lora_adapter": {
+                "use_lora": params.get("use_lora", False),
+                "path": params.get("lora_adapter_path", ""),
+                "name": params.get("lora_adapter_name", ""),
+                "scale": params.get("lora_scale", 1.0),
+                "adapter_model_variant": params.get("adapter_model_variant", ""),
+                "status": _jsonable(official_lora_status),
+            },
         }
         if params["return_audio_codes"] and audio_params.get("audio_codes"):
             item["audio_codes"] = audio_params["audio_codes"]
@@ -4165,6 +4284,14 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                     "audio_quality_audit": _jsonable(audio_audit),
                     "metadata_adherence": _jsonable(adherence),
                     "hit_readiness": _jsonable(hit_readiness),
+                    "lora_adapter": {
+                        "use_lora": params.get("use_lora", False),
+                        "path": params.get("lora_adapter_path", ""),
+                        "name": params.get("lora_adapter_name", ""),
+                        "scale": params.get("lora_scale", 1.0),
+                        "adapter_model_variant": params.get("adapter_model_variant", ""),
+                        "status": _jsonable(official_lora_status),
+                    },
                     "runner_plan": params["runner_plan"],
                     "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
@@ -4221,6 +4348,12 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "infer_method": params["infer_method"],
         "sampler_mode": params["sampler_mode"],
         "use_adg": params["use_adg"],
+        "use_lora": params["use_lora"],
+        "lora_adapter_path": params["lora_adapter_path"],
+        "lora_adapter_name": params["lora_adapter_name"],
+        "lora_scale": params["lora_scale"],
+        "adapter_model_variant": params["adapter_model_variant"],
+        "lora_adapter": _jsonable(official_lora_status),
         "audio_format": params["audio_format"],
         "lm_backend": params["lm_backend"],
         "thinking": params["thinking"],
@@ -4279,6 +4412,12 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
         "ace_step_text_budget": meta["ace_step_text_budget"],
+        "use_lora": params["use_lora"],
+        "lora_adapter_path": params["lora_adapter_path"],
+        "lora_adapter_name": params["lora_adapter_name"],
+        "lora_scale": params["lora_scale"],
+        "adapter_model_variant": params["adapter_model_variant"],
+        "lora_adapter": _jsonable(official_lora_status),
     }
 
 
@@ -4292,6 +4431,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     use_random_seed = bool(params["use_random_seed"])
     with handler_lock:
         active_song_model = _ensure_song_model(params["song_model"])
+        lora_status = _apply_lora_request(params)
         result = handler.generate_music(
             captions=params["caption"],
             lyrics="[Instrumental]" if params["instrumental"] else params["lyrics"],
@@ -4369,6 +4509,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             "audio_quality_audit": _jsonable(audio_audit),
             "metadata_adherence": _jsonable(adherence),
             "hit_readiness": _jsonable(hit_readiness),
+            "lora_adapter": _jsonable(lora_status),
         }
         if params["auto_lrc"]:
             item["lrc"] = _calculate_lrc(item_extra, params["duration"], params["vocal_language"], params["inference_steps"], seed_int)
@@ -4394,6 +4535,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
                     "audio_quality_audit": _jsonable(audio_audit),
                     "metadata_adherence": _jsonable(adherence),
                     "hit_readiness": _jsonable(hit_readiness),
+                    "lora_adapter": _jsonable(lora_status),
                     "runner_plan": params["runner_plan"],
                     "ui_mode": params["ui_mode"],
                     "bpm": params["bpm"],
@@ -4450,6 +4592,12 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "infer_method": params["infer_method"],
         "sampler_mode": params["sampler_mode"],
         "use_adg": params["use_adg"],
+        "use_lora": params["use_lora"],
+        "lora_adapter_path": params["lora_adapter_path"],
+        "lora_adapter_name": params["lora_adapter_name"],
+        "lora_scale": params["lora_scale"],
+        "adapter_model_variant": params["adapter_model_variant"],
+        "lora_adapter": _jsonable(lora_status),
         "audio_format": params["audio_format"],
         "tags": params["caption"],
         "tag_list": params["tag_list"],
@@ -4867,7 +5015,6 @@ def generate(
     lora_name_or_path: str = "",
     lora_weight: float = 0.8,
 ) -> str:
-    del lora_weight
     try:
         repaired = normalize_generation_text_fields(
             {
@@ -4884,6 +5031,12 @@ def generate(
                 status_msg = handler.load_lora(lora_name_or_path.strip())
                 if status_msg.startswith("❌"):
                     raise RuntimeError(status_msg)
+                scale_msg = handler.set_lora_scale(clamp_float(lora_weight, 0.8, 0.0, 1.0))
+                if str(scale_msg).startswith("❌"):
+                    raise RuntimeError(scale_msg)
+                use_msg = handler.set_use_lora(True)
+                if str(use_msg).startswith("❌"):
+                    raise RuntimeError(use_msg)
         wav_path, _ = _run_inference(
             prompt, lyrics, audio_duration, infer_step, seed, "en",
             song_model=song_model,
@@ -7164,6 +7317,71 @@ async def api_lora_use(request: Request):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
+@app.post("/api/lora/scale")
+async def api_lora_scale(request: Request):
+    try:
+        body = await request.json()
+        scale = clamp_float(body.get("scale", body.get("lora_scale")), 1.0, 0.0, 1.0)
+        with handler_lock:
+            status_msg = handler.set_lora_scale(scale)
+        return JSONResponse({"success": not status_msg.startswith("❌"), "status": status_msg, "scale": scale, **handler.get_lora_status()})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/lora/dataset/import-folder")
+async def api_lora_dataset_import_folder(
+    files: list[UploadFile] = File(...),
+    dataset_id: str = Form(""),
+    trigger_tag: str = Form(""),
+    language: str = Form("unknown"),
+):
+    try:
+        if not files:
+            return JSONResponse({"success": False, "error": "No files were selected"}, status_code=400)
+        import_id = safe_id(dataset_id or f"dataset-{uuid.uuid4().hex[:8]}")
+        target_root = training_manager.import_root_for(import_id)
+        if target_root.exists():
+            shutil.rmtree(target_root)
+        target_root.mkdir(parents=True, exist_ok=True)
+        copied = []
+        skipped = []
+        sidecar_suffixes = {".txt", ".json", ".csv"}
+        for upload in files:
+            rel_path = _safe_lora_upload_relative_path(upload.filename or "")
+            suffix = rel_path.suffix.lower()
+            if suffix not in ALLOWED_AUDIO_EXTENSIONS and suffix not in sidecar_suffixes:
+                skipped.append(str(rel_path))
+                continue
+            dest = target_root / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(await upload.read())
+            copied.append(str(rel_path))
+        if not copied:
+            return JSONResponse({"success": False, "error": "No supported audio or sidecar files were imported"}, status_code=400)
+        data = training_manager.scan_dataset(target_root)
+        labels_preview = training_manager.label_entries(
+            data.get("files") or [],
+            trigger_tag=trigger_tag,
+            language=language,
+            tag_position="prepend",
+        )
+        return JSONResponse(
+            {
+                "success": True,
+                "dataset_id": import_id,
+                "import_root": str(target_root),
+                "copied_files": copied,
+                "skipped_files": skipped,
+                "files": labels_preview,
+                "dataset_health": _lora_dataset_health(labels_preview),
+                "scan": data,
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
 @app.post("/api/lora/dataset/scan")
 async def api_lora_dataset_scan(request: Request):
     try:
@@ -7175,13 +7393,227 @@ async def api_lora_dataset_scan(request: Request):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
+def _parse_artist_title(filename: str) -> tuple[str, str]:
+    """Extract artist and title from filename like 'Artist - Title.wav'."""
+    stem = Path(filename).stem
+    for sep in [" - ", " – ", " — ", " _ "]:
+        if sep in stem:
+            parts = stem.split(sep, 1)
+            return parts[0].strip(), parts[1].strip()
+    return "", stem.replace("-", " ").replace("_", " ").strip()
+
+
+def _search_lyrics_online(artist: str, title: str) -> str:
+    """Search for lyrics via DuckDuckGo. Returns lyrics text or empty string."""
+    import re
+    import urllib.parse
+    import urllib.request
+
+    query = f"{artist} {title} lyrics"
+    try:
+        encoded = urllib.parse.quote(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        # Extract text snippets that look like lyrics
+        snippets = []
+        for match in re.finditer(r'class="result__snippet">(.*?)</a>', html, re.DOTALL):
+            text = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            text = re.sub(r"\s+", " ", text)
+            if text and len(text) > 30:
+                snippets.append(text)
+            if len(snippets) >= 3:
+                break
+        if not snippets:
+            return ""
+        # Format as basic lyrics (these are snippets, not full lyrics)
+        combined = "\n".join(snippets)
+        # Check if it looks like actual lyrics (has common lyric patterns)
+        lyric_indicators = ["verse", "chorus", "bridge", "\n", "yeah", "oh", "baby", "love", "night", "heart"]
+        if any(indicator in combined.lower() for indicator in lyric_indicators):
+            return combined
+        return ""
+    except Exception:
+        return ""
+
+
+def _detect_bpm_key(audio_path: str) -> tuple[int | None, str]:
+    """Detect BPM and musical key from audio file using scipy. No librosa needed."""
+    import numpy as np
+
+    try:
+        data, sr = sf.read(str(audio_path), dtype="float32")
+        if len(data.shape) > 1:
+            data = data.mean(axis=1)  # mono
+        # Limit to first 30 seconds for speed
+        data = data[: sr * 30]
+
+        # BPM detection via onset envelope autocorrelation
+        from scipy import signal
+        # Create onset strength envelope
+        hop = 512
+        frame_len = 2048
+        # Simple spectral flux
+        spec = np.abs(np.fft.rfft(np.lib.stride_tricks.sliding_window_view(data, frame_len)[::hop]))
+        flux = np.sum(np.maximum(0, np.diff(spec, axis=0)), axis=1)
+        if len(flux) < 4:
+            return None, ""
+        # Autocorrelation for tempo
+        corr = np.correlate(flux - flux.mean(), flux - flux.mean(), mode="full")
+        corr = corr[len(corr) // 2:]
+        # Find peaks in valid BPM range (60-200 BPM)
+        min_lag = int(60 * sr / hop / 200)  # 200 BPM
+        max_lag = int(60 * sr / hop / 60)   # 60 BPM
+        if max_lag > len(corr):
+            max_lag = len(corr) - 1
+        if min_lag >= max_lag:
+            return None, ""
+        search = corr[min_lag:max_lag]
+        if len(search) == 0:
+            return None, ""
+        peak_idx = np.argmax(search) + min_lag
+        bpm = round(60 * sr / hop / peak_idx)
+
+        # Key detection via chroma energy
+        chroma_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        # Simple chroma via FFT
+        fft_data = np.abs(np.fft.rfft(data))
+        freqs = np.fft.rfftfreq(len(data), 1.0 / sr)
+        chroma = np.zeros(12)
+        for i, name in enumerate(chroma_names):
+            # Sum energy around each pitch class (across octaves)
+            for octave in range(1, 8):
+                freq = 440 * 2 ** ((i - 9) / 12 + octave - 4)
+                idx = np.argmin(np.abs(freqs - freq))
+                if idx < len(fft_data):
+                    chroma[i] += fft_data[max(0, idx - 2):idx + 3].sum()
+        # Dominant pitch class
+        root = chroma_names[np.argmax(chroma)]
+        # Simple major/minor: check if minor third is stronger than major third
+        root_idx = np.argmax(chroma)
+        minor_third = chroma[(root_idx + 3) % 12]
+        major_third = chroma[(root_idx + 4) % 12]
+        scale = "minor" if minor_third > major_third else "major"
+        key = f"{root} {scale}"
+
+        return bpm, key
+    except Exception:
+        return None, ""
+
+
+def _build_smart_caption(artist: str, title: str, bpm: int | None, key: str, has_vocals: bool) -> str:
+    """Build a caption from extracted metadata without using an LLM."""
+    parts = []
+    if artist:
+        parts.append(f"song by {artist}")
+    if title:
+        parts.append(f"titled {title}")
+    if bpm:
+        parts.append(f"{bpm} BPM")
+    if key:
+        parts.append(key)
+    if has_vocals:
+        parts.append("vocals")
+    else:
+        parts.append("instrumental")
+    return ", ".join(parts) if parts else "music track"
+
+
+def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = "", tag_position: str = "prepend") -> dict[str, Any]:
+    """Auto-label a single audio file using online lyrics + audio analysis. No LLM needed."""
+    artist, title = _parse_artist_title(filename)
+
+    # Duration from soundfile
+    duration = 0.0
+    try:
+        info = sf.info(str(audio_path))
+        duration = round(info.frames / info.samplerate, 2)
+    except Exception:
+        pass
+
+    # Audio analysis for BPM and key
+    bpm, key = _detect_bpm_key(str(audio_path))
+
+    # Search lyrics online
+    lyrics = ""
+    if artist and title:
+        lyrics = _search_lyrics_online(artist, title)
+
+    has_vocals = bool(lyrics and lyrics.strip() != "[Instrumental]")
+    caption = _build_smart_caption(artist, title, bpm, key, has_vocals)
+    if trigger_tag:
+        if tag_position == "prepend":
+            caption = f"{trigger_tag}, {caption}"
+        elif tag_position == "append":
+            caption = f"{caption}, {trigger_tag}"
+
+    return {
+        "path": str(audio_path),
+        "filename": filename,
+        "caption": caption,
+        "lyrics": lyrics or "[Instrumental]",
+        "genre": "",
+        "bpm": bpm,
+        "keyscale": key,
+        "timesignature": "4",
+        "language": "en" if has_vocals else "instrumental",
+        "duration": duration,
+        "is_instrumental": not has_vocals,
+        "label_source": "smart_autolabel",
+        "trigger_tag": trigger_tag,
+        "tag_position": tag_position,
+    }
+
+
 @app.post("/api/lora/dataset/autolabel")
 async def api_lora_dataset_autolabel(request: Request):
     try:
         body = await request.json()
         files = body.get("files") or []
-        use_official = parse_bool(body.get("use_official_lm"), False)
+        mode = str(body.get("mode") or body.get("label_mode") or "smart").strip().lower()
+        use_official = parse_bool(body.get("use_official_lm"), False) or mode == "official"
+        trigger_tag = body.get("custom_tag") or body.get("trigger_tag") or ""
+        tag_position = body.get("tag_position") or "prepend"
         labels = []
+
+        # Smart mode: online lyrics + audio analysis (no model needed)
+        if mode == "smart" and not use_official:
+            for item in files[: int(body.get("limit") or 24)]:
+                path = Path(str(item.get("path") if isinstance(item, dict) else item)).expanduser()
+                if path.is_file():
+                    label = _smart_autolabel_file(path, path.name, trigger_tag, tag_position)
+                    # Preserve any existing metadata from the item
+                    if isinstance(item, dict):
+                        for key in ("caption", "lyrics", "genre", "bpm", "keyscale", "language"):
+                            if item.get(key) and not label.get(key):
+                                label[key] = item[key]
+                    labels.append(label)
+                else:
+                    labels.append({"path": str(path), "filename": path.name, "error": "File not found", "label_source": "error"})
+            return JSONResponse({"success": True, "labels": labels, "label_mode": "smart", "dataset_health": _lora_dataset_health(labels)})
+
+        # Filename-only fallback mode
+        if mode == "filename":
+            for item in files[: int(body.get("limit") or 24)]:
+                path = Path(str(item.get("path") if isinstance(item, dict) else item)).expanduser()
+                duration = None
+                try:
+                    info = sf.info(str(path))
+                    duration = round(info.frames / info.samplerate, 2)
+                except Exception:
+                    pass
+                labels.append({
+                    "path": str(path), "filename": path.name,
+                    "caption": path.stem.replace("-", " ").replace("_", " "),
+                    "lyrics": "[Instrumental]", "genre": "", "bpm": None, "keyscale": "",
+                    "timesignature": "4", "language": "instrumental", "duration": duration,
+                    "is_instrumental": True, "label_source": "filename_fallback",
+                    "trigger_tag": trigger_tag, "tag_position": tag_position,
+                })
+            return JSONResponse({"success": True, "labels": labels, "label_mode": "filename", "dataset_health": _lora_dataset_health(labels)})
+
+        # Official mode (original behavior, requires model)
         for item in files[: int(body.get("limit") or 24)]:
             path = Path(str(item.get("path") if isinstance(item, dict) else item)).expanduser()
             duration = None
@@ -7234,6 +7666,16 @@ async def api_lora_dataset_autolabel(request: Request):
         return JSONResponse({"success": True, "labels": labels, "dataset_health": _lora_dataset_health(labels)})
     except ModelDownloadStarted as exc:
         return JSONResponse(_download_started_payload(exc.model_name, exc.job))
+
+
+@app.post("/api/lora/one-click-train")
+async def api_lora_one_click_train(request: Request):
+    try:
+        body = await request.json()
+        job = training_manager.start_one_click_train(body)
+        return JSONResponse({"success": True, "job": job})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/lora/train")

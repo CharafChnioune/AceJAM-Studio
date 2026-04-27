@@ -915,6 +915,24 @@
         </div>
       </div>
 
+      <div class="section-block" id="generation-adapter-bar">
+        <div class="grid-3">
+          <div>
+            <label for="generation-lora-select">Adapter</label>
+            <select id="generation-lora-select"></select>
+          </div>
+          <div>
+            <label for="generation-lora-scale">Adapter scale</label>
+            <input id="generation-lora-scale" type="range" min="0" max="1" step="0.05" value="1" />
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <label class="check"><input type="checkbox" id="generation-lora-use" /> Use adapter</label>
+          </div>
+        </div>
+        <div class="control-note" id="generation-lora-note">Adapters trained in Trainer can be applied to Simple, Custom, Album, Cover, Repaint, Lego and Complete.</div>
+      </div>
+
       <details class="section-block disclosure assistant-panel" id="ai-fill-panel" open>
         <summary>
           <span class="disclosure-title">
@@ -1898,35 +1916,60 @@
           <label class="check"><input type="checkbox" id="lora-use" checked /> Use adapter</label>
         </div>
 
-        <div class="field" style="margin-top:12px;">
-          <label for="dataset-path">Training dataset folder</label>
-          <input id="dataset-path" type="text" placeholder="/path/to/audio/folder" />
-        </div>
-        <div class="trainer-actions">
-          <button class="secondary" id="dataset-scan">Scan</button>
-          <button class="secondary" id="dataset-label">Auto-label</button>
-          <button class="secondary" id="dataset-save">Save JSON</button>
-          <label class="check" hidden><input type="checkbox" id="dataset-official-labels" /> Legacy LM labels</label>
-        </div>
-        <div class="health-grid" id="lora-health-grid" style="margin-top:10px;"></div>
         <div class="grid-3" style="margin-top:10px;">
           <div>
             <label for="dataset-tag">Trigger tag</label>
             <input id="dataset-tag" type="text" placeholder="artist/style tag" />
           </div>
           <div>
-            <label for="dataset-tag-position">Tag position</label>
-            <select id="dataset-tag-position">
-              <option value="prepend">Prepend</option>
-              <option value="append">Append</option>
-              <option value="replace">Replace caption</option>
-            </select>
+            <label for="dataset-language">Language</label>
+            <select id="dataset-language"></select>
           </div>
           <div>
-            <label for="dataset-genre-ratio">Genre ratio</label>
-            <input id="dataset-genre-ratio" type="number" min="0" max="100" value="0" />
+            <label for="dataset-folder">Dataset folder</label>
+            <input id="dataset-folder" type="file" webkitdirectory directory multiple />
           </div>
         </div>
+        <input id="dataset-path" type="hidden" />
+        <div class="trainer-actions" style="margin-top:10px;">
+          <button class="primary" id="lora-one-click-train">Start training</button>
+          <button class="secondary" id="dataset-scan">Scan imported folder</button>
+          <button class="secondary" id="dataset-save">Save JSON</button>
+          <label class="check" hidden><input type="checkbox" id="dataset-official-labels" /> Legacy LM labels</label>
+        </div>
+        <details class="section-block disclosure advanced-group" data-advanced-group="trainer-labels" style="margin-top:10px;">
+          <summary>
+            <span class="disclosure-title">
+              <strong>Labeling Advanced</strong>
+              <small>Sidecars first, filename fallback, no language detection by default</small>
+            </span>
+          </summary>
+          <div class="advanced-content">
+            <div class="grid-2">
+              <div>
+                <label for="dataset-tag-position">Tag position</label>
+                <select id="dataset-tag-position">
+                  <option value="prepend">Prepend</option>
+                  <option value="append">Append</option>
+                  <option value="replace">Replace caption</option>
+                </select>
+              </div>
+              <div>
+                <label for="dataset-genre-ratio">Genre ratio</label>
+                <input id="dataset-genre-ratio" type="number" min="0" max="100" value="0" />
+              </div>
+            </div>
+            <div class="trainer-actions" style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+              <select id="dataset-label-mode" style="height:34px;">
+                <option value="smart" selected>Smart (online lyrics + audio analysis)</option>
+                <option value="filename">Filename only (fast, basic)</option>
+                <option value="official">Official LM (heavy, most accurate)</option>
+              </select>
+              <button class="secondary" id="dataset-label">Auto-label</button>
+            </div>
+          </div>
+        </details>
+        <div class="health-grid" id="lora-health-grid" style="margin-top:10px;"></div>
         <div class="table-wrap" style="margin-top:10px;">
           <table>
             <thead>
@@ -1965,7 +2008,7 @@
           <summary>
             <span class="disclosure-title">
               <strong>Training Parameters</strong>
-              <small id="summary-trainer-training">LoRA, 10 epochs, batch 1, grad accum 4</small>
+              <small id="summary-trainer-training">LoRA, auto epochs, batch 1, grad accum 4</small>
             </span>
             <span class="disclosure-actions"><span class="badge warn" data-modified-for="trainer-training" hidden>modified</span></span>
           </summary>
@@ -1980,7 +2023,7 @@
           </div>
           <div>
             <label for="train-epochs">Epochs</label>
-            <input id="train-epochs" type="number" min="1" value="10" />
+            <input id="train-epochs" type="number" min="1" placeholder="auto" />
           </div>
           <div>
             <label for="train-batch">Batch</label>
@@ -2304,8 +2347,10 @@
       lastPayloadValidation: null,
       datasetFiles: [],
       datasetId: null,
+      datasetImportRoot: "",
       datasetJson: "",
       tensorDir: "",
+      loraAdapters: [],
       activeLoraJob: null,
       loraTimer: null,
       albumPlan: [],
@@ -2354,6 +2399,17 @@
     function hydrateAllKeyScaleSelects(root = document) {
       root.querySelectorAll("select[data-key-scale-select]").forEach((select) => hydrateKeyScaleSelect(select, select.dataset.selected || select.value || DEFAULT_KEY_SCALE));
       hydrateKeyScaleSelect($("key-scale"), $("key-scale")?.value || DEFAULT_KEY_SCALE);
+    }
+    function languageOptionsHtml(selected = "en") {
+      const languages = state.config?.valid_languages || state.config?.ui_schema?.valid_languages || ["en","nl","de","fr","es","pt","it","ja","ko","zh","ar","tr","hi","ur","pa","ru","unknown"];
+      const chosen = String(selected || "en");
+      return languages.map((lang) => `<option value="${esc(lang)}"${chosen === lang ? " selected" : ""}>${esc(lang)}</option>`).join("");
+    }
+    function hydrateLanguageSelect(select, selected = "en") {
+      if (!select) return;
+      const value = String(selected || select.value || "en");
+      select.innerHTML = languageOptionsHtml(value);
+      if ([...select.options].some((option) => option.value === value)) select.value = value;
     }
     const normalizeProvider = (value) => String(value || "ollama").toLowerCase().replace("_", "-").includes("lmstudio") || String(value || "").toLowerCase().includes("lm studio") ? "lmstudio" : "ollama";
     const providerLabel = (provider) => normalizeProvider(provider) === "lmstudio" ? "LM Studio" : "Ollama";
@@ -2407,7 +2463,7 @@
       if (location.protocol !== "file:") return false;
       document.body.classList.add("file-url-opened");
       setStatus("Open AceJAM from Pinokio's HTTP Web UI. The file view cannot reach /api.", "error");
-      document.querySelectorAll("[data-generate], #ai-fill-btn, #compose-btn, #format-btn, #write-lyrics-btn, #album-btn, #lora-preprocess, #lora-train, #lora-estimate").forEach((button) => {
+      document.querySelectorAll("[data-generate], #ai-fill-btn, #compose-btn, #format-btn, #write-lyrics-btn, #album-btn, #lora-preprocess, #lora-one-click-train, #lora-train, #lora-estimate").forEach((button) => {
         button.disabled = true;
       });
       return true;
@@ -3850,6 +3906,7 @@
       for (const id of ["language", "album-language"]) {
         $(id).innerHTML = languages.map((lang) => `<option value="${esc(lang)}"${lang === "en" ? " selected" : ""}>${esc(lang)}</option>`).join("");
       }
+      hydrateLanguageSelect($("dataset-language"), $("dataset-language")?.value || "en");
       if ($("bpm") && !$("bpm").value) $("bpm").value = String(state.config.default_bpm || DEFAULT_BPM);
       hydrateAllKeyScaleSelects();
       for (const id of ["extract-track", "lego-track"]) {
@@ -4806,7 +4863,7 @@
         title: $("title").value || "Untitled",
         duration: Number($("duration").value),
         batch_size: Number($("batch-size").value),
-        song_model: $("song-model").value,
+        song_model: selectedActualSongModel(),
         quality_profile: selectedQualityProfile(),
         ace_lm_model: activeLmModelFor(mode),
         planner_lm_provider: plannerProviderForMode(mode),
@@ -4882,7 +4939,8 @@
         src_audio_id: state.sourceAudioId,
         src_result_id: state.sourceResultId,
         reference_audio_id: state.referenceAudioId,
-        reference_result_id: state.referenceResultId
+        reference_result_id: state.referenceResultId,
+        ...generationAdapterPayload()
       };
       if (mode === "simple") {
         base.description = $("simple-description").value;
@@ -5444,7 +5502,8 @@
         auto_score: $("album-auto-score").checked,
         auto_lrc: $("album-auto-lrc").checked,
         return_audio_codes: $("album-audio-codes").checked,
-        save_to_library: $("album-save-library").checked
+        save_to_library: $("album-save-library").checked,
+        ...generationAdapterPayload()
       };
       if (includeTracks && state.albumPlan.length) payload.tracks = albumPlanFromTable();
       renderAlbumPayloadReview(payload);
@@ -5505,6 +5564,11 @@
         auto_lrc: track.auto_lrc ?? defaults.auto_lrc,
         return_audio_codes: track.return_audio_codes ?? defaults.return_audio_codes,
         save_to_library: track.save_to_library ?? defaults.save_to_library,
+        use_lora: track.use_lora ?? defaults.use_lora ?? false,
+        lora_adapter_path: track.lora_adapter_path || defaults.lora_adapter_path || "",
+        lora_adapter_name: track.lora_adapter_name || defaults.lora_adapter_name || "",
+        lora_scale: track.lora_scale ?? defaults.lora_scale ?? 1,
+        adapter_model_variant: track.adapter_model_variant || defaults.adapter_model_variant || "",
         album_metadata: {
           track_number: track.track_number || "",
           tag_packs: defaults.tag_packs || [],
@@ -6047,6 +6111,37 @@
       }).filter((item) => item.path);
     }
 
+    function selectedGenerationAdapter() {
+      const path = $("generation-lora-select")?.value || "";
+      return (state.loraAdapters || []).find((adapter) => adapter.path === path) || null;
+    }
+
+    function generationAdapterPayload() {
+      const adapter = selectedGenerationAdapter();
+      const use = Boolean($("generation-lora-use")?.checked && adapter);
+      const scale = Number($("generation-lora-scale")?.value || 1);
+      return {
+        use_lora: use,
+        lora_adapter_path: use ? adapter.path : "",
+        lora_adapter_name: use ? adapter.name : "",
+        lora_scale: Math.max(0, Math.min(1, Number.isFinite(scale) ? scale : 1)),
+        adapter_model_variant: use ? (adapter.model_variant || "") : ""
+      };
+    }
+
+    function updateGenerationLoraNote() {
+      const note = $("generation-lora-note");
+      if (!note) return;
+      const adapter = selectedGenerationAdapter();
+      if (!adapter) {
+        note.textContent = "Adapters trained in Trainer can be applied to Simple, Custom, Album, Cover, Repaint, Lego and Complete.";
+        return;
+      }
+      const scale = $("generation-lora-scale")?.value || "1";
+      const active = $("generation-lora-use")?.checked ? "active" : "selected";
+      note.textContent = `${adapter.name} ${active} at scale ${scale}${adapter.model_variant ? ` · trained for ${adapter.model_variant}` : ""}.`;
+    }
+
     function renderTrainerReady(data) {
       const trainer = data.trainer || {};
       const ready = Boolean(trainer.ready);
@@ -6054,9 +6149,19 @@
       badge.className = `badge ${ready ? "ok" : "warn"}`;
       badge.textContent = ready ? "Trainer ready" : "Install trainer deps";
       const adapters = data.adapters || [];
+      state.loraAdapters = adapters;
       $("lora-adapter-select").innerHTML = `<option value="">Select adapter</option>` + adapters.map((adapter) =>
-        `<option value="${esc(adapter.path)}">${esc(adapter.name)} (${esc(adapter.adapter_type)})</option>`
+        `<option value="${esc(adapter.path)}">${esc(adapter.name)} (${esc(adapter.adapter_type)}${adapter.model_variant ? ` · ${esc(adapter.model_variant)}` : ""})</option>`
       ).join("");
+      const generationSelect = $("generation-lora-select");
+      if (generationSelect) {
+        const previous = generationSelect.value;
+        generationSelect.innerHTML = `<option value="">No adapter</option>` + adapters.map((adapter) =>
+          `<option value="${esc(adapter.path)}">${esc(adapter.name)} (${esc(adapter.adapter_type)}${adapter.model_variant ? ` · ${esc(adapter.model_variant)}` : ""})</option>`
+        ).join("");
+        if ([...generationSelect.options].some((option) => option.value === previous)) generationSelect.value = previous;
+      }
+      updateGenerationLoraNote();
       if (!ready) {
         $("lora-log").textContent = JSON.stringify({
           trainer_ready: trainer.ready,
@@ -6099,8 +6204,32 @@
       return data;
     }
 
+    async function importDatasetFolder() {
+      const input = $("dataset-folder");
+      const files = Array.from(input?.files || []);
+      if (!files.length) throw new Error("Choose a dataset folder first.");
+      const form = new FormData();
+      const datasetId = state.datasetId || `dataset-${Date.now().toString(16)}`;
+      form.append("dataset_id", datasetId);
+      form.append("trigger_tag", $("dataset-tag").value || "");
+      form.append("language", $("dataset-language").value || "en");
+      files.forEach((file) => form.append("files", file, file.webkitRelativePath || file.name));
+      const data = await api("/api/lora/dataset/import-folder", form);
+      state.datasetFiles = data.files || [];
+      state.datasetId = data.dataset_id;
+      state.datasetImportRoot = data.import_root || "";
+      state.loraDatasetHealth = data.dataset_health;
+      $("dataset-path").value = state.datasetImportRoot;
+      renderDatasetTable(state.datasetFiles);
+      renderLoraHealth(data.dataset_health);
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+      return data;
+    }
+
     async function scanDataset() {
-      const data = await api("/api/lora/dataset/scan", { path: $("dataset-path").value });
+      const path = $("dataset-path").value || state.datasetImportRoot;
+      if (!path && $("dataset-folder")?.files?.length) return importDatasetFolder();
+      const data = await api("/api/lora/dataset/scan", { path });
       state.datasetFiles = data.files || [];
       state.datasetId = data.dataset_id;
       state.loraDatasetHealth = data.dataset_health;
@@ -6109,16 +6238,51 @@
       $("lora-log").textContent = JSON.stringify(data, null, 2);
     }
 
+    async function oneClickTrainLora() {
+      const trigger = $("dataset-tag").value.trim();
+      const language = $("dataset-language").value || "en";
+      if (!trigger) throw new Error("Trigger tag is required.");
+      if (!state.datasetImportRoot) await importDatasetFolder();
+      const payload = {
+        dataset_id: state.datasetId,
+        import_root: state.datasetImportRoot,
+        trigger_tag: trigger,
+        language,
+        song_model: $("song-model").value,
+        adapter_type: $("adapter-type").value || "lora",
+        tag_position: $("dataset-tag-position").value || "prepend",
+        genre_ratio: Number($("dataset-genre-ratio").value || 0),
+        train_batch_size: Number($("train-batch").value || 1),
+        gradient_accumulation: Number($("grad-accum").value || 4),
+        rank: Number($("lora-rank").value || 64),
+        alpha: Number($("lora-alpha").value || 128),
+        dropout: $("lora-dropout").value || "0.1",
+        training_shift: 3,
+        training_seed: Number($("train-seed").value || 42),
+        auto_load: true,
+        lora_scale: Number($("generation-lora-scale")?.value || 1)
+      };
+      if ($("train-epochs").value) payload.train_epochs = Number($("train-epochs").value);
+      const data = await api("/api/lora/one-click-train", payload);
+      state.activeLoraJob = data.job.id;
+      saveActiveJobs();
+      $("lora-log").textContent = JSON.stringify(data, null, 2);
+      scheduleLoraPoll();
+    }
+
     async function labelDataset() {
+      const mode = $("dataset-label-mode")?.value || "smart";
       const data = await api("/api/lora/dataset/autolabel", {
         files: state.datasetFiles,
+        mode: mode,
+        use_official_lm: mode === "official",
         ...lmQualityRequestFields("custom"),
         song_model: $("song-model").value,
         custom_tag: $("dataset-tag").value,
         tag_position: $("dataset-tag-position").value
       });
       if (handleDownloadStarted(data, "trainer labels", () => labelDataset())) return;
-      state.datasetFiles = data.labels || [];
+      state.datasetFiles = (data.labels || []).map((item) => ({ ...item, language: $("dataset-language").value || item.language || "en" }));
       state.loraDatasetHealth = data.dataset_health;
       renderDatasetTable(state.datasetFiles);
       renderLoraHealth(data.dataset_health);
@@ -6132,7 +6296,8 @@
         metadata: {
           custom_tag: $("dataset-tag").value,
           tag_position: $("dataset-tag-position").value,
-          genre_ratio: Number($("dataset-genre-ratio").value)
+          genre_ratio: Number($("dataset-genre-ratio").value),
+          language: $("dataset-language").value || "en"
         }
       });
       state.datasetId = data.dataset_id;
@@ -6163,7 +6328,7 @@
         tensor_dir: $("tensor-dir").value,
         song_model: $("song-model").value,
         adapter_type: $("adapter-type").value,
-        train_epochs: Number($("train-epochs").value),
+        train_epochs: $("train-epochs").value ? Number($("train-epochs").value) : 10,
         train_batch_size: Number($("train-batch").value),
         gradient_accumulation: Number($("grad-accum").value),
         learning_rate: $("learning-rate").value,
@@ -6224,16 +6389,30 @@
       if (job.kind === "preprocess" && job.result?.tensor_output) {
         $("tensor-dir").value = job.result.tensor_output;
       }
-      if (job.kind === "train" && job.result?.final_adapter) {
-        $("lora-path").value = job.result.final_adapter;
+      if (job.result?.dataset_json) {
+        $("lora-dataset-json").value = job.result.dataset_json;
+      }
+      if (job.result?.tensor_output) {
+        $("tensor-dir").value = job.result.tensor_output;
+      }
+      const finishedAdapter = job.result?.registered_adapter_path || job.result?.final_adapter;
+      if ((job.kind === "train" || job.kind === "one_click_train") && finishedAdapter) {
+        $("lora-path").value = finishedAdapter;
+        if ($("generation-lora-use")) $("generation-lora-use").checked = true;
       }
       if (["queued", "running", "stopping"].includes(job.state)) {
         scheduleLoraPoll();
       } else {
+        const adapterPath = $("lora-path").value;
         state.activeLoraJob = null;
         clearSavedJob("loraJobId");
         saveActiveJobs();
         await loadLoraStatus();
+        if (adapterPath && [...$("generation-lora-select").options].some((option) => option.value === adapterPath)) {
+          $("generation-lora-select").value = adapterPath;
+          $("generation-lora-use").checked = true;
+          updateGenerationLoraNote();
+        }
       }
     }
 
@@ -6335,7 +6514,20 @@
       $("lora-use").addEventListener("change", () => lora("use"));
       $("lora-refresh").addEventListener("click", () => loadLoraStatus().catch((err) => $("lora-log").textContent = err.message));
       $("lora-adapter-select").addEventListener("change", () => {
-        if ($("lora-adapter-select").value) $("lora-path").value = $("lora-adapter-select").value;
+        if ($("lora-adapter-select").value) {
+          $("lora-path").value = $("lora-adapter-select").value;
+          $("generation-lora-select").value = $("lora-adapter-select").value;
+          $("generation-lora-use").checked = true;
+          updateGenerationLoraNote();
+        }
+      });
+      $("generation-lora-select")?.addEventListener("change", updateGenerationLoraNote);
+      $("generation-lora-use")?.addEventListener("change", updateGenerationLoraNote);
+      $("generation-lora-scale")?.addEventListener("input", updateGenerationLoraNote);
+      $("dataset-folder")?.addEventListener("change", () => {
+        state.datasetImportRoot = "";
+        state.datasetId = null;
+        importDatasetFolder().catch((err) => $("lora-log").textContent = err.message);
       });
       $("dataset-scan").addEventListener("click", () => scanDataset().catch((err) => $("lora-log").textContent = err.message));
       $("dataset-label").addEventListener("click", () => labelDataset().catch((err) => $("lora-log").textContent = err.message));
@@ -6343,6 +6535,7 @@
       $("lora-preprocess").addEventListener("click", () => preprocessLora().catch((err) => $("lora-log").textContent = err.message));
       $("lora-estimate").addEventListener("click", () => estimateLora().catch((err) => $("lora-log").textContent = err.message));
       $("lora-stop").addEventListener("click", () => stopLoraJob().catch((err) => $("lora-log").textContent = err.message));
+      $("lora-one-click-train").addEventListener("click", () => oneClickTrainLora().catch((err) => $("lora-log").textContent = err.message));
       $("lora-train").addEventListener("click", trainLora);
       document.querySelectorAll("input, select, textarea").forEach((input) => {
         input.addEventListener("input", updateAdvancedSummaries);
