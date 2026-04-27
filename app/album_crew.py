@@ -848,6 +848,7 @@ def _crewai_llm_kwargs(model_name: str, provider: str = "ollama") -> dict[str, A
         "max_tokens": CREWAI_LLM_MAX_TOKENS,
         "additional_params": {
             "extra_body": {
+                "think": False,
                 "options": {
                     "num_ctx": CREWAI_LLM_CONTEXT_WINDOW,
                     "num_predict": CREWAI_LLM_NUM_PREDICT,
