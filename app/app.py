@@ -7423,7 +7423,10 @@ def _musicbrainz_artist_tags(artist_name: str) -> list[str]:
     """Get genre tags for an artist from MusicBrainz. Cached."""
     key = artist_name.lower().strip()
     if key in _MB_ARTIST_CACHE:
-        return _MB_ARTIST_CACHE[key].get("tags", [])
+        cached = _MB_ARTIST_CACHE[key].get("tags", [])
+        print(f"[autolabel] MusicBrainz cached: {artist_name} → {cached}", flush=True)
+        return cached
+    print(f"[autolabel] MusicBrainz lookup: {artist_name}...", flush=True)
     data = _musicbrainz_search("artist", artist_name, limit=1)
     artists = data.get("artists", [])
     if not artists:
@@ -7444,6 +7447,7 @@ def _musicbrainz_artist_tags(artist_name: str) -> list[str]:
         if len(genre_tags) >= 6:
             break
     _MB_ARTIST_CACHE[key] = {"tags": genre_tags, "all_tags": tags}
+    print(f"[autolabel] MusicBrainz result: {artist_name} → {genre_tags}", flush=True)
     return genre_tags
 
 
@@ -7490,6 +7494,7 @@ def _search_lyrics_online(artist: str, title: str) -> str:
 
     if not artist or not title:
         return ""
+    print(f"[autolabel] Genius lyrics lookup: {artist} - {title}...", flush=True)
 
     def _genius_slug(artist_name: str, song_title: str) -> str:
         slug = f"{artist_name} {song_title}".lower()
@@ -7531,23 +7536,29 @@ def _search_lyrics_online(artist: str, title: str) -> str:
         html = _fetch_genius_page(url)
         lyrics = _extract_genius_lyrics(html)
         if lyrics and len(lyrics) > 50:
+            lines = len(lyrics.split("\n"))
+            print(f"[autolabel] Genius lyrics FOUND: {len(lyrics)} chars, {lines} lines", flush=True)
             return lyrics
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[autolabel] Genius primary lookup failed: {exc}", flush=True)
 
     # Fallback: try with simplified title (remove parentheses, features)
     try:
         clean_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", title).strip()
         if clean_title != title:
+            print(f"[autolabel] Genius retry with clean title: {clean_title}", flush=True)
             slug = _genius_slug(artist, clean_title)
             url = f"https://genius.com/{slug}-lyrics"
             html = _fetch_genius_page(url)
             lyrics = _extract_genius_lyrics(html)
             if lyrics and len(lyrics) > 50:
+                lines = len(lyrics.split("\n"))
+                print(f"[autolabel] Genius lyrics FOUND (retry): {len(lyrics)} chars, {lines} lines", flush=True)
                 return lyrics
     except Exception:
         pass
 
+    print(f"[autolabel] Genius lyrics NOT FOUND for: {artist} - {title}", flush=True)
     return ""
 
 
@@ -7555,6 +7566,7 @@ def _detect_bpm_key(audio_path: str) -> tuple[int | None, str]:
     """Detect BPM and musical key from audio file using scipy. No librosa needed."""
     import numpy as np
 
+    print(f"[autolabel] Audio analysis: {Path(audio_path).name}...", flush=True)
     try:
         data, sr = sf.read(str(audio_path), dtype="float32")
         if len(data.shape) > 1:
@@ -7610,8 +7622,10 @@ def _detect_bpm_key(audio_path: str) -> tuple[int | None, str]:
         scale = "minor" if minor_third > major_third else "major"
         key = f"{root} {scale}"
 
+        print(f"[autolabel] Audio result: BPM={bpm}, key={key}", flush=True)
         return bpm, key
-    except Exception:
+    except Exception as exc:
+        print(f"[autolabel] Audio analysis failed: {exc}", flush=True)
         return None, ""
 
 
@@ -7637,6 +7651,8 @@ def _build_smart_caption(artist: str, title: str, bpm: int | None, key: str, has
 def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = "", tag_position: str = "prepend") -> dict[str, Any]:
     """Auto-label a single audio file using MusicBrainz + online lyrics + audio analysis. No LLM needed."""
     artist, title = _parse_artist_title(filename)
+    print(f"\n[autolabel] === {filename} ===", flush=True)
+    print(f"[autolabel] Parsed: artist={artist!r}, title={title!r}", flush=True)
 
     # Duration from soundfile
     duration = 0.0
@@ -7706,6 +7722,10 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
         "musicbrainz_album": mb_info.get("album", ""),
         "musicbrainz_year": mb_info.get("year", ""),
     }
+    lyrics_len = len(result["lyrics"].split()) if result["lyrics"] != "[Instrumental]" else 0
+    print(f"[autolabel] DONE: caption={caption[:80]}", flush=True)
+    print(f"[autolabel]       lyrics={lyrics_len} words, genre={result['genre']}, bpm={bpm}, key={key}", flush=True)
+    return result
 
 
 @app.post("/api/lora/dataset/autolabel")
@@ -7718,6 +7738,9 @@ async def api_lora_dataset_autolabel(request: Request):
         trigger_tag = body.get("custom_tag") or body.get("trigger_tag") or ""
         tag_position = body.get("tag_position") or "prepend"
         labels = []
+        print(f"\n{'='*60}", flush=True)
+        print(f"[autolabel] START: mode={mode}, files={len(files)}, trigger={trigger_tag!r}", flush=True)
+        print(f"{'='*60}", flush=True)
 
         # Smart mode: online lyrics + audio analysis (no model needed)
         if mode == "smart" and not use_official:
