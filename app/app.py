@@ -7393,13 +7393,93 @@ async def api_lora_dataset_scan(request: Request):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
+_MB_ARTIST_CACHE: dict[str, dict[str, Any]] = {}
+_MB_RATE_LIMIT_LAST = [0.0]
+
+
+def _musicbrainz_search(endpoint: str, query: str, limit: int = 1) -> dict[str, Any]:
+    """Query MusicBrainz API with rate limiting (1 req/sec)."""
+    import time
+    import urllib.parse
+    import urllib.request
+
+    now = time.time()
+    wait = max(0, 1.1 - (now - _MB_RATE_LIMIT_LAST[0]))
+    if wait > 0:
+        time.sleep(wait)
+    _MB_RATE_LIMIT_LAST[0] = time.time()
+
+    encoded = urllib.parse.quote(query)
+    url = f"https://musicbrainz.org/ws/2/{endpoint}/?query={encoded}&fmt=json&limit={limit}"
+    req = urllib.request.Request(url, headers={"User-Agent": "AceJAM/1.0 (training-dataset-labeler)"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return {}
+
+
+def _musicbrainz_artist_tags(artist_name: str) -> list[str]:
+    """Get genre tags for an artist from MusicBrainz. Cached."""
+    key = artist_name.lower().strip()
+    if key in _MB_ARTIST_CACHE:
+        return _MB_ARTIST_CACHE[key].get("tags", [])
+    data = _musicbrainz_search("artist", artist_name, limit=1)
+    artists = data.get("artists", [])
+    if not artists:
+        _MB_ARTIST_CACHE[key] = {"tags": []}
+        return []
+    tags = [t["name"] for t in artists[0].get("tags", []) if t.get("count", 0) >= 0]
+    # Filter to music genre tags (skip nationality/decade tags)
+    skip = {"american", "british", "english", "german", "french", "dutch", "canadian", "australian", "swedish", "korean", "japanese"}
+    genre_tags_raw = [t for t in tags if t.lower() not in skip and not re.match(r"^\d{4}s?$", t)]
+    # Deduplicate similar tags (e.g., "hip-hop" and "hip hop")
+    seen_normalized: set[str] = set()
+    genre_tags: list[str] = []
+    for t in genre_tags_raw:
+        norm = t.lower().replace("-", " ").replace("_", " ").strip()
+        if norm not in seen_normalized:
+            seen_normalized.add(norm)
+            genre_tags.append(t)
+        if len(genre_tags) >= 6:
+            break
+    _MB_ARTIST_CACHE[key] = {"tags": genre_tags, "all_tags": tags}
+    return genre_tags
+
+
+def _musicbrainz_recording_info(artist: str, title: str) -> dict[str, Any]:
+    """Get recording info (duration, album) from MusicBrainz."""
+    query = f'artist:"{artist}" AND recording:"{title}"'
+    data = _musicbrainz_search("recording", query, limit=1)
+    recordings = data.get("recordings", [])
+    if not recordings:
+        return {}
+    rec = recordings[0]
+    releases = rec.get("releases", [])
+    return {
+        "title": rec.get("title", ""),
+        "duration_ms": rec.get("length"),
+        "album": releases[0].get("title", "") if releases else "",
+        "year": (releases[0].get("date", "")[:4] if releases and releases[0].get("date") else ""),
+        "tags": [t["name"] for t in rec.get("tags", [])],
+    }
+
+
 def _parse_artist_title(filename: str) -> tuple[str, str]:
-    """Extract artist and title from filename like 'Artist - Title.wav'."""
+    """Extract artist and title from filename like 'Artist - Title.wav' or 'Artist - 02 - Title.wav'."""
     stem = Path(filename).stem
+    # Remove leading track numbers: "01 - ", "02.", "Track 3 -"
+    stem = re.sub(r"^\d{1,3}[\s.\-_]+", "", stem).strip()
     for sep in [" - ", " – ", " — ", " _ "]:
         if sep in stem:
-            parts = stem.split(sep, 1)
-            return parts[0].strip(), parts[1].strip()
+            parts = stem.split(sep)
+            parts = [p.strip() for p in parts if p.strip()]
+            # Remove pure track-number parts ("01", "02", "03")
+            parts = [p for p in parts if not re.match(r"^\d{1,3}$", p)]
+            if len(parts) >= 2:
+                return parts[0], parts[-1]  # first = artist, last = title
+            if len(parts) == 1:
+                return "", parts[0]
     return "", stem.replace("-", " ").replace("_", " ").strip()
 
 
@@ -7502,17 +7582,18 @@ def _detect_bpm_key(audio_path: str) -> tuple[int | None, str]:
         return None, ""
 
 
-def _build_smart_caption(artist: str, title: str, bpm: int | None, key: str, has_vocals: bool) -> str:
-    """Build a caption from extracted metadata without using an LLM."""
+def _build_smart_caption(artist: str, title: str, bpm: int | None, key: str, has_vocals: bool, genre_tags: list[str] | None = None) -> str:
+    """Build an ACE-Step caption from metadata. No LLM needed."""
     parts = []
-    if artist:
-        parts.append(f"song by {artist}")
-    if title:
-        parts.append(f"titled {title}")
+    # Genre tags first (most important for ACE-Step conditioning)
+    if genre_tags:
+        parts.extend(genre_tags[:3])
+    # BPM and key
     if bpm:
         parts.append(f"{bpm} BPM")
     if key:
         parts.append(key)
+    # Vocal info
     if has_vocals:
         parts.append("vocals")
     else:
@@ -7521,7 +7602,7 @@ def _build_smart_caption(artist: str, title: str, bpm: int | None, key: str, has
 
 
 def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = "", tag_position: str = "prepend") -> dict[str, Any]:
-    """Auto-label a single audio file using online lyrics + audio analysis. No LLM needed."""
+    """Auto-label a single audio file using MusicBrainz + online lyrics + audio analysis. No LLM needed."""
     artist, title = _parse_artist_title(filename)
 
     # Duration from soundfile
@@ -7532,6 +7613,16 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
     except Exception:
         pass
 
+    # MusicBrainz: get genre tags from artist
+    genre_tags: list[str] = []
+    mb_info: dict[str, Any] = {}
+    if artist:
+        genre_tags = _musicbrainz_artist_tags(artist)
+    if artist and title:
+        mb_info = _musicbrainz_recording_info(artist, title)
+        if mb_info.get("duration_ms") and not duration:
+            duration = round(mb_info["duration_ms"] / 1000, 2)
+
     # Audio analysis for BPM and key
     bpm, key = _detect_bpm_key(str(audio_path))
 
@@ -7541,7 +7632,22 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
         lyrics = _search_lyrics_online(artist, title)
 
     has_vocals = bool(lyrics and lyrics.strip() != "[Instrumental]")
-    caption = _build_smart_caption(artist, title, bpm, key, has_vocals)
+    # Detect language from genre tags
+    language = "en"
+    if any("dutch" in t.lower() or "nederland" in t.lower() for t in genre_tags):
+        language = "nl"
+    elif any("french" in t.lower() for t in genre_tags):
+        language = "fr"
+    elif any("spanish" in t.lower() or "latin" in t.lower() for t in genre_tags):
+        language = "es"
+    elif any("arabic" in t.lower() for t in genre_tags):
+        language = "ar"
+    elif any("japanese" in t.lower() or "j-pop" in t.lower() for t in genre_tags):
+        language = "ja"
+    elif any("korean" in t.lower() or "k-pop" in t.lower() for t in genre_tags):
+        language = "ko"
+
+    caption = _build_smart_caption(artist, title, bpm, key, has_vocals, genre_tags)
     if trigger_tag:
         if tag_position == "prepend":
             caption = f"{trigger_tag}, {caption}"
@@ -7553,16 +7659,19 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
         "filename": filename,
         "caption": caption,
         "lyrics": lyrics or "[Instrumental]",
-        "genre": "",
+        "genre": ", ".join(genre_tags[:3]) if genre_tags else "",
         "bpm": bpm,
         "keyscale": key,
         "timesignature": "4",
-        "language": "en" if has_vocals else "instrumental",
+        "language": language if has_vocals else "instrumental",
         "duration": duration,
         "is_instrumental": not has_vocals,
-        "label_source": "smart_autolabel",
+        "label_source": "smart_musicbrainz",
         "trigger_tag": trigger_tag,
         "tag_position": tag_position,
+        "musicbrainz_tags": genre_tags,
+        "musicbrainz_album": mb_info.get("album", ""),
+        "musicbrainz_year": mb_info.get("year", ""),
     }
 
 
