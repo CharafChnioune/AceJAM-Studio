@@ -61,12 +61,11 @@ The CrewAI path receives real tools from `songwriting_toolkit.py`: model advisor
 
 ## Trainer Flow
 
-1. Scan a folder containing audio files.
-2. Review/edit captions, lyrics, BPM, key, language, and dataset trigger metadata.
-3. Save the official dataset JSON.
-4. Preprocess into tensor files through the official ACE-Step `training_v2` pipeline.
-5. Train LoRA or LoKr through the official `fixed` Side-Step trainer.
-6. Load the final adapter into AceJAM generation.
+1. Pick a dataset folder with the browser/Finder folder picker.
+2. Enter the trigger tag and fixed training language.
+3. Click **Start training**.
+4. AceJAM imports the files into `data/lora_imports/<dataset_id>/`, labels sidecar-first, saves the official dataset JSON, preprocesses tensors, trains LoRA by default, registers the final adapter, and tries to auto-load it for generation.
+5. Advanced users can still edit labels, run preprocess/train separately, or switch to LoKr.
 
 The trainer runs as a subprocess with `PYTHONPATH` pointed at `vendor/ACE-Step-1.5`, so the official trainer package does not collide with the local inference package.
 
@@ -162,18 +161,19 @@ album = requests.post(
 ).json()
 ```
 
-Start LoRA training:
+Start one-click LoRA training:
 
 ```python
 import requests
 
 base = "http://127.0.0.1:7860"
-scan = requests.post(f"{base}/api/lora/dataset/scan", json={"path": "/path/to/dataset"}).json()
-saved = requests.post(f"{base}/api/lora/dataset/save", json={"entries": scan["files"]}).json()
-prep = requests.post(f"{base}/api/lora/preprocess", json={"dataset_json": saved["dataset_path"]}).json()
-job_id = prep["job"]["id"]
+job = requests.post(
+    f"{base}/api/lora/one-click-train",
+    json={"dataset_id": "imported-id", "trigger_tag": "mytrigger", "language": "en"},
+).json()
+job_id = job["job"]["id"]
 
-# Poll /api/lora/jobs/{job_id} until succeeded, then train with the tensor output.
+# Poll /api/lora/jobs/{job_id}; stages are import, label, save_dataset, preprocess, train, register, load.
 ```
 
 Load an adapter:

@@ -259,6 +259,32 @@ def _call_compat(method: Any, **kwargs: Any) -> Any:
     return method(**kwargs)
 
 
+def _apply_lora_request(dit_handler: Any, request: dict[str, Any]) -> dict[str, Any]:
+    if not bool(request.get("use_lora")):
+        return {"success": True, "active": False}
+    adapter_path = str(request.get("lora_adapter_path") or "").strip()
+    if not adapter_path:
+        raise RuntimeError("Official runner received use_lora=true without lora_adapter_path")
+    scale = float(request.get("lora_scale") or 1.0)
+    status = dit_handler.load_lora(adapter_path)
+    if str(status).startswith("❌"):
+        raise RuntimeError(status)
+    scale_status = dit_handler.set_lora_scale(scale)
+    use_status = dit_handler.set_use_lora(True)
+    if str(use_status).startswith("❌"):
+        raise RuntimeError(use_status)
+    print(f"[official_runner] LoRA active: {adapter_path} scale={scale}")
+    return {
+        "success": True,
+        "active": True,
+        "path": adapter_path,
+        "scale": scale,
+        "status": status,
+        "scale_status": scale_status,
+        "use_status": use_status,
+    }
+
+
 def _run(request_path: Path, response_path: Path) -> None:
     request = json.loads(request_path.read_text(encoding="utf-8"))
     vendor_dir = Path(request["vendor_dir"]).resolve()
@@ -370,6 +396,8 @@ def _run(request_path: Path, response_path: Path) -> None:
     )
     if not ready:
         raise RuntimeError(status)
+
+    lora_status = _apply_lora_request(dit_handler, request)
 
     params_data = _normalize_generation_params(dict(request["params"]))
     config_data = dict(request["config"])
@@ -487,6 +515,7 @@ def _run(request_path: Path, response_path: Path) -> None:
                 "audios": audios,
                 "time_costs": _jsonable((result_data.get("extra_outputs") or {}).get("time_costs", {})),
                 "lm_metadata": _jsonable((result_data.get("extra_outputs") or {}).get("lm_metadata")),
+                "lora_status": _jsonable(lora_status),
             },
             indent=2,
         ),

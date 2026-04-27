@@ -50,6 +50,59 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(payload["samples"][0]["audio_path"], str(audio.resolve()))
             self.assertEqual(payload["samples"][0]["lyrics"], "[Verse]\nhello")
 
+    def test_one_click_labeling_keeps_user_language_and_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            labels = manager.label_entries(
+                [
+                    {
+                        "path": str(root / "song.wav"),
+                        "filename": "song.wav",
+                        "caption": "bright schlager",
+                        "lyrics": "",
+                        "language": "unknown",
+                    }
+                ],
+                trigger_tag="charafstyle",
+                language="de",
+            )
+
+            self.assertEqual(labels[0]["language"], "de")
+            self.assertEqual(labels[0]["lyrics"], "[Instrumental]")
+            self.assertTrue(labels[0]["caption"].startswith("charafstyle, "))
+            self.assertEqual(labels[0]["label_source"], "deterministic_filename")
+
+    def test_one_click_defaults_are_lora_and_dynamic_epochs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            params = manager._one_click_params(
+                {
+                    "dataset_id": "unit",
+                    "import_root": str(root),
+                    "trigger_tag": "voicehook",
+                    "language": "nl",
+                    "sample_count": 12,
+                },
+                dataset_id="unit",
+                import_root=root,
+            )
+
+            self.assertEqual(params["adapter_type"], "lora")
+            self.assertEqual(params["tag_position"], "prepend")
+            self.assertEqual(params["train_batch_size"], 1)
+            self.assertEqual(params["gradient_accumulation"], 4)
+            self.assertEqual(params["rank"], 64)
+            self.assertEqual(params["alpha"], 128)
+            self.assertEqual(params["dropout"], 0.1)
+            self.assertEqual(params["training_shift"], 3.0)
+            self.assertEqual(params["training_seed"], 42)
+            self.assertIsNone(params["train_epochs"])
+            self.assertEqual(manager.auto_epochs(20), 800)
+            self.assertEqual(manager.auto_epochs(21), 500)
+            self.assertEqual(manager.auto_epochs(101), 300)
+
     def test_preprocess_command_uses_vendor_module(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

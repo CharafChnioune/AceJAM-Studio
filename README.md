@@ -265,8 +265,10 @@ curl -X POST http://127.0.0.1:7860/api/lora/train \
 - `POST /api/lrc`
 - `POST /api/score`
 - `GET /api/lora/status`
+- `POST /api/lora/dataset/import-folder`
 - `POST /api/lora/dataset/scan`
 - `POST /api/lora/dataset/save`
+- `POST /api/lora/one-click-train`
 - `POST /api/lora/preprocess`
 - `POST /api/lora/train`
 - `POST /api/lora/estimate`
@@ -278,6 +280,7 @@ curl -X POST http://127.0.0.1:7860/api/lora/train \
 - `POST /api/lora/load`
 - `POST /api/lora/unload`
 - `POST /api/lora/use`
+- `POST /api/lora/scale`
 
 ## Development
 

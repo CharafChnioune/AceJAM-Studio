@@ -98,6 +98,8 @@ class TrainingJob:
     pid: int | None = None
     return_code: int | None = None
     error: str = ""
+    stage: str = ""
+    progress: float = 0.0
     result: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +116,8 @@ class TrainingJob:
             "pid": self.pid,
             "return_code": self.return_code,
             "error": self.error,
+            "stage": self.stage,
+            "progress": self.progress,
             "result": self.result,
         }
 
@@ -132,6 +136,8 @@ class TrainingJob:
             pid=data.get("pid"),
             return_code=data.get("return_code"),
             error=str(data.get("error") or ""),
+            stage=str(data.get("stage") or ""),
+            progress=parse_float(data.get("progress"), 0.0, 0.0, 100.0),
             result=dict(data.get("result") or {}),
         )
 
@@ -144,6 +150,7 @@ class AceTrainingManager:
         data_dir: Path,
         model_cache_dir: Path,
         release_models: Callable[[], None] | None = None,
+        adapter_ready: Callable[[Path, float], dict[str, Any]] | None = None,
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = data_dir
@@ -154,8 +161,10 @@ class AceTrainingManager:
         self.tensor_dir = data_dir / "lora_tensors"
         self.training_dir = data_dir / "lora_training"
         self.exports_dir = data_dir / "loras"
+        self.imports_dir = data_dir / "lora_imports"
         self.jobs_dir = data_dir / "lora_jobs"
         self.release_models = release_models
+        self.adapter_ready = adapter_ready
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen[str]] = {}
 
@@ -164,6 +173,7 @@ class AceTrainingManager:
             self.tensor_dir,
             self.training_dir,
             self.exports_dir,
+            self.imports_dir,
             self.jobs_dir,
         ]:
             directory.mkdir(parents=True, exist_ok=True)
@@ -246,6 +256,99 @@ class AceTrainingManager:
         )
         return {"dataset_id": dataset_id, "root": str(root), "files": files, "dataset_path": str(scan_path)}
 
+    def import_root_for(self, dataset_id: str) -> Path:
+        return self.imports_dir / slug(dataset_id, "dataset")
+
+    def label_entries(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        trigger_tag: str,
+        language: str,
+        tag_position: str = "prepend",
+        genre_ratio: int | float | str = 0,
+    ) -> list[dict[str, Any]]:
+        """Create ACE-Step training labels without language detection or LM guessing."""
+        trigger = str(trigger_tag or "").strip()
+        fixed_language = str(language or "unknown").strip() or "unknown"
+        position = str(tag_position or "prepend").strip().lower()
+        if position not in {"prepend", "append", "replace"}:
+            position = "prepend"
+        ratio = parse_int(genre_ratio, 0, 0, 100)
+        labeled: list[dict[str, Any]] = []
+        for item in entries:
+            entry = dict(item or {})
+            fallback_caption = self._caption_fallback(entry)
+            caption = str(entry.get("caption") or fallback_caption).strip() or fallback_caption
+            caption = self._apply_trigger_tag(caption, trigger, position)
+            lyrics = str(entry.get("lyrics") or "").strip() or "[Instrumental]"
+            entry.update(
+                {
+                    "caption": caption,
+                    "lyrics": lyrics,
+                    "language": fixed_language,
+                    "custom_tag": trigger,
+                    "trigger_tag": trigger,
+                    "tag_position": position,
+                    "genre_ratio": ratio,
+                    "label_source": entry.get("label_source")
+                    or ("sidecar_metadata" if entry.get("caption_path") or entry.get("metadata_path") else "deterministic_filename"),
+                    "is_instrumental": parse_bool(entry.get("is_instrumental"), lyrics.strip().lower() == "[instrumental]"),
+                    "labeled": True,
+                }
+            )
+            labeled.append(entry)
+        return labeled
+
+    def auto_epochs(self, sample_count: int) -> int:
+        count = max(0, int(sample_count or 0))
+        if count <= 20:
+            return 800
+        if count <= 100:
+            return 500
+        return 300
+
+    def start_one_click_train(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.require_ready()
+        trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        language = str(payload.get("language") or payload.get("vocal_language") or "").strip()
+        if not trigger_tag:
+            raise ValueError("trigger_tag is required")
+        if not language:
+            raise ValueError("language is required")
+
+        dataset_id = slug(str(payload.get("dataset_id") or payload.get("import_id") or uuid.uuid4().hex[:12]), "dataset")
+        import_root = Path(str(payload.get("import_root") or "")).expanduser() if payload.get("import_root") else self.import_root_for(dataset_id)
+        if not import_root.is_dir():
+            raise FileNotFoundError(f"Imported dataset folder not found: {import_root}")
+
+        with self._lock:
+            active = next((job for job in self._load_jobs_unlocked() if job.state in JOB_ACTIVE_STATES), None)
+            if active:
+                raise RuntimeError(f"Training job already active: {active.id}")
+            job_id = uuid.uuid4().hex[:12]
+            job_dir = self.jobs_dir / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            params = self._one_click_params(payload, dataset_id=dataset_id, import_root=import_root)
+            job = TrainingJob(
+                id=job_id,
+                kind="one_click_train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["acejam-one-click-lora"],
+                params=params,
+                paths={"import_root": str(import_root)},
+                log_path=str(job_dir / "job.log"),
+                stage="queued",
+                progress=0.0,
+            )
+            self._write_job_unlocked(job)
+
+        thread = threading.Thread(target=self._run_one_click_job, args=(job,), daemon=True)
+        thread.start()
+        return self.get_job(job.id)
+
     def save_dataset(
         self,
         entries: list[dict[str, Any]],
@@ -267,6 +370,8 @@ class AceTrainingManager:
                 "tag_position": str((metadata or {}).get("tag_position") or "prepend"),
                 "genre_ratio": parse_int((metadata or {}).get("genre_ratio"), 0, 0, 100),
                 "custom_tag": str((metadata or {}).get("custom_tag") or ""),
+                "language": str((metadata or {}).get("language") or "unknown"),
+                "one_click_train": parse_bool((metadata or {}).get("one_click_train"), False),
             },
             "samples": samples,
         }
@@ -524,6 +629,13 @@ class AceTrainingManager:
                 has_lokr = (child / "lokr_weights.safetensors").is_file()
                 if not (has_lora or has_lokr):
                     continue
+                meta: dict[str, Any] = {}
+                meta_path = child / "acejam_adapter.json"
+                if meta_path.is_file():
+                    try:
+                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        meta = {}
                 adapters.append(
                     {
                         "name": child.name,
@@ -531,6 +643,12 @@ class AceTrainingManager:
                         "adapter_type": "lokr" if has_lokr and not has_lora else "lora",
                         "source": "exports" if root == self.exports_dir else "training",
                         "updated_at": datetime.fromtimestamp(child.stat().st_mtime, timezone.utc).isoformat(),
+                        "trigger_tag": meta.get("trigger_tag", ""),
+                        "language": meta.get("language", ""),
+                        "model_variant": meta.get("model_variant", ""),
+                        "song_model": meta.get("song_model", ""),
+                        "sample_count": meta.get("sample_count"),
+                        "metadata": meta,
                     }
                 )
         return adapters
@@ -565,6 +683,365 @@ class AceTrainingManager:
             target.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target / source.name)
         return {"success": True, "path": str(target), "adapter": target.name}
+
+    def _one_click_params(self, payload: dict[str, Any], *, dataset_id: str, import_root: Path) -> dict[str, Any]:
+        sample_count = parse_int(payload.get("sample_count"), 0, 0, None)
+        epochs = payload.get("train_epochs", payload.get("epochs"))
+        return {
+            "dataset_id": dataset_id,
+            "import_root": str(import_root),
+            "trigger_tag": str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip(),
+            "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
+            "adapter_type": str(payload.get("adapter_type") or "lora").strip().lower(),
+            "tag_position": str(payload.get("tag_position") or "prepend").strip().lower(),
+            "genre_ratio": parse_int(payload.get("genre_ratio"), 0, 0, 100),
+            "song_model": str(payload.get("song_model") or "acestep-v15-sft").strip(),
+            "model_variant": model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-sft")),
+            "train_batch_size": parse_int(payload.get("train_batch_size", payload.get("batch_size")), 1, 1, 64),
+            "gradient_accumulation": parse_int(payload.get("gradient_accumulation"), 4, 1, 128),
+            "rank": parse_int(payload.get("rank"), 64, 1, 512),
+            "alpha": parse_int(payload.get("alpha"), 128, 1, 1024),
+            "dropout": parse_float(payload.get("dropout"), 0.1, 0.0, 1.0),
+            "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), 3.0, 0.1, 10.0),
+            "training_seed": parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1),
+            "train_epochs": parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None,
+            "save_every_n_epochs": parse_int(payload.get("save_every_n_epochs", payload.get("save_every")), 25, 1, 10000),
+            "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
+            "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
+            "device": str(payload.get("device") or "auto"),
+            "precision": str(payload.get("precision") or "auto"),
+            "auto_load": parse_bool(payload.get("auto_load"), True),
+            "lora_scale": parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0),
+            "use_official_lm_labels": parse_bool(payload.get("use_official_lm_labels"), False),
+        }
+
+    def _run_one_click_job(self, job: TrainingJob) -> None:
+        log_path = Path(job.log_path)
+        try:
+            if self.release_models is not None:
+                self.release_models()
+            params = dict(job.params)
+            import_root = Path(params["import_root"]).expanduser()
+            dataset_id = str(params["dataset_id"])
+            trigger = str(params["trigger_tag"])
+            language = str(params["language"])
+            adapter_type = str(params.get("adapter_type") or "lora").lower()
+            if adapter_type not in {"lora", "lokr"}:
+                raise ValueError("adapter_type must be lora or lokr")
+
+            self._set_job_state(job.id, state="running", stage="import", progress=5)
+            self._append_log(log_path, f"[import] scanning {import_root}\n")
+            scanned = self.scan_dataset(import_root)
+            files = list(scanned.get("files") or [])
+            if not files:
+                raise ValueError("No supported audio files found in the imported dataset")
+
+            self._set_job_state(job.id, stage="label", progress=16)
+            labels = self.label_entries(
+                files,
+                trigger_tag=trigger,
+                language=language,
+                tag_position=str(params.get("tag_position") or "prepend"),
+                genre_ratio=params.get("genre_ratio", 0),
+            )
+            epochs = params.get("train_epochs") or self.auto_epochs(len(labels))
+            params["train_epochs"] = epochs
+
+            self._set_job_state(job.id, stage="save_dataset", progress=24)
+            saved = self.save_dataset(
+                labels,
+                dataset_id=dataset_id,
+                metadata={
+                    "custom_tag": trigger,
+                    "tag_position": params.get("tag_position") or "prepend",
+                    "genre_ratio": params.get("genre_ratio") or 0,
+                    "language": language,
+                    "one_click_train": True,
+                },
+            )
+            dataset_json = saved["dataset_path"]
+            tensor_output = self.tensor_dir / job.id
+            preprocess_command = [
+                sys.executable,
+                "-m",
+                "acestep.training_v2.cli.train_fixed",
+                "--plain",
+                "--yes",
+                "--preprocess",
+                "--checkpoint-dir",
+                str(self.checkpoint_dir),
+                "--model-variant",
+                str(params["model_variant"]),
+                "--tensor-output",
+                str(tensor_output),
+                "--max-duration",
+                str(params["max_duration"]),
+                "--device",
+                str(params["device"]),
+                "--precision",
+                str(params["precision"]),
+                "--dataset-json",
+                dataset_json,
+                "--audio-dir",
+                str(import_root),
+            ]
+            self._set_job_state(
+                job.id,
+                stage="preprocess",
+                progress=34,
+                paths={"import_root": str(import_root), "dataset_json": dataset_json, "tensor_output": str(tensor_output)},
+                result={"sample_count": len(labels), "epochs": epochs},
+            )
+            self._run_command_step(job.id, preprocess_command, log_path, stage="preprocess")
+
+            output_dir = self.training_dir / f"{slug(trigger or adapter_type)}-{job.id}"
+            log_dir = output_dir / "runs"
+            train_command = [
+                sys.executable,
+                "train.py",
+                "--plain",
+                "--yes",
+                "fixed",
+                "--checkpoint-dir",
+                str(self.checkpoint_dir),
+                "--model-variant",
+                str(params["model_variant"]),
+                "--dataset-dir",
+                str(tensor_output),
+                "--output-dir",
+                str(output_dir),
+                "--adapter-type",
+                adapter_type,
+                "--batch-size",
+                str(params["train_batch_size"]),
+                "--gradient-accumulation",
+                str(params["gradient_accumulation"]),
+                "--epochs",
+                str(epochs),
+                "--save-every",
+                str(params["save_every_n_epochs"]),
+                "--lr",
+                str(params["learning_rate"]),
+                "--shift",
+                str(params["training_shift"]),
+                "--seed",
+                str(params["training_seed"]),
+                "--num-inference-steps",
+                "8",
+                "--warmup-steps",
+                "100",
+                "--weight-decay",
+                "0.01",
+                "--max-grad-norm",
+                "1.0",
+                "--optimizer-type",
+                "adamw",
+                "--scheduler-type",
+                "cosine",
+                "--log-dir",
+                str(log_dir),
+                "--log-every",
+                "10",
+                "--log-heavy-every",
+                "50",
+                "--sample-every-n-epochs",
+                "0",
+                "--device",
+                str(params["device"]),
+                "--precision",
+                str(params["precision"]),
+                "--gradient-checkpointing",
+                "--no-offload-encoder",
+            ]
+            if adapter_type == "lokr":
+                train_command.extend(["--lokr-linear-dim", "64", "--lokr-linear-alpha", "128", "--lokr-factor", "-1", "--lokr-weight-decompose"])
+            else:
+                train_command.extend(
+                    [
+                        "--rank",
+                        str(params["rank"]),
+                        "--alpha",
+                        str(params["alpha"]),
+                        "--dropout",
+                        str(params["dropout"]),
+                        "--attention-type",
+                        "both",
+                    ]
+                )
+            self._set_job_state(
+                job.id,
+                stage="train",
+                progress=58,
+                paths={
+                    "import_root": str(import_root),
+                    "dataset_json": dataset_json,
+                    "tensor_output": str(tensor_output),
+                    "output_dir": str(output_dir),
+                    "final_adapter": str(output_dir / "final"),
+                    "log_dir": str(log_dir),
+                },
+                result={"sample_count": len(labels), "epochs": epochs},
+            )
+            self._run_command_step(job.id, train_command, log_path, stage="train")
+
+            final_adapter = output_dir / "final"
+            if not final_adapter.exists():
+                raise FileNotFoundError(f"Training finished but no final adapter was found at {final_adapter}")
+
+            self._set_job_state(job.id, stage="register", progress=90)
+            export = self.export_adapter(final_adapter, f"{slug(trigger, 'adapter')}-{job.id}")
+            registered = Path(str(export["path"]))
+            metadata = {
+                "trigger_tag": trigger,
+                "language": language,
+                "adapter_type": adapter_type,
+                "model_variant": params["model_variant"],
+                "song_model": params["song_model"],
+                "dataset_id": dataset_id,
+                "sample_count": len(labels),
+                "epochs": epochs,
+                "trained_at": utc_now(),
+            }
+            (registered / "acejam_adapter.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+            load_status: dict[str, Any] = {"requested": False}
+            if params.get("auto_load") and self.adapter_ready is not None:
+                self._set_job_state(job.id, stage="load", progress=96)
+                load_status = self.adapter_ready(registered, float(params.get("lora_scale") or 1.0))
+
+            with self._lock:
+                current = self._read_job_unlocked(job.id)
+                current.state = "succeeded"
+                current.stage = "complete"
+                current.progress = 100.0
+                current.return_code = 0
+                current.updated_at = utc_now()
+                current.result = {
+                    "dataset_id": dataset_id,
+                    "dataset_json": dataset_json,
+                    "tensor_output": str(tensor_output),
+                    "output_dir": str(output_dir),
+                    "final_adapter": str(final_adapter),
+                    "registered_adapter_path": str(registered),
+                    "sample_count": len(labels),
+                    "epochs": epochs,
+                    "auto_load": bool(params.get("auto_load")),
+                    "use_lora": bool(load_status.get("success", False)),
+                    "load_status": load_status,
+                    "labels": labels[:5],
+                }
+                self._write_job_unlocked(current)
+            self._append_log(log_path, f"\n[complete] adapter registered at {registered}\n")
+        except Exception as exc:
+            with self._lock:
+                try:
+                    current = self._read_job_unlocked(job.id)
+                except Exception:
+                    current = job
+                current.state = "failed"
+                current.error = str(exc)
+                current.updated_at = utc_now()
+                self._write_job_unlocked(current)
+            self._append_log(log_path, f"\n[failed] {exc}\n")
+
+    def _run_command_step(self, job_id: str, command: list[str], log_path: Path, *, stage: str) -> None:
+        env = self._training_env()
+        self._append_log(log_path, f"\n[{stage}] $ {' '.join(command)}\n\n")
+        with log_path.open("a", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                command,
+                cwd=str(self.vendor_dir),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            with self._lock:
+                self._processes[job_id] = process
+                current = self._read_job_unlocked(job_id)
+                current.pid = process.pid
+                current.updated_at = utc_now()
+                self._write_job_unlocked(current)
+            assert process.stdout is not None
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+            return_code = process.wait()
+        with self._lock:
+            self._processes.pop(job_id, None)
+            current = self._read_job_unlocked(job_id)
+            current.pid = None
+            current.return_code = return_code
+            current.updated_at = utc_now()
+            self._write_job_unlocked(current)
+        if return_code != 0:
+            raise RuntimeError(f"{stage} exited with code {return_code}")
+
+    def _training_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        py_paths = [
+            str(self.vendor_dir),
+            str(self.vendor_dir / "acestep" / "third_parts" / "nano-vllm"),
+        ]
+        if env.get("PYTHONPATH"):
+            py_paths.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(py_paths)
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        env.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+        env.setdefault("HF_MODULES_CACHE", str(self.model_cache_dir / "hf_modules"))
+        env.setdefault("MPLCONFIGDIR", str(self.model_cache_dir / "matplotlib"))
+        return env
+
+    def _set_job_state(
+        self,
+        job_id: str,
+        *,
+        state: str | None = None,
+        stage: str | None = None,
+        progress: float | None = None,
+        paths: dict[str, str] | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            current = self._read_job_unlocked(job_id)
+            if state is not None:
+                current.state = state
+            if stage is not None:
+                current.stage = stage
+            if progress is not None:
+                current.progress = parse_float(progress, 0.0, 0.0, 100.0)
+            if paths:
+                current.paths.update({str(k): str(v) for k, v in paths.items()})
+            if result:
+                current.result.update(result)
+            current.updated_at = utc_now()
+            self._write_job_unlocked(current)
+
+    def _append_log(self, log_path: Path, text: str) -> None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def _caption_fallback(self, entry: dict[str, Any]) -> str:
+        relative = str(entry.get("relative_path") or entry.get("filename") or entry.get("path") or "sample")
+        path = Path(relative)
+        parts = [part for part in path.with_suffix("").parts if part not in {".", ""}]
+        text = " ".join(parts[-3:]) if parts else path.stem
+        return text.replace("_", " ").replace("-", " ").strip() or "training sample"
+
+    def _apply_trigger_tag(self, caption: str, trigger_tag: str, tag_position: str) -> str:
+        caption = str(caption or "").strip()
+        trigger = str(trigger_tag or "").strip()
+        if not trigger:
+            return caption
+        if trigger.lower() in caption.lower():
+            return caption
+        if tag_position == "replace":
+            return trigger
+        if tag_position == "append":
+            return f"{caption}, {trigger}" if caption else trigger
+        return f"{trigger}, {caption}" if caption else trigger
 
     def _start_job(
         self,

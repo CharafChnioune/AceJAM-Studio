@@ -481,6 +481,50 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("lora-health-grid", html)
         self.assertNotIn('id="key-scale" type="text"', html)
 
+    def test_lora_one_click_ui_and_adapterbar_are_exposed(self):
+        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="dataset-folder" type="file" webkitdirectory directory multiple', html)
+        self.assertIn('id="dataset-language"', html)
+        self.assertIn('id="lora-one-click-train"', html)
+        self.assertIn('id="generation-lora-select"', html)
+        self.assertIn('id="generation-lora-use"', html)
+        self.assertIn('id="generation-lora-scale"', html)
+
+    def test_lora_payload_reaches_generation_and_official_runner(self):
+        adapter_path = "/tmp/unit-adapter"
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "bright pop, crisp drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "audio_format": "wav32",
+                    "use_lora": True,
+                    "lora_adapter_path": adapter_path,
+                    "lora_adapter_name": "unit",
+                    "lora_scale": 0.65,
+                    "adapter_model_variant": "xl_sft",
+                }
+            )
+
+        self.assertTrue(params["use_lora"])
+        self.assertEqual(params["lora_adapter_path"], adapter_path)
+        self.assertEqual(params["lora_scale"], 0.65)
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+        self.assertTrue(request["use_lora"])
+        self.assertEqual(request["lora_adapter_path"], adapter_path)
+        self.assertEqual(request["lora_adapter_name"], "unit")
+        self.assertEqual(request["lora_scale"], 0.65)
+
+    def test_lora_upload_path_sanitizer_preserves_relative_folders(self):
+        self.assertEqual(str(acejam_app._safe_lora_upload_relative_path("dataset/sub/song.wav")), "dataset/sub/song.wav")
+        self.assertEqual(str(acejam_app._safe_lora_upload_relative_path("../evil.wav")), "evil.wav")
+
     def test_official_runner_stream_redacts_conditioning_prompt_blocks(self):
         state = {}
         lines = [
