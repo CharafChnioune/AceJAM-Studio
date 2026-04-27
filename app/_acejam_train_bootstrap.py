@@ -55,6 +55,15 @@ try:
 except ImportError:
     pass
 
+# Override path safety root to allow access to app/data/ (outside vendor dir)
+# The vendor's path_safety.py defaults to cwd (vendor/) but our data is in app/data/
+try:
+    from acestep.training.path_safety import set_safe_root
+    # Set safe root to the app directory (parent of vendor) so data/ paths are allowed
+    set_safe_root(str(_SCRIPT_DIR))
+except ImportError:
+    pass
+
 # Run the actual ACE-Step training CLI by directly executing the file
 sys.argv = sys.argv[1:]
 _target = _VENDOR / "acestep" / "training_v2" / "cli" / "train_fixed.py"
