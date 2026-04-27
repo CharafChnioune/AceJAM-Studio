@@ -7484,38 +7484,71 @@ def _parse_artist_title(filename: str) -> tuple[str, str]:
 
 
 def _search_lyrics_online(artist: str, title: str) -> str:
-    """Search for lyrics via DuckDuckGo. Returns lyrics text or empty string."""
-    import re
+    """Fetch lyrics from Genius. Returns lyrics text or empty string."""
     import urllib.parse
     import urllib.request
 
-    query = f"{artist} {title} lyrics"
-    try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://html.duckduckgo.com/html/?q={encoded}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        # Extract text snippets that look like lyrics
-        snippets = []
-        for match in re.finditer(r'class="result__snippet">(.*?)</a>', html, re.DOTALL):
-            text = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-            text = re.sub(r"\s+", " ", text)
-            if text and len(text) > 30:
-                snippets.append(text)
-            if len(snippets) >= 3:
-                break
-        if not snippets:
+    if not artist or not title:
+        return ""
+
+    def _genius_slug(artist_name: str, song_title: str) -> str:
+        slug = f"{artist_name} {song_title}".lower()
+        slug = re.sub(r"[^a-z0-9\s]", "", slug)
+        slug = re.sub(r"\s+", "-", slug.strip())
+        return slug
+
+    def _fetch_genius_page(url: str) -> str:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read().decode("utf-8", errors="ignore")
+
+    def _extract_genius_lyrics(html: str) -> str:
+        blocks = re.findall(r'data-lyrics-container="true"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if not blocks:
             return ""
-        # Format as basic lyrics (these are snippets, not full lyrics)
-        combined = "\n".join(snippets)
-        # Check if it looks like actual lyrics (has common lyric patterns)
-        lyric_indicators = ["verse", "chorus", "bridge", "\n", "yeah", "oh", "baby", "love", "night", "heart"]
-        if any(indicator in combined.lower() for indicator in lyric_indicators):
-            return combined
-        return ""
+        text = "\n".join(blocks)
+        text = re.sub(r"<br\s*/?>", "\n", text)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = text.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", '"')
+        # Clean Genius header junk (contributors, translations line)
+        lines = text.split("\n")
+        cleaned: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            # Skip contributor/translation header lines
+            if re.match(r"^\d+\s*Contributor", stripped):
+                continue
+            if stripped.startswith("Translations") or re.match(r"^[A-Z][a-zà-ü]+(,\s*[A-Z])", stripped):
+                continue
+            cleaned.append(line)
+        return "\n".join(cleaned).strip()
+
+    try:
+        slug = _genius_slug(artist, title)
+        url = f"https://genius.com/{slug}-lyrics"
+        html = _fetch_genius_page(url)
+        lyrics = _extract_genius_lyrics(html)
+        if lyrics and len(lyrics) > 50:
+            return lyrics
     except Exception:
-        return ""
+        pass
+
+    # Fallback: try with simplified title (remove parentheses, features)
+    try:
+        clean_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", title).strip()
+        if clean_title != title:
+            slug = _genius_slug(artist, clean_title)
+            url = f"https://genius.com/{slug}-lyrics"
+            html = _fetch_genius_page(url)
+            lyrics = _extract_genius_lyrics(html)
+            if lyrics and len(lyrics) > 50:
+                return lyrics
+    except Exception:
+        pass
+
+    return ""
 
 
 def _detect_bpm_key(audio_path: str) -> tuple[int | None, str]:
