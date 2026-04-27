@@ -236,6 +236,23 @@ class AceTrainingManager:
             VARIANT_DIR_MAP.setdefault("xl_sft", "acestep-v15-xl-sft")
         except ImportError:
             pass
+        # Patch torchaudio.load to use soundfile backend (avoids torchcodec/FFmpeg dependency)
+        try:
+            import torchaudio
+            _orig_torchaudio_load = torchaudio.load
+
+            def _patched_torchaudio_load(filepath, *args, **kwargs):
+                if "backend" not in kwargs:
+                    kwargs["backend"] = "soundfile"
+                try:
+                    return _orig_torchaudio_load(filepath, *args, **kwargs)
+                except Exception:
+                    kwargs.pop("backend", None)
+                    return _orig_torchaudio_load(filepath, *args, **kwargs)
+
+            torchaudio.load = _patched_torchaudio_load
+        except ImportError:
+            pass
 
     def active_job(self) -> dict[str, Any] | None:
         with self._lock:
