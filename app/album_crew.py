@@ -1140,7 +1140,10 @@ def songwriting_toolkit(installed_models: set[str] | list[str] | None = None) ->
 
 
 def _output_json_for_provider(model: type[BaseModel], planner_provider: str) -> type[BaseModel] | None:
-    return None if normalize_provider(planner_provider) == "lmstudio" else model
+    # Always return None — thinking models (Qwen3, etc.) emit <think> blocks that
+    # break CrewAI's Pydantic output_json validator before our _strip_thinking_blocks
+    # can clean them. We parse the raw text ourselves after kickoff.
+    return None
 
 
 def create_album_bible_crew(
