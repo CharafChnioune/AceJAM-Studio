@@ -789,8 +789,7 @@ class AceTrainingManager:
             tensor_output = self.tensor_dir / job.id
             preprocess_command = [
                 sys.executable,
-                "-m",
-                "acestep.training_v2.cli.train_fixed",
+                str(self.base_dir / "_acejam_train_bootstrap.py"),
                 "--plain",
                 "--yes",
                 "--preprocess",
@@ -824,7 +823,7 @@ class AceTrainingManager:
             log_dir = output_dir / "runs"
             train_command = [
                 sys.executable,
-                "train.py",
+                str(self.base_dir / "_acejam_train_bootstrap.py"),
                 "--plain",
                 "--yes",
                 "fixed",
@@ -1017,6 +1016,30 @@ class AceTrainingManager:
         env.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
         env.setdefault("HF_MODULES_CACHE", str(self.model_cache_dir / "hf_modules"))
         env.setdefault("MPLCONFIGDIR", str(self.model_cache_dir / "matplotlib"))
+        # Write a training bootstrap script that patches torchaudio + VARIANT_DIR_MAP
+        # before running the actual ACE-Step training CLI. This runs as a subprocess.
+        bootstrap = self.base_dir / "_acejam_train_bootstrap.py"
+        bootstrap.write_text(
+            "\"\"\"AceJAM training bootstrap: patches torchaudio and variant map before ACE-Step training.\"\"\"\n"
+            "import torchaudio, sys, runpy\n"
+            "# Patch torchaudio to use soundfile backend (avoids torchcodec/FFmpeg)\n"
+            "_orig = torchaudio.load\n"
+            "def _sf(f,*a,**k):\n"
+            "    if 'backend' not in k: k['backend']='soundfile'\n"
+            "    try: return _orig(f,*a,**k)\n"
+            "    except: k.pop('backend',None); return _orig(f,*a,**k)\n"
+            "torchaudio.load = _sf\n"
+            "# Patch VARIANT_DIR_MAP for XL models\n"
+            "try:\n"
+            "    from acestep.training_v2.cli.args import VARIANT_DIR_MAP\n"
+            "    for k,v in {'turbo_shift3':'acestep-v15-turbo-shift3','xl_turbo':'acestep-v15-xl-turbo','xl_base':'acestep-v15-xl-base','xl_sft':'acestep-v15-xl-sft'}.items():\n"
+            "        VARIANT_DIR_MAP.setdefault(k,v)\n"
+            "except: pass\n"
+            "# Run the actual training CLI\n"
+            "sys.argv = sys.argv[1:]  # Remove bootstrap script from argv\n"
+            "runpy.run_module('acestep.training_v2.cli.train_fixed', run_name='__main__')\n",
+            encoding="utf-8",
+        )
         return env
 
     def _set_job_state(
