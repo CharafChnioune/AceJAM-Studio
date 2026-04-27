@@ -2044,9 +2044,9 @@
       <section class="panel mode-panel" data-mode="library">
         <div class="mode-intro">
           <div>
-            <div class="mode-kicker">Saved Songs</div>
+            <div class="mode-kicker">Music Library</div>
             <h2>Library</h2>
-            <p>Listen back, filter by title/model/album, download files, and inspect metadata only when needed.</p>
+            <p>Browse albums and songs. Filter by model, album, or search. Select and delete in bulk.</p>
           </div>
           <span class="badge" id="library-count">Loading</span>
         </div>
@@ -2060,16 +2060,43 @@
             <select id="library-filter-model"><option value="">All models</option></select>
           </div>
           <div>
+            <label for="library-filter-album">Album</label>
+            <select id="library-filter-album"><option value="">All albums</option></select>
+          </div>
+          <div>
+            <label for="library-filter-type">Type</label>
+            <select id="library-filter-type">
+              <option value="">All</option>
+              <option value="album">Album tracks</option>
+              <option value="single">Singles</option>
+            </select>
+          </div>
+          <div>
             <label for="library-sort">Sort</label>
             <select id="library-sort">
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
               <option value="title">Title A-Z</option>
               <option value="model">Model A-Z</option>
+              <option value="album">Album → Track #</option>
             </select>
           </div>
+          <div>
+            <label for="library-view">View</label>
+            <select id="library-view">
+              <option value="songs">Song list</option>
+              <option value="albums">Album cards</option>
+            </select>
+          </div>
+        </div>
+        <div class="library-actions" style="display:flex;gap:8px;margin:8px 0;align-items:center;">
+          <label style="font-size:0.85em;cursor:pointer;display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" id="library-select-all" /> Select all
+          </label>
+          <button class="danger" id="library-bulk-delete" style="display:none;">Delete selected</button>
+          <span style="flex:1"></span>
           <button class="secondary" id="library-refresh">Refresh</button>
-          <button class="danger" id="library-delete-generated-output">Delete all generated</button>
+          <button class="danger" id="library-delete-generated-output">Delete all</button>
         </div>
         <div class="library-list" id="library-list"></div>
       </section>
@@ -4972,24 +4999,27 @@
 
     function songCardHtml(song, compact = false) {
       const displayTitle = song.artist_name ? `${song.artist_name} - ${song.title || "Untitled"}` : (song.title || "Untitled");
-      const albumMeta = song.album_id
-        ? ` \u00b7 album ${esc(song.album_id)}${song.album_model_label ? ` \u00b7 ${esc(song.album_model_label)}` : ""}${song.track_number ? ` \u00b7 track ${esc(song.track_number)}` : ""}`
-        : "";
+      const model = (song.song_model || "").replace("acestep-v15-", "");
+      const albumLabel = song.album_family_id ? `album ${String(song.album_concept || song.album_family_id).slice(0, 30)}` : "";
+      const trackLabel = song.track_number ? `#${song.track_number}` : "";
+      const metaParts = [song.task_type || "text2music", model, albumLabel, trackLabel, String(song.duration || "?") + "s", (song.created_at || "").slice(0, 10)].filter(Boolean);
       const albumDeleteControls = !compact && song.album_id
-        ? `${song.album_family_id ? `<button class="danger" data-delete-album-family="${esc(song.album_family_id)}">Delete family</button>` : ""}
-           <button class="danger" data-delete-album="${esc(song.album_id)}">Delete album</button>`
+        ? `${song.album_family_id ? `<button class="danger" data-delete-album-family="${esc(song.album_family_id)}">Delete album</button>` : ""}`
         : "";
       return `
-        <div class="song-card">
-          <div class="result-title">${esc(displayTitle)}</div>
-          <div class="meta">${esc(song.task_type || "text2music")} \u00b7 ${esc(song.song_model || "")}${albumMeta} \u00b7 ${esc(song.created_at || "")}</div>
-          ${createPlayerHtml(song.audio_url)}
-          <div class="row">
-            <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:34px;padding:0 13px;border-radius:6px;font-weight:650;font-size:inherit;border:1px solid var(--line);background:var(--panel-2);color:var(--text);transition:all var(--transition);" href="${esc(song.audio_url)}" download="${esc(song.audio_file || "")}">Download</a>
-            ${compact ? "" : `<button class="danger" data-delete="${esc(song.id)}" data-title="${esc(song.title || "Untitled")}">Delete</button>`}
-            ${albumDeleteControls}
+        <div class="song-card" style="display:flex;gap:10px;align-items:start;padding:10px;border-radius:8px;border:1px solid var(--line);margin-bottom:6px;background:var(--panel);">
+          <label style="cursor:pointer;padding-top:4px;"><input type="checkbox" class="library-select" data-song-id="${esc(song.id)}" /></label>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;">${esc(displayTitle)}</div>
+            <div class="meta" style="font-size:0.82em;">${metaParts.map((p) => esc(p)).join(" · ")}</div>
+            ${song.audio_url ? createPlayerHtml(song.audio_url) : ""}
+            <div class="row" style="margin-top:6px;">
+              <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:30px;padding:0 10px;border-radius:6px;font-weight:600;font-size:0.85em;border:1px solid var(--line);background:var(--panel-2);color:var(--text);" href="${esc(song.audio_url || "")}" download="${esc(song.audio_file || "")}">Download</a>
+              ${compact ? "" : `<button class="danger" style="height:30px;font-size:0.85em;" data-delete="${esc(song.id)}" data-title="${esc(song.title || "")}">Delete</button>`}
+              ${albumDeleteControls}
+              ${compact ? "" : `<details style="margin-left:auto;"><summary style="font-size:0.8em;cursor:pointer;">Meta</summary><pre style="font-size:0.75em;max-height:200px;overflow:auto;">${esc(JSON.stringify({title: song.title, model: song.song_model, bpm: song.bpm, key: song.key_scale, duration: song.duration, language: song.language, tags: song.tags}, null, 2))}</pre></details>`}
+            </div>
           </div>
-          ${compact ? "" : `<details><summary>Metadata</summary><pre>${esc(JSON.stringify(song, null, 2))}</pre></details>`}
         </div>
       `;
     }
@@ -5041,41 +5071,89 @@
     }
 
     function populateLibraryFilters(songs) {
-      const select = $("library-filter-model");
-      if (!select) return;
-      const previous = select.value || "";
-      const models = [...new Set(songs.flatMap((song) => [song.song_model, song.album_model]).filter(Boolean))].sort();
-      select.innerHTML = `<option value="">All models</option>` + models.map((model) => `<option value="${esc(model)}">${esc(model)}</option>`).join("");
-      if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+      const modelSelect = $("library-filter-model");
+      const albumSelect = $("library-filter-album");
+      if (modelSelect) {
+        const prev = modelSelect.value || "";
+        const models = [...new Set(songs.flatMap((s) => [s.song_model, s.album_model]).filter(Boolean))].sort();
+        modelSelect.innerHTML = `<option value="">All models</option>` + models.map((m) => `<option value="${esc(m)}">${esc(m.replace("acestep-v15-", ""))}</option>`).join("");
+        if ([...modelSelect.options].some((o) => o.value === prev)) modelSelect.value = prev;
+      }
+      if (albumSelect) {
+        const prev = albumSelect.value || "";
+        const albums = new Map();
+        songs.filter((s) => s.album_family_id).forEach((s) => {
+          if (!albums.has(s.album_family_id)) albums.set(s.album_family_id, s.album_concept || s.album_family_id);
+        });
+        albumSelect.innerHTML = `<option value="">All albums</option>` + [...albums.entries()].map(([id, label]) => `<option value="${esc(id)}">${esc(String(label).slice(0, 50))}</option>`).join("");
+        if ([...albumSelect.options].some((o) => o.value === prev)) albumSelect.value = prev;
+      }
     }
 
-    function renderLibraryList() {
-      const list = $("library-list");
+    function _libraryFiltered() {
       const songs = [...(state.librarySongs || [])];
       const query = String($("library-search")?.value || "").trim().toLowerCase();
       const modelFilter = $("library-filter-model")?.value || "";
+      const albumFilter = $("library-filter-album")?.value || "";
+      const typeFilter = $("library-filter-type")?.value || "";
       const sort = $("library-sort")?.value || "newest";
       let filtered = songs.filter((song) => {
-        const haystack = [
-          song.title,
-          song.artist_name,
-          song.song_model,
-          song.album_model,
-          song.album_id,
-          song.album_family_id,
-          song.task_type,
-          Array.isArray(song.tags) ? song.tags.join(", ") : song.tags,
-          song.caption
-        ].filter(Boolean).join(" ").toLowerCase();
+        const haystack = [song.title, song.artist_name, song.song_model, song.album_model, song.album_id, song.album_family_id, song.task_type, Array.isArray(song.tags) ? song.tags.join(", ") : song.tags, song.caption].filter(Boolean).join(" ").toLowerCase();
         const modelOk = !modelFilter || song.song_model === modelFilter || song.album_model === modelFilter;
-        return modelOk && (!query || haystack.includes(query));
+        const albumOk = !albumFilter || song.album_family_id === albumFilter;
+        const typeOk = !typeFilter || (typeFilter === "album" ? !!song.album_id : !song.album_id);
+        return modelOk && albumOk && typeOk && (!query || haystack.includes(query));
       });
       filtered.sort((a, b) => {
         if (sort === "oldest") return String(a.created_at || "").localeCompare(String(b.created_at || ""));
         if (sort === "title") return String(a.title || "").localeCompare(String(b.title || ""));
-        if (sort === "model") return String(a.song_model || a.album_model || "").localeCompare(String(b.song_model || b.album_model || ""));
+        if (sort === "model") return String(a.song_model || "").localeCompare(String(b.song_model || ""));
+        if (sort === "album") return (String(a.album_family_id || "zzz") + String(a.track_number || 0).padStart(3, "0")).localeCompare(String(b.album_family_id || "zzz") + String(b.track_number || 0).padStart(3, "0"));
         return String(b.created_at || "").localeCompare(String(a.created_at || ""));
       });
+      return filtered;
+    }
+
+    function _albumCardHtml(familyId, albumSongs) {
+      const concept = albumSongs[0]?.album_concept || familyId;
+      const models = [...new Set(albumSongs.map((s) => s.song_model || s.album_model).filter(Boolean))];
+      const trackCount = new Set(albumSongs.map((s) => s.track_number)).size;
+      const date = albumSongs[0]?.created_at || "";
+      return `
+        <div class="album-card" style="border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;background:var(--panel-2);">
+          <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:10px;">
+            <div>
+              <div style="font-weight:700;font-size:1.1em;">${esc(String(concept).slice(0, 80))}</div>
+              <div class="meta">${trackCount} tracks · ${models.map((m) => esc(m.replace("acestep-v15-", ""))).join(", ")} · ${esc(date.slice(0, 10))}</div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:30px;padding:0 10px;border-radius:6px;font-weight:600;font-size:0.85em;border:1px solid var(--line);background:var(--panel-2);color:var(--text);" href="/api/album-families/${esc(familyId)}/download" download>ZIP</a>
+              <button class="danger" style="height:30px;font-size:0.85em;" data-delete-album-family="${esc(familyId)}">Delete</button>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${albumSongs.sort((a, b) => Number(a.track_number || 0) - Number(b.track_number || 0)).map((song) => `
+              <div class="song-row" style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;background:var(--panel);">
+                <label style="cursor:pointer;"><input type="checkbox" class="library-select" data-song-id="${esc(song.id)}" /></label>
+                <span style="min-width:24px;font-weight:700;color:var(--muted);">${song.track_number || "?"}</span>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.title || "Untitled")}</div>
+                  <div class="meta" style="font-size:0.8em;">${esc(song.artist_name || "")} · ${esc((song.song_model || "").replace("acestep-v15-", ""))} · ${esc(String(song.duration || "?"))}s</div>
+                </div>
+                ${song.audio_url ? createPlayerHtml(song.audio_url) : ""}
+                <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:28px;padding:0 8px;border-radius:5px;font-size:0.8em;border:1px solid var(--line);background:var(--panel-2);color:var(--text);" href="${esc(song.audio_url || "")}" download>DL</a>
+                <button class="danger" style="height:28px;font-size:0.8em;padding:0 8px;" data-delete="${esc(song.id)}" data-title="${esc(song.title || "")}">×</button>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderLibraryList() {
+      const list = $("library-list");
+      const filtered = _libraryFiltered();
+      const view = $("library-view")?.value || "songs";
       if ($("library-count")) {
         $("library-count").className = `badge ${filtered.length ? "ok" : "warn"}`;
         $("library-count").textContent = `${filtered.length} saved`;
@@ -5084,18 +5162,57 @@
         list.innerHTML = `<div class="tiny">No saved songs match the current filters.</div>`;
         return;
       }
-      list.innerHTML = filtered.map((song) => songCardHtml(song)).join("");
+      if (view === "albums") {
+        // Group by album family, singles at the end
+        const groups = new Map();
+        const singles = [];
+        filtered.forEach((song) => {
+          if (song.album_family_id) {
+            if (!groups.has(song.album_family_id)) groups.set(song.album_family_id, []);
+            groups.get(song.album_family_id).push(song);
+          } else {
+            singles.push(song);
+          }
+        });
+        let html = "";
+        for (const [familyId, albumSongs] of groups) {
+          html += _albumCardHtml(familyId, albumSongs);
+        }
+        if (singles.length) {
+          html += `<h3 style="margin:20px 0 10px;font-weight:700;">Singles</h3>`;
+          html += singles.map((song) => songCardHtml(song)).join("");
+        }
+        list.innerHTML = html;
+      } else {
+        list.innerHTML = filtered.map((song) => songCardHtml(song)).join("");
+      }
       initPlayers(list);
-      list.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", async () => {
-        const title = button.dataset.title || "this song";
-        const confirmed = await confirmAction("Delete song", `Delete "${title}"? This cannot be undone.`);
-        if (!confirmed) return;
-        await api("/api/delete_song", { song_id: button.dataset.delete });
-        loadLibrary();
-        loadAlbumSaves();
+      // Delete handlers
+      list.querySelectorAll("[data-delete]").forEach((btn) => btn.addEventListener("click", async () => {
+        const title = btn.dataset.title || "this song";
+        if (!await confirmAction("Delete song", `Delete "${title}"?`)) return;
+        await api("/api/delete_song", { song_id: btn.dataset.delete });
+        loadLibrary(); loadAlbumSaves();
       }));
-      list.querySelectorAll("[data-delete-album-family]").forEach((button) => button.addEventListener("click", () => deleteAlbumFamily(button.dataset.deleteAlbumFamily)));
-      list.querySelectorAll("[data-delete-album]").forEach((button) => button.addEventListener("click", () => deleteAlbum(button.dataset.deleteAlbum)));
+      list.querySelectorAll("[data-delete-album-family]").forEach((btn) => btn.addEventListener("click", () => deleteAlbumFamily(btn.dataset.deleteAlbumFamily)));
+      list.querySelectorAll("[data-delete-album]").forEach((btn) => btn.addEventListener("click", () => deleteAlbum(btn.dataset.deleteAlbum)));
+      // Bulk select tracking
+      list.querySelectorAll(".library-select").forEach((cb) => cb.addEventListener("change", _updateBulkDeleteButton));
+    }
+
+    function _updateBulkDeleteButton() {
+      const selected = document.querySelectorAll(".library-select:checked");
+      const btn = $("library-bulk-delete");
+      if (btn) {
+        btn.style.display = selected.length ? "" : "none";
+        btn.textContent = `Delete ${selected.length} selected`;
+      }
+      const selectAll = $("library-select-all");
+      if (selectAll) {
+        const all = document.querySelectorAll(".library-select");
+        selectAll.checked = all.length > 0 && selected.length === all.length;
+        selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+      }
     }
 
     async function loadLibrary() {
@@ -6085,9 +6202,23 @@
       $("ace-lm-upload-private")?.addEventListener("click", () => uploadPrivateAceLm().catch((err) => setStatus(err.message, "error")));
       $("ace-lm-cleanup-originals")?.addEventListener("click", () => deleteOrdinaryAceLms().catch((err) => setStatus(err.message, "error")));
       $("library-refresh").addEventListener("click", loadLibrary);
-      ["library-search", "library-filter-model", "library-sort"].forEach((id) => {
+      ["library-search", "library-filter-model", "library-filter-album", "library-filter-type", "library-sort", "library-view"].forEach((id) => {
         $(id)?.addEventListener("input", renderLibraryList);
         $(id)?.addEventListener("change", renderLibraryList);
+      });
+      $("library-select-all")?.addEventListener("change", () => {
+        const checked = $("library-select-all").checked;
+        document.querySelectorAll(".library-select").forEach((cb) => { cb.checked = checked; });
+        _updateBulkDeleteButton();
+      });
+      $("library-bulk-delete")?.addEventListener("click", async () => {
+        const selected = [...document.querySelectorAll(".library-select:checked")].map((cb) => cb.dataset.songId);
+        if (!selected.length) return;
+        if (!await confirmAction("Bulk delete", `Delete ${selected.length} selected song(s)?`)) return;
+        for (const id of selected) {
+          try { await api("/api/delete_song", { song_id: id }); } catch {}
+        }
+        loadLibrary(); loadAlbumSaves();
       });
       $("lora-load").addEventListener("click", () => lora("load"));
       $("lora-unload").addEventListener("click", () => lora("unload"));
