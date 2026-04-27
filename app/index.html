@@ -6243,6 +6243,34 @@
       const language = $("dataset-language").value || "en";
       if (!trigger) throw new Error("Trigger tag is required.");
       if (!state.datasetImportRoot) await importDatasetFolder();
+
+      // Auto-label with smart mode before training (online lyrics + BPM/key detection)
+      if (state.datasetFiles?.length) {
+        setStatus("Smart auto-labeling dataset (online lyrics + audio analysis)...", "busy");
+        try {
+          const labelData = await api("/api/lora/dataset/autolabel", {
+            files: state.datasetFiles,
+            mode: "smart",
+            custom_tag: trigger,
+            tag_position: $("dataset-tag-position")?.value || "prepend",
+            language: language,
+          });
+          if (labelData.labels?.length) {
+            state.datasetFiles = labelData.labels;
+            renderDatasetTable(state.datasetFiles);
+            setStatus(`Labeled ${labelData.labels.length} files. Starting training...`, "busy");
+            // Save the labeled dataset
+            await api("/api/lora/dataset/save", {
+              entries: labelData.labels,
+              dataset_id: state.datasetId,
+              metadata: { custom_tag: trigger, language: language, smart_labeled: true },
+            });
+          }
+        } catch (labelErr) {
+          console.warn("Smart auto-label failed, continuing with basic labels:", labelErr);
+        }
+      }
+
       const payload = {
         dataset_id: state.datasetId,
         import_root: state.datasetImportRoot,
