@@ -734,7 +734,7 @@ class AceTrainingManager:
             "save_every_n_epochs": parse_int(payload.get("save_every_n_epochs", payload.get("save_every")), 25, 1, 10000),
             "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
-            "device": str(payload.get("device") or "auto"),
+            "device": str(payload.get("device") or ("cpu" if sys.platform == "darwin" else "auto")),
             "precision": str(payload.get("precision") or "auto"),
             "auto_load": parse_bool(payload.get("auto_load"), True),
             "lora_scale": parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0),
@@ -876,6 +876,8 @@ class AceTrainingManager:
                 str(params["precision"]),
                 "--gradient-checkpointing",
                 "--no-offload-encoder",
+                "--num-workers",
+                "0",
             ]
             if adapter_type == "lokr":
                 train_command.extend(["--lokr-linear-dim", "64", "--lokr-linear-alpha", "128", "--lokr-factor", "-1", "--lokr-weight-decompose"])
