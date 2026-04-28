@@ -5364,7 +5364,9 @@ def generate_album(
                 try:
                     _cleanup_accelerator_memory()
                     track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
-                    track_lm_enabled = _requested_ace_lm_model({"ace_lm_model": track_lm_model}) != "none"
+                    if track_lm_model == "none" or not track_lm_model.strip():
+                        track_lm_model = ACE_LM_PREFERRED_MODEL
+                    track_lm_enabled = True  # Always use LM for album generation
                     track_has_vocal_lyrics = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
                     quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
