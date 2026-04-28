@@ -3522,6 +3522,15 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
+    print(
+        f"[generation] Official request: model={params.get('song_model')}, "
+        f"lm={lm_model or 'NONE'}, requires_lm={needs_lm}, "
+        f"thinking={params.get('thinking')}, cot_metas={params.get('use_cot_metas')}, "
+        f"cot_caption={params.get('use_cot_caption')}, cot_lyrics={params.get('use_cot_lyrics')}, "
+        f"steps={params.get('inference_steps')}, guidance={params.get('guidance_scale')}, "
+        f"duration={params.get('duration')}, caption={str(params.get('caption',''))[:80]}",
+        flush=True,
+    )
     runtime_caption = str(params.get("caption") or "")
     runtime_lyrics = "[Instrumental]" if params["instrumental"] else str(params.get("lyrics") or "")
     if len(runtime_caption) > ACE_STEP_CAPTION_CHAR_LIMIT:
