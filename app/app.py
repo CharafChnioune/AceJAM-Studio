@@ -107,6 +107,12 @@ from acestep.constants import (
 from acestep.handler import AceStepHandler
 from lora_trainer import AceTrainingManager
 from local_composer import LocalComposer
+from album_quality_gate import (
+    ALBUM_PAYLOAD_GATE_VERSION,
+    AlbumRunDebugLogger,
+    build_album_global_sonic_caption,
+    evaluate_album_payload_quality,
+)
 from songwriting_toolkit import (
     ALBUM_FINAL_MODEL,
     ALBUM_MODEL_PORTFOLIO,
@@ -3033,6 +3039,12 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "tag_list": list(payload.get("tag_list") or []),
         "payload_warnings": payload_warnings,
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
+        "payload_quality_gate": payload.get("payload_quality_gate") if isinstance(payload.get("payload_quality_gate"), dict) else {},
+        "payload_gate_status": str(payload.get("payload_gate_status") or ""),
+        "tag_coverage": payload.get("tag_coverage") if isinstance(payload.get("tag_coverage"), dict) else {},
+        "caption_integrity": payload.get("caption_integrity") if isinstance(payload.get("caption_integrity"), dict) else {},
+        "lyric_duration_fit": payload.get("lyric_duration_fit") if isinstance(payload.get("lyric_duration_fit"), dict) else {},
+        "repair_actions": list(payload.get("repair_actions") or []),
         "instrumental": instrumental,
         "duration": duration,
         "bpm": bpm,
@@ -4472,6 +4484,11 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "official_features": params["official_fields"],
         "generation_metadata_audit": _jsonable(metadata_audit),
         "hit_readiness": _jsonable(hit_readiness),
+        "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
+        "payload_gate_status": params.get("payload_gate_status") or "",
+        "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
+        "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
+        "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
         "effective_settings": _jsonable(params.get("effective_settings") or _effective_settings_summary(params)),
         "settings_coverage": _jsonable(params.get("settings_coverage") or ace_step_settings_registry().get("coverage") or {}),
         "runtime_planner": _jsonable(params.get("runtime_planner") or runtime_planner_report(params)),
@@ -4506,6 +4523,11 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "lm_backend": params["lm_backend"],
         "generation_metadata_audit": metadata_audit,
         "hit_readiness": hit_readiness,
+        "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
+        "payload_gate_status": params.get("payload_gate_status") or "",
+        "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
+        "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
+        "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
         "effective_settings": meta["effective_settings"],
         "settings_coverage": meta["settings_coverage"],
         "runtime_planner": meta["runtime_planner"],
@@ -4708,6 +4730,11 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "generation_metadata_audit": _jsonable(metadata_audit),
         "hit_readiness": _jsonable(hit_readiness),
+        "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
+        "payload_gate_status": params.get("payload_gate_status") or "",
+        "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
+        "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
+        "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
         "effective_settings": _jsonable(params.get("effective_settings") or _effective_settings_summary(params)),
         "settings_coverage": _jsonable(params.get("settings_coverage") or ace_step_settings_registry().get("coverage") or {}),
         "runtime_planner": _jsonable(params.get("runtime_planner") or runtime_planner_report(params)),
@@ -4743,6 +4770,11 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "audio_format": params["audio_format"],
         "generation_metadata_audit": metadata_audit,
         "hit_readiness": hit_readiness,
+        "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
+        "payload_gate_status": params.get("payload_gate_status") or "",
+        "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
+        "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
+        "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
         "effective_settings": meta["effective_settings"],
         "settings_coverage": meta["settings_coverage"],
         "runtime_planner": meta["runtime_planner"],
@@ -5284,6 +5316,28 @@ def generate_album(
         ace_lm_model = _requested_ace_lm_model(request_payload)
         request_payload["ace_lm_model"] = ace_lm_model
         album_job_id = str(request_payload.get("album_job_id") or "")
+        album_debug_id = album_job_id or f"manual-{uuid.uuid4().hex[:12]}"
+        album_debug = AlbumRunDebugLogger(DATA_DIR, album_debug_id)
+        request_payload["album_debug_dir"] = str(album_debug.root)
+        request_payload["llm_debug_log_file"] = str(album_debug.path("03_crewai_messages.jsonl"))
+        album_debug.write_json(
+            "01_request.json",
+            {
+                "concept": concept,
+                "num_tracks": num_tracks,
+                "track_duration": track_duration,
+                "language": language,
+                "song_model": song_model,
+                "request_payload": request_payload,
+            },
+        )
+        logs.append(f"Album debug log dir: {album_debug.root}")
+        _album_job_log(
+            album_job_id,
+            f"Album debug log dir: {album_debug.root}",
+            album_debug_dir=str(album_debug.root),
+            album_payload_gate_version=ALBUM_PAYLOAD_GATE_VERSION,
+        )
         planner_lm_provider = normalize_provider(request_payload.get("planner_lm_provider") or planner_lm_provider or "ollama")
         embedding_lm_provider = normalize_provider(request_payload.get("embedding_lm_provider") or request_payload.get("embedding_provider") or embedding_lm_provider or planner_lm_provider)
         if not ollama_model:
@@ -5292,6 +5346,21 @@ def generate_album(
             embedding_model = DEFAULT_ALBUM_EMBEDDING_MODEL
         track_duration = parse_duration_seconds(request_payload.get("track_duration") or request_payload.get("duration") or track_duration, track_duration)
         album_options = _album_options_from_payload(request_payload, song_model=song_model)
+        album_options["album_debug_dir"] = str(album_debug.root)
+        album_options["llm_debug_log_file"] = str(album_debug.path("03_crewai_messages.jsonl"))
+        album_debug.write_json(
+            "02_contract.json",
+            {
+                "user_album_contract": album_options.get("user_album_contract"),
+                "input_contract_applied": album_options.get("input_contract_applied"),
+                "blocked_unsafe_count": album_options.get("blocked_unsafe_count"),
+                "album_options_preview": {
+                    key: value
+                    for key, value in album_options.items()
+                    if key not in {"album_model_portfolio", "user_album_contract"}
+                },
+            },
+        )
         planned_tracks = _json_list(request_payload.get("tracks") or request_payload.get("planned_tracks"))
         strategy = str(album_options.get("song_model_strategy") or "all_models_album")
         album_models = album_models_for_strategy(
@@ -5337,6 +5406,7 @@ def generate_album(
             embedding_provider=embedding_lm_provider,
         )
         tracks = result.get("tracks", [])
+        album_debug.write_json("04_plan_outputs.json", result)
         logs.extend(result.get("logs", []))
         actual_memory = ((result.get("toolkit_report") or {}).get("memory") or {}) if isinstance(result.get("toolkit_report"), dict) else {}
         if actual_memory.get("embedding_model"):
@@ -5359,11 +5429,20 @@ def generate_album(
                 input_contract_version=str(result.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION),
                 blocked_unsafe_count=int(result.get("blocked_unsafe_count") or album_options.get("blocked_unsafe_count") or 0),
                 contract_repair_count=int(result.get("contract_repair_count") or 0),
+                album_debug_dir=str(album_debug.root),
+                album_payload_gate_version=ALBUM_PAYLOAD_GATE_VERSION,
             )
 
         if not result.get("success", True) or not tracks or "error" in tracks[0]:
             logs.append("ERROR: Album planning failed")
-            return json.dumps({"tracks": tracks, "logs": logs, "success": False, "error": result.get("error") or "Planning failed"})
+            return json.dumps({
+                "tracks": tracks,
+                "logs": logs,
+                "success": False,
+                "error": result.get("error") or "Planning failed",
+                "album_debug_dir": str(album_debug.root),
+                "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
+            })
 
         logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
         logs.append(
@@ -5371,6 +5450,12 @@ def generate_album(
             f"{ace_lm_model if ace_lm_model != 'none' else 'off unless official LM controls are enabled'}."
         )
         logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
+        album_global_caption = build_album_global_sonic_caption(
+            concept,
+            tracks,
+            existing=request_payload.get("global_caption") or "",
+        )
+        logs.append(f"AlbumPayloadQualityGate: enabled ({ALBUM_PAYLOAD_GATE_VERSION}); debug={album_debug.root}")
         logs.append("---")
         # Free unified memory: unload LLM models before heavy audio generation
         _unload_llm_models_for_generation()
@@ -5479,7 +5564,12 @@ def generate_album(
                         "title": track_title,
                         "description": track.get("description", ""),
                         "caption": track.get("tags") or track.get("caption") or "",
+                        "tag_list": track.get("tag_list", []),
                         "lyrics": track.get("lyrics", ""),
+                        "required_phrases": track.get("required_phrases", []),
+                        "style": track.get("style", ""),
+                        "vibe": track.get("vibe", ""),
+                        "narrative": track.get("narrative", ""),
                         "duration": track.get("duration") or track_duration,
                         "bpm": track.get("bpm") or request_payload.get("bpm") or DEFAULT_BPM,
                         "key_scale": track.get("key_scale") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE,
@@ -5489,7 +5579,7 @@ def generate_album(
                         "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
                         "song_model": track_model,
                         "ace_lm_model": track_lm_model,
-                        "global_caption": request_payload.get("global_caption") or concept,
+                        "global_caption": album_global_caption,
                         "inference_steps": clamp_int(
                             model_render_settings.get("inference_steps", model_item.get("default_steps")),
                             int(model_item.get("default_steps") or _quality_default_steps(track_model, quality_profile)),
@@ -5560,8 +5650,73 @@ def generate_album(
                             "model_render_settings": _jsonable(model_render_settings),
                             "final_model_policy": _jsonable(track.get("final_model_policy", {})),
                             "tag_list": track.get("tag_list", []),
+                            "album_debug_dir": str(album_debug.root),
+                            "payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                         },
                     }
+                    album_debug.append_jsonl(
+                        "05_generation_payloads.jsonl",
+                        {
+                            "phase": "pre_gate",
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "payload": generation_payload,
+                        },
+                    )
+                    gate = evaluate_album_payload_quality(
+                        generation_payload,
+                        options={
+                            **album_options,
+                            "track_duration": generation_payload.get("duration") or track_duration,
+                        },
+                        repair=True,
+                    )
+                    generation_payload = gate["repaired_payload"]
+                    track["payload_quality_gate"] = {key: value for key, value in gate.items() if key != "repaired_payload"}
+                    track["payload_gate_status"] = gate.get("status")
+                    track["tag_coverage"] = gate.get("tag_coverage")
+                    track["caption_integrity"] = gate.get("caption_integrity")
+                    track["lyric_duration_fit"] = gate.get("lyric_duration_fit")
+                    track["repair_actions"] = gate.get("repair_actions") or []
+                    album_debug.append_jsonl(
+                        "06_quality_audit.jsonl",
+                        {
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "gate": {key: value for key, value in gate.items() if key != "repaired_payload"},
+                        },
+                    )
+                    if not gate.get("gate_passed"):
+                        issue_preview = "; ".join(
+                            f"{item.get('id')}: {item.get('detail')}"
+                            for item in (gate.get("issues") or [])[:6]
+                        )
+                        raise ValueError(f"AlbumPayloadQualityGate failed: {issue_preview or gate.get('status')}")
+                    if gate.get("status") == "auto_repair":
+                        logs.append(
+                            f"    Payload gate auto-repaired {track_title}: "
+                            f"{', '.join(str(item) for item in gate.get('repair_actions') or [])}"
+                        )
+                        _album_job_log(
+                            album_job_id,
+                            f"Payload gate auto-repaired {album_id} track {i + 1}: {track_title}",
+                            album_debug_dir=str(album_debug.root),
+                        )
+                    album_debug.append_jsonl(
+                        "05_generation_payloads.jsonl",
+                        {
+                            "phase": "post_gate",
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "payload": generation_payload,
+                        },
+                    )
                     payload_validation = _validate_generation_payload(generation_payload)
                     track["payload_validation"] = payload_validation
                     track["payload_warnings"] = payload_validation.get("payload_warnings", [])
@@ -5570,6 +5725,20 @@ def generate_album(
                     generation_result = _run_advanced_generation(generation_payload)
                     if not generation_result.get("success"):
                         raise RuntimeError(generation_result.get("error") or "Track generation failed")
+                    album_debug.append_jsonl(
+                        "07_generation_results.jsonl",
+                        {
+                            "status": "success",
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "result_id": generation_result.get("result_id"),
+                            "active_song_model": generation_result.get("active_song_model"),
+                            "audios": generation_result.get("audios", []),
+                            "payload_gate_status": track.get("payload_gate_status"),
+                        },
+                    )
 
                     track["result_id"] = generation_result.get("result_id")
                     track["active_song_model"] = generation_result.get("active_song_model")
@@ -5627,6 +5796,19 @@ def generate_album(
                 except Exception as track_exc:
                     track["generated"] = False
                     track["error"] = str(track_exc)
+                    album_debug.append_jsonl(
+                        "07_generation_results.jsonl",
+                        {
+                            "status": "failed",
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "error": str(track_exc),
+                            "payload_gate_status": track.get("payload_gate_status"),
+                            "payload_quality_gate": track.get("payload_quality_gate"),
+                        },
+                    )
                     base_track["model_results"].append(_jsonable(track))
                     logs.append(f"    FAILED: {track_exc}")
                     print(f"[generate_album] {album_id} track {i+1} failed: {track_exc}")
@@ -5657,6 +5839,8 @@ def generate_album(
                     "audios": album_audios,
                     "toolkit_report": result.get("toolkit_report", {}),
                     "album_options": album_options,
+                    "album_debug_dir": str(album_debug.root),
+                    "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                     "download_url": f"/api/albums/{album_id}/download",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 },
@@ -5698,6 +5882,8 @@ def generate_album(
                 "album_model_portfolio": album_models,
                 "toolkit_report": result.get("toolkit_report", {}),
                 "album_options": album_options,
+                "album_debug_dir": str(album_debug.root),
+                "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                 "download_url": f"/api/album-families/{album_family_id}/download",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -5735,6 +5921,8 @@ def generate_album(
             "planner_provider": planner_lm_provider,
             "embedding_model": embedding_model,
             "embedding_provider": embedding_lm_provider,
+            "album_debug_dir": str(album_debug.root),
+            "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
             "logs": logs,
             "success": album_success,
             "error": "" if album_success else f"Album incomplete: {generated_count}/{expected_count} track/model renders generated.",
@@ -5747,7 +5935,14 @@ def generate_album(
         print(f"[generate_album ERROR] {type(exc).__name__}: {exc}")
         print(traceback.format_exc())
         logs.append(f"ERROR: {exc}")
-        return json.dumps({"tracks": [], "logs": logs, "success": False, "error": str(exc)})
+        debug_dir = ""
+        if "album_debug" in locals():
+            debug_dir = str(album_debug.root)
+            try:
+                album_debug.write_json("99_exception.json", {"error": str(exc), "traceback": traceback.format_exc(), "logs": logs})
+            except Exception:
+                pass
+        return json.dumps({"tracks": [], "logs": logs, "success": False, "error": str(exc), "album_debug_dir": debug_dir})
 
 
 @app.api(name="generate_advanced", concurrency_limit=1, time_limit=3600)

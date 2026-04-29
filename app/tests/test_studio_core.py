@@ -312,6 +312,29 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(planner["steps"], 64)
         self.assertIn(planner["risk"], {"medium", "high"})
 
+    def test_hit_readiness_fails_caption_and_fallback_lyric_leakage(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "quality_profile": "chart_master",
+            "caption": "Track 1: Broken Caption\n[Verse]\nThis is lyric leakage",
+            "lyrics": "[Verse]\nMorning finds the you on the floor\n\n[Chorus]\nThe you is here",
+            "bpm": 95,
+            "key_scale": "A minor",
+            "time_signature": "4",
+            "duration": 60,
+            "batch_size": 3,
+            "inference_steps": 64,
+            "lm_backend": "mlx",
+        }
+
+        readiness = hit_readiness_report(payload, task_type="text2music", song_model="acestep-v15-xl-sft")
+        statuses = {check["id"]: check["status"] for check in readiness["checks"]}
+
+        self.assertEqual(readiness["status"], "fail")
+        self.assertEqual(statuses["caption_integrity"], "fail")
+        self.assertEqual(statuses["no_fallback_artifacts"], "fail")
+
     def test_docs_best_model_settings(self):
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["inference_steps"], 8)
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["guidance_scale"], 7.0)

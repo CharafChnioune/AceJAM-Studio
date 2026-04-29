@@ -1450,7 +1450,7 @@ def pro_quality_policy() -> dict[str, Any]:
 
 def _quality_status_from_score(score: int, *, failure: bool = False) -> str:
     if failure:
-        return "review"
+        return "fail"
     if score >= 85:
         return "pass"
     if score >= 70:
@@ -1501,11 +1501,37 @@ def hit_readiness_report(payload: dict[str, Any], *, task_type: str | None = Non
     expected_sections = 2 if task == "text2music" and not instrumental else 0
     add("section_map", "pass" if section_hits >= expected_sections else "warn", f"{section_hits} section tag(s)", 10)
 
+    caption_leak_count = len(
+        re.findall(
+            r"(?i)(\[[^\]]*(?:verse|chorus|hook|bridge|intro|outro)[^\]]*\]|\b(?:verse|lyrics|naming drop|track\s+\d+|album|bpm|keyscale|duration|metadata|produced by|artist|description|tags)\s*:)",
+            caption,
+        )
+    )
+    add("caption_integrity", "pass" if caption_leak_count == 0 else "fail", f"{caption_leak_count} caption leak marker(s)", 10)
+
     meta_leak_count = sum(1 for line in lyrics.splitlines() if _META_LEAK_LINE_RE.search(line.strip()))
     add("no_meta_leakage", "pass" if meta_leak_count == 0 else "fail", f"{meta_leak_count} meta/planning line(s)", 14)
 
+    fallback_artifact_count = len(
+        re.findall(
+            r"(?i)\b(?:morning finds the|light is leaning through the door|kept the receipt from the life before|now i want the sound and nothing more|the you|the was|the are|the is)\b",
+            lyrics,
+        )
+    )
+    add("no_fallback_artifacts", "pass" if fallback_artifact_count == 0 else "fail", f"{fallback_artifact_count} fallback artifact(s)", 10)
+
     metadata_present = bool(payload.get("bpm") not in [None, ""] and payload.get("key_scale") not in [None, ""] and payload.get("time_signature") not in [None, ""])
     add("metadata_presence", "pass" if metadata_present else "warn", "BPM/key/time present" if metadata_present else "metadata is auto or missing", 8)
+
+    gate = payload.get("payload_quality_gate") if isinstance(payload.get("payload_quality_gate"), dict) else {}
+    gate_status = str(payload.get("payload_gate_status") or gate.get("status") or "").strip()
+    if gate_status:
+        add(
+            "album_payload_gate",
+            "pass" if gate_status == "pass" else "warn" if gate_status == "auto_repair" else "fail",
+            gate_status,
+            12,
+        )
 
     settings = payload.get("settings_compliance") or {}
     settings_valid = settings.get("valid", True) is not False

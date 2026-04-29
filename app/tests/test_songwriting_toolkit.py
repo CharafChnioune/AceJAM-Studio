@@ -59,6 +59,7 @@ from songwriting_toolkit import (
     lyric_stats,
     lyric_length_plan,
     make_crewai_tools,
+    expand_lyrics_for_duration,
     normalize_album_tracks,
     normalize_artist_name,
     parse_duration_seconds,
@@ -776,6 +777,23 @@ Lyrics:
         self.assertIsInstance(tracks[0]["guidance_scale"], float)
         self.assertIsInstance(tracks[0]["shift"], float)
         self.assertEqual(tracks[0]["seed"], "-1")
+
+    def test_fallback_lyric_expansion_avoids_stopword_subject_artifacts(self):
+        lyrics = expand_lyrics_for_duration(
+            title="The You",
+            concept="A hopeful pop song about repair",
+            lyrics="",
+            duration=60,
+            language="en",
+            density="balanced",
+            structure_preset="auto",
+        )
+
+        lowered = lyrics.lower()
+        self.assertNotIn("morning finds the", lowered)
+        self.assertNotIn("the you", lowered)
+        self.assertNotIn("the was", lowered)
+        self.assertIn("morning lifts", lowered)
 
     def test_album_crew_uses_ollama_llm_without_native_tool_parser(self):
         kwargs = _crewai_llm_kwargs("qwen3.6:27b-instruct-general")

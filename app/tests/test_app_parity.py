@@ -270,6 +270,37 @@ class AppParityTest(unittest.TestCase):
         self.assertIsNone(request["params"]["bpm"])
         self.assertEqual(request["params"]["keyscale"], "")
 
+    def test_parse_generation_payload_preserves_album_quality_gate_metadata(self):
+        gate = {
+            "version": "album-payload-quality-gate-2026-04-29",
+            "status": "auto_repair",
+            "gate_passed": True,
+        }
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "bright pop, steady groove, piano, clear lead vocal, polished studio mix",
+                    "lyrics": "[Verse]\nLine one lands clearly\n\n[Chorus]\nHook line stays bright",
+                    "duration": 30,
+                    "payload_quality_gate": gate,
+                    "payload_gate_status": "auto_repair",
+                    "tag_coverage": {"status": "pass"},
+                    "caption_integrity": {"status": "pass"},
+                    "lyric_duration_fit": {"status": "pass"},
+                    "repair_actions": ["caption_rebuilt_from_tag_dimensions"],
+                }
+            )
+
+        self.assertEqual(params["payload_quality_gate"], gate)
+        self.assertEqual(params["payload_gate_status"], "auto_repair")
+        self.assertEqual(params["tag_coverage"]["status"], "pass")
+        self.assertEqual(params["caption_integrity"]["status"], "pass")
+        self.assertEqual(params["lyric_duration_fit"]["status"], "pass")
+        self.assertEqual(params["repair_actions"], ["caption_rebuilt_from_tag_dimensions"])
+
     def test_invalid_key_validation_returns_field_error(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}):
             validation = acejam_app._validate_generation_payload(
@@ -746,8 +777,17 @@ class AppParityTest(unittest.TestCase):
                     "track_number": 1,
                     "artist_name": "Unit Signal",
                     "title": "Seven Model Test",
-                    "tags": "pop, radio ready, crisp modern mix",
-                    "lyrics": "[Verse]\nWe test the route\n\n[Chorus]\nEvery model plays it loud",
+                    "tags": (
+                        "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                        "dynamic hook arrangement, crisp modern mix"
+                    ),
+                    "lyrics": (
+                        "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
+                        "Clean chords carry the signal\nThe chorus waits for release\n\n"
+                        "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
+                        "Seven engines share the light\nUnit Signal rides tonight\n\n"
+                        "[Outro]\nThe final note stays clean"
+                    ),
                     "duration": 30,
                     "bpm": 120,
                     "key_scale": "C minor",

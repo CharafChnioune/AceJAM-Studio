@@ -22,6 +22,7 @@ from prompt_kit import (
     prompt_kit_payload,
     section_map_for,
 )
+from album_quality_gate import evaluate_album_payload_quality
 from studio_core import (
     ace_step_settings_compliance,
     ace_step_settings_registry,
@@ -398,6 +399,9 @@ def _subject_terms(text: str) -> list[str]:
     stop = {
         "a", "an", "and", "the", "to", "of", "in", "on", "with", "for", "about", "song",
         "album", "track", "music", "make", "like", "style", "ft", "feat", "featuring",
+        "you", "your", "yours", "we", "our", "they", "them", "their", "was", "were",
+        "are", "is", "this", "that", "these", "those", "vibe", "verse", "chorus",
+        "lyrics", "narrative", "produced", "prod", "man", "woman", "one", "two",
     }
     terms = [w for w in _words(text) if len(w) > 2 and w not in stop]
     counts = Counter(terms)
@@ -718,7 +722,10 @@ def polish_caption(tags: Any, description: str = "", global_caption: str = "") -
 def _fallback_lines(language: str, section: str, title: str, terms: list[str], metaphor: str, rap: bool, count: int) -> list[str]:
     subject = terms[count % len(terms)] if terms else "moment"
     accent = terms[(count + 1) % len(terms)] if len(terms) > 1 else "city"
-    hook = re.sub(r"[^A-Za-z0-9 ']", "", title).strip() or "All The Way Up"
+    hook = re.sub(r"[^A-Za-z0-9 ']", "", title).strip()
+    if not _subject_terms(hook):
+        hook = "The Moment"
+    hook = hook or "All The Way Up"
     # Use count to rotate through different line templates for variety across tracks
     variant = count % 4
     if language == "nl":
@@ -758,7 +765,7 @@ def _fallback_lines(language: str, section: str, title: str, terms: list[str], m
         [f"Dead end road but the {subject} speaks", f"Mic check one two, hear the floorboard creak", f"No handouts, built this week by week", f"Crown heavy but I never feel weak"],
     ]
     en_vocal = [
-        [f"Morning finds the {subject} on the floor", f"{accent.capitalize()} light is leaning through the door", f"I kept the receipt from the life before", f"Now I want the sound and nothing more"],
+        [f"Morning lifts {subject} from the floor", f"{accent.capitalize()} light moves softly through the door", f"I turn the page and ask for more", f"Every note becomes the reason"],
         [f"Midnight paints the {subject} in the glass", f"{accent.capitalize()} breeze reminds me time moves fast", f"I held on tight but I couldn't last", f"Now I build a future from the past"],
         [f"Sunrise burns the {subject} clean", f"{accent.capitalize()} shadows fade from what I've seen", f"Every wound becomes a place I've been", f"Now I write the ending to this scene"],
         [f"Twilight carries {subject} through the air", f"{accent.capitalize()} noise dissolves and I don't care", f"I stripped it down, left the bones laid bare", f"Now the music is my only prayer"],
@@ -987,14 +994,25 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
         song_model=str(track.get("song_model") or options.get("song_model") or ALBUM_FINAL_MODEL),
         quality_profile=str(track.get("quality_profile") or options.get("quality_profile") or "chart_master"),
     )
-    if hit_readiness.get("status") == "review":
+    if hit_readiness.get("status") in {"review", "fail"}:
         quality_checks["hook_has_title_or_emotional_promise"] = "review"
+    payload_gate = evaluate_album_payload_quality(
+        track,
+        options=options,
+        repair=False,
+    )
+    payload_gate_public = {key: value for key, value in payload_gate.items() if key != "repaired_payload"}
     return {
         "prompt_kit_version": PROMPT_KIT_VERSION,
         "settings_policy_version": settings_compliance["version"],
         "settings_compliance": settings_compliance,
         "pro_quality_policy": pro_quality_policy(),
         "hit_readiness": hit_readiness,
+        "payload_quality_gate": payload_gate_public,
+        "payload_gate_status": payload_gate.get("status"),
+        "tag_coverage": payload_gate.get("tag_coverage"),
+        "caption_integrity": payload_gate.get("caption_integrity"),
+        "lyric_duration_fit": payload_gate.get("lyric_duration_fit"),
         "runtime_planner": runtime_plan,
         "length_plan": plan,
         "lyric_stats": stats,
@@ -1282,6 +1300,12 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         **dict(normalized.get("quality_checks") or {}),
         **dict(normalized["tool_report"].get("quality_checks") or {}),
     }
+    normalized["payload_quality_gate"] = normalized["tool_report"].get("payload_quality_gate", {})
+    normalized["payload_gate_status"] = normalized["tool_report"].get("payload_gate_status", "")
+    normalized["tag_coverage"] = normalized["tool_report"].get("tag_coverage", {})
+    normalized["caption_integrity"] = normalized["tool_report"].get("caption_integrity", {})
+    normalized["lyric_duration_fit"] = normalized["tool_report"].get("lyric_duration_fit", {})
+    normalized["repair_actions"] = list(normalized.get("repair_actions") or [])
     normalized["troubleshooting_hints"] = list(
         dict.fromkeys(
             list(normalized.get("troubleshooting_hints") or [])

@@ -194,6 +194,13 @@ class TrackProductionPayloadModel(_AceJamStructuredModel):
     model_render_notes: Any = Field(default_factory=dict)
     settings_policy_version: str = ""
     settings_compliance: dict[str, Any] = Field(default_factory=dict)
+    quality_checks: dict[str, Any] = Field(default_factory=dict)
+    contract_compliance: dict[str, Any] = Field(default_factory=dict)
+    tag_coverage: dict[str, Any] = Field(default_factory=dict)
+    lyric_duration_fit: dict[str, Any] = Field(default_factory=dict)
+    caption_integrity: dict[str, Any] = Field(default_factory=dict)
+    payload_gate_status: str = ""
+    repair_actions: list[Any] = Field(default_factory=list)
 
 
 def _clip_text(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
@@ -295,6 +302,35 @@ def _compact_json(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
     except TypeError:
         text = str(value)
     return _clip_text(text, limit)
+
+
+def _debug_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _debug_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_debug_jsonable(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _append_llm_debug_jsonl(path_value: Any, payload: dict[str, Any]) -> None:
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return
+    try:
+        path = Path(path_text)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            **_debug_jsonable(payload),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True, default=str) + "\n")
+    except Exception as exc:
+        print(f"[album_crew][llm-debug-log][warning] {type(exc).__name__}: {_monitor_preview(exc, 220)}", flush=True)
 
 
 def _small_scalar(value: Any, limit: int = 160) -> Any:
@@ -919,7 +955,7 @@ def _is_lmstudio_model_crash(value: Any) -> bool:
     return "model has crashed" in text or "exit code: null" in text
 
 
-def _make_llm(model_name: str, provider: str = "ollama"):
+def _make_llm(model_name: str, provider: str = "ollama", debug_log_file: str | None = None):
     from crewai import LLM
 
     provider_name = normalize_provider(provider)
@@ -953,9 +989,31 @@ def _make_llm(model_name: str, provider: str = "ollama"):
         for attempt in range(total_attempts):
             try:
                 call_args, call_kwargs = _lmstudio_no_think_args(args, kwargs, provider_name)
+                _append_llm_debug_jsonl(
+                    debug_log_file,
+                    {
+                        "event": "request",
+                        "provider": provider_name,
+                        "model": model_name,
+                        "attempt": attempt + 1,
+                        "args": call_args,
+                        "kwargs": call_kwargs,
+                    },
+                )
                 result = getattr(llm, "_acejam_original_call")(*call_args, **call_kwargs)
             except Exception as exc:
                 text = str(exc)
+                _append_llm_debug_jsonl(
+                    debug_log_file,
+                    {
+                        "event": "exception",
+                        "provider": provider_name,
+                        "model": model_name,
+                        "attempt": attempt + 1,
+                        "exception_type": type(exc).__name__,
+                        "exception": text,
+                    },
+                )
                 if "OpenAI API call failed" in text:
                     text = text.replace("OpenAI API call failed", f"{provider_label(provider_name)} CrewAI call failed for {model_name}")
                 if "context length" in text.lower() or "input length" in text.lower():
@@ -998,6 +1056,18 @@ def _make_llm(model_name: str, provider: str = "ollama"):
                 )
                 raise
             last_result = result
+            _append_llm_debug_jsonl(
+                debug_log_file,
+                {
+                    "event": "response",
+                    "provider": provider_name,
+                    "model": model_name,
+                    "attempt": attempt + 1,
+                    "response_type": type(result).__name__,
+                    "response": result,
+                    "response_chars": len(str(result or "")),
+                },
+            )
             _debug_print_response("raw-response", result, attempt)
             if isinstance(result, str) and "<think" in result.lower():
                 stripped = _strip_thinking_blocks(result)
@@ -1014,6 +1084,15 @@ def _make_llm(model_name: str, provider: str = "ollama"):
                 break
             time.sleep(CREWAI_EMPTY_RESPONSE_RETRY_DELAY)
         fallback = _empty_response_fallback_text(model_name)
+        _append_llm_debug_jsonl(
+            debug_log_file,
+            {
+                "event": "empty_response_fallback",
+                "provider": provider_name,
+                "model": model_name,
+                "response": fallback,
+            },
+        )
         _debug_print_response("empty-response-fallback", fallback, CREWAI_EMPTY_RESPONSE_RETRIES)
         return fallback
 
@@ -1174,7 +1253,7 @@ def create_album_bible_crew(
     from crewai import Agent, Crew, Process
 
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
-    llm = _make_llm(ollama_model, planner_provider)
+    llm = _make_llm(ollama_model, planner_provider, str(opts.get("llm_debug_log_file") or ""))
     lang_preset = language_preset(language)
     matched_genres = infer_genre_modules(opts["sanitized_concept"], max_modules=2)
     length_plan = lyric_length_plan(
@@ -1285,7 +1364,7 @@ def create_track_production_crew(
     from crewai import Agent, Crew, Process
 
     opts = _coerce_options(str(options.get("concept") if isinstance(options, dict) else "") or str(album_bible.get("concept") or ""), num_tracks, track_duration, language, options)
-    llm = _make_llm(ollama_model, planner_provider)
+    llm = _make_llm(ollama_model, planner_provider, str(opts.get("llm_debug_log_file") or ""))
     lang_preset = language_preset(language)
     blueprint = dict(blueprint or {})
     lyric_plan = lyric_length_plan(
@@ -1321,7 +1400,9 @@ def create_track_production_crew(
         goal="Return strict JSON for this one track only",
         backstory=(
             "Return a single JSON object only. Preserve all contract fields. "
-            "Caption/tags describe sound; lyrics contain lyrics and section/performance tags only."
+            "Caption/tags describe sound; lyrics contain lyrics and section/performance tags only. "
+            "Every track must satisfy the ACE-Step payload contract: tag dimensions covered, "
+            "no prompt leakage in captions, and lyrics long enough for the chosen duration."
         ),
         tools=tools,
         **cfg,
@@ -1353,7 +1434,8 @@ def create_track_production_crew(
             "lyrics, bpm, key_scale, time_signature, language, duration, song_model, seed, inference_steps, "
             "guidance_scale, shift, infer_method, sampler_mode, audio_format, auto_score, auto_lrc, "
             "return_audio_codes, save_to_library, tool_notes, production_team, model_render_notes, "
-            "quality_profile, prompt_kit_version, settings_policy_version, settings_compliance, quality_checks, contract_compliance. "
+            "quality_profile, prompt_kit_version, settings_policy_version, settings_compliance, quality_checks, contract_compliance, "
+            "tag_coverage, lyric_duration_fit, caption_integrity, payload_gate_status, repair_actions. "
             "Preserve the blueprint title and locked fields exactly. No markdown fences."
         ),
         expected_output="Strict JSON object for exactly one produced track.",
@@ -1392,7 +1474,7 @@ def create_album_crew(
     from crewai import Agent, Crew, Process
 
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
-    llm = _make_llm(ollama_model, planner_provider)
+    llm = _make_llm(ollama_model, planner_provider, str(opts.get("llm_debug_log_file") or ""))
     lang_name = LANG_NAMES.get(language, language)
     length_plan = lyric_length_plan(
         track_duration,
@@ -1762,7 +1844,8 @@ def create_album_crew(
             "quality_profile, "
             "tool_notes, production_team, model_render_notes, prompt_kit_version, target_language, language_notes, "
             "genre_profile, genre_modules, section_map, lyric_density_notes, workflow_mode, negative_control, "
-            "quality_checks, troubleshooting_hints, and anti_ai_rewrite_notes. "
+            "quality_checks, troubleshooting_hints, anti_ai_rewrite_notes, tag_coverage, lyric_duration_fit, "
+            "caption_integrity, payload_gate_status, and repair_actions. "
             "Include contract_compliance with each locked field marked kept, repaired, or blocked.\n"
             "DURATION CALCULATION FROM LYRICS (MANDATORY):\n"
             "Count the words in the lyrics field for each track, then calculate duration:\n"
@@ -1781,6 +1864,8 @@ def create_album_crew(
             "- Language script is correct for target language\n"
             "- Duration matches lyrics word count (calculated above)\n"
             "- Caption and lyrics do not conflict\n"
+            "- tag_coverage confirms genre, rhythm/groove, instrumentation, vocal style, mood, arrangement energy, and mix/production\n"
+            "- payload_gate_status is pass or auto_repair, never pass when lyrics are too short or caption leaks prompt text\n"
             f"{schema_rules} "
             f"For planning, song_model may be {ALBUM_FINAL_MODEL}; final audio generation will render all models: "
             f"{', '.join(ALBUM_MODEL_PORTFOLIO_MODELS)}. "
