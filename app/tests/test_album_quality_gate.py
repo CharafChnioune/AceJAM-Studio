@@ -41,6 +41,23 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertNotIn("Track 1:", repaired["caption"])
         self.assertIn("caption_rebuilt_from_tag_dimensions", report["repair_actions"])
 
+    def test_caption_dict_fragment_in_tags_is_repaired(self):
+        payload = {
+            "caption": "pop, funk, groovy, {'bpm': '95'}, clean lead vocal",
+            "tag_list": ["pop", "groovy", "{'bpm': '95'}", "piano", "clear lead vocal", "bright", "dynamic hook", "polished studio mix"],
+            "lyrics": "[Instrumental]",
+            "instrumental": True,
+            "duration": 60,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        repaired = report["repaired_payload"]
+
+        self.assertEqual(report["status"], "auto_repair")
+        self.assertTrue(report["gate_passed"])
+        self.assertNotIn("{", repaired["caption"])
+        self.assertNotIn("{'bpm'", repaired["tag_list"])
+
     def test_global_caption_is_compact_album_sonic_dna_not_track_list(self):
         tracks = [{
             "tags": "hip-hop, boom-bap, dusty piano, male rap vocal, gritty mood, anthemic hook, punchy studio mix",
@@ -110,6 +127,115 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertEqual(report["caption_integrity"]["status"], "pass")
         self.assertEqual(report["lyric_duration_fit"]["status"], "pass")
 
+    def test_markdown_bold_chorus_counts_as_hook(self):
+        sections = ["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"]
+        lyrics = _lyrics_for_sections(sections, lines_per_section=4).replace("[Chorus]", "**[Chorus]**")
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": lyrics,
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+
+        self.assertTrue(report["gate_passed"])
+        self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["hook_count"], 1)
+        self.assertNotIn("hook_missing", {issue["id"] for issue in report["issues"]})
+
+    def test_song_model_metadata_in_lyrics_fails(self):
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": _lyrics_for_sections(["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"], lines_per_section=4)
+            + "\nSong Model: acestep-v15-turbo",
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("lyric_meta_leakage", issue_ids)
+
+    def test_bold_ace_step_metadata_in_lyrics_fails(self):
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": _lyrics_for_sections(["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"], lines_per_section=4)
+            + "\n**ACE-Step Metadata:**\n- **Song Model:** acestep-v15-turbo",
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("lyric_meta_leakage", issue_ids)
+
+    def test_ace_step_timing_block_in_lyrics_fails(self):
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": _lyrics_for_sections(["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"], lines_per_section=4)
+            + "\n[ACE-Step]\nTag: [Chorus]\nStart: 00:30\nEnd: 00:46\nVocal Role: lyrics",
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("lyric_meta_leakage", issue_ids)
+
+    def test_bracketed_ace_step_metadata_tail_in_lyrics_fails(self):
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": _lyrics_for_sections(["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"], lines_per_section=4)
+            + "\n[ACE-Step metadata]\ntag_list: pop, funk, radio ready",
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("lyric_meta_leakage", issue_ids)
+
+    def test_bracketed_contract_metadata_in_lyrics_fails(self):
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": _lyrics_for_sections(["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"], lines_per_section=4)
+            + "\n[Producer Credit: Studio House]\n[Locked Title: Neon Bakery Lights]\n[Duration: 60.0 seconds]",
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("lyric_meta_leakage", issue_ids)
+
     def test_hook_repetition_warns_without_blocking_render(self):
         hook_lines = [f"Hook returns {idx}" for idx in range(20)]
         lyrics = "\n".join(
@@ -151,6 +277,36 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertIn("lyric_repetition_warning", issue_ids)
         self.assertTrue(report["gate_passed"])
         self.assertNotEqual(report["status"], "fail")
+
+    def test_low_unique_line_ratio_blocks_mechanical_lyrics(self):
+        lines = (
+            ["[Intro]"]
+            + ["Bakery lights come back tonight"] * 8
+            + ["[Verse]"]
+            + ["Warm windows shine across the street"] * 8
+            + ["[Chorus]"]
+            + ["We gather where the ovens glow"] * 8
+            + ["[Verse 2]"]
+            + ["Warm windows shine across the street"] * 8
+            + ["[Final Chorus]"]
+            + ["We gather where the ovens glow"] * 8
+        )
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": "\n".join(lines),
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("too_many_repeated_lines", issue_ids)
 
     def test_debug_logger_writes_job_scoped_json_and_jsonl(self):
         with tempfile.TemporaryDirectory() as tmp:

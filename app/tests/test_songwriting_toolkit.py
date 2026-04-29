@@ -23,6 +23,7 @@ from album_crew import (
     DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
     AlbumBiblePayloadModel,
     TrackProductionPayloadModel,
+    _album_genre_hint,
     _compact_track_memory_record,
     _crewai_llm_kwargs,
     _crewai_task_callback,
@@ -30,9 +31,11 @@ from album_crew import (
     _empty_response_fallback_text,
     _is_lmstudio_model_crash,
     _json_object_from_text,
+    _lyric_like_text,
     _lmstudio_no_think_args,
     _lmstudio_no_think_messages,
     _make_llm,
+    _select_crewai_tools,
     _make_album_memory,
     _make_album_memory_writer,
     _remember_compact,
@@ -75,7 +78,7 @@ class SongwritingToolkitTest(unittest.TestCase):
 Album: Market Lights
 Concept: A safe city album about rebuilding trust after a long blackout.
 Track 1: "Morning Market" (Produced by Ada North)
-(BPM: 92 | Style: warm boom-bap)
+(BPM: 92 | Key: A minor | Style: warm boom-bap)
 The Vibe: brass stabs, vinyl dust, calm crowd energy.
 The Narrative: neighbors reopen stalls and trade stories instead of rumors.
 Lyrics:
@@ -100,9 +103,29 @@ Lyrics:
         self.assertEqual(contract["tracks"][0]["locked_title"], "Morning Market")
         self.assertEqual(contract["tracks"][0]["producer_credit"], "Ada North")
         self.assertEqual(contract["tracks"][0]["bpm"], 92)
+        self.assertEqual(contract["tracks"][0]["key_scale"], "A minor")
         self.assertEqual(contract["tracks"][0]["style"], "warm boom-bap")
         self.assertIn("Open the shutters", contract["tracks"][0]["required_phrases"])
         self.assertEqual(contract["tracks"][0]["content_policy_status"], "safe")
+
+    def test_user_album_contract_extracts_required_hook_phrase(self):
+        contract = extract_user_album_contract(
+            """
+Album: Midnight Bakery
+Track 1: "Neon Bakery Lights" (Produced by Studio House)
+BPM: 95 | Style: upbeat city-pop
+The Vibe: rubber bass and bright piano.
+The Narrative: the block gathers after midnight.
+Required hook phrase: Neon bakery lights keep calling us home.
+""",
+            1,
+            "en",
+        )
+
+        track = contract["tracks"][0]
+        self.assertEqual(track["narrative"], "the block gathers after midnight.")
+        self.assertIn("Neon bakery lights keep calling us home.", track["required_phrases"])
+        self.assertNotIn("[]", track["required_phrases"])
 
     def test_build_album_plan_uses_locked_user_titles_and_producers(self):
         result = build_album_plan(
@@ -777,6 +800,113 @@ Lyrics:
         self.assertIsInstance(tracks[0]["guidance_scale"], float)
         self.assertIsInstance(tracks[0]["shift"], float)
         self.assertEqual(tracks[0]["seed"], "-1")
+
+    def test_normalize_album_tracks_repairs_string_schema_fields(self):
+        tracks = normalize_album_tracks([
+            {
+                "title": "Schema Repair",
+                "description": "upbeat city-pop repair song",
+                "tags": "pop, steady groove, piano, clear lead vocal, uplifting mood, dynamic hook arrangement, polished studio mix",
+                "lyrics": (
+                    "[Intro]\nLights are coming back\n"
+                    "[Verse]\nNeighbors gather by the bakery door\nFresh warm bread gives everybody more\n"
+                    "[Chorus]\nWe sing the lights back on tonight\nWe sing the lights back on tonight\n"
+                    "[Verse 2]\nClean drums move under every line\n"
+                    "[Final Chorus]\nWe sing the lights back on tonight"
+                ),
+                "duration": 45,
+                "quality_checks": "quality_checks",
+                "contract_compliance": "contract_compliance",
+                "settings_compliance": "settings_compliance",
+                "genre_profile": "genre_profile",
+                "section_map": "section_map",
+                "iteration_plan": "iteration_plan",
+                "community_risk_notes": "community_risk_notes",
+                "troubleshooting_hints": "troubleshooting_hints",
+                "variations": "variations",
+                "negative_control": "negative_control",
+                "tag_coverage": "tag_coverage",
+                "lyric_duration_fit": "lyric_duration_fit",
+                "caption_integrity": "caption_integrity",
+                "repair_actions": "repair_actions",
+                "prompt_kit_version": "bad-version",
+                "auto_score": True,
+                "auto_lrc": True,
+                "return_audio_codes": True,
+            }
+        ], {
+            "installed_models": ["acestep-v15-turbo"],
+            "song_model_strategy": "best_installed",
+            "track_duration": 45,
+            "lyric_density": "balanced",
+        })
+
+        self.assertEqual(len(tracks), 1)
+        self.assertIsInstance(tracks[0]["quality_checks"], dict)
+        self.assertIsInstance(tracks[0]["contract_compliance"], dict)
+        self.assertIsInstance(tracks[0]["settings_compliance"], dict)
+        self.assertIsInstance(tracks[0]["genre_profile"], dict)
+        self.assertIsInstance(tracks[0]["section_map"], list)
+        self.assertIsInstance(tracks[0]["iteration_plan"], list)
+        self.assertIsInstance(tracks[0]["community_risk_notes"], list)
+        self.assertIsInstance(tracks[0]["troubleshooting_hints"], list)
+        self.assertIsInstance(tracks[0]["variations"], list)
+        self.assertIsInstance(tracks[0]["negative_control"], list)
+        self.assertIsInstance(tracks[0]["tag_coverage"], dict)
+        self.assertIsInstance(tracks[0]["repair_actions"], list)
+        self.assertEqual(tracks[0]["prompt_kit_version"], PROMPT_KIT_VERSION)
+        self.assertFalse(tracks[0]["auto_score"])
+        self.assertFalse(tracks[0]["auto_lrc"])
+        self.assertFalse(tracks[0]["return_audio_codes"])
+
+    def test_crewai_lyric_extractor_strips_metadata_tail(self):
+        raw = (
+            "Thought: done\nFinal Answer:\n```\n"
+            "**[Intro]**\nThe lights come back\n[Verse]\nThe bakery opens wide\n**[Chorus]**\nWarm bread, bright street\n[Outro]\nGood night\n"
+            "```\n**ACE-Step Metadata:**\n- **Song Model:** acestep-v15-turbo\nmetadata:\nbpm: 95\nkey_scale: A minor\n"
+        )
+
+        lyrics = _lyric_like_text(raw)
+
+        self.assertIn("[Intro]", lyrics)
+        self.assertIn("[Chorus]", lyrics)
+        self.assertNotIn("**[Chorus]**", lyrics)
+        self.assertNotIn("ACE-Step Metadata", lyrics)
+        self.assertNotIn("metadata:", lyrics)
+        self.assertNotIn("Song Model:", lyrics)
+        self.assertNotIn("bpm:", lyrics)
+
+    def test_crewai_tool_filter_keeps_only_allowed_tools(self):
+        class DummyTool:
+            def __init__(self, name, description=""):
+                self.name = name
+                self.description = description
+
+        tools = [
+            DummyTool("LyricLengthTool", "Tool Name: lyric_length_tool\nTool Description: ok"),
+            DummyTool("AceStepCoverageAuditTool", "Tool Name: ace_step_coverage_audit_tool\nTool Description: huge"),
+            DummyTool("HookDoctorTool", "Tool Name: hook_doctor_tool\nTool Description: ok"),
+        ]
+
+        selected = _select_crewai_tools(tools, {"lyric_length_tool", "hook_doctor_tool"})
+
+        self.assertEqual([tool.name for tool in selected], ["LyricLengthTool", "HookDoctorTool"])
+
+    def test_album_genre_hint_ignores_producer_credit_house(self):
+        hint = _album_genre_hint({
+            "sanitized_concept": 'Track 1: "Neon Bakery Lights" (Produced by Studio House)',
+            "user_album_contract": {
+                "tracks": [{
+                    "style": "upbeat city-pop / pop-funk",
+                    "vibe": "rubber bass, bright piano stabs",
+                    "narrative": "neighbors gather after a blackout",
+                }]
+            },
+        })
+
+        self.assertIn("city-pop", hint)
+        self.assertIn("pop-funk", hint)
+        self.assertNotIn("Studio House", hint)
 
     def test_fallback_lyric_expansion_avoids_stopword_subject_artifacts(self):
         lyrics = expand_lyrics_for_duration(

@@ -388,8 +388,64 @@ def _lyric_like_text(raw: str) -> str:
     text = _strip_thinking_blocks(raw)
     match = re.search(r"\[(?:Intro|Verse|Pre-Chorus|Chorus|Bridge|Final Chorus|Outro|Ad-libs?)[^\]]*\]", text, flags=re.I)
     if match:
-        return text[match.start():]
+        snippet = text[match.start():]
+        lines: list[str] = []
+        for line in snippet.splitlines():
+            stripped = line.strip()
+            section_match = re.fullmatch(r"[*_`~\s]*(\[[^\]]+\])[*_`~\s]*", stripped)
+            if section_match:
+                line = section_match.group(1)
+                stripped = line
+            marker = re.sub(r"^[\s>*_`#-]+", "", stripped)
+            marker = re.sub(r"[\s*_`#-]+$", "", marker).replace("**", "").strip()
+            if lines and (
+                stripped.startswith("```")
+                or re.match(r"(?i)^(metadata|ace[-\s]?step metadata|bpm|key(?:[_\s-]?scale)?|time(?:[_\s-]?signature)?|language|duration|song(?:[_\s-]?model)?|quality(?:[_\s-]?profile)?|seed|inference(?:[_\s-]?steps)?|guidance(?:[_\s-]?scale)?|shift|infer(?:[_\s-]?method)?|sampler(?:[_\s-]?mode)?|audio(?:[_\s-]?format)?|model(?:[_\s-]?advice)?|title|artist|description|tags)\s*:", marker)
+                or re.match(r"(?i)^final answer\s*:", marker)
+                or stripped.startswith("{")
+            ):
+                break
+            if stripped.startswith("```"):
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
     return text
+
+
+def _lyrics_richness_score(lyrics: Any, duration: float, density: str, structure_preset: str, genre_hint: str) -> float:
+    text = str(lyrics or "")
+    stats = lyric_stats(text)
+    plan = lyric_length_plan(duration, density, structure_preset, genre_hint)
+    lowered = text.lower()
+    score = 0.0
+    score += min(1.0, stats.get("word_count", 0) / max(1, int(plan.get("min_words") or 1))) * 4
+    score += min(1.0, stats.get("line_count", 0) / max(1, int(plan.get("min_lines") or 1))) * 3
+    score += min(1.0, stats.get("section_count", 0) / max(1, len(plan.get("sections") or []))) * 2
+    if "[verse" in lowered:
+        score += 1
+    if "[chorus" in lowered or "[hook" in lowered or "[refrain" in lowered:
+        score += 1
+    return score
+
+
+def _prefer_production_lyrics(
+    current_lyrics: Any,
+    track_result: Any,
+    *,
+    duration: float,
+    density: str,
+    structure_preset: str,
+    genre_hint: str,
+) -> tuple[str, bool]:
+    current = str(current_lyrics or "")
+    candidate = _lyric_like_text(_task_output_raw_text(track_result))
+    if not candidate or candidate == current:
+        return current, False
+    current_score = _lyrics_richness_score(current, duration, density, structure_preset, genre_hint)
+    candidate_score = _lyrics_richness_score(candidate, duration, density, structure_preset, genre_hint)
+    if candidate_score >= max(current_score + 1.0, 5.5):
+        return candidate, True
+    return current, False
 
 
 def _compact_track_memory_record(track: dict[str, Any], *, include_lyrics_excerpt: bool = False) -> tuple[str, dict[str, Any]]:
@@ -1235,6 +1291,48 @@ def _output_json_for_provider(model: type[BaseModel], planner_provider: str) -> 
     return None
 
 
+def _tool_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _select_crewai_tools(tools: list[Any], allowed_names: set[str]) -> list[Any]:
+    allowed = {_tool_key(name) for name in allowed_names}
+    selected: list[Any] = []
+    for tool in tools:
+        keys = {_tool_key(getattr(tool, "name", ""))}
+        description = str(getattr(tool, "description", "") or "")
+        match = re.search(r"Tool Name:\s*([A-Za-z0-9_ -]+)", description)
+        if match:
+            keys.add(_tool_key(match.group(1)))
+        if keys & allowed:
+            selected.append(tool)
+    return selected or tools
+
+
+def _album_genre_hint(opts: dict[str, Any]) -> str:
+    contract = opts.get("user_album_contract") if isinstance(opts, dict) else {}
+    parts: list[str] = []
+    if isinstance(contract, dict):
+        for track in contract.get("tracks") or []:
+            if not isinstance(track, dict):
+                continue
+            parts.extend(
+                str(track.get(key) or "")
+                for key in ("style", "vibe", "narrative", "required_phrases")
+                if track.get(key)
+            )
+    parts.extend(
+        str(opts.get(key) or "")
+        for key in ("custom_tags", "negative_tags", "sanitized_concept")
+        if opts.get(key)
+    )
+    text = "\n".join(parts)
+    text = re.sub(r"\(\s*produced\s+by\s+[^)]+\)", " ", text, flags=re.I)
+    text = re.sub(r"\bproduced\s+by\s+[^\n.;]+", " ", text, flags=re.I)
+    text = re.sub(r"\bproducer(?:_credit)?\s*:\s*[^\n.;]+", " ", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def create_album_bible_crew(
     concept: str,
     num_tracks: int,
@@ -1255,26 +1353,42 @@ def create_album_bible_crew(
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
     llm = _make_llm(ollama_model, planner_provider, str(opts.get("llm_debug_log_file") or ""))
     lang_preset = language_preset(language)
-    matched_genres = infer_genre_modules(opts["sanitized_concept"], max_modules=2)
+    genre_hint = _album_genre_hint(opts)
+    matched_genres = infer_genre_modules(genre_hint, max_modules=2)
     length_plan = lyric_length_plan(
         track_duration,
         str(opts.get("lyric_density") or "dense"),
         str(opts.get("structure_preset") or "auto"),
-        opts["sanitized_concept"],
+        genre_hint,
     )
     tool_context = json.dumps(
         {
             "prompt_kit_version": PROMPT_KIT_VERSION,
             "language_preset": lang_preset,
             "genre_modules": matched_genres,
-            "section_map": section_map_for(track_duration, opts["sanitized_concept"], instrumental=is_sparse_lyric_genre(opts["sanitized_concept"])),
+            "section_map": section_map_for(track_duration, genre_hint, instrumental=is_sparse_lyric_genre(genre_hint)),
             "lyric_length_plan": length_plan,
             "album_model_portfolio": album_model_portfolio(opts.get("installed_models")),
             "user_album_contract": contract_prompt_context(opts.get("user_album_contract")),
         },
         ensure_ascii=True,
     )
-    tools = make_crewai_tools(opts)
+    tools = _select_crewai_tools(
+        make_crewai_tools(opts),
+        {
+            "album_arc_tool",
+            "album_continuity_tool",
+            "tag_library_tool",
+            "genre_module_tool",
+            "language_preset_tool",
+            "lyric_length_tool",
+            "section_map_tool",
+            "model_portfolio_tool",
+            "per_model_settings_tool",
+            "generation_settings_tool",
+            "conflict_checker_tool",
+        },
+    )
     cfg = dict(
         llm=llm,
         verbose=CREWAI_VERBOSE,
@@ -1373,7 +1487,25 @@ def create_track_production_crew(
         str(opts.get("structure_preset") or "auto"),
         " ".join(str(blueprint.get(key) or "") for key in ("description", "tags", "style", "vibe", "narrative")),
     )
-    tools = make_crewai_tools(opts)
+    tools = _select_crewai_tools(
+        make_crewai_tools(opts),
+        {
+            "lyric_length_tool",
+            "arrangement_tool",
+            "vocal_performance_tool",
+            "rhyme_flow_tool",
+            "metaphor_world_tool",
+            "hook_doctor_tool",
+            "caption_polisher_tool",
+            "cliche_guard_tool",
+            "conflict_checker_tool",
+            "track_repair_tool",
+            "negative_control_tool",
+            "effective_settings_tool",
+            "hit_readiness_tool",
+            "model_compatibility_tool",
+        },
+    )
     cfg = dict(
         llm=llm,
         verbose=CREWAI_VERBOSE,
@@ -1415,7 +1547,7 @@ def create_track_production_crew(
         "section_map": section_map_for(blueprint.get("duration") or track_duration, str(blueprint.get("tags") or blueprint.get("description") or "")),
         "docs_best_model_settings": ALBUM_FINAL_DOCS_BEST,
         "quality_profile": opts.get("quality_profile"),
-        "settings_policy": "Use AceStepSettingsPolicyTool, ChartMasterProfileTool, AceStepCoverageAuditTool, EffectiveSettingsTool, TaskApplicabilityTool, and ModelCompatibilityTool. Keep unsupported/reserved/read-only settings out of active payloads.",
+        "settings_policy": "Use EffectiveSettingsTool and ModelCompatibilityTool. Keep unsupported/reserved/read-only settings out of active payloads.",
     }
     task_produce = _crew_task(
         description=(
@@ -1942,6 +2074,7 @@ def plan_album(
 ) -> dict[str, Any]:
     logs: list[str] = _AlbumPlanLogs(log_callback)
     opts = _coerce_options(concept, num_tracks, track_duration, language, options)
+    opts["genre_hint"] = _album_genre_hint(opts)
     lang_name = LANG_NAMES.get(language, language)
     logs.append(f"Concept preview: {_monitor_preview(opts['sanitized_concept'], 220)}")
     logs.append(f"Language: {lang_name}")
@@ -2158,6 +2291,24 @@ def plan_album(
                 logs.append(f"CrewAI JSON repair used production text for track {index + 1}.")
             if not isinstance(track_payload, dict):
                 track_payload = {"lyrics": str(track_payload), "tool_notes": "Non-dict crew output coerced to lyrics."}
+            preferred_lyrics, used_production_lyrics = _prefer_production_lyrics(
+                track_payload.get("lyrics"),
+                track_result,
+                duration=parse_duration_seconds(blueprint.get("duration") or track_duration, track_duration),
+                density=str(opts.get("lyric_density") or "balanced"),
+                structure_preset=str(opts.get("structure_preset") or "auto"),
+                genre_hint=" ".join(
+                    str(blueprint.get(key) or track_payload.get(key) or "")
+                    for key in ("tags", "description", "style", "vibe", "narrative")
+                ),
+            )
+            if used_production_lyrics:
+                track_payload["lyrics"] = preferred_lyrics
+                notes = str(track_payload.get("tool_notes") or "").strip()
+                track_payload["tool_notes"] = " ".join(
+                    part for part in [notes, "CrewAI production lyrics preserved over shortened finalizer lyrics."] if part
+                )
+                logs.append(f"CrewAI production lyrics preserved for track {index + 1}.")
             merged = {**blueprint, **track_payload}
             merged["track_number"] = int(blueprint.get("track_number") or index + 1)
             merged["duration"] = parse_duration_seconds(blueprint.get("duration") or track_duration, track_duration)

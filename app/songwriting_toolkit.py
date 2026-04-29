@@ -28,6 +28,7 @@ from studio_core import (
     ace_step_settings_registry,
     docs_best_model_settings,
     hit_readiness_report,
+    parse_bool,
     pro_quality_policy,
     runtime_planner_report,
 )
@@ -391,6 +392,81 @@ def split_terms(value: Any) -> list[str]:
     return terms
 
 
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump()
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    if hasattr(value, "dict"):
+        dumped = value.dict()
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    if isinstance(value, (list, tuple)):
+        try:
+            converted = dict(value)
+            return converted if isinstance(converted, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    return []
+
+
+PROMPT_KIT_DICT_FIELDS = {
+    "genre_profile",
+    "metadata",
+    "generation_settings",
+    "runtime_profile",
+    "advanced_generation_settings",
+    "quality_checks",
+    "settings_compliance",
+    "hit_readiness",
+    "effective_settings",
+    "settings_coverage",
+    "audio_quality_audit",
+    "metadata_adherence",
+    "recommended_take",
+    "tag_coverage",
+    "caption_integrity",
+    "lyric_duration_fit",
+    "payload_quality_gate",
+}
+
+PROMPT_KIT_LIST_FIELDS = {
+    "section_map",
+    "iteration_plan",
+    "community_risk_notes",
+    "troubleshooting_hints",
+    "variations",
+    "negative_control",
+    "genre_modules",
+    "repair_actions",
+}
+
+
+def _coerce_prompt_kit_field(field: str, value: Any, default: Any = None) -> Any:
+    if field == "prompt_kit_version":
+        return PROMPT_KIT_VERSION
+    if field in PROMPT_KIT_DICT_FIELDS:
+        return _dict_or_empty(value) or _dict_or_empty(default)
+    if field in PROMPT_KIT_LIST_FIELDS:
+        items = _list_or_empty(value)
+        if not items and not isinstance(value, (dict, list, tuple, set)):
+            items = split_terms(value)
+        return items or _list_or_empty(default)
+    if field in {"lyrics", "ace_caption", "copy_paste_block"}:
+        return str(value or default or "")
+    if value in (None, ""):
+        return default
+    return str(value) if field in PROMPT_KIT_METADATA_FIELDS else value
+
+
 def _words(text: str) -> list[str]:
     return re.findall(r"[^\W_]+(?:'[^\W_]+)?", text.lower(), flags=re.UNICODE)
 
@@ -402,6 +478,9 @@ def _subject_terms(text: str) -> list[str]:
         "you", "your", "yours", "we", "our", "they", "them", "their", "was", "were",
         "are", "is", "this", "that", "these", "those", "vibe", "verse", "chorus",
         "lyrics", "narrative", "produced", "prod", "man", "woman", "one", "two",
+        "pop", "funk", "city", "upbeat", "polished", "radio", "ready", "clean",
+        "lead", "vocal", "stacked", "harmonies", "groovy", "bright", "crisp",
+        "must", "feel", "complete", "singable", "placeholder", "copied",
     }
     terms = [w for w in _words(text) if len(w) > 2 and w not in stop]
     counts = Counter(terms)
@@ -661,6 +740,8 @@ def infer_core_tags(concept: str, track_index: int = 0) -> list[str]:
         base = ["hip-hop", "808 bass", "trap hi-hats", "male rap vocal", "crisp modern mix"]
     elif "r&b" in lowered or "soul" in lowered:
         base = ["R&B", "Rhodes", "sub-bass", "breathy vocal", "warm analog mix"]
+    elif "city-pop" in lowered or "city pop" in lowered or "funk" in lowered:
+        base = ["pop", "funk", "groovy", "rubber bass", "bright piano", "clean lead vocal", "stacked harmonies", "radio ready"]
     elif "rock" in lowered:
         base = ["rock", "electric guitar", "bass guitar", "punchy snare", "high-fidelity"]
     elif "house" in lowered or "club" in lowered:
@@ -793,17 +874,20 @@ def build_fallback_lyrics(
     metaphor = ["signal", "architecture", "weather", "currency", "gravity"][len(title) % 5]
     chunks: list[str] = []
     section_counts: Counter[str] = Counter()
-    for section in plan["sections"]:
+    for section_index, section in enumerate(plan["sections"]):
         lines_needed = max(2, int(plan["target_lines"] / max(1, len(plan["sections"]))))
         if "Chorus" in section:
             lines_needed = max(4, lines_needed)
         if "Verse" in section:
             lines_needed = max(6 if rap else 5, lines_needed)
-        count = section_counts[section]
-        section_counts[section] += 1
+        section_key = _section_key(section)
+        count = section_counts[section_key] + section_index
+        section_counts[section_key] += 1
         lines: list[str] = []
+        variant_round = 0
         while len(lines) < lines_needed:
-            lines.extend(_fallback_lines(language, section, title, terms, metaphor, rap, count + len(lines)))
+            lines.extend(_fallback_lines(language, section, title, terms, metaphor, rap, count + variant_round))
+            variant_round += 1
         lines = lines[:lines_needed]
         chunks.append(f"[{section}]\n" + "\n".join(lines))
     lyrics = "\n\n".join(chunks)
@@ -828,6 +912,13 @@ def _section_key(section: str) -> str:
     if "break" in text or "drop" in text:
         return "break"
     return text.strip()
+
+
+def _section_label_key(section: str) -> str:
+    text = re.sub(r"[\[\]]", "", str(section or "")).lower()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s*-\s*(?:rap|anthemic|extension|reprise)\b.*$", "", text)
+    return text
 
 
 def trim_lyrics_to_limit(lyrics: str, limit: int = 4096) -> str:
@@ -860,9 +951,10 @@ def expand_lyrics_for_duration(
     if not current:
         return build_fallback_lyrics(title, concept, duration, language, density, structure_preset)
     stats = lyric_stats(current)
-    covered = {_section_key(section) for section in stats["sections"]}
-    needed = [_section_key(section) for section in plan["sections"]]
-    missing_keys = [key for key in needed if key and key not in covered]
+    if stats["section_count"] == 0 and (stats["word_count"] < plan["min_words"] or stats["line_count"] < plan["min_lines"]):
+        return build_fallback_lyrics(title, concept, duration, language, density, structure_preset)
+    covered_labels = {_section_label_key(section) for section in stats["sections"]}
+    missing_labels = [_section_label_key(section) for section in plan["sections"] if _section_label_key(section) not in covered_labels]
     extras: list[str] = []
     fallback = build_fallback_lyrics(title, concept, duration, language, density, structure_preset)
     fallback_blocks = re.split(r"\n\s*\n", fallback)
@@ -870,11 +962,11 @@ def expand_lyrics_for_duration(
         match = re.match(r"\[([^\]]+)\]", block.strip())
         if not match:
             continue
-        key = _section_key(match.group(1))
-        if key in missing_keys:
+        label_key = _section_label_key(match.group(1))
+        if label_key in missing_labels:
             extras.append(block.strip())
-            covered.add(key)
-            missing_keys = [item for item in missing_keys if item != key]
+            covered_labels.add(label_key)
+            missing_labels = [item for item in missing_labels if item != label_key]
     repaired = current
     if extras:
         repaired = repaired + "\n\n" + "\n\n".join(extras)
@@ -1027,7 +1119,10 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
         "repeated_lines": stats["repeated_lines"],
         "conflicts": conflicts,
         "quality_checks": quality_checks,
-        "negative_control": negative_control_for(track.get("tags") or options.get("concept") or "", instrumental=bool(track.get("instrumental"))),
+        "negative_control": negative_control_for(
+            track.get("tags") or options.get("concept") or "",
+            instrumental=parse_bool(track.get("instrumental"), False),
+        ),
         "troubleshooting_hints": troubleshooting_hints,
         "hit_gate_passed": bool(length_ok and char_ok and section_coverage >= 0.72 and not cliches and len(stats["repeated_lines"]) <= 2),
     }
@@ -1040,7 +1135,8 @@ def production_team_report(track: dict[str, Any], options: dict[str, Any], model
     modules = infer_genre_modules(genre_hint, max_modules=2)
     language = str(track.get("language") or options.get("language") or "en")
     preset = language_preset(language)
-    instrumental = bool(track.get("instrumental")) or is_sparse_lyric_genre(genre_hint)
+    has_vocal_script = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
+    instrumental = parse_bool(track.get("instrumental"), False) or (not has_vocal_script and is_sparse_lyric_genre(genre_hint))
     lyric_plan = lyric_length_plan(
         duration,
         str(options.get("lyric_density") or "dense"),
@@ -1114,6 +1210,7 @@ def production_team_report(track: dict[str, Any], options: dict[str, Any], model
 
 def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) -> dict[str, Any]:
     concept = str(options.get("sanitized_concept") or options.get("concept") or "")
+    genre_hint = str(options.get("genre_hint") or concept)
     contract = options.get("user_album_contract")
     if not isinstance(contract, dict):
         contract = extract_user_album_contract(concept, options.get("num_tracks"), str(options.get("language") or "en"), options)
@@ -1123,7 +1220,7 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
     duration = parse_duration_seconds(track.get("duration") or track.get("duration_seconds") or options.get("track_duration") or 120, 120)
     language = str(track.get("language") or options.get("language") or "en").strip().lower()
     tags = build_track_tags(
-        " ".join([concept, str(track.get("tags") or ""), str(track.get("description") or "")]),
+        " ".join([genre_hint, str(track.get("tags") or ""), str(track.get("description") or "")]),
         index,
         options.get("tag_packs"),
         " ".join(split_terms(options.get("custom_tags")) + split_terms(track.get("custom_tags"))),
@@ -1151,7 +1248,7 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
     lyrics = str(track.get("lyrics") or "").strip()
     lyrics = expand_lyrics_for_duration(
         title,
-        concept,
+        genre_hint,
         lyrics,
         duration,
         language,
@@ -1213,15 +1310,17 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         "infer_method": normalize_infer_method(track.get("infer_method") or options.get("infer_method") or model_defaults["infer_method"]),
         "sampler_mode": normalize_sampler_mode(track.get("sampler_mode") or options.get("sampler_mode") or model_defaults["sampler_mode"]),
         "audio_format": normalize_album_audio_format(track.get("audio_format") or options.get("audio_format") or model_defaults["audio_format"]),
-        "auto_score": bool(track.get("auto_score", options.get("auto_score", False))),
-        "auto_lrc": bool(track.get("auto_lrc", options.get("auto_lrc", False))),
-        "return_audio_codes": bool(track.get("return_audio_codes", options.get("return_audio_codes", False))),
+        "auto_score": bool(options.get("auto_score", False)),
+        "auto_lrc": bool(options.get("auto_lrc", False)),
+        "return_audio_codes": bool(options.get("return_audio_codes", False)),
         "save_to_library": bool(track.get("save_to_library", options.get("save_to_library", True))),
         "use_format": bool(track.get("use_format", options.get("use_format", False))),
         "model_advice": model_info,
         "tool_notes": tool_notes,
         "duration_seconds": duration,
     }
+    dict_fields = {"contract_compliance"}
+    list_fields = {"required_phrases", "contract_repaired_fields"}
     for field in [
         "locked_title",
         "source_title",
@@ -1239,7 +1338,12 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         "contract_compliance",
     ]:
         if field in track:
-            normalized[field] = track.get(field)
+            if field in dict_fields:
+                normalized[field] = _dict_or_empty(track.get(field))
+            elif field in list_fields:
+                normalized[field] = _list_or_empty(track.get(field)) or split_terms(track.get(field))
+            else:
+                normalized[field] = track.get(field)
     if normalized.get("input_contract_applied"):
         normalized["input_contract_version"] = normalized.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION
         normalized["tool_notes"] = " ".join(
@@ -1250,8 +1354,18 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
                 ]
             )
         )
-    kit_hint = " ".join([caption, str(normalized.get("description") or ""), concept])
-    instrumental = bool(track.get("instrumental")) or is_sparse_lyric_genre(kit_hint)
+    kit_hint = " ".join(
+        [
+            caption,
+            str(normalized.get("description") or ""),
+            genre_hint,
+            str(normalized.get("style") or ""),
+            str(normalized.get("vibe") or ""),
+            str(normalized.get("narrative") or ""),
+        ]
+    )
+    has_vocal_script = bool(lyrics.strip() and lyrics.strip().lower() != "[instrumental]")
+    instrumental = parse_bool(track.get("instrumental"), False) or (not has_vocal_script and is_sparse_lyric_genre(kit_hint))
     kit_defaults = kit_metadata_defaults(
         mode=str(options.get("workflow_mode") or "text2music"),
         language=language,
@@ -1279,13 +1393,13 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
     }
     for field in PROMPT_KIT_METADATA_FIELDS:
         if field == "copy_paste_block":
-            normalized[field] = str(track.get(field) or "")
+            normalized[field] = _coerce_prompt_kit_field(field, track.get(field), "")
         elif field in {"lyrics", "ace_caption", "metadata", "generation_settings"}:
-            normalized[field] = kit_defaults.get(field)
+            normalized[field] = _coerce_prompt_kit_field(field, kit_defaults.get(field), kit_defaults.get(field))
         elif field in track and track.get(field) not in (None, ""):
-            normalized[field] = track.get(field)
+            normalized[field] = _coerce_prompt_kit_field(field, track.get(field), kit_defaults.get(field))
         elif field in kit_defaults:
-            normalized[field] = kit_defaults[field]
+            normalized[field] = _coerce_prompt_kit_field(field, kit_defaults[field], kit_defaults[field])
     normalized["vocal_language"] = str(track.get("vocal_language") or kit_defaults.get("vocal_language") or language)
     normalized["instrumental"] = instrumental
     normalized["settings_compliance"] = ace_step_settings_compliance(
@@ -1297,19 +1411,19 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
     normalized["settings_policy_version"] = normalized["settings_compliance"]["version"]
     normalized["tool_report"] = quality_report(normalized, options)
     normalized["quality_checks"] = {
-        **dict(normalized.get("quality_checks") or {}),
-        **dict(normalized["tool_report"].get("quality_checks") or {}),
+        **_dict_or_empty(normalized.get("quality_checks")),
+        **_dict_or_empty(normalized["tool_report"].get("quality_checks")),
     }
     normalized["payload_quality_gate"] = normalized["tool_report"].get("payload_quality_gate", {})
     normalized["payload_gate_status"] = normalized["tool_report"].get("payload_gate_status", "")
     normalized["tag_coverage"] = normalized["tool_report"].get("tag_coverage", {})
     normalized["caption_integrity"] = normalized["tool_report"].get("caption_integrity", {})
     normalized["lyric_duration_fit"] = normalized["tool_report"].get("lyric_duration_fit", {})
-    normalized["repair_actions"] = list(normalized.get("repair_actions") or [])
+    normalized["repair_actions"] = _list_or_empty(normalized.get("repair_actions")) or split_terms(normalized.get("repair_actions"))
     normalized["troubleshooting_hints"] = list(
         dict.fromkeys(
-            list(normalized.get("troubleshooting_hints") or [])
-            + list(normalized["tool_report"].get("troubleshooting_hints") or [])
+            (_list_or_empty(normalized.get("troubleshooting_hints")) or split_terms(normalized.get("troubleshooting_hints")))
+            + (_list_or_empty(normalized["tool_report"].get("troubleshooting_hints")) or split_terms(normalized["tool_report"].get("troubleshooting_hints")))
         )
     )
     normalized["production_team"] = production_team_report(normalized, options, model_info)

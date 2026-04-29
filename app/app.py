@@ -198,6 +198,7 @@ from studio_core import (
     safe_filename,
     safe_id,
     studio_ui_schema,
+    strip_ace_step_lyrics_leakage,
     supported_tasks_for_model,
     VALID_KEY_SCALES,
 )
@@ -3041,6 +3042,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
         "payload_quality_gate": payload.get("payload_quality_gate") if isinstance(payload.get("payload_quality_gate"), dict) else {},
         "payload_gate_status": str(payload.get("payload_gate_status") or ""),
+        "payload_gate_passed": parse_bool(payload.get("payload_gate_passed"), False),
+        "payload_gate_blocking_issues": list(payload.get("payload_gate_blocking_issues") or []),
         "tag_coverage": payload.get("tag_coverage") if isinstance(payload.get("tag_coverage"), dict) else {},
         "caption_integrity": payload.get("caption_integrity") if isinstance(payload.get("caption_integrity"), dict) else {},
         "lyric_duration_fit": payload.get("lyric_duration_fit") if isinstance(payload.get("lyric_duration_fit"), dict) else {},
@@ -4486,6 +4489,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "hit_readiness": _jsonable(hit_readiness),
         "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
         "payload_gate_status": params.get("payload_gate_status") or "",
+        "payload_gate_passed": bool(params.get("payload_gate_passed")),
+        "payload_gate_blocking_issues": _jsonable(params.get("payload_gate_blocking_issues") or []),
         "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
         "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
         "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
@@ -4525,6 +4530,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "hit_readiness": hit_readiness,
         "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
         "payload_gate_status": params.get("payload_gate_status") or "",
+        "payload_gate_passed": bool(params.get("payload_gate_passed")),
+        "payload_gate_blocking_issues": _jsonable(params.get("payload_gate_blocking_issues") or []),
         "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
         "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
         "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
@@ -4732,6 +4739,8 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "hit_readiness": _jsonable(hit_readiness),
         "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
         "payload_gate_status": params.get("payload_gate_status") or "",
+        "payload_gate_passed": bool(params.get("payload_gate_passed")),
+        "payload_gate_blocking_issues": _jsonable(params.get("payload_gate_blocking_issues") or []),
         "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
         "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
         "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
@@ -4772,6 +4781,8 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         "hit_readiness": hit_readiness,
         "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
         "payload_gate_status": params.get("payload_gate_status") or "",
+        "payload_gate_passed": bool(params.get("payload_gate_passed")),
+        "payload_gate_blocking_issues": _jsonable(params.get("payload_gate_blocking_issues") or []),
         "tag_coverage": _jsonable(params.get("tag_coverage") or {}),
         "caption_integrity": _jsonable(params.get("caption_integrity") or {}),
         "lyric_duration_fit": _jsonable(params.get("lyric_duration_fit") or {}),
@@ -5311,6 +5322,10 @@ def generate_album(
     logs: list[str] = []
     try:
         request_payload = json.loads(request_json or "{}")
+        request_payload.setdefault("concept", concept)
+        request_payload.setdefault("num_tracks", num_tracks)
+        request_payload.setdefault("track_duration", track_duration)
+        request_payload.setdefault("language", language)
         if "ace_lm_model" not in request_payload and ace_lm_model:
             request_payload["ace_lm_model"] = ace_lm_model
         ace_lm_model = _requested_ace_lm_model(request_payload)
@@ -5514,11 +5529,23 @@ def generate_album(
                 track.pop("model_results", None)
                 track.pop("audios", None)
                 track_title = track.get("title", f"Track {i+1}")
+                raw_track_artist = track.get("artist_name") or track.get("artist")
+                producer_credit = str(track.get("producer_credit") or "").strip()
+                if producer_credit:
+                    normalized_raw_artist = normalize_artist_name(raw_track_artist or "", "")
+                    normalized_title_artist = normalize_artist_name(track_title, "")
+                    if not normalized_raw_artist or normalized_raw_artist == normalized_title_artist or normalized_raw_artist.lower() == "unknown":
+                        raw_track_artist = producer_credit
                 track_artist = normalize_artist_name(
-                    track.get("artist_name") or track.get("artist"),
+                    raw_track_artist,
                     derive_artist_name(track_title, concept, track.get("tags") or track.get("caption") or "", i),
                 )
                 track["artist_name"] = track_artist
+                if producer_credit:
+                    track["producer_credit"] = producer_credit
+                base_track["artist_name"] = track_artist
+                if producer_credit:
+                    base_track["producer_credit"] = producer_credit
                 track["song_model"] = track_model
                 track["album_model"] = track_model
                 track["album_model_label"] = model_item.get("label") or track_model
@@ -5556,6 +5583,13 @@ def generate_album(
                     track_lm_enabled = track_lm_model != "none" and not track_has_vocal_lyrics
                     quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
+                    request_key_scale = request_payload.get("key_scale") or request_payload.get("keyscale") or request_payload.get("key")
+                    effective_key_scale = (
+                        track.get("key_scale")
+                        if parse_bool(track.get("input_contract_key_scale_locked"), False) and track.get("key_scale")
+                        else request_key_scale or track.get("key_scale") or DEFAULT_KEY_SCALE
+                    )
+                    effective_audio_format = request_payload.get("audio_format") or track.get("audio_format") or model_defaults["audio_format"]
                     generation_payload = {
                         "task_type": "text2music",
                         "ui_mode": "album",
@@ -5572,7 +5606,7 @@ def generate_album(
                         "narrative": track.get("narrative", ""),
                         "duration": track.get("duration") or track_duration,
                         "bpm": track.get("bpm") or request_payload.get("bpm") or DEFAULT_BPM,
-                        "key_scale": track.get("key_scale") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE,
+                        "key_scale": effective_key_scale,
                         "time_signature": track.get("time_signature") or request_payload.get("time_signature") or "4",
                         "vocal_language": track.get("language") or request_payload.get("vocal_language") or language,
                         "batch_size": variants,
@@ -5604,12 +5638,12 @@ def generate_album(
                         "cfg_interval_start": clamp_float(model_render_settings.get("cfg_interval_start", track.get("cfg_interval_start", request_payload.get("cfg_interval_start"))), 0.0, 0.0, 1.0),
                         "cfg_interval_end": clamp_float(model_render_settings.get("cfg_interval_end", track.get("cfg_interval_end", request_payload.get("cfg_interval_end"))), 1.0, 0.0, 1.0),
                         "timesteps": model_render_settings.get("timesteps") or track.get("timesteps") or request_payload.get("timesteps") or "",
-                        "audio_format": str(track.get("audio_format") or request_payload.get("audio_format") or model_defaults["audio_format"]),
+                        "audio_format": str(effective_audio_format),
                         "mp3_bitrate": str(track.get("mp3_bitrate") or request_payload.get("mp3_bitrate") or "128k"),
                         "mp3_sample_rate": track.get("mp3_sample_rate") or request_payload.get("mp3_sample_rate") or 48000,
-                        "auto_score": parse_bool(track.get("auto_score", request_payload.get("auto_score")), False),
-                        "auto_lrc": parse_bool(track.get("auto_lrc", request_payload.get("auto_lrc")), False),
-                        "return_audio_codes": parse_bool(track.get("return_audio_codes", request_payload.get("return_audio_codes")), False),
+                        "auto_score": parse_bool(request_payload.get("auto_score"), False),
+                        "auto_lrc": parse_bool(request_payload.get("auto_lrc"), False),
+                        "return_audio_codes": parse_bool(request_payload.get("return_audio_codes"), False),
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
                         "thinking": False if track_has_vocal_lyrics else parse_bool(track.get("thinking", request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
                         "sample_mode": False if track_has_vocal_lyrics else parse_bool(track.get("sample_mode", request_payload.get("sample_mode")), False),
@@ -5665,6 +5699,7 @@ def generate_album(
                             "payload": generation_payload,
                         },
                     )
+                    generation_payload["lyrics"] = strip_ace_step_lyrics_leakage(generation_payload.get("lyrics"))
                     gate = evaluate_album_payload_quality(
                         generation_payload,
                         options={
@@ -5674,12 +5709,49 @@ def generate_album(
                         repair=True,
                     )
                     generation_payload = gate["repaired_payload"]
+                    for public_field in [
+                        "caption",
+                        "tags",
+                        "tag_list",
+                        "lyrics",
+                        "required_phrases",
+                        "description",
+                        "style",
+                        "vibe",
+                        "narrative",
+                        "duration",
+                        "bpm",
+                        "key_scale",
+                        "time_signature",
+                        "vocal_language",
+                    ]:
+                        if public_field in generation_payload:
+                            track[public_field] = generation_payload[public_field]
                     track["payload_quality_gate"] = {key: value for key, value in gate.items() if key != "repaired_payload"}
                     track["payload_gate_status"] = gate.get("status")
+                    track["payload_gate_passed"] = bool(gate.get("gate_passed"))
+                    track["payload_gate_blocking_issues"] = gate.get("blocking_issues") or []
                     track["tag_coverage"] = gate.get("tag_coverage")
                     track["caption_integrity"] = gate.get("caption_integrity")
                     track["lyric_duration_fit"] = gate.get("lyric_duration_fit")
                     track["repair_actions"] = gate.get("repair_actions") or []
+                    if model_index == 1:
+                        for public_field in [
+                            "caption",
+                            "tags",
+                            "tag_list",
+                            "lyrics",
+                            "required_phrases",
+                            "payload_quality_gate",
+                            "payload_gate_status",
+                            "payload_gate_passed",
+                            "payload_gate_blocking_issues",
+                            "tag_coverage",
+                            "caption_integrity",
+                            "lyric_duration_fit",
+                            "repair_actions",
+                        ]:
+                            base_track[public_field] = _jsonable(track.get(public_field))
                     album_debug.append_jsonl(
                         "06_quality_audit.jsonl",
                         {
@@ -5761,6 +5833,8 @@ def generate_album(
                         audio["album_family_id"] = album_family_id
                         audio["album_model"] = track_model
                         audio["album_model_label"] = model_item.get("label") or track_model
+                        audio["payload_gate_status"] = track.get("payload_gate_status")
+                        audio["payload_gate_passed"] = track.get("payload_gate_passed")
                         if audio.get("song_id"):
                             _merge_song_album_metadata(
                                 audio["song_id"],
@@ -5924,6 +5998,10 @@ def generate_album(
             "planner_provider": planner_lm_provider,
             "embedding_model": embedding_model,
             "embedding_provider": embedding_lm_provider,
+            "planning_engine": str(result.get("planning_engine") or ""),
+            "crewai_used": bool(result.get("crewai_used")),
+            "toolbelt_fallback": bool(result.get("toolbelt_fallback")),
+            "crewai_error": str(result.get("crewai_error") or ""),
             "album_debug_dir": str(album_debug.root),
             "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
             "logs": logs,

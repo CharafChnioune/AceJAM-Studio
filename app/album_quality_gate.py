@@ -21,7 +21,7 @@ TAG_DIMENSION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "rhythm_groove": (
         "groove", "bounce", "swing", "boom-bap", "four-on-the-floor", "breakbeat",
         "drums", "hi-hat", "hi hats", "snare", "kick", "percussion", "shuffle",
-        "rhythm", "syncopation", "tempo",
+        "rhythm", "syncopation", "tempo", "groovy", "rubber bass", "handclap", "handclaps",
     ),
     "instrumentation": (
         "piano", "guitar", "bass", "808", "sub-bass", "synth", "strings", "brass",
@@ -61,11 +61,19 @@ CAPTION_LEAK_PATTERNS = [
     re.compile(r"\[[^\]]*(?:verse|chorus|hook|bridge|intro|outro)[^\]]*\]", re.I),
     re.compile(r"\b(?:verse|lyrics|naming drop|track\s+\d+|album|bpm|keyscale|key|duration|metadata|produced by|prod\.|artist|description|tags)\s*:", re.I),
     re.compile(r"\b(?:return strict json|json object|tool context|deterministic acejam|lyric target|crewai)\b", re.I),
+    re.compile(r"[{}]|\b(?:true|false|null)\b|['\"][A-Za-z0-9_ -]{1,40}['\"]\s*:", re.I),
 ]
 
 META_LEAK_LINE_RE = re.compile(
-    r"^\s*(?:thought:|final answer:|track metadata:|artist:|description:|tags:|duration:|bpm:|key scale:|metadata:|"
-    r"i will now|the complete production spec|return strict json|```)",
+    r"^\s*(?:[-*>_`#\s]+)?(?:"
+    r"\[(?:producer credit|locked title|duration|bpm|key|artist|title|metadata|tags|song model|quality profile)[^\]]*\]|"
+    r"thought:|reasoning:|analysis:|final answer:|track metadata:|artist:|"
+    r"description:|tags:|duration:|bpm:|key(?:[_\s-]?scale)?:|time(?:[_\s-]?signature)?:|metadata:|"
+    r"\[?ace[-\s]?step(?:\s+metadata)?\]?:?|ace[-\s]?step metadata:|"
+    r"tag(?:[_\s-]?list)?:|start:|end:|vocal(?:[_\s-]?role)?:|"
+    r"song(?:[_\s-]?model)?:|quality(?:[_\s-]?profile)?:|"
+    r"model(?:[_\s-]?advice)?:|seed:|inference(?:[_\s-]?steps)?:|guidance(?:[_\s-]?scale)?:|"
+    r"shift:|audio(?:[_\s-]?format)?:|i will now|the complete production spec|return strict json|```)",
     re.I,
 )
 FALLBACK_ARTIFACT_RE = re.compile(
@@ -128,10 +136,28 @@ def _words(text: str) -> list[str]:
 
 
 def _section_key(section: str) -> str:
-    text = re.sub(r"[\[\]]", "", str(section or "")).lower()
+    text = re.sub(r"[*_`]", "", str(section or ""))
+    text = re.sub(r"[\[\]]", "", text).lower()
     text = re.sub(r"\s*-\s*.*$", "", text)
     text = re.sub(r"\s+\d+$", "", text)
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def _normalize_lyric_section_line(line: str) -> str:
+    """Strip markdown emphasis around bare section tags before lyric analysis."""
+    stripped = str(line or "").strip()
+    match = re.fullmatch(r"[*_`~\s]*\[\s*([^\]]+?)\s*\][*_`~\s]*", stripped)
+    if not match:
+        return str(line or "")
+    return f"[{match.group(1).strip()}]"
+
+
+def _metadata_probe(line: str) -> str:
+    text = str(line or "").strip()
+    text = re.sub(r"^[\s>*_`#-]+", "", text)
+    text = re.sub(r"[\s*_`#-]+$", "", text)
+    text = text.replace("**", "")
+    return text.strip()
 
 
 def _split_terms(value: Any) -> list[str]:
@@ -153,11 +179,12 @@ def _split_terms(value: Any) -> list[str]:
 
 
 def _lyric_stats(lyrics: str) -> dict[str, Any]:
-    raw_lines = [line.strip() for line in str(lyrics or "").splitlines() if line.strip()]
+    raw_lines = [_normalize_lyric_section_line(line).strip() for line in str(lyrics or "").splitlines() if line.strip()]
     lyric_lines = [re.sub(r"\[[^\]]+\]", "", line).strip() for line in raw_lines]
     lyric_lines = [line for line in lyric_lines if line]
     words = _words("\n".join(lyric_lines))
     sections = SECTION_RE.findall(str(lyrics or ""))
+    section_keys = [_section_key(section) for section in sections]
     repeated = [
         line
         for line, count in Counter(line.lower() for line in lyric_lines).items()
@@ -170,10 +197,10 @@ def _lyric_stats(lyrics: str) -> dict[str, Any]:
         "section_count": len(sections),
         "sections": [f"[{item}]" for item in sections],
         "char_count": len(str(lyrics or "")),
-        "hook_count": len(re.findall(r"(?im)^\s*\[(?:chorus|hook|refrain)", str(lyrics or ""))),
+        "hook_count": sum(1 for key in section_keys if any(token in key for token in ("chorus", "hook", "refrain"))),
         "repeated_lines": repeated,
         "unique_line_ratio": unique_ratio,
-        "meta_leak_lines": [line for line in raw_lines if META_LEAK_LINE_RE.search(line)],
+        "meta_leak_lines": [line for line in raw_lines if META_LEAK_LINE_RE.search(_metadata_probe(line))],
         "fallback_artifact_count": len(FALLBACK_ARTIFACT_RE.findall(str(lyrics or ""))),
         "placeholder_count": len(PLACEHOLDER_RE.findall(str(lyrics or ""))),
     }
@@ -282,13 +309,18 @@ def evaluate_album_payload_quality(
 
     caption = str(repaired.get("caption") or repaired.get("tags") or "")
     tag_list = repaired.get("tag_list") or ((repaired.get("album_metadata") or {}).get("tag_list") if isinstance(repaired.get("album_metadata"), dict) else [])
+    tag_terms = _split_terms(tag_list)
     coverage = tag_dimension_coverage(caption, tag_list)
     caption_leaks = _caption_has_leakage(caption)
-    if caption_leaks:
-        issues.append({"id": "caption_leakage", "severity": "repairable", "detail": f"{len(caption_leaks)} leak marker(s)"})
+    tag_leaks = [term for term in tag_terms if _caption_has_leakage(term)]
+    if caption_leaks or tag_leaks:
+        issues.append({"id": "caption_leakage", "severity": "repairable", "detail": f"{len(caption_leaks) + len(tag_leaks)} leak marker(s)"})
     if coverage.get("missing"):
         issues.append({"id": "tag_dimension_coverage", "severity": "repairable", "detail": ", ".join(coverage["missing"])})
-    if repair and (caption_leaks or coverage.get("missing")):
+    if repair and (caption_leaks or tag_leaks or coverage.get("missing")):
+        if tag_leaks:
+            repaired["tag_list"] = [term for term in tag_terms if not _caption_has_leakage(term)]
+            tag_list = repaired["tag_list"]
         repaired_caption = _clean_caption(repaired, coverage)
         repaired["caption"] = repaired_caption
         repaired["tags"] = repaired_caption
@@ -344,7 +376,7 @@ def evaluate_album_payload_quality(
             issues.append({"id": "lyric_placeholders", "severity": "fail", "detail": f"{stats['placeholder_count']} placeholder(s)"})
         severe_repetition = (
             len(stats["repeated_lines"]) > max(20, stats["line_count"] // 2)
-            or (stats["line_count"] >= 24 and stats["unique_line_ratio"] < 0.12)
+            or (stats["line_count"] >= 24 and stats["unique_line_ratio"] < 0.35)
         )
         notable_repetition = len(stats["repeated_lines"]) > max(6, stats["line_count"] // 4) or (
             stats["line_count"] >= 24 and stats["unique_line_ratio"] < 0.45

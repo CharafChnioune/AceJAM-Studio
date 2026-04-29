@@ -1494,7 +1494,11 @@ def hit_readiness_report(payload: dict[str, Any], *, task_type: str | None = Non
     else:
         add("lyrics_presence", "pass", "not required for this mode", 8)
 
-    hook_hits = len(re.findall(r"(?im)^\s*\[(?:chorus|hook|refrain)", lyrics))
+    hook_hits = sum(
+        1
+        for section in INLINE_LYRIC_SECTION_RE.findall(lyrics)
+        if any(token in lyric_section_key(section) for token in ("chorus", "hook", "refrain"))
+    )
     add("hook_or_chorus", "pass" if instrumental or hook_hits else "warn", f"{hook_hits} hook/chorus section(s)", 10)
 
     section_hits = len(INLINE_LYRIC_SECTION_RE.findall(lyrics))
@@ -1632,13 +1636,30 @@ PARAM_ALIASES: dict[str, list[str]] = {
 }
 
 LYRIC_SECTION_RE = re.compile(
-    r"(?im)^\s*\[(?:intro|verse|pre[-\s]?chorus|chorus|hook|bridge|drop|break|interlude|outro|refrain|rap|spoken)"
+    r"(?im)^\s*\*{0,2}\[(?:intro|verse|pre[-\s]?chorus|chorus|final\s+chorus|hook|bridge|drop|break|interlude|outro|refrain|rap|spoken)"
     r"(?:\s+\d+)?\]\s*$"
 )
 INLINE_LYRIC_SECTION_RE = re.compile(
-    r"(?i)\[(?:intro|verse|pre[-\s]?chorus|chorus|hook|bridge|drop|break|interlude|outro|refrain|rap|spoken)"
+    r"(?i)\[(?:intro|verse|pre[-\s]?chorus|chorus|final\s+chorus|hook|bridge|drop|break|interlude|outro|refrain|rap|spoken)"
     r"(?:\s+\d+)?\]"
 )
+
+
+def normalize_lyric_section_marker(line: str | None) -> str:
+    """Normalize markdown-emphasized section-only lines such as **[Chorus]**."""
+    text = str(line or "")
+    match = re.fullmatch(r"\s*[*_`~]*\s*(\[[^\]]+\])\s*[*_`~]*\s*", text)
+    if not match:
+        return text
+    return match.group(1)
+
+
+def lyric_section_key(section: str | None) -> str:
+    text = re.sub(r"[*_`~]", "", str(section or ""))
+    text = re.sub(r"[\[\]]", "", text).lower()
+    text = re.sub(r"\s*-\s*.*$", "", text)
+    text = re.sub(r"\s+\d+$", "", text)
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
 
 def safe_id(value: str) -> str:
@@ -1785,10 +1806,27 @@ def normalize_generation_text_fields(payload: dict[str, Any], task_type: str | N
 
 
 _META_LEAK_LINE_RE = re.compile(
-    r"(?i)^\s*(?:thought:|reasoning:|analysis:|self[-\s]?correction:|draft:|note:|"
+    r"(?i)^\s*(?:[-*>_`#\s]+)?(?:"
+    r"\[(?:producer credit|locked title|duration|bpm|key|artist|title|metadata|tags|song model|quality profile)[^\]]*\]|"
+    r"thought:|reasoning:|analysis:|self[-\s]?correction:|draft:|note:|"
     r"i will now\b|i'?ll now\b|let'?s write\b|let me\b|here(?:'s| is)\b|"
     r"the complete production spec\b|track metadata:|artist:|description:|tags:|"
-    r"duration:|bpm:|key scale:|title:|metadata:|json\b)"
+    r"duration:|bpm:|key(?:[_\s-]?scale)?:|time(?:[_\s-]?signature)?:|title:|metadata:|"
+    r"\[?ace[-\s]?step(?:\s+metadata)?\]?:?|ace[-\s]?step metadata:|"
+    r"tag(?:[_\s-]?list)?:|start:|end:|vocal(?:[_\s-]?role)?:|"
+    r"song(?:[_\s-]?model)?:|quality(?:[_\s-]?profile)?:|"
+    r"model(?:[_\s-]?advice)?:|seed:|inference(?:[_\s-]?steps)?:|guidance(?:[_\s-]?scale)?:|"
+    r"shift:|audio(?:[_\s-]?format)?:|json\b)"
+)
+_SECTION_TIMING_LINE_RE = re.compile(r"(?i)^\s*-?\s*\[[^\]]+\]\s*\([^)]*\bsec(?:ond)?s?\b[^)]*\)\s*$")
+_BRACKET_CONTRACT_META_LINE_RE = re.compile(
+    r"(?i)^\s*\[(?:producer credit|locked title|duration|bpm|key|artist|title|metadata|tags|song model|quality profile)[^\]]*\]\s*$"
+)
+_LYRICS_LABEL_RE = re.compile(r"(?i)^\s*(?:[-*>_`#\s]+)?lyrics\s*:\s*$")
+_REQUIRED_PHRASES_SECTION_RE = re.compile(r"(?i)^\s*\[required phrases?\]\s*$")
+_ACE_STEP_TIMING_BLOCK_RE = re.compile(
+    r"(?ims)^\s*\[ACE-Step\]\s*\n"
+    r"(?:(?:\s*(?:Tag|Start|End|Vocal\s+Role)\s*:[^\n]*\n?)|\s*)+"
 )
 
 
@@ -1800,14 +1838,25 @@ def strip_ace_step_lyrics_leakage(lyrics: str | None) -> str:
     text = re.sub(r"(?is)<think>.*?</think>", "", text)
     text = re.sub(r"(?is)```(?:json|markdown|text)?\s*", "", text)
     text = text.replace("```", "")
+    text = _ACE_STEP_TIMING_BLOCK_RE.sub("", text)
     kept: list[str] = []
     saw_section = False
     for raw_line in text.splitlines():
-        line = raw_line.rstrip()
+        line = normalize_lyric_section_marker(raw_line.rstrip())
         stripped = line.strip()
         if not stripped:
             if kept and kept[-1] != "":
                 kept.append("")
+            continue
+        if _BRACKET_CONTRACT_META_LINE_RE.search(stripped):
+            continue
+        if _SECTION_TIMING_LINE_RE.search(stripped):
+            continue
+        if _LYRICS_LABEL_RE.search(stripped):
+            kept = []
+            saw_section = False
+            continue
+        if _REQUIRED_PHRASES_SECTION_RE.search(stripped):
             continue
         if INLINE_LYRIC_SECTION_RE.search(stripped):
             saw_section = True
@@ -1815,8 +1864,8 @@ def strip_ace_step_lyrics_leakage(lyrics: str | None) -> str:
             continue
         if not saw_section and _META_LEAK_LINE_RE.search(stripped):
             continue
-        if saw_section and _META_LEAK_LINE_RE.search(stripped) and len(stripped) > 24:
-            continue
+        if saw_section and _META_LEAK_LINE_RE.search(stripped):
+            break
         kept.append(line)
     cleaned = "\n".join(kept)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()

@@ -42,6 +42,69 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(payload["time_signature"], "4")
         self.assertEqual(payload["vocal_language"], "en")
 
+    def test_album_lyrics_cleaner_removes_section_timing_preamble(self):
+        cleaned = acejam_app.strip_ace_step_lyrics_leakage(
+            "[Intro] (0-8 sec)\n"
+            "  - [Verse] (8-42 sec)\n"
+            "  - [Chorus] (42-60 sec)\n\n"
+            "Lyrics:\n"
+            "Neon bakery lights keep calling us home.\n"
+            "[Verse]\nThe ovens glow again\n"
+            "[Chorus]\nNeon bakery lights keep calling us home.\n"
+        )
+
+        self.assertNotIn("(0-8 sec)", cleaned)
+        self.assertNotIn("Lyrics:", cleaned)
+        self.assertIn("[Verse]", cleaned)
+        self.assertIn("Neon bakery lights keep calling us home.", cleaned)
+
+    def test_album_lyrics_cleaner_removes_ace_step_timing_blocks(self):
+        cleaned = acejam_app.strip_ace_step_lyrics_leakage(
+            "[Verse]\nThe ovens glow again\n\n"
+            "[ACE-Step]\n"
+            "Tag: [Chorus]\n"
+            "Start: 00:30\n"
+            "End: 00:46\n"
+            "Vocal Role: lyrics\n\n"
+            "[Chorus]\nNeon bakery lights keep calling us home.\n"
+        )
+
+        self.assertNotIn("[ACE-Step]", cleaned)
+        self.assertNotIn("Vocal Role:", cleaned)
+        self.assertNotIn("Start:", cleaned)
+        self.assertIn("[Chorus]", cleaned)
+        self.assertIn("Neon bakery lights keep calling us home.", cleaned)
+
+    def test_album_lyrics_cleaner_removes_bracketed_metadata_tail(self):
+        cleaned = acejam_app.strip_ace_step_lyrics_leakage(
+            "[Verse]\nThe ovens glow again\n"
+            "[Chorus]\nNeon bakery lights keep calling us home.\n"
+            "[ACE-Step metadata]\n"
+            "tag_list: pop, funk, groovy\n"
+            "[Intro]\nThis should not be kept\n"
+        )
+
+        self.assertNotIn("[ACE-Step metadata]", cleaned)
+        self.assertNotIn("tag_list:", cleaned)
+        self.assertNotIn("This should not be kept", cleaned)
+        self.assertIn("Neon bakery lights keep calling us home.", cleaned)
+
+    def test_album_lyrics_cleaner_removes_contract_metadata_sections(self):
+        cleaned = acejam_app.strip_ace_step_lyrics_leakage(
+            "[Final Chorus]\nWe built this thing from nothing at all\n"
+            "[Producer Credit: Studio House]\n"
+            "[Locked Title: Neon Bakery Lights]\n"
+            "[Duration: 60.0 seconds]\n\n"
+            "[Required phrases]\n"
+            "Neon bakery lights keep calling us home.\n"
+        )
+
+        self.assertNotIn("Producer Credit", cleaned)
+        self.assertNotIn("Locked Title", cleaned)
+        self.assertNotIn("[Duration:", cleaned)
+        self.assertNotIn("[Required phrases]", cleaned)
+        self.assertIn("Neon bakery lights keep calling us home.", cleaned)
+
     def test_unreleased_model_is_not_downloadable(self):
         self.assertNotIn("acestep-v15-turbo-rl", acejam_app._downloadable_model_names())
 
@@ -287,6 +350,7 @@ class AppParityTest(unittest.TestCase):
                     "duration": 30,
                     "payload_quality_gate": gate,
                     "payload_gate_status": "auto_repair",
+                    "payload_gate_passed": True,
                     "tag_coverage": {"status": "pass"},
                     "caption_integrity": {"status": "pass"},
                     "lyric_duration_fit": {"status": "pass"},
@@ -296,6 +360,7 @@ class AppParityTest(unittest.TestCase):
 
         self.assertEqual(params["payload_quality_gate"], gate)
         self.assertEqual(params["payload_gate_status"], "auto_repair")
+        self.assertTrue(params["payload_gate_passed"])
         self.assertEqual(params["tag_coverage"]["status"], "pass")
         self.assertEqual(params["caption_integrity"]["status"], "pass")
         self.assertEqual(params["lyric_duration_fit"]["status"], "pass")
@@ -838,6 +903,31 @@ class AppParityTest(unittest.TestCase):
 
         self.assertEqual(opts["song_model_strategy"], "selected")
         self.assertEqual(opts["requested_song_model"], "acestep-v15-xl-sft")
+
+    def test_album_options_extract_contract_from_concept_payload(self):
+        opts = acejam_app._album_options_from_payload(
+            {
+                "concept": (
+                    'Album: Midnight Bakery\n'
+                    'Track 1: "Neon Bakery Lights" (Produced by Studio House)\n'
+                    "(BPM: 95 | Key: A minor | Style: upbeat city-pop / pop-funk)\n"
+                    "The Vibe: rubber bass and bright piano.\n"
+                    "The Narrative: the lights come back on."
+                ),
+                "num_tracks": 1,
+                "language": "en",
+                "song_model_strategy": "selected",
+                "song_model": "acestep-v15-turbo",
+            },
+            song_model="auto",
+        )
+
+        contract = opts["user_album_contract"]
+        self.assertTrue(contract["applied"])
+        self.assertEqual(contract["album_title"], "Midnight Bakery")
+        self.assertEqual(contract["tracks"][0]["locked_title"], "Neon Bakery Lights")
+        self.assertEqual(contract["tracks"][0]["producer_credit"], "Studio House")
+        self.assertEqual(contract["tracks"][0]["key_scale"], "A minor")
 
     def test_generate_album_selected_model_queues_download_instead_of_empty_strategy_error(self):
         request_payload = {

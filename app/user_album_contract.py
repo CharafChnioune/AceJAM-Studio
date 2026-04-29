@@ -14,9 +14,10 @@ TRACK_HEADER_RE = re.compile(
 )
 
 LABEL_PATTERNS = [
-    "album", "album title", "album name", "concept", "language", "track", "bpm", "style",
+    "album", "album title", "album name", "concept", "language", "track", "bpm", "key", "keyscale", "key scale", "style",
     "vibe", "the vibe", "narrative", "the narrative", "lyrics", "explicit lyrics",
-    "naming drop", "produced by", "engineered by", "artist", "performer",
+    "naming drop", "required hook phrase", "required phrase", "required phrases", "hook phrase",
+    "produced by", "engineered by", "artist", "performer",
 ]
 
 UNSAFE_CONTENT_RE = None  # content filtering removed
@@ -27,6 +28,32 @@ def _clip(value: Any, limit: int = 700) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump()
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    if hasattr(value, "dict"):
+        dumped = value.dict()
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    if isinstance(value, (list, tuple)):
+        try:
+            converted = dict(value)
+            return converted if isinstance(converted, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    return []
 
 
 def _clean_title(value: Any) -> str:
@@ -68,7 +95,11 @@ def _lyric_lines(value: str) -> list[str]:
     lines: list[str] = []
     for line in str(value or "").splitlines():
         cleaned = line.strip().strip("\"“”")
-        if not cleaned or cleaned.lower().startswith(("the explicit", "lyrics", "naming drop")):
+        if (
+            not cleaned
+            or cleaned in {"[]", "[ ]"}
+            or cleaned.lower().startswith(("the explicit", "lyrics", "naming drop"))
+        ):
             continue
         if cleaned not in lines:
             lines.append(cleaned)
@@ -118,13 +149,23 @@ def extract_user_album_contract(
         engineer_credit = re.sub(r"(?i)^\s*(engineered|mixed)\s+by\s*", "", engineer_credit).strip()
         bpm_raw = _capture_inline(block, "BPM") or _capture_field(block, ["bpm"], multiline=False)
         bpm_match = re.search(r"\d{2,3}", bpm_raw)
+        key_scale = (
+            _capture_inline(block, "Key Scale")
+            or _capture_inline(block, "Keyscale")
+            or _capture_inline(block, "Key")
+            or _capture_field(block, ["key scale", "keyscale", "key"], multiline=False)
+        )
         style = _capture_inline(block, "Style") or _capture_field(block, ["style"], multiline=False)
         vibe = _capture_field(block, ["the vibe", "vibe"], multiline=True)
         narrative = _capture_field(block, ["the narrative", "narrative"], multiline=True)
         lyrics = _capture_field(block, ["explicit lyrics", "lyrics"], multiline=True)
         naming_drop = _capture_field(block, ["naming drop"], multiline=True)
-        combined_required = "\n".join(part for part in [lyrics, naming_drop] if part).strip()
-        required_phrases = _quoted_phrases(naming_drop) + _lyric_lines(lyrics)
+        required_phrase_text = _capture_field(
+            block,
+            ["required hook phrase", "required phrase", "required phrases", "hook phrase"],
+            multiline=True,
+        )
+        required_phrases = _quoted_phrases(naming_drop) + _lyric_lines(lyrics) + _lyric_lines(required_phrase_text)
         tracks.append(
             {
                 "track_number": track_number,
@@ -134,13 +175,14 @@ def extract_user_album_contract(
                 "engineer_credit": _clip(engineer_credit, 160),
                 "artist_role": _clip(_capture_field(block, ["artist", "performer"], multiline=False), 160),
                 "bpm": int(bpm_match.group(0)) if bpm_match else None,
+                "key_scale": _clip(key_scale, 80),
                 "style": _clip(style, 240),
                 "vibe": _clip(vibe, 500),
                 "narrative": _clip(narrative, 650),
                 "required_lyrics": lyrics,
                 "required_phrases": required_phrases,
                 "blocked_required_excerpt": "",
-                "forbidden_changes": ["title", "track_number", "producer_credit", "bpm", "style", "vibe", "narrative"],
+                "forbidden_changes": ["title", "track_number", "producer_credit", "bpm", "key_scale", "style", "vibe", "narrative"],
                 "content_policy_status": "safe",
                 "source_excerpt": _clip(block, 650),
             }
@@ -196,6 +238,7 @@ def contract_prompt_context(contract: dict[str, Any] | None) -> dict[str, Any]:
                 "producer_credit": item.get("producer_credit"),
                 "engineer_credit": item.get("engineer_credit"),
                 "bpm": item.get("bpm"),
+                "key_scale": item.get("key_scale"),
                 "style": item.get("style"),
                 "vibe": item.get("vibe"),
                 "narrative": item.get("narrative"),
@@ -224,6 +267,7 @@ def tracks_from_user_album_contract(contract: dict[str, Any] | None) -> list[dic
                 "producer_credit": item.get("producer_credit") or "",
                 "engineer_credit": item.get("engineer_credit") or "",
                 "bpm": item.get("bpm"),
+                "key_scale": item.get("key_scale") or "",
                 "style": item.get("style") or "",
                 "vibe": item.get("vibe") or "",
                 "narrative": item.get("narrative") or "",
@@ -269,7 +313,7 @@ def apply_user_album_contract_to_track(
     if not item:
         return result
     repaired: list[str] = []
-    compliance = dict(result.get("contract_compliance") or {})
+    compliance = _dict_or_empty(result.get("contract_compliance"))
     locked_title = str(item.get("locked_title") or "").strip()
     if locked_title:
         old_title = str(result.get("title") or "").strip()
@@ -282,13 +326,14 @@ def apply_user_album_contract_to_track(
         result["locked_title"] = locked_title
         result["source_title"] = item.get("source_title") or locked_title
         compliance["title"] = "repaired" if "title" in repaired else "kept"
-    for field in ["producer_credit", "engineer_credit", "artist_role", "style", "vibe", "narrative"]:
+    for field in ["producer_credit", "engineer_credit", "artist_role", "key_scale", "style", "vibe", "narrative"]:
         value = item.get(field)
         if value not in (None, ""):
             if result.get(field) != value:
                 repaired.append(field)
             result[field] = value
             compliance[field] = "repaired" if field in repaired else "kept"
+    result["input_contract_key_scale_locked"] = bool(item.get("key_scale"))
     if item.get("bpm"):
         if int(result.get("bpm") or 0) != int(item["bpm"]):
             repaired.append("bpm")
@@ -304,7 +349,13 @@ def apply_user_album_contract_to_track(
             result["lyrics"] = required + ("\n\n" + str(result.get("lyrics") or "").strip() if str(result.get("lyrics") or "").strip() else "")
             repaired.append("required_lyrics")
         compliance["required_lyrics"] = "repaired" if "required_lyrics" in repaired else "kept"
-    missing = _ensure_required_phrases(result, list(item.get("required_phrases") or []))
+    required_phrases = [
+        str(phrase).strip()
+        for phrase in _list_or_empty(item.get("required_phrases"))
+        if str(phrase).strip() and str(phrase).strip() not in {"[]", "[ ]"}
+    ]
+    result["required_phrases"] = required_phrases
+    missing = _ensure_required_phrases(result, required_phrases)
     if missing:
         repaired.append("required_phrase")
         compliance["required_phrase"] = "repaired"
@@ -324,4 +375,3 @@ def apply_user_album_contract_to_tracks(
     logs: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     return [apply_user_album_contract_to_track(track, contract, index, logs) for index, track in enumerate(tracks or [])]
-
