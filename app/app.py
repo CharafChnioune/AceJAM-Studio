@@ -5420,7 +5420,7 @@ def generate_album(
                         "auto_lrc": parse_bool(track.get("auto_lrc", request_payload.get("auto_lrc")), False),
                         "return_audio_codes": parse_bool(track.get("return_audio_codes", request_payload.get("return_audio_codes")), False),
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
-                        "thinking": parse_bool(track.get("thinking", request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
+                        "thinking": True,  # Always enable thinking for album generation (LM is required for audio quality)
                         "use_format": parse_bool(track.get("use_format", False if track_has_vocal_lyrics else request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled and not track_has_vocal_lyrics else False),
                         "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85, 0.0, 2.0),
                         "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
