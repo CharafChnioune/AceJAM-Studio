@@ -5691,9 +5691,12 @@ def generate_album(
                         },
                     )
                     if not gate.get("gate_passed"):
+                        blocking_issues = gate.get("blocking_issues") or [
+                            item for item in (gate.get("issues") or []) if item.get("severity") == "fail"
+                        ]
                         issue_preview = "; ".join(
                             f"{item.get('id')}: {item.get('detail')}"
-                            for item in (gate.get("issues") or [])[:6]
+                            for item in blocking_issues[:6]
                         )
                         raise ValueError(f"AlbumPayloadQualityGate failed: {issue_preview or gate.get('status')}")
                     if gate.get("status") == "auto_repair":

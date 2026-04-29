@@ -342,10 +342,17 @@ def evaluate_album_payload_quality(
             issues.append({"id": "lyric_meta_leakage", "severity": "fail", "detail": f"{len(stats['meta_leak_lines'])} line(s)"})
         if stats["placeholder_count"]:
             issues.append({"id": "lyric_placeholders", "severity": "fail", "detail": f"{stats['placeholder_count']} placeholder(s)"})
-        if len(stats["repeated_lines"]) > max(6, stats["line_count"] // 4) or (
-            stats["line_count"] >= 12 and stats["unique_line_ratio"] < 0.45
-        ):
+        severe_repetition = (
+            len(stats["repeated_lines"]) > max(20, stats["line_count"] // 2)
+            or (stats["line_count"] >= 24 and stats["unique_line_ratio"] < 0.12)
+        )
+        notable_repetition = len(stats["repeated_lines"]) > max(6, stats["line_count"] // 4) or (
+            stats["line_count"] >= 24 and stats["unique_line_ratio"] < 0.45
+        )
+        if severe_repetition:
             issues.append({"id": "too_many_repeated_lines", "severity": "fail", "detail": f"{len(stats['repeated_lines'])} repeated line(s)"})
+        elif notable_repetition:
+            issues.append({"id": "lyric_repetition_warning", "severity": "warning", "detail": f"{len(stats['repeated_lines'])} repeated line(s)"})
 
     required_phrases = [str(item).strip() for item in (repaired.get("required_phrases") or []) if str(item).strip()]
     missing_required = [phrase for phrase in required_phrases if phrase.lower() not in lyrics.lower()]
@@ -370,10 +377,12 @@ def evaluate_album_payload_quality(
     else:
         status = "pass"
 
+    final_caption_leaks = _caption_has_leakage(str(repaired.get("caption") or ""))
     caption_integrity = {
-        "status": "pass" if not _caption_has_leakage(str(repaired.get("caption") or "")) else "fail",
+        "status": "pass" if not final_caption_leaks else "fail",
         "char_count": len(str(repaired.get("caption") or "")),
-        "leakage_markers": caption_leaks,
+        "leakage_markers": final_caption_leaks,
+        "repaired_leakage_markers": caption_leaks,
     }
     lyric_duration_fit = {
         "status": "pass" if not fail_issues else "fail",
@@ -389,6 +398,7 @@ def evaluate_album_payload_quality(
         "status": status,
         "gate_passed": status in {"pass", "auto_repair"},
         "issues": issues,
+        "blocking_issues": fail_issues,
         "repair_actions": repair_actions,
         "tag_coverage": coverage,
         "caption_integrity": caption_integrity,

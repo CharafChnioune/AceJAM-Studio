@@ -110,6 +110,48 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertEqual(report["caption_integrity"]["status"], "pass")
         self.assertEqual(report["lyric_duration_fit"]["status"], "pass")
 
+    def test_hook_repetition_warns_without_blocking_render(self):
+        hook_lines = [f"Hook returns {idx}" for idx in range(20)]
+        lyrics = "\n".join(
+            ["[Intro]"]
+            + [f"Opening image starts {idx}" for idx in range(4)]
+            + ["[Verse 1]"]
+            + [f"Clear scene moves {idx}" for idx in range(14)]
+            + ["[Pre-Chorus]"]
+            + hook_lines
+            + ["[Chorus]"]
+            + hook_lines
+            + ["[Verse 2]"]
+            + [f"Second scene lands {idx}" for idx in range(14)]
+            + ["[Pre-Chorus]"]
+            + hook_lines
+            + ["[Chorus]"]
+            + hook_lines
+            + ["[Bridge]"]
+            + [f"Bridge opens door {idx}" for idx in range(6)]
+            + ["[Breakdown]"]
+            + [f"Breakdown leaves space {idx}" for idx in range(4)]
+            + ["[Final Chorus]"]
+            + hook_lines
+            + ["[Outro]", "Last image lands"]
+        )
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": lyrics,
+            "duration": 180,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertIn("lyric_repetition_warning", issue_ids)
+        self.assertTrue(report["gate_passed"])
+        self.assertNotEqual(report["status"], "fail")
+
     def test_debug_logger_writes_job_scoped_json_and_jsonl(self):
         with tempfile.TemporaryDirectory() as tmp:
             logger = AlbumRunDebugLogger(Path(tmp), "job/with spaces")
