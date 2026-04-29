@@ -4,6 +4,8 @@ import json
 import re
 import zlib
 from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from prompt_kit import (
@@ -194,6 +196,11 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "FilenamePlannerTool", "summary": "Plans safe track/model filenames for downloads and album ZIPs."},
     {"name": "XLModelPolicyTool", "summary": "Locks final album renders to ACE-Step XL SFT and explains download/runtime requirements."},
     {"name": "TagLibraryTool", "summary": "Provides ACE-Step caption dimensions and lyric meta tags."},
+    {"name": "AceStepPromptContractTool", "summary": "Returns the strict ACE-Step track payload prompt contract for album agents."},
+    {"name": "LyricCounterTool", "summary": "Deterministically counts words, lyric lines, chars, sections, and hooks."},
+    {"name": "TagCoverageTool", "summary": "Checks that caption/tags cover all required ACE-Step sound dimensions."},
+    {"name": "CaptionIntegrityTool", "summary": "Checks captions for lyric, prompt, JSON, and metadata leakage."},
+    {"name": "PayloadGateTool", "summary": "Runs the same album payload quality gate used before ACE-Step renders."},
     {"name": "LyricLengthTool", "summary": "Plans sections, words, and lines for the chosen duration."},
     {"name": "GenerationSettingsTool", "summary": "Builds editable per-track seed, steps, guidance, shift, sampler, and format settings."},
     {"name": "ArrangementTool", "summary": "Plans intro, verses, hooks, bridge, outro, BPM/key/time, and energy movement."},
@@ -787,14 +794,57 @@ def build_track_tags(
     return clean
 
 
-def polish_caption(tags: Any, description: str = "", global_caption: str = "") -> str:
-    tag_text = ", ".join(split_terms(tags))
-    parts = [tag_text]
-    if description:
-        parts.append(str(description).strip())
-    if global_caption:
-        parts.append(str(global_caption).strip())
-    caption = ". ".join(part for part in parts if part)
+SONIC_CAPTION_TERM_RE = re.compile(
+    r"\b(?:pop|rap|hip-hop|hip hop|trap|drill|g-funk|r&b|soul|rock|metal|punk|house|techno|trance|"
+    r"dancehall|reggaeton|afro|amapiano|cinematic|ambient|schlager|latin|j-pop|k-pop|"
+    r"groove|bounce|swing|boom-bap|drums?|hi-hats?|snare|kick|percussion|shuffle|rhythm|"
+    r"bass|808|sub-bass|low-end|synth|piano|guitar|strings|brass|horns?|sirens?|accordion|organ|"
+    r"vocal|voice|sung|singer|choir|harmony|hook|chorus|chant|dark|bright|uplifting|melancholic|"
+    r"euphoric|dreamy|nostalgic|aggressive|romantic|hopeful|tense|warm|cold|gritty|emotional|"
+    r"build|drop|bridge|anthemic|breakdown|dynamic|riser|climax|intro|outro|stadium|mix|master|"
+    r"polished|crisp|clean|wide stereo|high-fidelity|radio|studio|glossy|punchy|analog|west coast)\b",
+    re.I,
+)
+
+
+def _caption_term_is_compact(term: Any) -> bool:
+    text = re.sub(r"\s+", " ", str(term or "")).strip(" .")
+    if not text:
+        return False
+    if len(text) > 64:
+        return False
+    if re.search(r"[\n\r{}]|\b(?:album|track\s+\d+|verse|lyrics|metadata|json|bpm|key|duration|seed)\s*:", text, re.I):
+        return False
+    if re.search(r"[.!?]", text):
+        return False
+    words = re.findall(r"[A-Za-z0-9À-ÿ\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff']+", text)
+    if len(words) > 6:
+        return False
+    lowered_words = {word.lower() for word in words}
+    if lowered_words & {"and", "while", "with", "that", "this"} and not re.search(
+        r"\b(?:r&b|drum and bass|call and response|wide stereo|warm analog|male and female)\b",
+        text,
+        re.I,
+    ):
+        return False
+    if not SONIC_CAPTION_TERM_RE.search(text):
+        return False
+    return True
+
+
+def polish_caption(tags: Any, description: str = "", global_caption: str = "", *, strict: bool = False) -> str:
+    terms: list[str] = []
+    sources = [tags]
+    if not strict:
+        sources.extend([description, global_caption])
+    for source in sources:
+        for term in split_terms(source):
+            if not _caption_term_is_compact(term):
+                continue
+            key = term.lower()
+            if key not in {existing.lower() for existing in terms}:
+                terms.append(term)
+    caption = ", ".join(terms)
     caption = re.sub(r"\b\d{2,3}\s*bpm\b", "", caption, flags=re.I)
     caption = re.sub(r"\s{2,}", " ", caption).strip(" ,.")
     return caption[:512]
@@ -1136,7 +1186,8 @@ def production_team_report(track: dict[str, Any], options: dict[str, Any], model
     language = str(track.get("language") or options.get("language") or "en")
     preset = language_preset(language)
     has_vocal_script = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
-    instrumental = parse_bool(track.get("instrumental"), False) or (not has_vocal_script and is_sparse_lyric_genre(genre_hint))
+    explicit_instrumental = parse_bool(track.get("instrumental"), False)
+    instrumental = (explicit_instrumental and not has_vocal_script) or (not has_vocal_script and is_sparse_lyric_genre(genre_hint))
     lyric_plan = lyric_length_plan(
         duration,
         str(options.get("lyric_density") or "dense"),
@@ -1219,6 +1270,12 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
     title = str(track.get("title") or f"Track {index + 1}").strip()[:80]
     duration = parse_duration_seconds(track.get("duration") or track.get("duration_seconds") or options.get("track_duration") or 120, 120)
     language = str(track.get("language") or options.get("language") or "en").strip().lower()
+    strict_album_agents = bool(options.get("strict_album_agents") or str(options.get("agent_engine") or "") == "acejam_agents")
+    if strict_album_agents:
+        genre_hint = " ".join(
+            str(track.get(key) or "")
+            for key in ("title", "tags", "style", "vibe", "narrative", "description")
+        ).strip() or genre_hint
     tags = build_track_tags(
         " ".join([genre_hint, str(track.get("tags") or ""), str(track.get("description") or "")]),
         index,
@@ -1246,16 +1303,24 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
     key_scale = normalize_key_scale(track.get("key_scale"), index, key_strategy)
     time_signature = normalize_time_signature(track.get("time_signature") or track.get("timesignature") or "4")
     lyrics = str(track.get("lyrics") or "").strip()
-    lyrics = expand_lyrics_for_duration(
-        title,
-        genre_hint,
-        lyrics,
-        duration,
-        language,
-        str(options.get("lyric_density") or "balanced"),
-        str(options.get("structure_preset") or "auto"),
+    if options.get("disable_auto_lyric_expansion") or strict_album_agents:
+        lyrics = trim_lyrics_to_limit(lyrics)
+    else:
+        lyrics = expand_lyrics_for_duration(
+            title,
+            genre_hint,
+            lyrics,
+            duration,
+            language,
+            str(options.get("lyric_density") or "balanced"),
+            str(options.get("structure_preset") or "auto"),
+        )
+    caption = polish_caption(
+        tags,
+        str(track.get("description") or ""),
+        str(options.get("global_caption") or ""),
+        strict=strict_album_agents,
     )
-    caption = polish_caption(tags, str(track.get("description") or ""), str(options.get("global_caption") or ""))
     installed_models = set(options.get("installed_models") or [])
     requested_track_model = str(track.get("song_model") or "").strip()
     final_locked = str(options.get("song_model_strategy") or "") == "xl_sft_final"
@@ -1365,7 +1430,8 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         ]
     )
     has_vocal_script = bool(lyrics.strip() and lyrics.strip().lower() != "[instrumental]")
-    instrumental = parse_bool(track.get("instrumental"), False) or (not has_vocal_script and is_sparse_lyric_genre(kit_hint))
+    explicit_instrumental = parse_bool(track.get("instrumental"), False)
+    instrumental = (explicit_instrumental and not has_vocal_script) or (not has_vocal_script and is_sparse_lyric_genre(kit_hint))
     kit_defaults = kit_metadata_defaults(
         mode=str(options.get("workflow_mode") or "text2music"),
         language=language,
@@ -1391,10 +1457,19 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         "infer_method": normalize_infer_method(track.get("infer_method") or options.get("infer_method") or model_defaults["infer_method"]),
         "sampler_mode": normalize_sampler_mode(track.get("sampler_mode") or options.get("sampler_mode") or model_defaults["sampler_mode"]),
     }
+    strict_album_agents = parse_bool(options.get("strict_album_agents"), False) or str(options.get("agent_engine") or "").strip().lower() == "acejam_agents"
+    strict_kit_override_fields = {
+        "genre_profile",
+        "genre_modules",
+        "section_map",
+        "lyric_density_notes",
+    }
     for field in PROMPT_KIT_METADATA_FIELDS:
         if field == "copy_paste_block":
             normalized[field] = _coerce_prompt_kit_field(field, track.get(field), "")
         elif field in {"lyrics", "ace_caption", "metadata", "generation_settings"}:
+            normalized[field] = _coerce_prompt_kit_field(field, kit_defaults.get(field), kit_defaults.get(field))
+        elif strict_album_agents and field in strict_kit_override_fields:
             normalized[field] = _coerce_prompt_kit_field(field, kit_defaults.get(field), kit_defaults.get(field))
         elif field in track and track.get(field) not in (None, ""):
             normalized[field] = _coerce_prompt_kit_field(field, track.get(field), kit_defaults.get(field))
@@ -1525,6 +1600,42 @@ def toolkit_payload(installed_models: set[str] | list[str] | None = None) -> dic
     }
 
 
+def _compact_tool_debug(value: Any, limit: int = 6000) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _compact_tool_debug(item, limit) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_compact_tool_debug(item, limit) for item in value]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def _write_tool_debug(context: dict[str, Any], tool_name: str, tool_input: Any, tool_output: Any) -> None:
+    debug_dir = str(context.get("album_debug_dir") or "").strip()
+    if not debug_dir:
+        return
+    try:
+        path = Path(debug_dir) / "03_crewai_tool_calls.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tool": tool_name,
+            "input": _compact_tool_debug(tool_input),
+            "output": _compact_tool_debug(tool_output),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True, default=str) + "\n")
+    except Exception:
+        return
+
+
+def _tool_return(context: dict[str, Any], tool_name: str, tool_input: Any, payload: Any) -> str:
+    text = json.dumps(payload, ensure_ascii=True, default=str)
+    _write_tool_debug(context, tool_name, tool_input, payload)
+    return text
+
+
 def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
     try:
         from crewai.tools import tool
@@ -1618,7 +1729,122 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
     @tool("TagLibraryTool")
     def tag_library(query: str = "") -> str:
         """Return ACE-Step caption dimensions, lyric meta tags, and curated tags."""
-        return json.dumps({"tag_taxonomy": TAG_TAXONOMY, "lyric_meta_tags": LYRIC_META_TAGS})
+        payload = {
+            "caption_dimensions": [
+                "genre_style",
+                "rhythm_groove",
+                "instrumentation",
+                "vocal_style",
+                "mood_atmosphere",
+                "arrangement_energy",
+                "mix_production",
+            ],
+            "tag_taxonomy": TAG_TAXONOMY,
+            "lyric_meta_tags": LYRIC_META_TAGS,
+            "selection_rule": "Use this full library to choose compact caption/tag terms; do not dump the entire library into final captions.",
+        }
+        return _tool_return(context, "TagLibraryTool", query, payload)
+
+    @tool("AceStepPromptContractTool")
+    def ace_step_prompt_contract_tool(query: str = "") -> str:
+        """Return the strict ACE-Step track payload contract and self-check rules."""
+        payload = {
+            "contract": context.get("ace_step_track_payload_contract") or {},
+            "prompt_template_version": context.get("ace_step_track_prompt_template_version") or "",
+            "rules": [
+                "Caption is <=512 chars and contains only sound/style/production cues.",
+                "Lyrics are <=4096 chars and contain section tags plus actual lines only.",
+                "Metadata stays in bpm/key_scale/time_signature/duration fields.",
+                "Run LyricCounterTool, TagCoverageTool, CaptionIntegrityTool, and PayloadGateTool before final JSON.",
+                "If PayloadGateTool reports fail, repair before final JSON.",
+            ],
+        }
+        return _tool_return(context, "AceStepPromptContractTool", query, payload)
+
+    @tool("LyricCounterTool")
+    def lyric_counter_tool(lyrics: str = "") -> str:
+        """Deterministically count lyric words, lines, chars, sections, and hooks."""
+        stats = lyric_stats(str(lyrics or ""))
+        hooks = [
+            section
+            for section in stats.get("sections") or []
+            if re.search(r"chorus|hook|refrain", str(section), re.I)
+        ]
+        payload = {
+            "lyrics_word_count": int(stats.get("word_count") or 0),
+            "lyrics_line_count": int(stats.get("line_count") or 0),
+            "lyrics_char_count": int(stats.get("char_count") or 0),
+            "section_count": int(stats.get("section_count") or 0),
+            "hook_count": len(hooks),
+            "sections": stats.get("sections") or [],
+            "repeated_lines": stats.get("repeated_lines") or [],
+            "copy_counts_to_final_json": True,
+        }
+        return _tool_return(context, "LyricCounterTool", {"lyrics_chars": len(str(lyrics or ""))}, payload)
+
+    @tool("TagCoverageTool")
+    def tag_coverage_tool(spec: str = "") -> str:
+        """Check that caption/tags/tag_list cover every required ACE-Step sound dimension."""
+        try:
+            payload_in = json.loads(spec or "{}") if str(spec or "").strip().startswith("{") else {"caption": spec}
+        except json.JSONDecodeError:
+            payload_in = {"caption": spec}
+        if not isinstance(payload_in, dict):
+            payload_in = {"caption": str(spec or "")}
+        report = evaluate_album_payload_quality(payload_in, options=context, repair=False)
+        payload = {
+            "status": (report.get("tag_coverage") or {}).get("status"),
+            "missing": (report.get("tag_coverage") or {}).get("missing") or [],
+            "dimensions": (report.get("tag_coverage") or {}).get("dimensions") or [],
+            "repair_instruction": "Add one compact caption/tag term for every missing dimension before final JSON.",
+        }
+        return _tool_return(context, "TagCoverageTool", payload_in, payload)
+
+    @tool("CaptionIntegrityTool")
+    def caption_integrity_tool(spec: str = "") -> str:
+        """Check caption text for lyrics, prompt, JSON, and metadata leakage."""
+        try:
+            payload_in = json.loads(spec or "{}") if str(spec or "").strip().startswith("{") else {"caption": spec}
+        except json.JSONDecodeError:
+            payload_in = {"caption": spec}
+        if not isinstance(payload_in, dict):
+            payload_in = {"caption": str(spec or "")}
+        report = evaluate_album_payload_quality(payload_in, options=context, repair=False)
+        payload = {
+            "status": (report.get("caption_integrity") or {}).get("status"),
+            "char_count": (report.get("caption_integrity") or {}).get("char_count"),
+            "leakage_markers": (report.get("caption_integrity") or {}).get("leakage_markers") or [],
+            "repair_instruction": "Rewrite caption as comma-separated sound terms only; move lyrics and metadata to their fields.",
+        }
+        return _tool_return(context, "CaptionIntegrityTool", payload_in, payload)
+
+    @tool("PayloadGateTool")
+    def payload_gate_tool(spec: str = "") -> str:
+        """Run AceJAM's album payload quality gate and return compact retry instructions."""
+        try:
+            payload_in = json.loads(spec or "{}") if str(spec or "").strip().startswith("{") else {"lyrics": spec}
+        except json.JSONDecodeError:
+            payload_in = {"lyrics": spec}
+        if not isinstance(payload_in, dict):
+            payload_in = {"lyrics": str(spec or "")}
+        report = evaluate_album_payload_quality(payload_in, options=context, repair=True)
+        public_report = {key: value for key, value in report.items() if key != "repaired_payload"}
+        blocking = report.get("blocking_issues") or []
+        payload = {
+            "status": report.get("status"),
+            "gate_passed": bool(report.get("gate_passed")),
+            "issues": report.get("issues") or [],
+            "repair_actions": report.get("repair_actions") or [],
+            "retry_instructions": [
+                f"{issue.get('id')}: {issue.get('detail')}"
+                for issue in blocking[:8]
+            ] or [
+                f"{issue.get('id')}: {issue.get('detail')}"
+                for issue in (report.get("issues") or [])[:8]
+            ],
+            "report": public_report,
+        }
+        return _tool_return(context, "PayloadGateTool", payload_in, payload)
 
     @tool("LyricLengthTool")
     def lyric_length(duration: str = "") -> str:
@@ -2114,6 +2340,11 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
         filename_planner,
         xl_model_policy,
         tag_library,
+        ace_step_prompt_contract_tool,
+        lyric_counter_tool,
+        tag_coverage_tool,
+        caption_integrity_tool,
+        payload_gate_tool,
         lyric_length,
         generation_settings,
         arrangement_tool,

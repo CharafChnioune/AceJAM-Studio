@@ -1712,7 +1712,7 @@
           </summary>
           <div class="advanced-content">
           <div class="grid-2">
-          <div class="control-note">CrewAI planning uses the selected local planner provider. ACE-Step 4B LM is the default for official generation controls.</div>
+          <div class="control-note">AceJAM Agents use the selected local planner provider directly. ACE-Step 4B LM is the default for official generation controls.</div>
           <div hidden>
             <label for="album-ace-lm-model">ACE-Step LM</label>
             <select id="album-ace-lm-model"></select>
@@ -5756,12 +5756,13 @@
       const logs = job.logs || [];
       const isPlan = job.job_type === "album_plan";
       const result = job.result || {};
-      const engine = job.planning_engine || result.planning_engine || (job.memory_enabled ? "crewai_requested" : "toolbelt");
+      const engine = job.planning_engine || result.planning_engine || (job.memory_enabled ? "acejam_agents" : "acejam_agents");
       const engineText = String(engine || "").toLowerCase();
-      const engineStatus = result.crewai_used || job.crewai_used
-        ? "CrewAI used"
+      const engineStatus = result.custom_agents_used || job.custom_agents_used || engineText.includes("acejam")
+        ? "AceJAM Agents used"
         : (result.toolbelt_fallback || job.toolbelt_fallback ? "toolbelt fallback" : (engineText.includes("toolbelt") ? "toolbelt used" : "pending"));
       const crewaiLogFile = job.crewai_output_log_file || result.crewai_output_log_file || "";
+      const agentDebugDir = job.agent_debug_dir || result.agent_debug_dir || job.album_debug_dir || result.album_debug_dir || "";
       const promptKitVersion = job.prompt_kit_version || result.prompt_kit_version || state.config?.prompt_kit_version || state.config?.songwriting_toolkit?.prompt_kit_version || "";
       const contractApplied = Boolean(job.input_contract_applied || result.input_contract_applied);
       const contractRepairs = Number(job.contract_repair_count || result.contract_repair_count || 0);
@@ -5780,7 +5781,8 @@
         promptKitVersion ? `Prompt Kit: ${promptKitVersion}` : "",
         contractApplied ? `Input Contract: applied · Repairs: ${contractRepairs}` : "",
         `Planner: ${job.planner_provider || "local"} / ${job.planner_model || "unknown"} · Embedding: ${job.embedding_provider || "local"} / ${job.embedding_model || "unknown"} · Memory: ${job.memory_enabled ? "on" : "off"}`,
-        crewaiLogFile ? `CrewAI log file: ${crewaiLogFile}` : "",
+        agentDebugDir ? `Agent debug dir: ${agentDebugDir}` : "",
+        crewaiLogFile ? `Legacy CrewAI log file: ${crewaiLogFile}` : "",
         job.current_model_album ? `Model album: ${job.current_model_album}` : "",
         job.current_track ? `Track: ${job.current_track}` : "",
         isPlan ? `Planned: ${job.planned_count || 0}/${job.expected_count || "?"}` : `Generated: ${job.generated_count || 0}/${job.expected_count || "?"}`,

@@ -851,7 +851,7 @@ class AppParityTest(unittest.TestCase):
                         "Clean chords carry the signal\nThe chorus waits for release\n\n"
                         "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
                         "Seven engines share the light\nUnit Signal rides tonight\n\n"
-                        "[Outro]\nThe final note stays clean"
+                        "[Outro]\nThe final note stays clean\nSeven paths land bright"
                     ),
                     "duration": 30,
                     "bpm": 120,
@@ -1012,7 +1012,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(job["state"], "succeeded")
         self.assertEqual(job["planner_model"], acejam_app.DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
         self.assertEqual(job["embedding_model"], acejam_app.DEFAULT_ALBUM_EMBEDDING_MODEL)
-        self.assertTrue(job["memory_enabled"])
+        self.assertFalse(job["memory_enabled"])
         self.assertEqual(job["album_family_id"], "family-one")
         self.assertEqual(job["download_url"], "/api/album-families/family-one/download")
 
@@ -1031,10 +1031,11 @@ class AppParityTest(unittest.TestCase):
             "logs": ["planned"],
             "planner_model": acejam_app.DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
             "embedding_model": acejam_app.DEFAULT_ALBUM_EMBEDDING_MODEL,
-            "planning_engine": "crewai",
-            "crewai_used": True,
+            "planning_engine": "acejam_agents",
+            "custom_agents_used": True,
+            "crewai_used": False,
             "toolbelt_fallback": False,
-            "crewai_output_log_file": "/tmp/album_plan_planjob123.json",
+            "agent_debug_dir": "/tmp/album_plan_debug",
         }
 
         with patch.object(acejam_app, "_run_album_plan_from_payload", return_value=fake_result):
@@ -1045,10 +1046,11 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(job["job_type"], "album_plan")
         self.assertEqual(job["planned_count"], 2)
         self.assertEqual(job["result"]["tracks"][0]["title"], "One")
-        self.assertEqual(job["planning_engine"], "crewai")
-        self.assertTrue(job["crewai_used"])
+        self.assertEqual(job["planning_engine"], "acejam_agents")
+        self.assertTrue(job["custom_agents_used"])
+        self.assertFalse(job["crewai_used"])
         self.assertFalse(job["toolbelt_fallback"])
-        self.assertEqual(job["crewai_output_log_file"], "/tmp/album_plan_planjob123.json")
+        self.assertEqual(job["agent_debug_dir"], "/tmp/album_plan_debug")
 
     def test_song_portfolio_renders_every_model_with_model_defaults(self):
         calls = []

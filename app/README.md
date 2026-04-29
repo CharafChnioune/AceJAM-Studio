@@ -57,7 +57,7 @@ Album mode is now a two-stage agent studio:
 
 The model advisor never silently swaps to a different checkpoint. Album final render defaults to `xl_sft_final`, which locks every track to `acestep-v15-xl-sft`. If XL SFT is missing, the UI/API starts a download and retries with a fresh payload instead of rendering with a cheaper fallback. `best_installed`, `maximum_detail`, and `selected` remain available for planning/previews or direct API use.
 
-The CrewAI path receives real tools from `songwriting_toolkit.py`: model advisor, tag library, lyric length planner, rhyme/flow brief, metaphor world builder, hook checker, cliche guard, album arc, inspiration radar, caption polisher, and conflict checker. If CrewAI or Ollama fails, the deterministic toolbelt still returns a usable plan.
+Album planning now uses AceJAM Agents by default: direct local LLM calls for album bible, per-track writer, finalizer, and quality repair, with deterministic Python gates for tag coverage, caption integrity, lyric duration fit, and contract enforcement before audio rendering. The deterministic toolbelt remains available only when `toolbelt_only=true`.
 
 ## Trainer Flow
 

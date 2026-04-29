@@ -361,6 +361,79 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertFalse(report["gate_passed"])
         self.assertIn("too_many_repeated_lines", issue_ids)
 
+    def test_new_generic_album_filler_artifacts_are_blocked(self):
+        payload = {
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": (
+                "[Intro]\n"
+                "Morning lifts end from the floor\n"
+                "Concrete light moves softly through the door\n"
+                "[Verse]\n"
+                "Midnight paints the but in the glass\n"
+                "Concrete breeze reminds me time moves fast\n"
+                "[Chorus]\n"
+                "We turn pressure into perfume\n"
+            ),
+            "duration": 240,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertEqual(report["status"], "fail")
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("fallback_lyric_artifacts", issue_ids)
+
+    def test_caption_repair_drops_prompt_prose_and_preserves_dimensions(self):
+        payload = {
+            "caption": (
+                "hip-hop, 808 bass, trap hi-hats, male rap vocal, crisp modern mix, "
+                "melancholic, drill. A heavy atmospheric West Coast hip-hop track "
+                "Album: You Buried the Wrong Man Track 1 Verse: leaked prompt"
+            ),
+            "tag_list": [
+                "hip-hop",
+                "808 bass",
+                "trap hi-hats",
+                "male rap vocal",
+                "crisp modern mix",
+                "melancholic",
+            ],
+            "lyrics": "[Instrumental]",
+            "instrumental": True,
+            "duration": 60,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        repaired = report["repaired_payload"]
+
+        self.assertEqual(report["status"], "auto_repair")
+        self.assertTrue(report["gate_passed"])
+        self.assertEqual(report["tag_coverage"]["status"], "pass")
+        self.assertNotIn("Album:", repaired["caption"])
+        self.assertNotIn("Verse:", repaired["caption"])
+        self.assertNotIn("A heavy atmospheric", repaired["caption"])
+
+    def test_instrumental_flag_does_not_skip_vocal_lyrics_gate(self):
+        payload = {
+            "caption": "cinematic pop-rap, boom-bap drums, warm piano, male rap vocal, hopeful, dynamic hook, polished studio mix",
+            "tag_list": ["cinematic pop-rap", "boom-bap drums", "warm piano", "male rap vocal", "hopeful", "dynamic hook", "polished studio mix"],
+            "lyrics": "[Verse]\nOne short line\n[Chorus]\nHome",
+            "instrumental": True,
+            "duration": 120,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("lyrics_under_length", issue_ids)
+
     def test_debug_logger_writes_job_scoped_json_and_jsonl(self):
         with tempfile.TemporaryDirectory() as tmp:
             logger = AlbumRunDebugLogger(Path(tmp), "job/with spaces")

@@ -25,11 +25,13 @@ from album_crew import (
     TrackProductionPayloadModel,
     _album_genre_hint,
     _compact_track_memory_record,
+    _coerce_agent_lyrics_payload,
     _crewai_llm_kwargs,
     _crewai_task_callback,
     _kickoff_crewai_compact,
     _empty_response_fallback_text,
     _is_lmstudio_model_crash,
+    _is_empty_response_payload,
     _json_object_from_text,
     _lyric_like_text,
     _lmstudio_no_think_args,
@@ -41,12 +43,19 @@ from album_crew import (
     _remember_compact,
     _ollama_embedder_config,
     _strip_thinking_blocks,
+    _track_json_guardrail_factory,
     create_album_bible_crew,
     create_album_crew,
     create_track_production_crew,
     crewai_output_log_path,
     plan_album,
     preflight_album_local_llm,
+)
+from ace_step_track_prompt_template import (
+    ACE_STEP_TRACK_PROMPT_TEMPLATE_VERSION,
+    CAPTION_DIMENSIONS,
+    compact_full_tag_library,
+    render_track_prompt_template,
 )
 from songwriting_toolkit import (
     ALBUM_FINAL_MODEL,
@@ -93,6 +102,21 @@ The Narrative: friends read old letters on a roof as the lights come back.
 Lyrics:
 "Letters in the skyline"
 """
+
+    def _valid_album_test_lyrics(self, required_phrases=None, sections=None, lines_per_section=8):
+        required = [str(item) for item in (required_phrases or []) if str(item)]
+        section_names = sections or ["Verse", "Chorus", "Outro"]
+        lines = []
+        phrase_index = 0
+        for section in section_names:
+            lines.append(f"[{section}]")
+            for line_index in range(lines_per_section):
+                if phrase_index < len(required):
+                    lines.append(required[phrase_index])
+                    phrase_index += 1
+                else:
+                    lines.append(f"Market lanterns carry hopeful voices number {section.lower()} {line_index}")
+        return "\n".join(lines)
 
     def test_user_album_contract_extracts_safe_album_prompt(self):
         contract = extract_user_album_contract(self.SAFE_CONTRACT_PROMPT, 2, "en")
@@ -374,6 +398,49 @@ kill all the rivals
         self.assertIn("quality_checks", track)
         self.assertFalse(track["use_format"])
 
+    def test_acejam_agent_normalization_does_not_append_generic_filler(self):
+        tracks = normalize_album_tracks(
+            [
+                {
+                    "title": "Concrete Canyons",
+                    "description": "A heavy atmospheric West Coast hip-hop track with deep bass and sirens.",
+                    "tags": "hip-hop, 808 bass, trap hi-hats, male rap vocal, crisp modern mix, melancholic",
+                    "lyrics": "[Verse]\nThey paved them blocks just to hide what is real\n\n[Chorus]\nConcrete canyons keep shaking",
+                    "duration": 240,
+                    "bpm": 78,
+                }
+            ],
+            {
+                "concept": (
+                    "Album: You Buried the Wrong Man\n"
+                    "Track 1: Concrete Canyons\n"
+                    "Track 2: Rooftop Letters (Style: melodic house)"
+                ),
+                "sanitized_concept": (
+                    "Album: You Buried the Wrong Man\n"
+                    "Track 1: Concrete Canyons\n"
+                    "Track 2: Rooftop Letters (Style: melodic house)"
+                ),
+                "num_tracks": 1,
+                "track_duration": 240,
+                "lyric_density": "dense",
+                "structure_preset": "auto",
+                "installed_models": [ALBUM_FINAL_MODEL],
+                "song_model_strategy": "xl_sft_final",
+                "agent_engine": "acejam_agents",
+                "strict_album_agents": True,
+                "disable_auto_lyric_expansion": True,
+            },
+        )
+
+        track = tracks[0]
+        self.assertIn("They paved them blocks", track["lyrics"])
+        self.assertNotIn("Morning lifts", track["lyrics"])
+        self.assertNotIn("pressure into perfume", track["lyrics"])
+        self.assertNotIn("A heavy atmospheric", track["tags"])
+        self.assertNotEqual(track["tool_report"]["length_plan"]["density"], "sparse")
+        self.assertIn(track["payload_gate_status"], {"fail", "review_needed"})
+
     def test_build_album_plan_returns_duration_ready_tracks(self):
         result = build_album_plan(
             "Dutch luxury rap album with cinematic hooks",
@@ -494,6 +561,167 @@ kill all the rivals
         self.assertLessEqual(len(streamed[0]), 240)
         self.assertIn("Toolbelt fallback planned 1 tracks.", streamed)
 
+    def test_acejam_agents_default_plans_with_direct_json_calls(self):
+        required = ["Open the shutters", "Coffee on the corner", "market bell"]
+        lyrics = self._valid_album_test_lyrics(required)
+        bible_payload = {
+            "album_bible": {"album_title": "Market Lights", "concept": "safe", "arc": "repair", "motifs": ["market bell"]},
+            "tracks": [{
+                "track_number": 1,
+                "title": "Generated Rename",
+                "producer_credit": "Wrong Producer",
+                "description": "wrong",
+                "tags": "warm boom-bap, steady groove, drums, brass, clear lead vocal, hopeful atmosphere, dynamic hook arrangement, polished studio mix",
+                "tag_list": ["warm boom-bap", "steady groove", "brass", "clear lead vocal", "hopeful atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                "duration": 45,
+                "bpm": 120,
+            }],
+        }
+        writer_payload = {
+            "description": "neighbors reopen stalls and trade stories instead of rumors.",
+            "tags": bible_payload["tracks"][0]["tags"],
+            "tag_list": bible_payload["tracks"][0]["tag_list"],
+            "lyrics": lyrics,
+            "hook_promise": "Open the shutters into a brighter block.",
+        }
+
+        def fake_agent_json_call(*, agent_name, **_kwargs):
+            if agent_name == "Album Bible Agent":
+                return bible_payload
+            if agent_name == "Track Writer Agent":
+                return writer_payload
+            if agent_name == "Track Finalizer Agent":
+                return {**writer_payload, "title": "Another Rename", "bpm": 140}
+            raise AssertionError(agent_name)
+
+        with patch.object(album_crew_module, "preflight_album_agent_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "warnings": [],
+        }), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_agent_json_call):
+            result = plan_album(
+                self.SAFE_CONTRACT_PROMPT,
+                num_tracks=1,
+                track_duration=45,
+                ollama_model="qwen-local",
+                embedding_model="embed-local",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                use_crewai=True,
+                planner_provider="ollama",
+                embedding_provider="ollama",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["planning_engine"], "acejam_agents")
+        self.assertTrue(result["custom_agents_used"])
+        self.assertFalse(result["crewai_used"])
+        self.assertFalse(result["toolbelt_fallback"])
+        self.assertEqual(result["tracks"][0]["title"], "Morning Market")
+        self.assertEqual(result["tracks"][0]["producer_credit"], "Ada North")
+        self.assertEqual(result["tracks"][0]["bpm"], 92)
+        self.assertIn("Open the shutters", result["tracks"][0]["lyrics"])
+        self.assertIn(result["tracks"][0]["payload_gate_status"], {"pass", "auto_repair"})
+        self.assertTrue(any("AceJAM Agents produced" in line for line in result["logs"]))
+
+    def test_acejam_agent_prompt_contains_full_contract_template_and_counter(self):
+        template = render_track_prompt_template(
+            user_album_contract={"album_title": "Market Lights"},
+            ace_step_payload_contract={"version": "unit"},
+            lyric_length_plan=lyric_length_plan(45, "dense", "auto", "warm boom-bap"),
+            language_preset={"code": "en"},
+            blueprint={"track_number": 1, "title": "Morning Market"},
+            album_bible={"concept": "safe"},
+        )
+        prompt = album_crew_module._track_writer_prompt(
+            concept=self.SAFE_CONTRACT_PROMPT,
+            album_bible={"concept": "safe"},
+            blueprint={"track_number": 1, "title": "Morning Market"},
+            previous_summaries=[],
+            track_prompt_template=template,
+            index=0,
+            total=2,
+        )
+
+        self.assertIn("FULL_ORIGINAL_ALBUM_PROMPT", prompt)
+        self.assertIn("Track 1: \"Morning Market\"", prompt)
+        self.assertIn("TRACK COUNTER: you are writing track 1 of 2", prompt)
+        self.assertIn("FULL_TAG_LIBRARY", prompt)
+        self.assertIn("LYRIC_LENGTH_PLAN", prompt)
+
+    def test_acejam_agents_empty_response_fails_loudly_without_toolbelt(self):
+        with patch.object(album_crew_module, "preflight_album_agent_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "warnings": [],
+        }), patch.object(album_crew_module, "_agent_json_call", side_effect=album_crew_module.AceJamAgentError("empty response")):
+            result = plan_album(
+                "safe city recovery album",
+                num_tracks=1,
+                track_duration=45,
+                ollama_model="qwen-local",
+                embedding_model="embed-local",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                use_crewai=True,
+                planner_provider="ollama",
+                embedding_provider="ollama",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["planning_engine"], "acejam_agents")
+        self.assertTrue(result["custom_agents_used"])
+        self.assertFalse(result["crewai_used"])
+        self.assertFalse(result["toolbelt_fallback"])
+        self.assertEqual(result["tracks"], [])
+        self.assertTrue(any("deterministic toolbelt fallback was not used" in line for line in result["logs"]))
+
+    def test_agent_json_parser_repairs_raw_newlines_inside_lyrics_string(self):
+        raw = (
+            '{\n'
+            '  "title": "Lanterns on the Pier",\n'
+            '  "lyrics": "[Intro]\nWarm piano enters\n[Chorus]\nLanterns on the pier keep calling us home.",\n'
+            '  "tags": "cinematic pop-rap, boom-bap drums, clear male rap vocal"\n'
+            '}'
+        )
+
+        parsed = _json_object_from_text(raw)
+
+        self.assertEqual(parsed["title"], "Lanterns on the Pier")
+        self.assertIn("[Chorus]", parsed["lyrics"])
+        self.assertIn("calling us home", parsed["lyrics"])
+
+    def test_agent_payload_lyrics_lines_are_joined(self):
+        payload = _coerce_agent_lyrics_payload({
+            "title": "Lanterns on the Pier",
+            "lyrics_lines": ["[Intro]", "Warm piano enters", "[Chorus]", "Lanterns call us home"],
+        })
+
+        self.assertEqual(payload["lyrics"], "[Intro]\nWarm piano enters\n[Chorus]\nLanterns call us home")
+        self.assertEqual(payload["lyrics_lines"][2], "[Chorus]")
+
+    def test_vocal_album_track_clears_spurious_instrumental_flag(self):
+        tracks = normalize_album_tracks([
+            {
+                "title": "Lanterns on the Pier",
+                "description": "coastal rebuild anthem",
+                "tags": "cinematic pop-rap, boom-bap drums, warm piano, male rap vocal, hopeful, dynamic hook, polished studio mix",
+                "lyrics": "[Verse]\nWe relight the harbor\n[Chorus]\nLanterns on the pier keep calling us home",
+                "instrumental": True,
+                "section_map": [{"tag": "[Build]"}, {"tag": "[Drop]"}],
+                "duration": 60,
+            }
+        ], {
+            "agent_engine": "acejam_agents",
+            "strict_album_agents": True,
+            "installed_models": ["acestep-v15-xl-sft"],
+            "song_model_strategy": "xl_sft_final",
+            "track_duration": 60,
+            "lyric_density": "dense",
+            "structure_preset": "auto",
+        })
+
+        self.assertFalse(tracks[0]["instrumental"])
+        self.assertEqual(tracks[0]["production_team"]["prompt_kit"]["section_map"][1]["tag"], "[Verse]")
+
     def test_crewai_bible_parse_repair_still_uses_track_crew(self):
         class FakeCrew:
             def __init__(self, output):
@@ -536,7 +764,7 @@ kill all the rivals
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "agent_engine": "legacy_crewai"},
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",
@@ -612,7 +840,7 @@ Lyrics:
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "agent_engine": "legacy_crewai"},
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",
@@ -678,7 +906,7 @@ Lyrics:
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "agent_engine": "legacy_crewai"},
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",
@@ -735,7 +963,7 @@ Lyrics:
                 track_duration=20,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "agent_engine": "legacy_crewai"},
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",
@@ -1295,6 +1523,25 @@ Lyrics:
         self.assertIn("acejam_empty_response_fallback", fallback)
         self.assertIn("tracks", fallback)
 
+    def test_empty_llm_response_tries_no_tool_recovery_before_fallback(self):
+        calls = []
+
+        def fake_call(*args, **kwargs):
+            calls.append((args, kwargs))
+            if len(calls) <= 2:
+                return ""
+            return '{"ok": true}'
+
+        with patch.object(album_crew_module.time, "sleep"):
+            llm = _make_llm("qwen3.6:27b-instruct-general")
+            object.__setattr__(llm, "_acejam_original_call", fake_call)
+            result = llm.call([{"role": "user", "content": "Return JSON."}])
+
+        self.assertEqual(result, '{"ok": true}')
+        self.assertEqual(len(calls), 3)
+        recovery_messages = calls[-1][0][0]
+        self.assertIn("Do not call tools", recovery_messages[-1]["content"])
+
     def test_track_production_crew_has_compact_single_track_context(self):
         album_bible = {"concept": "cinematic rap", "arc": "rise and resolve", "motifs": ["signal"]}
         blueprint = {
@@ -1323,15 +1570,180 @@ Lyrics:
         descriptions = "\n".join(task.description for task in crew.tasks)
         self.assertIn("Signal Room", descriptions)
         self.assertIn("ace-step-track-payload-contract", descriptions)
+        self.assertIn("ACE-Step track prompt template", descriptions)
+        self.assertIn("FULL_TAG_LIBRARY", descriptions)
         self.assertIn("lyrics_word_count", descriptions)
         self.assertIn("TagLibraryTool", descriptions)
+        self.assertIn("PayloadGateTool", descriptions)
         self.assertNotIn("all tracks", descriptions.lower())
-        self.assertLess(len(descriptions), 14000)
+        self.assertLess(len(descriptions), 48000)
         self.assertNotIn("raw_lyrics", descriptions)
         self.assertTrue(crew.memory.read_only)
+        self.assertIsNotNone(crew.tasks[-1].guardrail)
         for task in crew.tasks:
+            self.assertEqual(task.guardrail_max_retries, CREWAI_TASK_MAX_RETRIES)
             if task.output_json is not None:
                 self.assertIs(task.output_json, TrackProductionPayloadModel)
+
+    def test_ace_step_track_prompt_template_contains_full_contract_blocks(self):
+        library = compact_full_tag_library()
+        lyric_plan = lyric_length_plan(120, "dense", genre_hint="rap")
+        rendered = render_track_prompt_template(
+            user_album_contract={"applied": True, "album_title": "Safe Brief"},
+            ace_step_payload_contract={"version": "unit-contract"},
+            lyric_length_plan=lyric_plan,
+            language_preset={"code": "en", "language": "English"},
+            blueprint={"track_number": 1, "title": "Signal Room"},
+            album_bible={"concept": "safe concept"},
+        )
+
+        self.assertEqual(set(CAPTION_DIMENSIONS), {
+            "genre_style",
+            "rhythm_groove",
+            "instrumentation",
+            "vocal_style",
+            "mood_atmosphere",
+            "arrangement_energy",
+            "mix_production",
+        })
+        self.assertIn("FULL_TAG_LIBRARY", rendered)
+        self.assertIn("SELF_CHECK", rendered)
+        self.assertIn("LyricCounterTool", rendered)
+        for category in TAG_TAXONOMY:
+            self.assertIn(category, rendered)
+            self.assertIn(category, library["tag_taxonomy"])
+        for category in LYRIC_META_TAGS:
+            self.assertIn(category, rendered)
+            self.assertIn(category, library["lyric_meta_tags"])
+        self.assertIn(ACE_STEP_TRACK_PROMPT_TEMPLATE_VERSION, rendered)
+
+    def test_crewai_toolkit_exposes_payload_validation_tools(self):
+        tools = make_crewai_tools({
+            "concept": "safe rap song",
+            "track_duration": 120,
+            "language": "en",
+            "ace_step_track_payload_contract": {"version": "unit-contract"},
+            "ace_step_track_prompt_template_version": ACE_STEP_TRACK_PROMPT_TEMPLATE_VERSION,
+        })
+        names = {getattr(tool, "name", "") for tool in tools}
+
+        self.assertIn("AceStepPromptContractTool", names)
+        self.assertIn("LyricCounterTool", names)
+        self.assertIn("TagCoverageTool", names)
+        self.assertIn("CaptionIntegrityTool", names)
+        self.assertIn("PayloadGateTool", names)
+
+    def test_track_json_guardrail_rejects_under_length_payload(self):
+        lyric_plan = lyric_length_plan(240, "dense", genre_hint="rap")
+        guardrail = _track_json_guardrail_factory(
+            blueprint={
+                "track_number": 1,
+                "title": "Signal Room",
+                "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+                "duration": 240,
+            },
+            options={"track_duration": 240, "lyric_density": "dense", "structure_preset": "auto", "language": "en"},
+            lyric_plan=lyric_plan,
+        )
+        output = SimpleNamespace(raw=json.dumps({
+            "track_number": 1,
+            "title": "Signal Room",
+            "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+            "lyrics": "[Verse]\nWe start\n[Chorus]\nSignal room",
+            "duration": 240,
+            "language": "en",
+        }))
+
+        ok, message = guardrail(output)
+
+        self.assertFalse(ok)
+        self.assertIn("lyrics_under_length", message)
+        self.assertIn("TrackRepairTool", message)
+
+    def test_track_json_guardrail_repairs_near_miss_and_returns_counts(self):
+        lyric_plan = lyric_length_plan(240, "dense", genre_hint="heavy rap")
+        lines = []
+        lyric_lines = 0
+        for section in lyric_plan["sections"]:
+            lines.append(f"[{section}]")
+            while lyric_lines < 84 and len(lines) < 110:
+                lines.append(f"Blocks bend as drums hit cold stone hard {lyric_lines:02d}")
+                lyric_lines += 1
+                if lyric_lines % 8 == 0:
+                    break
+            if lyric_lines >= 84:
+                break
+        guardrail = _track_json_guardrail_factory(
+            blueprint={
+                "track_number": 1,
+                "title": "Concrete Signal",
+                "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+                "duration": 240,
+            },
+            options={"track_duration": 240, "lyric_density": "dense", "structure_preset": "auto", "language": "en"},
+            lyric_plan=lyric_plan,
+        )
+        output = SimpleNamespace(raw=json.dumps({
+            "track_number": 1,
+            "title": "Concrete Signal",
+            "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+            "lyrics": "\n".join(lines),
+            "duration": 240,
+            "language": "en",
+        }))
+
+        ok, repaired_json = guardrail(output)
+        repaired = json.loads(repaired_json)
+
+        self.assertTrue(ok)
+        self.assertGreaterEqual(repaired["lyrics_line_count"], lyric_plan["min_lines"])
+        self.assertGreaterEqual(len(repaired["caption_dimensions_covered"]), 7)
+
+    def test_empty_crewai_payload_is_explicit_failure_marker(self):
+        payload = json.loads(_empty_response_fallback_text("qwen-local").split("Final Answer: ", 1)[1])
+
+        self.assertTrue(_is_empty_response_payload(payload))
+
+    def test_empty_crewai_response_fails_loudly_without_toolbelt_fallback(self):
+        class FakeCrew:
+            def __init__(self, output):
+                self.output = output
+
+            def kickoff(self):
+                return self.output
+
+        class FakeMemory:
+            def remember(self, *args, **kwargs):
+                return None
+
+        empty_payload = _empty_response_fallback_text("qwen-local")
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "embed_ok": True,
+            "warnings": [],
+            "embedding_model": "embed-local",
+            "memory_dir": str(CREWAI_MEMORY_DIR),
+        }), patch.object(album_crew_module, "_make_album_memory_writer", return_value=FakeMemory()), \
+            patch.object(album_crew_module, "create_album_bible_crew", return_value=FakeCrew(SimpleNamespace(raw=empty_payload))):
+            result = plan_album(
+                "safe city recovery album",
+                num_tracks=1,
+                track_duration=45,
+                ollama_model="qwen-local",
+                embedding_model="embed-local",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "agent_engine": "legacy_crewai"},
+                use_crewai=True,
+                planner_provider="lmstudio",
+                embedding_provider="lmstudio",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["planning_engine"], "crewai")
+        self.assertTrue(result["crewai_used"])
+        self.assertFalse(result["toolbelt_fallback"])
+        self.assertEqual(result["tracks"], [])
+        self.assertTrue(any("deterministic toolbelt fallback was not used" in line for line in result["logs"]))
 
     def test_album_crew_ollama_embedding_config(self):
         config = _ollama_embedder_config("nomic-embed-text")

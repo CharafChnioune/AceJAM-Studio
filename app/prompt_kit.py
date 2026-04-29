@@ -642,7 +642,7 @@ def section_map_for(duration: Any, genre_hint: Any = "", instrumental: bool = Fa
         dur = max(30, min(600, int(float(duration or 180))))
     except Exception:
         dur = 180
-    sparse = instrumental or is_sparse_lyric_genre(genre_hint)
+    sparse = bool(instrumental)
     if sparse:
         if dur <= 90:
             sections = [("Intro", 0, 18), ("Build", 18, 42), ("Drop", 42, 72), ("Outro", 72, dur)]
@@ -732,7 +732,7 @@ def kit_metadata_defaults(
     preset = language_preset(language)
     modules = infer_genre_modules(genre_hint, max_modules=2)
     genre_slugs = [module["slug"] for module in modules]
-    sparse = instrumental or any(module.get("slug") in SPARSE_GENRE_KEYS or module.get("instrumental") for module in modules)
+    sparse = bool(instrumental)
     return {
         "prompt_kit_version": PROMPT_KIT_VERSION,
         "concept_summary": "",

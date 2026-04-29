@@ -305,6 +305,29 @@ def _ensure_required_phrases(track: dict[str, Any], required_phrases: list[str])
     return missing
 
 
+def _required_lyrics_present(required: str, lyrics: str) -> bool:
+    required_text = str(required or "").strip()
+    lyric_text = str(lyrics or "")
+    if not required_text:
+        return True
+    if required_text in lyric_text:
+        return True
+    lyric_lower = lyric_text.lower()
+    required_lines = [
+        re.sub(r"^[\"'“”‘’]+|[\"'“”‘’]+$", "", line.strip()).strip()
+        for line in required_text.splitlines()
+        if line.strip()
+    ]
+    required_lines = [
+        line
+        for line in required_lines
+        if line and not re.match(r"^(?:lyrics|verse|naming drop|track\s+\d+)\s*:", line, re.I)
+    ]
+    if not required_lines:
+        return False
+    return all(line.lower() in lyric_lower for line in required_lines)
+
+
 def apply_user_album_contract_to_track(
     track: dict[str, Any],
     contract: dict[str, Any] | None,
@@ -348,7 +371,7 @@ def apply_user_album_contract_to_track(
         result["description"] = item["vibe"]
     if item.get("required_lyrics"):
         required = str(item.get("required_lyrics") or "").strip()
-        if required and required not in str(result.get("lyrics") or ""):
+        if required and not _required_lyrics_present(required, str(result.get("lyrics") or "")):
             result["lyrics"] = required + ("\n\n" + str(result.get("lyrics") or "").strip() if str(result.get("lyrics") or "").strip() else "")
             repaired.append("required_lyrics")
         compliance["required_lyrics"] = "repaired" if "required_lyrics" in repaired else "kept"

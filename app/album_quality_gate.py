@@ -47,6 +47,22 @@ TAG_DIMENSION_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+SONIC_CAPTION_TERM_RE = re.compile(
+    r"\b(?:"
+    r"pop|rap|hip-hop|hip hop|trap|drill|g-funk|r&b|soul|rock|metal|punk|house|techno|trance|"
+    r"dancehall|reggaeton|afro|amapiano|cinematic|ambient|schlager|latin|j-pop|k-pop|"
+    r"groove|bounce|swing|boom-bap|drums?|hi-hats?|snare|kick|percussion|shuffle|rhythm|"
+    r"bass|808|sub-bass|low-end|synth|piano|guitar|strings|brass|horns?|sirens?|accordion|organ|"
+    r"vocal|voice|sung|singer|choir|harmony|hook|chorus|chant|"
+    r"dark|bright|uplifting|melancholic|euphoric|dreamy|nostalgic|aggressive|romantic|hopeful|"
+    r"tense|warm|cold|gritty|emotional|intimate|confident|"
+    r"build|drop|bridge|anthemic|breakdown|dynamic|riser|climax|intro|outro|stadium|"
+    r"mix|master|polished|crisp|clean|wide stereo|high-fidelity|radio|studio|glossy|punchy|analog|"
+    r"west coast"
+    r")\b",
+    re.I,
+)
+
 DIMENSION_REPAIR_TERMS: dict[str, str] = {
     "genre_style": "modern pop",
     "rhythm_groove": "steady groove",
@@ -77,8 +93,11 @@ META_LEAK_LINE_RE = re.compile(
     re.I,
 )
 FALLBACK_ARTIFACT_RE = re.compile(
-    r"\b(?:morning finds the|light is leaning through the door|kept the receipt from the life before|"
-    r"now i want the sound and nothing more|the you|the was|the are|the is)\b",
+    r"\b(?:morning finds the|morning lifts\b|light moves softly through the door|"
+    r"midnight paints the\b|breeze reminds me time moves fast|now i build a future from the past|"
+    r"every note becomes the reason|turn pressure into perfume|"
+    r"light is leaning through the door|kept the receipt from the life before|"
+    r"now i want the sound and nothing more|the you|the was|the are|the is|the but|the end from the floor)\b",
     re.I,
 )
 PLACEHOLDER_RE = re.compile(r"\b(?:placeholder|repeat chorus|same as before|continue|tbd|todo|\.\.\.)\b", re.I)
@@ -176,6 +195,33 @@ def _split_terms(value: Any) -> list[str]:
             terms.append(term)
             seen.add(key)
     return terms
+
+
+def _caption_term_allowed(term: Any) -> bool:
+    text = re.sub(r"\s+", " ", str(term or "")).strip(" .")
+    if not text:
+        return False
+    if len(text) > 64:
+        return False
+    if _caption_has_leakage(text):
+        return False
+    if re.search(r"[\n\r{}]|[.!?]", text):
+        return False
+    words = WORD_RE.findall(text)
+    if len(words) > 6:
+        return False
+    lowered_words = {word.lower() for word in words}
+    if lowered_words & {"and", "while", "with", "that", "this"} and not re.search(
+        r"\b(?:r&b|drum and bass|call and response|wide stereo|warm analog|male and female)\b",
+        text,
+        re.I,
+    ):
+        return False
+    if not SONIC_CAPTION_TERM_RE.search(text):
+        return False
+    if re.search(r"\b(?:album|track|verse|lyrics|prompt|json|metadata|narrative|naming drop|produced by|prod\.)\b", text, re.I):
+        return False
+    return True
 
 
 def _lyric_stats(lyrics: str) -> dict[str, Any]:
@@ -338,11 +384,9 @@ def tag_dimension_coverage(caption: str, tag_list: Any = None) -> dict[str, Any]
 
 def _clean_caption(payload: dict[str, Any], coverage: dict[str, Any]) -> str:
     terms: list[str] = []
-    for value in [payload.get("tag_list"), payload.get("caption"), payload.get("style"), payload.get("vibe"), payload.get("description")]:
+    for value in [payload.get("tag_list"), payload.get("caption"), payload.get("style"), payload.get("vibe")]:
         for term in _split_terms(value):
-            if len(term) > 80:
-                continue
-            if _caption_has_leakage(term):
+            if not _caption_term_allowed(term):
                 continue
             if term.lower() not in {existing.lower() for existing in terms}:
                 terms.append(term)
@@ -364,7 +408,7 @@ def build_album_global_sonic_caption(concept: str, tracks: list[dict[str, Any]] 
     for track in tracks or []:
         for value in [track.get("tag_list"), track.get("tags"), track.get("style"), track.get("vibe")]:
             for term in _split_terms(value):
-                if len(term) <= 54 and not _caption_has_leakage(term) and term.lower() not in {item.lower() for item in terms}:
+                if _caption_term_allowed(term) and term.lower() not in {item.lower() for item in terms}:
                     terms.append(term)
     if not terms:
         terms = _split_terms(concept)[:8]
@@ -408,7 +452,13 @@ def evaluate_album_payload_quality(
         repaired["caption"] = repaired_caption
         repaired["tags"] = repaired_caption
         repair_actions.append("caption_rebuilt_from_tag_dimensions")
+        repaired["tag_list"] = _split_terms(tag_list) + [
+            term for term in _split_terms(repaired_caption) if term.lower() not in {item.lower() for item in _split_terms(tag_list)}
+        ]
+        tag_list = repaired["tag_list"]
         coverage = tag_dimension_coverage(repaired_caption, tag_list)
+        if coverage.get("missing"):
+            issues.append({"id": "tag_dimension_coverage_unrepaired", "severity": "fail", "detail": ", ".join(coverage["missing"])})
 
     global_caption = str(repaired.get("global_caption") or "")
     global_leaks = _caption_has_leakage(global_caption)
@@ -436,7 +486,8 @@ def evaluate_album_payload_quality(
         lyrics = lyrics.replace("\\r\\n", "\n").replace("\\n", "\n")
         repaired["lyrics"] = lyrics
         repair_actions.append("lyrics_unescaped_newlines")
-    instrumental = str(lyrics).strip().lower() == "[instrumental]" or bool(repaired.get("instrumental"))
+    has_vocal_script = bool(lyrics.strip() and lyrics.strip().lower() != "[instrumental]")
+    instrumental = str(lyrics).strip().lower() == "[instrumental]" or (bool(repaired.get("instrumental")) and not has_vocal_script)
     stats = _lyric_stats(lyrics)
     expected_keys = {_section_key(section) for section in plan.get("sections") or [] if section}
     actual_keys = {_section_key(section) for section in stats["sections"] if section}
@@ -509,6 +560,19 @@ def evaluate_album_payload_quality(
         status = "pass"
 
     final_caption_leaks = _caption_has_leakage(str(repaired.get("caption") or ""))
+    final_coverage = tag_dimension_coverage(str(repaired.get("caption") or ""), repaired.get("tag_list") or tag_list)
+    if final_coverage.get("missing") and not any(issue.get("id") == "tag_dimension_coverage_unrepaired" for issue in issues):
+        issues.append({"id": "tag_dimension_coverage_unrepaired", "severity": "fail", "detail": ", ".join(final_coverage["missing"])})
+        fail_issues = [issue for issue in issues if issue.get("severity") == "fail"]
+        if fail_issues:
+            status = "fail"
+        elif repair_actions:
+            status = "auto_repair"
+        elif repairable_issues:
+            status = "review_needed"
+        else:
+            status = "pass"
+        coverage = final_coverage
     caption_integrity = {
         "status": "pass" if not final_caption_leaks else "fail",
         "char_count": len(str(repaired.get("caption") or "")),

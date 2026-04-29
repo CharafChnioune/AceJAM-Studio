@@ -2556,6 +2556,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "prompt_kit_version": str(payload.get("prompt_kit_version") or PROMPT_KIT_VERSION),
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
+        "agent_engine": str(payload.get("agent_engine") or "acejam_agents"),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         "embedding_lm_provider": normalize_provider(payload.get("embedding_lm_provider") or payload.get("embedding_provider") or payload.get("planner_lm_provider") or "ollama"),
         "ace_lm_model": _requested_ace_lm_model(payload),
@@ -5318,7 +5319,7 @@ def generate_album(
     planner_lm_provider: str = "ollama",
     embedding_lm_provider: str = "ollama",
 ) -> str:
-    """Plan album with tools/CrewAI, then generate through the advanced engine."""
+    """Plan album with AceJAM Agents/tools, then generate through the advanced engine."""
     logs: list[str] = []
     try:
         request_payload = json.loads(request_json or "{}")
@@ -5334,7 +5335,7 @@ def generate_album(
         album_debug_id = album_job_id or f"manual-{uuid.uuid4().hex[:12]}"
         album_debug = AlbumRunDebugLogger(DATA_DIR, album_debug_id)
         request_payload["album_debug_dir"] = str(album_debug.root)
-        request_payload["llm_debug_log_file"] = str(album_debug.path("03_crewai_messages.jsonl"))
+        request_payload["llm_debug_log_file"] = str(album_debug.path("04_agent_responses.jsonl"))
         album_debug.write_json(
             "01_request.json",
             {
@@ -5362,7 +5363,7 @@ def generate_album(
         track_duration = parse_duration_seconds(request_payload.get("track_duration") or request_payload.get("duration") or track_duration, track_duration)
         album_options = _album_options_from_payload(request_payload, song_model=song_model)
         album_options["album_debug_dir"] = str(album_debug.root)
-        album_options["llm_debug_log_file"] = str(album_debug.path("03_crewai_messages.jsonl"))
+        album_options["llm_debug_log_file"] = str(album_debug.path("04_agent_responses.jsonl"))
         album_debug.write_json(
             "02_contract.json",
             {
@@ -5405,8 +5406,8 @@ def generate_album(
 
         from album_crew import plan_album as _plan_album
 
-        logs.append("Phase 1: Planning album with Hit Album Agent tools...")
-        _album_job_log(album_job_id, "Phase 1: Planning album with Hit Album Agent tools.", status="Planning album", progress=3)
+        logs.append("Phase 1: Planning album with AceJAM Agents and deterministic gates...")
+        _album_job_log(album_job_id, "Phase 1: Planning album with AceJAM Agents and deterministic gates.", status="Planning album", progress=3)
         result = _plan_album(
             concept=concept,
             num_tracks=num_tracks,
@@ -5437,8 +5438,12 @@ def generate_album(
                 embedding_model=embedding_model,
                 embedding_provider=embedding_lm_provider,
                 planning_engine=str(result.get("planning_engine") or ""),
+                custom_agents_used=bool(result.get("custom_agents_used")),
                 crewai_used=bool(result.get("crewai_used")),
                 toolbelt_fallback=bool(result.get("toolbelt_fallback")),
+                agent_debug_dir=str(result.get("agent_debug_dir") or album_debug.root),
+                agent_repair_count=int(result.get("agent_repair_count") or 0),
+                agent_rounds=result.get("agent_rounds") or [],
                 input_contract=result.get("input_contract") or contract_prompt_context(album_options.get("user_album_contract")),
                 input_contract_applied=bool(result.get("input_contract_applied") or album_options.get("input_contract_applied")),
                 input_contract_version=str(result.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION),
@@ -5999,9 +6004,14 @@ def generate_album(
             "embedding_model": embedding_model,
             "embedding_provider": embedding_lm_provider,
             "planning_engine": str(result.get("planning_engine") or ""),
+            "custom_agents_used": bool(result.get("custom_agents_used")),
             "crewai_used": bool(result.get("crewai_used")),
             "toolbelt_fallback": bool(result.get("toolbelt_fallback")),
             "crewai_error": str(result.get("crewai_error") or ""),
+            "agent_error": str(result.get("agent_error") or ""),
+            "agent_debug_dir": str(result.get("agent_debug_dir") or album_debug.root),
+            "agent_repair_count": int(result.get("agent_repair_count") or 0),
+            "agent_rounds": result.get("agent_rounds") or [],
             "album_debug_dir": str(album_debug.root),
             "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
             "logs": logs,
@@ -6564,7 +6574,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
     _set_album_job(
         job_id,
         state="running",
-        status="Running album production team",
+        status="Running AceJAM album agents",
         progress=1,
         started_at=started,
         finished_at=None,
@@ -6573,12 +6583,16 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         planner_provider=planner_provider,
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
-        memory_enabled=True,
+        planning_engine="acejam_agents",
+        custom_agents_used=True,
+        crewai_used=False,
+        memory_enabled=False,
         logs=[
             f"Album job {job_id} started.",
+            "Engine: AceJAM Agents",
             f"Planner: {provider_label(planner_provider)} ({planner_model})",
             f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
-            "CrewAI memory: enabled, local provider only.",
+            "Agent memory: off; deterministic debug logs are job-scoped.",
         ],
     )
     try:
@@ -6704,7 +6718,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
     toolbelt_only = parse_bool(body.get("toolbelt_only"), False)
-    requested_engine = "deterministic toolbelt" if toolbelt_only else "CrewAI"
+    requested_engine = "deterministic toolbelt" if toolbelt_only else "AceJAM Agents"
     crewai_output_log_file = str(body.get("crewai_output_log_file") or "")
     user_album_contract = extract_user_album_contract(
         "\n\n".join(
@@ -6720,17 +6734,14 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         str(body.get("language") or "en"),
         body,
     )
-    if not toolbelt_only and not crewai_output_log_file:
-        from album_crew import crewai_output_log_path as _crewai_output_log_path
-
-        crewai_output_log_file = str(_crewai_output_log_path(job_id))
-        body = {**body, "crewai_output_log_file": crewai_output_log_file}
     start_logs = [
         f"Album plan job {job_id} started.",
         f"Planning engine requested: {requested_engine}.",
+        "Engine: AceJAM Agents" if not toolbelt_only else "Engine: deterministic toolbelt",
         f"Prompt Kit: {PROMPT_KIT_VERSION}.",
         f"Planner: {provider_label(planner_provider)} ({planner_model})",
         f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
+        "Agent memory: off; prompts/responses go to the job debug folder.",
     ]
     if user_album_contract.get("applied"):
         start_logs.append(
@@ -6739,7 +6750,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             f"blocked_unsafe={int(user_album_contract.get('blocked_unsafe_count') or 0)}"
         )
     if crewai_output_log_file:
-        start_logs.append(f"CrewAI output log file: {crewai_output_log_file}")
+        start_logs.append(f"Legacy CrewAI output log file requested but AceJAM Agents do not write CrewAI logs: {crewai_output_log_file}")
     _set_album_job(
         job_id,
         state="running",
@@ -6752,12 +6763,15 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
         crewai_output_log_file=crewai_output_log_file,
+        planning_engine="toolbelt" if toolbelt_only else "acejam_agents",
+        custom_agents_used=not toolbelt_only,
+        crewai_used=False,
         prompt_kit_version=PROMPT_KIT_VERSION,
         input_contract=contract_prompt_context(user_album_contract),
         input_contract_applied=bool(user_album_contract.get("applied")),
         input_contract_version=USER_ALBUM_CONTRACT_VERSION,
         blocked_unsafe_count=int(user_album_contract.get("blocked_unsafe_count") or 0),
-        memory_enabled=not toolbelt_only,
+        memory_enabled=False,
         started_at=datetime.now(timezone.utc).isoformat(),
         finished_at=None,
         logs=start_logs,
@@ -6767,14 +6781,14 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             compact = str(line).replace("\n", " ")[:700]
             updates: dict[str, Any] = {}
             lower = compact.lower()
-            if "planning compact album bible with crewai" in lower:
-                updates.update(status="CrewAI album bible running", progress=15)
-            elif "crewai compact bible planned" in lower:
-                updates.update(status="CrewAI track blueprints ready", progress=45)
-            elif "producing track" in lower:
-                updates.update(status="CrewAI track production running", progress=55)
-            elif "crewai produced" in lower:
-                updates.update(status="CrewAI plan ready", progress=95)
+            if "planning album bible with acejam agents" in lower:
+                updates.update(status="AceJAM album bible running", progress=15)
+            elif "acejam agents planned" in lower:
+                updates.update(status="AceJAM track blueprints ready", progress=45)
+            elif "writing track" in lower:
+                updates.update(status="AceJAM track writing running", progress=55)
+            elif "acejam agents produced" in lower:
+                updates.update(status="AceJAM plan ready", progress=95)
             elif "fell back to deterministic toolbelt" in lower or "toolbelt fallback planned" in lower:
                 updates.update(status="Deterministic toolbelt fallback", progress=90)
             print(f"[album_plan_job][{job_id}] {compact}", file=sys.__stdout__, flush=True)
@@ -6794,9 +6808,13 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             planner_model=str(result.get("planner_model") or planner_model),
             embedding_model=str(result.get("embedding_model") or embedding_model),
             planning_engine=str(result.get("planning_engine") or requested_engine.lower()),
+            custom_agents_used=bool(result.get("custom_agents_used")),
             crewai_used=bool(result.get("crewai_used")),
             toolbelt_fallback=bool(result.get("toolbelt_fallback")),
             crewai_output_log_file=str(result.get("crewai_output_log_file") or crewai_output_log_file),
+            agent_debug_dir=str(result.get("agent_debug_dir") or ""),
+            agent_repair_count=int(result.get("agent_repair_count") or 0),
+            agent_rounds=result.get("agent_rounds") or [],
             prompt_kit_version=str(result.get("prompt_kit_version") or PROMPT_KIT_VERSION),
             input_contract=result.get("input_contract") or contract_prompt_context(user_album_contract),
             input_contract_applied=bool(result.get("input_contract_applied") or user_album_contract.get("applied")),
@@ -7067,7 +7085,10 @@ async def api_create_album_plan_job(request: Request):
             planner_provider=planner_provider,
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
-            memory_enabled=not parse_bool(body.get("toolbelt_only"), False),
+            planning_engine="toolbelt" if parse_bool(body.get("toolbelt_only"), False) else "acejam_agents",
+            custom_agents_used=not parse_bool(body.get("toolbelt_only"), False),
+            crewai_used=False,
+            memory_enabled=False,
             expected_count=int(body.get("num_tracks") or 5),
             logs=[f"Queued album plan job {job_id}."],
         )
@@ -8468,7 +8489,10 @@ async def api_create_album_job(request: Request):
             planner_provider=planner_provider,
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
-            memory_enabled=True,
+            planning_engine="acejam_agents",
+            custom_agents_used=True,
+            crewai_used=False,
+            memory_enabled=False,
             logs=[f"Queued album job {job_id}."],
         )
         threading.Thread(target=_album_job_worker, args=(job_id, request_body), daemon=True).start()
