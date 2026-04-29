@@ -141,6 +141,48 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["audio_format"], "wav")
         self.assertEqual(normalized["runner_plan"], "fast")
 
+    def test_text2music_supplied_lyrics_forces_direct_render_globally(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "caption": "clear pop vocal, crisp drums, radio mix",
+            "lyrics": "[Verse]\nLine one lands clearly\n\n[Chorus]\nHook line stays bright",
+            "duration": 30,
+            "audio_format": "wav32",
+            "thinking": True,
+            "sample_mode": True,
+            "sample_query": "rewrite and generate audio codes",
+            "use_format": True,
+            "use_cot_metas": True,
+            "use_cot_caption": True,
+            "use_cot_language": True,
+            "use_cot_lyrics": True,
+            "audio_code_string": "<|audio_code_1|><|audio_code_2|>",
+            "src_result_id": "stale-source",
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            normalized = acejam_app._parse_generation_payload(payload)
+
+        self.assertFalse(normalized["thinking"])
+        self.assertFalse(normalized["sample_mode"])
+        self.assertEqual(normalized["sample_query"], "")
+        self.assertFalse(normalized["use_format"])
+        self.assertFalse(normalized["use_cot_metas"])
+        self.assertFalse(normalized["use_cot_caption"])
+        self.assertFalse(normalized["use_cot_language"])
+        self.assertFalse(normalized["use_cot_lyrics"])
+        self.assertEqual(normalized["audio_code_string"], "")
+        self.assertIsNone(normalized["src_audio"])
+        self.assertIn("audio_code_hints_cleared_for_text2music_direct_render", normalized["payload_warnings"])
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(normalized, Path(tmp))
+        self.assertFalse(request["requires_lm"])
+        self.assertIsNone(request["lm_model"])
+        self.assertEqual(request["params"]["audio_codes"], "")
+        self.assertIsNone(request["params"]["src_audio"])
+
     def test_text2music_defaults_and_key_aliases_reach_official_request(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -691,6 +733,15 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual([payload["song_model"] for payload in calls], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS)
         self.assertTrue(all(payload["artist_name"] == "Unit Signal" for payload in calls))
         self.assertTrue(all(payload["ace_lm_model"] == "none" for payload in calls))
+        self.assertTrue(all(not payload["thinking"] for payload in calls))
+        self.assertTrue(all(not payload["use_format"] for payload in calls))
+        self.assertTrue(all(not payload["use_cot_metas"] for payload in calls))
+        self.assertTrue(all(not payload["use_cot_caption"] for payload in calls))
+        self.assertTrue(all(not payload["use_cot_lyrics"] for payload in calls))
+        self.assertTrue(all(not payload["use_cot_language"] for payload in calls))
+        self.assertTrue(all(payload.get("audio_code_string", "") == "" for payload in calls))
+        self.assertTrue(all(payload.get("src_audio_id", "") == "" for payload in calls))
+        self.assertTrue(all(payload.get("reference_audio_id", "") == "" for payload in calls))
         self.assertEqual(len(data["model_albums"]), len(acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS))
         self.assertIn("album_family_id", data)
         self.assertEqual(data["tracks"][0]["model_results"][0]["album_model"], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS[0])
@@ -874,6 +925,9 @@ class AppParityTest(unittest.TestCase):
             "time_signature": "4",
             "audio_format": "wav",
             "save_to_library": False,
+            "thinking": True,
+            "sample_mode": True,
+            "sample_query": "rewrite this into a different sample",
         }
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value=set(acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS)), \
@@ -887,6 +941,8 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(all(item["batch_size"] == 1 for item in calls))
         self.assertTrue(all(item["ace_lm_model"] == acejam_app.ACE_LM_PREFERRED_MODEL for item in calls))
         self.assertTrue(all(not item["thinking"] for item in calls))
+        self.assertTrue(all(not item["sample_mode"] for item in calls))
+        self.assertTrue(all(item["sample_query"] == "" for item in calls))
         self.assertTrue(all(not item["use_cot_lyrics"] for item in calls))
         self.assertEqual(calls[0]["inference_steps"], 8)
         self.assertEqual(calls[2]["inference_steps"], 64)

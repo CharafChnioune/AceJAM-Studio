@@ -131,6 +131,12 @@ def _patch_mlx_thread_stream(handler_cls: Any) -> None:
         velocity_ema_factor = values["velocity_ema_factor"]
         repaint_crossfade_frames = values["repaint_crossfade_frames"]
         repaint_injection_ratio = values["repaint_injection_ratio"]
+        dcw_enabled = values["dcw_enabled"]
+        dcw_mode = values["dcw_mode"]
+        dcw_scaler = values["dcw_scaler"]
+        dcw_high_scaler = values["dcw_high_scaler"]
+        dcw_wavelet = values["dcw_wavelet"]
+        task_type = values["task_type"]
 
         infer_steps_for_progress = len(timesteps) if timesteps else inference_steps
         progress_desc = f"Generating music (batch size: {actual_batch_size})..."
@@ -163,7 +169,12 @@ def _patch_mlx_thread_stream(handler_cls: Any) -> None:
             if original_generate_audio is not None:
                 setattr(self.model, "generate_audio", _blocked_pytorch_fallback)
 
-            _logger.info("[generate_music] MLX active - running diffusion directly on the main thread.")
+            _logger.info(
+                "[generate_music] MLX active - running diffusion directly on the main thread "
+                "(task_type={}, dcw_enabled={}).",
+                task_type,
+                dcw_enabled,
+            )
             outputs = self.service_generate(
                 captions=service_inputs["captions_batch"],
                 global_captions=service_inputs.get("global_captions_batch"),
@@ -188,12 +199,18 @@ def _patch_mlx_thread_stream(handler_cls: Any) -> None:
                 sampler_mode=sampler_mode,
                 velocity_norm_threshold=velocity_norm_threshold,
                 velocity_ema_factor=velocity_ema_factor,
+                dcw_enabled=dcw_enabled,
+                dcw_mode=dcw_mode,
+                dcw_scaler=dcw_scaler,
+                dcw_high_scaler=dcw_high_scaler,
+                dcw_wavelet=dcw_wavelet,
                 audio_code_hints=service_inputs["audio_code_hints_batch"],
                 return_intermediate=service_inputs["should_return_intermediate"],
                 timesteps=timesteps,
                 chunk_mask_modes=service_inputs.get("chunk_mask_modes_batch"),
                 repaint_crossfade_frames=repaint_crossfade_frames,
                 repaint_injection_ratio=repaint_injection_ratio,
+                task_type=task_type,
             )
             return {"outputs": outputs, "infer_steps_for_progress": infer_steps_for_progress}
         finally:

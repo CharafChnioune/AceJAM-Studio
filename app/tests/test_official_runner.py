@@ -48,8 +48,14 @@ class OfficialRunnerTest(unittest.TestCase):
                 sampler_mode="euler",
                 velocity_norm_threshold=0.0,
                 velocity_ema_factor=0.0,
+                dcw_enabled=True,
+                dcw_mode="double",
+                dcw_scaler=0.05,
+                dcw_high_scaler=0.02,
+                dcw_wavelet="haar",
                 repaint_crossfade_frames=10,
                 repaint_injection_ratio=0.5,
+                task_type="",
             ):
                 raise AssertionError("original threaded method should not run for active MLX")
 
@@ -157,6 +163,8 @@ class OfficialRunnerTest(unittest.TestCase):
 
                 def service_generate(self, **kwargs):
                     calls.append(("service", threading.current_thread().name, kwargs["captions"]))
+                    calls.append(("task_type", kwargs["task_type"]))
+                    calls.append(("dcw", kwargs["dcw_enabled"], kwargs["dcw_mode"], kwargs["dcw_scaler"], kwargs["dcw_high_scaler"], kwargs["dcw_wavelet"]))
                     return {"target_latents": "ok"}
 
             def progress(*args, **kwargs):
@@ -192,10 +200,18 @@ class OfficialRunnerTest(unittest.TestCase):
                 cfg_interval_end=1.0,
                 shift=1.0,
                 infer_method="ode",
+                dcw_enabled=False,
+                dcw_mode="low",
+                dcw_scaler=0.07,
+                dcw_high_scaler=0.03,
+                dcw_wavelet="db4",
+                task_type="text2music",
             )
 
             self.assertEqual(result["outputs"], {"target_latents": "ok"})
             self.assertIn(("service", threading.current_thread().name, ["bright schlager"]), calls)
+            self.assertIn(("task_type", "text2music"), calls)
+            self.assertIn(("dcw", False, "low", 0.07, 0.03, "db4"), calls)
             self.assertIn(("progress", 8), calls)
         finally:
             self._restore_modules(saved)
@@ -247,6 +263,7 @@ class OfficialRunnerTest(unittest.TestCase):
                     cfg_interval_end=1.0,
                     shift=1.0,
                     infer_method="ode",
+                    task_type="text2music",
                 )
         finally:
             self._restore_modules(saved)

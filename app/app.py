@@ -405,6 +405,8 @@ def _quality_lm_controls_enabled(payload: dict[str, Any], task_type: str) -> boo
         return False
     supplied_lyrics = str(payload.get("lyrics") or "").strip()
     has_supplied_vocal_lyrics = bool(supplied_lyrics and supplied_lyrics.lower() != "[instrumental]")
+    if has_supplied_vocal_lyrics and not parse_bool(payload.get("allow_supplied_lyrics_lm"), False):
+        return False
     default_enabled = not has_supplied_vocal_lyrics
     return any(
         [
@@ -417,8 +419,37 @@ def _quality_lm_controls_enabled(payload: dict[str, Any], task_type: str) -> boo
     )
 
 
+DIRECT_LYRICS_LM_FIELDS = {
+    "allow_lm_batch",
+    "constrained_decoding_debug",
+    "lm_batch_chunk_size",
+    "lm_cfg_scale",
+    "lm_negative_prompt",
+    "lm_temperature",
+    "lm_top_k",
+    "lm_top_p",
+    "sample_mode",
+    "sample_query",
+    "thinking",
+    "use_constrained_decoding",
+    "use_cot_caption",
+    "use_cot_language",
+    "use_cot_lyrics",
+    "use_cot_metas",
+    "use_format",
+}
+
+
 def _active_official_fields(payload: dict[str, Any], task_type: str, existing: list[str]) -> list[str]:
     fields = list(existing)
+    supplied_lyrics = str(payload.get("lyrics") or "").strip()
+    direct_lyrics_render = (
+        task_type == "text2music"
+        and bool(supplied_lyrics and supplied_lyrics.lower() != "[instrumental]")
+        and not parse_bool(payload.get("allow_supplied_lyrics_lm"), False)
+    )
+    if direct_lyrics_render:
+        fields = [field for field in fields if field not in DIRECT_LYRICS_LM_FIELDS]
     if _quality_lm_controls_enabled(payload, task_type):
         for field in ["thinking", "use_format", "use_cot_lyrics", "use_cot_caption", "use_cot_language", "use_cot_metas"]:
             if parse_bool(payload.get(field), ACE_LM_QUALITY_DEFAULTS.get(field, True)) and field not in fields:
@@ -1103,7 +1134,7 @@ def _unload_llm_models_for_generation() -> None:
     # Unload all Ollama models by sending keep_alive=0
     try:
         import ollama as _ollama_client
-        client = _ollama_client.Client(host=ollama_host())
+        client = _ollama_client.Client(host=_ollama_host())
         response = client.list()
         for model in response.models:
             try:
@@ -2908,6 +2939,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sample_query = str(get_param(payload, "sample_query", "") or "").strip()
     lm_controls = _explicit_ace_lm_controls(payload)
     supplied_vocal_lyrics = bool(lyrics_text.strip() and lyrics_text.strip().lower() != "[instrumental]")
+    direct_lyrics_render = task_type == "text2music" and supplied_vocal_lyrics and not parse_bool(payload.get("allow_supplied_lyrics_lm"), False)
+    if direct_lyrics_render:
+        sample_mode = False
+        sample_query = ""
     lm_quality_defaults = requested_lm_model != "none" and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS and not supplied_vocal_lyrics
     if lm_controls and requested_lm_model == "none":
         raise ValueError(
@@ -2933,6 +2968,13 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lora_request = _lora_adapter_request(payload)
     if lora_request["use_lora"] and not lora_request["lora_adapter_path"]:
         raise ValueError("Use adapter is enabled but no LoRA adapter was selected")
+    payload_warnings = list(payload.get("payload_warnings") or [])
+    audio_code_string = str(get_param(payload, "audio_code_string", "") or "")
+    src_audio = None if task_type == "text2music" else _resolve_audio_reference(payload, "src_audio_id", "src_result_id")
+    if task_type == "text2music" and audio_code_string.strip() and not parse_bool(payload.get("allow_text2music_audio_codes"), False):
+        audio_code_string = ""
+        payload_warnings.append("audio_code_hints_cleared_for_text2music_direct_render")
+    reference_audio = _resolve_audio_reference(payload, "reference_audio_id", "reference_result_id")
     parsed = {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "quality_profile": quality_profile,
@@ -2943,7 +2985,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "caption_source": str(payload.get("caption_source") or "caption"),
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
         "tag_list": list(payload.get("tag_list") or []),
-        "payload_warnings": list(payload.get("payload_warnings") or []),
+        "payload_warnings": payload_warnings,
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
         "instrumental": instrumental,
         "duration": duration,
@@ -2959,9 +3001,9 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
-        "reference_audio": _resolve_audio_reference(payload, "reference_audio_id", "reference_result_id"),
-        "src_audio": _resolve_audio_reference(payload, "src_audio_id", "src_result_id"),
-        "audio_code_string": str(get_param(payload, "audio_code_string", "") or ""),
+        "reference_audio": reference_audio,
+        "src_audio": src_audio,
+        "audio_code_string": audio_code_string,
         "repainting_start": clamp_float(payload.get("repainting_start"), 0.0, -DURATION_MAX, DURATION_MAX),
         "repainting_end": None if payload.get("repainting_end") in [None, "", "end"] else clamp_float(payload.get("repainting_end"), -1.0, -1.0, DURATION_MAX),
         "instruction": instruction,
@@ -2991,10 +3033,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         **lora_request,
         "album_metadata": payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {},
         "track_names": track_names,
-        "thinking": parse_bool(payload.get("thinking"), lm_quality_defaults),
+        "thinking": False if direct_lyrics_render else parse_bool(payload.get("thinking"), lm_quality_defaults),
         "sample_mode": sample_mode,
         "sample_query": sample_query,
-        "use_format": parse_bool(get_param(payload, "use_format"), lm_quality_defaults),
+        "use_format": False if direct_lyrics_render else parse_bool(get_param(payload, "use_format"), lm_quality_defaults),
         "lm_temperature": clamp_float(payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if lm_quality_defaults else 0.85, 0.0, 2.0),
         "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if lm_quality_defaults else 2.0, 0.0, 10.0),
         "lm_repetition_penalty": clamp_float(payload.get("lm_repetition_penalty") or payload.get("repetition_penalty"), 1.0, 0.1, 4.0),
@@ -3002,10 +3044,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lm_top_p": clamp_float(payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if lm_quality_defaults else 0.9, 0.0, 1.0),
         "lm_negative_prompt": str(payload.get("lm_negative_prompt") or "NO USER INPUT"),
         "lm_backend": _normalize_lm_backend(payload.get("lm_backend")),
-        "use_cot_metas": parse_bool(payload.get("use_cot_metas"), lm_quality_defaults),
-        "use_cot_caption": parse_bool(payload.get("use_cot_caption"), lm_quality_defaults),
-        "use_cot_lyrics": parse_bool(payload.get("use_cot_lyrics"), False),
-        "use_cot_language": parse_bool(payload.get("use_cot_language"), lm_quality_defaults),
+        "use_cot_metas": False if direct_lyrics_render else parse_bool(payload.get("use_cot_metas"), lm_quality_defaults),
+        "use_cot_caption": False if direct_lyrics_render else parse_bool(payload.get("use_cot_caption"), lm_quality_defaults),
+        "use_cot_lyrics": False if direct_lyrics_render else parse_bool(payload.get("use_cot_lyrics"), False),
+        "use_cot_language": False if direct_lyrics_render else parse_bool(payload.get("use_cot_language"), lm_quality_defaults),
         "allow_lm_batch": parse_bool(payload.get("allow_lm_batch"), False),
         "lm_batch_chunk_size": clamp_int(payload.get("lm_batch_chunk_size"), 8, 1, 64),
         "use_constrained_decoding": parse_bool(payload.get("use_constrained_decoding"), True),
@@ -3276,6 +3318,11 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         inference_steps = DOCS_BEST_TURBO_HIGH_CAP_STEPS
     title = str(payload.get("title") or "").strip() or "Untitled"
     artist_name = _artist_name_from_payload(payload, title=title)
+    preview_warnings = list(payload.get("payload_warnings") or [])
+    preview_audio_code_string = str(get_param(payload, "audio_code_string", "") or "")
+    if task_type == "text2music" and preview_audio_code_string.strip() and not parse_bool(payload.get("allow_text2music_audio_codes"), False):
+        preview_audio_code_string = ""
+        preview_warnings.append("audio_code_hints_cleared_for_text2music_direct_render")
     return {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "quality_profile": quality_profile,
@@ -3288,7 +3335,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "caption_source": str(payload.get("caption_source") or "caption"),
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
         "tag_list": list(payload.get("tag_list") or []),
-        "payload_warnings": list(payload.get("payload_warnings") or []),
+        "payload_warnings": preview_warnings,
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
         "instrumental": parse_bool(payload.get("instrumental"), False),
         "duration": clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX),
@@ -3304,13 +3351,13 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
-        "audio_code_string": str(get_param(payload, "audio_code_string", "") or ""),
+        "audio_code_string": preview_audio_code_string,
         "track_names": track_names,
         "track_name": track_names[0] if track_names else "",
         "reference_audio_id": str(payload.get("reference_audio_id") or ""),
         "reference_result_id": str(payload.get("reference_result_id") or ""),
-        "src_audio_id": str(payload.get("src_audio_id") or ""),
-        "src_result_id": str(payload.get("src_result_id") or ""),
+        "src_audio_id": "" if task_type == "text2music" else str(payload.get("src_audio_id") or ""),
+        "src_result_id": "" if task_type == "text2music" else str(payload.get("src_result_id") or ""),
         "inference_steps": inference_steps,
         "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
         "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
@@ -4668,6 +4715,7 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
     model_defaults = quality_profile_model_settings(model_name, quality_profile)
     payload = dict(raw_payload or {})
     has_vocal_lyrics = bool(str(payload.get("lyrics") or "").strip() and str(payload.get("lyrics") or "").strip().lower() != "[instrumental]")
+    lm_defaults_enabled = not has_vocal_lyrics and _requested_ace_lm_model(raw_payload) != "none"
     payload.update(
         {
             "task_type": "text2music",
@@ -4681,17 +4729,24 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
             "planner_lm_provider": normalize_provider(raw_payload.get("planner_lm_provider") or raw_payload.get("planner_provider") or "ollama"),
             "planner_model": str(raw_payload.get("planner_model") or raw_payload.get("planner_ollama_model") or raw_payload.get("ollama_model") or ""),
             "render_strategy": SONG_PORTFOLIO_STRATEGY,
-            "thinking": parse_bool(raw_payload.get("thinking"), DOCS_BEST_LM_DEFAULTS["thinking"]),
-            "use_format": parse_bool(raw_payload.get("use_format"), not has_vocal_lyrics),
-            "use_cot_metas": parse_bool(raw_payload.get("use_cot_metas"), True),
-            "use_cot_caption": parse_bool(raw_payload.get("use_cot_caption"), True),
-            "use_cot_lyrics": parse_bool(raw_payload.get("use_cot_lyrics"), not has_vocal_lyrics),
-            "use_cot_language": parse_bool(raw_payload.get("use_cot_language"), True),
+            "thinking": False if has_vocal_lyrics else parse_bool(raw_payload.get("thinking"), lm_defaults_enabled and DOCS_BEST_LM_DEFAULTS["thinking"]),
+            "sample_mode": False if has_vocal_lyrics else parse_bool(raw_payload.get("sample_mode"), False),
+            "sample_query": "" if has_vocal_lyrics else str(raw_payload.get("sample_query") or ""),
+            "use_format": False if has_vocal_lyrics else parse_bool(raw_payload.get("use_format"), lm_defaults_enabled and DOCS_BEST_LM_DEFAULTS["use_format"]),
+            "use_cot_metas": False if has_vocal_lyrics else parse_bool(raw_payload.get("use_cot_metas"), lm_defaults_enabled and DOCS_BEST_LM_DEFAULTS["use_cot_metas"]),
+            "use_cot_caption": False if has_vocal_lyrics else parse_bool(raw_payload.get("use_cot_caption"), lm_defaults_enabled and DOCS_BEST_LM_DEFAULTS["use_cot_caption"]),
+            "use_cot_lyrics": False if has_vocal_lyrics else parse_bool(raw_payload.get("use_cot_lyrics"), lm_defaults_enabled and DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"]),
+            "use_cot_language": False if has_vocal_lyrics else parse_bool(raw_payload.get("use_cot_language"), lm_defaults_enabled and DOCS_BEST_LM_DEFAULTS["use_cot_language"]),
             "use_constrained_decoding": parse_bool(raw_payload.get("use_constrained_decoding"), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
             "lm_temperature": clamp_float(raw_payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"], 0.0, 2.0),
             "lm_cfg_scale": clamp_float(raw_payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"], 0.0, 10.0),
             "lm_top_p": clamp_float(raw_payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"], 0.0, 1.0),
             "lm_top_k": clamp_int(raw_payload.get("lm_top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"], 0, 200),
+            "audio_code_string": "",
+            "src_audio_id": "",
+            "src_result_id": "",
+            "reference_audio_id": "",
+            "reference_result_id": "",
         }
     )
     payload.setdefault("seed", "-1")
@@ -5364,10 +5419,10 @@ def generate_album(
                 try:
                     _cleanup_accelerator_memory()
                     track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
-                    if track_lm_model == "none" or not track_lm_model.strip():
+                    if not track_lm_model.strip():
                         track_lm_model = ACE_LM_PREFERRED_MODEL
-                    track_lm_enabled = True  # Always use LM for album generation
                     track_has_vocal_lyrics = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
+                    track_lm_enabled = track_lm_model != "none" and not track_has_vocal_lyrics
                     quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
                     generation_payload = {
@@ -5420,18 +5475,25 @@ def generate_album(
                         "auto_lrc": parse_bool(track.get("auto_lrc", request_payload.get("auto_lrc")), False),
                         "return_audio_codes": parse_bool(track.get("return_audio_codes", request_payload.get("return_audio_codes")), False),
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
-                        "thinking": True,  # Always enable thinking for album generation (LM is required for audio quality)
-                        "use_format": parse_bool(track.get("use_format", False if track_has_vocal_lyrics else request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled and not track_has_vocal_lyrics else False),
+                        "thinking": False if track_has_vocal_lyrics else parse_bool(track.get("thinking", request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
+                        "sample_mode": False if track_has_vocal_lyrics else parse_bool(track.get("sample_mode", request_payload.get("sample_mode")), False),
+                        "sample_query": "" if track_has_vocal_lyrics else str(track.get("sample_query") or request_payload.get("sample_query") or ""),
+                        "use_format": False if track_has_vocal_lyrics else parse_bool(track.get("use_format", request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
                         "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85, 0.0, 2.0),
                         "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
                         "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
                         "lm_top_p": clamp_float(track.get("lm_top_p", request_payload.get("lm_top_p")), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if track_lm_enabled else 0.9, 0.0, 1.0),
                         "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
-                        "use_cot_metas": parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), True if track_lm_enabled else False),
-                        "use_cot_caption": parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), True if track_lm_enabled else False),
-                        "use_cot_lyrics": parse_bool(track.get("use_cot_lyrics", request_payload.get("use_cot_lyrics")), not track_has_vocal_lyrics if track_lm_enabled else False),
-                        "use_cot_language": parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), True if track_lm_enabled else False),
+                        "use_cot_metas": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"] if track_lm_enabled else False),
+                        "use_cot_caption": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled else False),
+                        "use_cot_lyrics": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_lyrics", request_payload.get("use_cot_lyrics")), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if track_lm_enabled else False),
+                        "use_cot_language": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if track_lm_enabled else False),
                         "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
+                        "audio_code_string": "",
+                        "src_audio_id": "",
+                        "src_result_id": "",
+                        "reference_audio_id": "",
+                        "reference_result_id": "",
                         "album_metadata": {
                             "album_family_id": album_family_id,
                             "album_family_title": album_family_title,
