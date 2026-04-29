@@ -15,9 +15,9 @@ TRACK_HEADER_RE = re.compile(
 
 LABEL_PATTERNS = [
     "album", "album title", "album name", "concept", "language", "track", "bpm", "key", "keyscale", "key scale", "style",
-    "vibe", "the vibe", "narrative", "the narrative", "lyrics", "explicit lyrics",
-    "naming drop", "required hook phrase", "required phrase", "required phrases", "hook phrase",
-    "produced by", "engineered by", "artist", "performer",
+    "vibe", "the vibe", "narrative", "the narrative", "verse", "the verse", "lyrics", "explicit lyrics", "required lyrics",
+    "naming drop", "naming drop style", "required hook phrase", "required phrase", "required phrases", "hook phrase",
+    "produced by", "producer", "prod", "prod.", "engineered by", "engineer", "mixed by", "artist", "performer",
 ]
 
 UNSAFE_CONTENT_RE = None  # content filtering removed
@@ -78,7 +78,10 @@ def _capture_field(block: str, labels: list[str], *, multiline: bool = True) -> 
 
 
 def _capture_inline(block: str, label: str) -> str:
-    match = re.search(rf"(?i)\b{re.escape(label)}\s*[:=-]\s*([^|\n)]+)", block)
+    # Inline metadata often appears inside "(BPM: 95 | Style: boom-bap)".
+    # Require a field boundary so "Naming Drop Style:" is not mistaken for
+    # the musical Style field.
+    match = re.search(rf"(?im)(?:^|[\n(|;])\s*{re.escape(label)}\s*[:=-]\s*([^|\n)]+)", block)
     return str(match.group(1)).strip() if match else ""
 
 
@@ -141,10 +144,10 @@ def extract_user_album_contract(
         title = _clean_title(raw_title)
         paren = str(match.group(5) or "")
         producer_credit = ""
-        if re.search(r"(?i)\bproduced\s+by\b", paren):
-            producer_credit = re.sub(r"(?i)^\s*produced\s+by\s*", "", paren).strip()
-        producer_credit = producer_credit or _capture_field(block, ["produced by", "producer"], multiline=False)
-        producer_credit = re.sub(r"(?i)^\s*produced\s+by\s*", "", producer_credit).strip()
+        if re.search(r"(?i)\b(?:produced\s+by|prod\.?)\b", paren):
+            producer_credit = re.sub(r"(?i)^\s*(?:produced\s+by|prod\.?)\s*", "", paren).strip()
+        producer_credit = producer_credit or _capture_field(block, ["produced by", "producer", "prod.", "prod"], multiline=False)
+        producer_credit = re.sub(r"(?i)^\s*(?:produced\s+by|producer|prod\.?)\s*", "", producer_credit).strip()
         engineer_credit = _capture_field(block, ["engineered by", "engineer", "mixed by"], multiline=False)
         engineer_credit = re.sub(r"(?i)^\s*(engineered|mixed)\s+by\s*", "", engineer_credit).strip()
         bpm_raw = _capture_inline(block, "BPM") or _capture_field(block, ["bpm"], multiline=False)
@@ -158,8 +161,8 @@ def extract_user_album_contract(
         style = _capture_inline(block, "Style") or _capture_field(block, ["style"], multiline=False)
         vibe = _capture_field(block, ["the vibe", "vibe"], multiline=True)
         narrative = _capture_field(block, ["the narrative", "narrative"], multiline=True)
-        lyrics = _capture_field(block, ["explicit lyrics", "lyrics"], multiline=True)
-        naming_drop = _capture_field(block, ["naming drop"], multiline=True)
+        lyrics = _capture_field(block, ["explicit lyrics", "required lyrics", "lyrics", "the verse", "verse"], multiline=True)
+        naming_drop = _capture_field(block, ["naming drop style", "naming drop"], multiline=True)
         required_phrase_text = _capture_field(
             block,
             ["required hook phrase", "required phrase", "required phrases", "hook phrase"],

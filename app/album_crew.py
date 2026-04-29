@@ -117,6 +117,8 @@ CREWAI_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 CREWAI_LOG_DIR.mkdir(parents=True, exist_ok=True)
 ALBUM_FINAL_DOCS_BEST = docs_best_model_settings(ALBUM_FINAL_MODEL)
 
+ACE_STEP_PAYLOAD_CONTRACT_VERSION = "ace-step-track-payload-contract-2026-04-29"
+
 LANG_NAMES = {
     "en": "English", "ar": "Arabic", "az": "Azerbaijani", "bg": "Bulgarian",
     "bn": "Bengali", "ca": "Catalan", "cs": "Czech", "da": "Danish",
@@ -201,6 +203,11 @@ class TrackProductionPayloadModel(_AceJamStructuredModel):
     caption_integrity: dict[str, Any] = Field(default_factory=dict)
     payload_gate_status: str = ""
     repair_actions: list[Any] = Field(default_factory=list)
+    lyrics_word_count: int = 0
+    lyrics_line_count: int = 0
+    lyrics_char_count: int = 0
+    section_count: int = 0
+    hook_count: int = 0
 
 
 def _clip_text(value: Any, limit: int = CREWAI_MEMORY_CONTENT_LIMIT) -> str:
@@ -426,6 +433,68 @@ def _lyrics_richness_score(lyrics: Any, duration: float, density: str, structure
     if "[chorus" in lowered or "[hook" in lowered or "[refrain" in lowered:
         score += 1
     return score
+
+
+def _ace_step_track_payload_contract(
+    lyric_plan: dict[str, Any],
+    language: str,
+    blueprint: dict[str, Any],
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    """Machine-readable contract given to CrewAI before track production."""
+    return {
+        "version": ACE_STEP_PAYLOAD_CONTRACT_VERSION,
+        "source_docs": {
+            "caption": "ACE-Step GenerationParams.caption: max 512 chars; style, emotion, instruments, timbre only.",
+            "lyrics": "ACE-Step GenerationParams.lyrics: max 4096 chars; temporal script with concise section/performance tags.",
+            "metadata": "BPM, keyscale, timesignature, duration are dedicated metadata fields, never caption prose.",
+        },
+        "caption_contract": {
+            "max_chars": 512,
+            "required_dimensions": [
+                "genre_style",
+                "rhythm_groove",
+                "instrumentation",
+                "vocal_style",
+                "mood_atmosphere",
+                "arrangement_energy",
+                "mix_production",
+            ],
+            "full_tag_library_tool": "Call TagLibraryTool before final JSON; it returns the complete caption tag taxonomy and lyric meta tag library.",
+            "forbidden": [
+                "lyrics",
+                "section tags",
+                "track headers",
+                "JSON/prose scaffolding",
+                "BPM/key/duration/model/seed",
+                "full user prompt",
+            ],
+        },
+        "lyrics_contract": {
+            "language": language,
+            "max_chars": int(lyric_plan.get("max_lyrics_chars") or 4096),
+            "min_words": int(lyric_plan.get("min_words") or 0),
+            "target_words": int(lyric_plan.get("target_words") or 0),
+            "max_words": int(lyric_plan.get("max_words") or 0),
+            "min_lines": int(lyric_plan.get("min_lines") or 0),
+            "target_lines": int(lyric_plan.get("target_lines") or 0),
+            "required_sections": lyric_plan.get("sections") or [],
+            "required_stats_fields": ["lyrics_word_count", "lyrics_line_count", "lyrics_char_count", "section_count"],
+            "line_rule": "Use short performable lines. Rap bars may be split across breath units; do not write prose paragraphs.",
+            "full_lyric_tag_library_tool": "Call TagLibraryTool before final JSON; keep lyric tags concise per ACE-Step tutorial guidance.",
+        },
+        "locked_user_fields": {
+            key: blueprint.get(key)
+            for key in ("track_number", "title", "locked_title", "producer_credit", "bpm", "key_scale", "style", "vibe", "narrative", "required_phrases")
+            if blueprint.get(key) not in (None, "", [])
+        },
+        "repair_instruction": (
+            "Before final JSON, count words, vocal lines, chars, sections, hook count, and tag dimensions. "
+            "If any required count is short, call TrackRepairTool or extend/reflow lyrics before output. "
+            "Never claim payload_gate_status=pass unless these counts pass."
+        ),
+        "quality_profile": options.get("quality_profile"),
+    }
 
 
 def _prefer_production_lyrics(
@@ -1490,7 +1559,9 @@ def create_track_production_crew(
     tools = _select_crewai_tools(
         make_crewai_tools(opts),
         {
+            "tag_library_tool",
             "lyric_length_tool",
+            "section_map_tool",
             "arrangement_tool",
             "vocal_performance_tool",
             "rhyme_flow_tool",
@@ -1500,6 +1571,7 @@ def create_track_production_crew(
             "cliche_guard_tool",
             "conflict_checker_tool",
             "track_repair_tool",
+            "validation_checklist_tool",
             "negative_control_tool",
             "effective_settings_tool",
             "hit_readiness_tool",
@@ -1516,6 +1588,7 @@ def create_track_production_crew(
         respect_context_window=CREWAI_RESPECT_CONTEXT_WINDOW,
         step_callback=step_callback,
     )
+    payload_contract = _ace_step_track_payload_contract(lyric_plan, language, blueprint, opts)
     producer = Agent(
         role="Track Production Team",
         goal="Produce exactly one track from a compact blueprint with complete lyrics and ACE-Step metadata",
@@ -1547,6 +1620,7 @@ def create_track_production_crew(
         "section_map": section_map_for(blueprint.get("duration") or track_duration, str(blueprint.get("tags") or blueprint.get("description") or "")),
         "docs_best_model_settings": ALBUM_FINAL_DOCS_BEST,
         "quality_profile": opts.get("quality_profile"),
+        "ace_step_payload_contract_version": ACE_STEP_PAYLOAD_CONTRACT_VERSION,
         "settings_policy": "Use EffectiveSettingsTool and ModelCompatibilityTool. Keep unsupported/reserved/read-only settings out of active payloads.",
     }
     task_produce = _crew_task(
@@ -1554,10 +1628,14 @@ def create_track_production_crew(
             f"Produce exactly one track from this compact blueprint: {_compact_json(blueprint, 3600)}\n"
             f"Album bible: {_compact_json(album_bible, 1800)}\n"
             f"Production context: {_compact_json(compact_context, 5200)}\n"
+            f"ACE-Step track payload contract: {_compact_json(payload_contract, 7600)}\n"
             "Write complete lyrics unless the blueprint is explicitly instrumental. "
-            "Stay on this single track; do not rewrite album-wide plans."
+            "Use TagLibraryTool, LyricLengthTool, SectionMapTool, CaptionPolisherTool, and TrackRepairTool as needed. "
+            "Your production notes must include a compact ACE_STEP_VALIDATION block with lyrics_word_count, "
+            "lyrics_line_count, lyrics_char_count, section_count, hook_count, caption_dimensions_covered, "
+            "caption_char_count, and any repairs made. Stay on this single track; do not rewrite album-wide plans."
         ),
-        expected_output="Complete production notes and lyrics for one track.",
+        expected_output="Complete production notes and full lyrics for one track, including ACE_STEP_VALIDATION counts.",
         agent=producer,
     )
     task_json = _crew_task(
@@ -1567,10 +1645,15 @@ def create_track_production_crew(
             "guidance_scale, shift, infer_method, sampler_mode, audio_format, auto_score, auto_lrc, "
             "return_audio_codes, save_to_library, tool_notes, production_team, model_render_notes, "
             "quality_profile, prompt_kit_version, settings_policy_version, settings_compliance, quality_checks, contract_compliance, "
-            "tag_coverage, lyric_duration_fit, caption_integrity, payload_gate_status, repair_actions. "
+            "tag_coverage, lyric_duration_fit, caption_integrity, payload_gate_status, repair_actions, "
+            "lyrics_word_count, lyrics_line_count, lyrics_char_count, section_count, hook_count. "
+            f"Apply this contract before output: {_compact_json(payload_contract, 7000)} "
+            "If lyrics_line_count is below min_lines, split long rap/sung lines into shorter breath units or extend sections. "
+            "If lyrics_word_count is below min_words, extend verses/bridge/final chorus. "
+            "If tags miss a required caption dimension, repair the caption. "
             "Preserve the blueprint title and locked fields exactly. No markdown fences."
         ),
-        expected_output="Strict JSON object for exactly one produced track.",
+        expected_output="Strict JSON object for exactly one produced track with passing validation counts.",
         agent=finalizer,
         context=[task_produce],
         output_json=_output_json_for_provider(TrackProductionPayloadModel, planner_provider),
@@ -2318,6 +2401,14 @@ def plan_album(
         tracks = normalize_album_tracks(produced_tracks, opts)
         for index, track in enumerate(tracks):
             track["duration"] = parse_duration_seconds(blueprints[index].get("duration") if index < len(blueprints) else track_duration, track_duration)
+            stats = lyric_stats(str(track.get("lyrics") or ""))
+            track["lyrics_word_count"] = int(stats.get("word_count") or 0)
+            track["lyrics_line_count"] = int(stats.get("line_count") or 0)
+            track["lyrics_char_count"] = int(stats.get("char_count") or 0)
+            track["section_count"] = int(stats.get("section_count") or 0)
+            track["hook_count"] = sum(
+                1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
+            )
 
         # Write to memory
         _remember_album_bible(album_memory_writer, album_bible, tracks, logs)

@@ -10,6 +10,7 @@ from album_quality_gate import (
     evaluate_album_payload_quality,
     tag_dimension_coverage,
 )
+from songwriting_toolkit import lyric_length_plan
 
 
 def _lyrics_for_sections(sections, lines_per_section=4):
@@ -126,6 +127,58 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertEqual(report["tag_coverage"]["status"], "pass")
         self.assertEqual(report["caption_integrity"]["status"], "pass")
         self.assertEqual(report["lyric_duration_fit"]["status"], "pass")
+
+    def test_near_miss_rap_lyrics_are_reflowed_to_min_lines(self):
+        plan = lyric_length_plan(240, "dense", genre_hint="heavy rap")
+        lines = []
+        lyric_lines = 0
+        for section in plan["sections"]:
+            lines.append(f"[{section}]")
+            section_lines = 8 if lyric_lines < 40 else 7
+            for idx in range(section_lines):
+                lines.append(f"Blocks bend while sirens answer back hard {lyric_lines:02d}")
+                lyric_lines += 1
+                if lyric_lines >= 84:
+                    break
+            if lyric_lines >= 84:
+                break
+        payload = {
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": "\n".join(lines),
+            "duration": 240,
+            "language": "en",
+            "instrumental": False,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+
+        self.assertEqual(report["status"], "auto_repair")
+        self.assertTrue(report["gate_passed"])
+        self.assertIn("lyrics_reflowed_to_min_lines", " ".join(report["repair_actions"]))
+        self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["line_count"], plan["min_lines"])
+        self.assertLessEqual(report["lyric_duration_fit"]["stats"]["char_count"], 4096)
+
+    def test_escaped_newlines_in_lyrics_are_repaired_before_counting(self):
+        sections = ["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
+        lyrics = _lyrics_for_sections(sections, lines_per_section=6).replace("\n", "\\n")
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": lyrics,
+            "duration": 120,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+
+        self.assertTrue(report["gate_passed"])
+        self.assertIn("lyrics_unescaped_newlines", report["repair_actions"])
+        self.assertNotIn("\\n", report["repaired_payload"]["lyrics"])
 
     def test_markdown_bold_chorus_counts_as_hook(self):
         sections = ["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"]

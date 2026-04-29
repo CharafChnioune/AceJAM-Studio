@@ -206,6 +206,89 @@ def _lyric_stats(lyrics: str) -> dict[str, Any]:
     }
 
 
+def _section_only_line(line: str) -> bool:
+    return bool(re.fullmatch(r"[*_`~\s]*\[\s*[^\]]+?\s*\][*_`~\s]*", str(line or "").strip()))
+
+
+def _line_word_chunks(line: str, target_words: int = 6) -> list[str]:
+    """Split an overlong sung/rap line into short ACE-Step-friendly lines."""
+    text = str(line or "").strip()
+    if not text or _section_only_line(text):
+        return [text] if text else []
+    tag_prefix = ""
+    tag_match = re.match(r"^(\[[^\]]+\])\s*(.+)$", text)
+    if tag_match:
+        tag_prefix = tag_match.group(1)
+        text = tag_match.group(2).strip()
+    pieces = [
+        piece.strip(" ,;:.!?-")
+        for piece in re.split(
+            r"\s*(?:,|;|:|—|–| - |\band\b|\bbut\b|\bwhile\b|\bwhen\b|\bwhere\b|\bso\b|\bcause\b)\s+",
+            text,
+            flags=re.I,
+        )
+        if piece.strip(" ,;:.!?-")
+    ]
+    words = _words(text)
+    if len(pieces) <= 1 and len(words) > target_words + 2:
+        pieces = [" ".join(words[index : index + target_words]) for index in range(0, len(words), target_words)]
+    if len(pieces) > 1 and all(len(_words(piece)) >= 2 for piece in pieces):
+        return ([tag_prefix] if tag_prefix else []) + pieces
+    segments: list[str] = []
+    current: list[str] = []
+    for piece in pieces:
+        piece_words = _words(piece)
+        if not piece_words:
+            continue
+        if current and len(current) + len(piece_words) > target_words + 2:
+            segments.append(" ".join(current))
+            current = piece_words
+        else:
+            current.extend(piece_words)
+    if current:
+        segments.append(" ".join(current))
+    if len(segments) <= 1:
+        return [line]
+    if tag_prefix:
+        return [tag_prefix] + segments
+    return segments
+
+
+def _reflow_lyrics_to_min_lines(lyrics: str, min_lines: int, max_chars: int = ACE_STEP_LYRICS_CHAR_LIMIT) -> tuple[str, bool]:
+    """Increase line count by splitting long lines, without adding filler words."""
+    text = str(lyrics or "").strip()
+    stats = _lyric_stats(text)
+    target = int(min_lines or 0)
+    if not text or stats["line_count"] >= target:
+        return text, False
+    deficit = target - stats["line_count"]
+    output: list[str] = []
+    changed = False
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if deficit <= 0 or _section_only_line(line) or not line.strip():
+            output.append(line)
+            continue
+        words = _words(line)
+        if len(words) < 8 and len(line) < 48:
+            output.append(line)
+            continue
+        chunks = _line_word_chunks(line, target_words=6)
+        if len(chunks) > 1:
+            keep = min(len(chunks), deficit + 1)
+            output.extend(chunks[:keep])
+            if keep < len(chunks):
+                output.append(" ".join(chunks[keep:]))
+            deficit -= keep - 1
+            changed = True
+        else:
+            output.append(line)
+    repaired = "\n".join(output).strip()
+    if changed and len(repaired) <= max_chars and _lyric_stats(repaired)["line_count"] > stats["line_count"]:
+        return repaired, True
+    return text, False
+
+
 def _lyric_plan(duration: float, density: str, structure_preset: str, genre_hint: str) -> dict[str, Any]:
     try:
         from songwriting_toolkit import lyric_length_plan
@@ -349,6 +432,10 @@ def evaluate_album_payload_quality(
     )
     plan = _lyric_plan(duration, density, structure_preset, genre_hint)
     lyrics = str(repaired.get("lyrics") or "")
+    if repair and "\\n" in lyrics and lyrics.count("\\n") >= 3:
+        lyrics = lyrics.replace("\\r\\n", "\n").replace("\\n", "\n")
+        repaired["lyrics"] = lyrics
+        repair_actions.append("lyrics_unescaped_newlines")
     instrumental = str(lyrics).strip().lower() == "[instrumental]" or bool(repaired.get("instrumental"))
     stats = _lyric_stats(lyrics)
     expected_keys = {_section_key(section) for section in plan.get("sections") or [] if section}
@@ -356,6 +443,18 @@ def evaluate_album_payload_quality(
     section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
 
     if not instrumental:
+        min_words = int(plan.get("min_words") or 0)
+        min_lines = int(plan.get("min_lines") or 0)
+        if repair and stats["line_count"] < min_lines and stats["word_count"] >= min_words and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
+            reflowed, changed = _reflow_lyrics_to_min_lines(lyrics, min_lines, ACE_STEP_LYRICS_CHAR_LIMIT)
+            if changed:
+                old_lines = stats["line_count"]
+                repaired["lyrics"] = reflowed
+                lyrics = reflowed
+                stats = _lyric_stats(lyrics)
+                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
+                repair_actions.append(f"lyrics_reflowed_to_min_lines:{old_lines}->{stats['line_count']}")
         if not has_vocal_lyrics(lyrics):
             issues.append({"id": "lyrics_missing", "severity": "fail", "detail": "vocal track has no lyrics"})
         if stats["char_count"] > ACE_STEP_LYRICS_CHAR_LIMIT:

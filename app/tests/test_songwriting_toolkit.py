@@ -127,6 +127,31 @@ Required hook phrase: Neon bakery lights keep calling us home.
         self.assertIn("Neon bakery lights keep calling us home.", track["required_phrases"])
         self.assertNotIn("[]", track["required_phrases"])
 
+    def test_user_album_contract_handles_prod_shorthand_and_verse_label(self):
+        contract = extract_user_album_contract(
+            """
+Album: You Buried the Wrong Man
+Track 1: Concrete Canyons (Prod. Dr. Dre)
+(BPM: 78 | Style: Heavy West Coast G-Funk)
+Vibe: Low-end rumble, sirens, West Coast weight
+Verse: They paved them blocks just to hide what's real,
+Boardroom smiles while they cut them deals.
+Naming Drop Style: "Death Row", "East Coast", "Closed doors"
+""",
+            1,
+            "en",
+        )
+
+        track = contract["tracks"][0]
+        self.assertEqual(track["locked_title"], "Concrete Canyons")
+        self.assertEqual(track["producer_credit"], "Dr. Dre")
+        self.assertEqual(track["bpm"], 78)
+        self.assertEqual(track["style"], "Heavy West Coast G-Funk")
+        self.assertEqual(track["vibe"], "Low-end rumble, sirens, West Coast weight")
+        self.assertIn("They paved them blocks", track["required_lyrics"])
+        self.assertIn("Death Row", track["required_phrases"])
+        self.assertNotIn("Death Row", track["style"])
+
     def test_build_album_plan_uses_locked_user_titles_and_producers(self):
         result = build_album_plan(
             self.SAFE_CONTRACT_PROMPT,
@@ -1297,8 +1322,11 @@ Lyrics:
         self.assertIn("one track", crew.agents[0].goal.lower())
         descriptions = "\n".join(task.description for task in crew.tasks)
         self.assertIn("Signal Room", descriptions)
+        self.assertIn("ace-step-track-payload-contract", descriptions)
+        self.assertIn("lyrics_word_count", descriptions)
+        self.assertIn("TagLibraryTool", descriptions)
         self.assertNotIn("all tracks", descriptions.lower())
-        self.assertLess(len(descriptions), 10000)
+        self.assertLess(len(descriptions), 14000)
         self.assertNotIn("raw_lyrics", descriptions)
         self.assertTrue(crew.memory.read_only)
         for task in crew.tasks:
