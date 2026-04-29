@@ -14,6 +14,13 @@ acejam_app = importlib.import_module("app")
 
 
 class AppParityTest(unittest.TestCase):
+    def _write_ready_checkpoint(self, root: Path, name: str, weight_name: str = "model.safetensors") -> Path:
+        path = root / "checkpoints" / name
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "config.json").write_text("{}", encoding="utf-8")
+        (path / weight_name).write_bytes(b"weights")
+        return path
+
     def test_nested_generation_metadata_is_canonicalized(self):
         payload = acejam_app._merge_nested_generation_metadata(
             {
@@ -43,6 +50,39 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(status["status"], "unreleased")
         self.assertFalse(status["downloadable"])
         self.assertIn("unreleased", status["error"])
+
+    def test_song_models_require_real_weights_and_shared_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            incomplete = root / "checkpoints" / "acestep-v15-turbo"
+            incomplete.mkdir(parents=True)
+            (incomplete / "config.json").write_text("{}", encoding="utf-8")
+
+            with patch.object(acejam_app, "MODEL_CACHE_DIR", root):
+                self.assertFalse(acejam_app._checkpoint_dir_ready(incomplete))
+                self.assertNotIn("acestep-v15-turbo", acejam_app._installed_acestep_models())
+
+                self._write_ready_checkpoint(root, "acestep-v15-turbo")
+                self.assertNotIn("acestep-v15-turbo", acejam_app._installed_acestep_models())
+
+                self._write_ready_checkpoint(root, "vae", "diffusion_pytorch_model.safetensors")
+                self._write_ready_checkpoint(root, "Qwen3-Embedding-0.6B")
+                self.assertIn("acestep-v15-turbo", acejam_app._installed_acestep_models())
+
+    def test_startup_skips_incomplete_checkpoint_without_transformers_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            incomplete = root / "checkpoints" / "acestep-v15-turbo"
+            incomplete.mkdir(parents=True)
+            (incomplete / "config.json").write_text("{}", encoding="utf-8")
+
+            with patch.object(acejam_app, "MODEL_CACHE_DIR", root), \
+                patch.object(acejam_app.handler, "initialize_service", side_effect=AssertionError("should not load")):
+                status, ready = acejam_app._initialize_acestep_handler("acestep-v15-turbo")
+
+            self.assertFalse(ready)
+            self.assertIn("not fully downloaded", status)
+            self.assertIn("missing usable weight files", status)
 
     def test_official_parity_payload_exposes_wrappers_and_runtime(self):
         payload = acejam_app._official_parity_payload()

@@ -964,6 +964,38 @@ def _checkpoint_dir_ready(path: Path) -> bool:
     )
 
 
+ACE_STEP_SHARED_RUNTIME_COMPONENTS = ("vae", "Qwen3-Embedding-0.6B")
+
+
+def _checkpoint_status_reason(path: Path) -> str:
+    if not path.exists():
+        return f"{path.name} is missing"
+    if not path.is_dir():
+        return f"{path.name} is not a checkpoint directory"
+    if not (path / "config.json").is_file():
+        return f"{path.name} is missing config.json"
+    if not _checkpoint_dir_ready(path):
+        return f"{path.name} is missing usable weight files"
+    return "ready"
+
+
+def _song_model_runtime_ready(model_name: str) -> bool:
+    checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
+    if not _checkpoint_dir_ready(checkpoint_dir / model_name):
+        return False
+    return all(_checkpoint_dir_ready(checkpoint_dir / component) for component in ACE_STEP_SHARED_RUNTIME_COMPONENTS)
+
+
+def _song_model_runtime_missing_reasons(model_name: str) -> list[str]:
+    checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
+    checks = [model_name, *ACE_STEP_SHARED_RUNTIME_COMPONENTS]
+    return [
+        _checkpoint_status_reason(checkpoint_dir / name)
+        for name in checks
+        if not _checkpoint_dir_ready(checkpoint_dir / name)
+    ]
+
+
 def _available_acestep_models() -> list[str]:
     checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
     available = set(KNOWN_ACE_STEP_MODELS)
@@ -981,7 +1013,7 @@ def _installed_acestep_models() -> set[str]:
     return {
         child.name
         for child in checkpoint_dir.iterdir()
-        if child.name.startswith("acestep-v15-") and not _download_job_active(child.name) and _checkpoint_dir_ready(child)
+        if child.name.startswith("acestep-v15-") and not _download_job_active(child.name) and _song_model_runtime_ready(child.name)
     }
 
 
@@ -1233,6 +1265,14 @@ def _apply_lora_request(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _initialize_acestep_handler(config_path: str) -> tuple[str, bool]:
+    model_name = str(config_path or "").strip()
+    if model_name.startswith("acestep-v15-") and not _song_model_runtime_ready(model_name):
+        reasons = "; ".join(_song_model_runtime_missing_reasons(model_name))
+        return (
+            f"ACE-Step model {model_name} is not fully downloaded. Missing: {reasons}. "
+            "Run Install to download all weights, or use the Models panel to download this model.",
+            False,
+        )
     return handler.initialize_service(
         project_root=str(BASE_DIR),
         config_path=config_path,
@@ -1814,7 +1854,7 @@ def _is_model_installed(model_name: str, ignore_active_job: bool = False) -> boo
         return False
     checkpoint_path = MODEL_CACHE_DIR / "checkpoints" / model_name
     if model_name.startswith("acestep-v15-"):
-        return _checkpoint_dir_ready(checkpoint_path)
+        return _song_model_runtime_ready(model_name)
     if model_name.startswith("acestep-5Hz-lm-"):
         return model_name in {"auto", "none"} or _checkpoint_dir_ready(checkpoint_path)
     return False
@@ -1867,12 +1907,18 @@ def _download_model_worker(model_name: str) -> None:
             checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             handler._ensure_model_downloaded(model_name, str(checkpoint_dir))
-            if model_name.startswith("acestep-v15-") and model_name != "acestep-v15-turbo":
-                if not (checkpoint_dir / "acestep-v15-turbo").exists():
+            if model_name.startswith("acestep-v15-"):
+                if not _checkpoint_dir_ready(checkpoint_dir / "acestep-v15-turbo"):
                     _set_model_download_job(model_name, message="Downloading shared ACE-Step components...")
                     handler._ensure_model_downloaded("acestep-v15-turbo", str(checkpoint_dir))
+                for component in ACE_STEP_SHARED_RUNTIME_COMPONENTS:
+                    if not _checkpoint_dir_ready(checkpoint_dir / component):
+                        _set_model_download_job(model_name, message=f"Downloading shared ACE-Step component {component}...")
+                        handler._ensure_model_downloaded(component, str(checkpoint_dir))
             if not _is_model_installed(model_name, ignore_active_job=True):
-                raise RuntimeError(f"{model_name} download finished but the checkpoint folder was not found.")
+                reasons = "; ".join(_song_model_runtime_missing_reasons(model_name)) if model_name.startswith("acestep-v15-") else ""
+                suffix = f" Missing: {reasons}." if reasons else ""
+                raise RuntimeError(f"{model_name} download finished but required checkpoint weights were not found.{suffix}")
             _set_model_download_job(
                 model_name,
                 state="succeeded",
