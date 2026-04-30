@@ -668,6 +668,39 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('id="generation-lora-select"', html)
         self.assertIn('id="generation-lora-use"', html)
         self.assertIn('id="generation-lora-scale"', html)
+        self.assertIn('id="album-lora-select"', html)
+        self.assertIn('id="album-lora-use"', html)
+        self.assertIn('id="album-lora-scale"', html)
+        self.assertIn("loadableGenerationAdapters", html)
+        self.assertIn('renderAdapterSelect("album-lora-select"', html)
+
+    def test_lora_status_and_adapters_expose_display_name_and_trigger(self):
+        client = TestClient(acejam_app.app)
+
+        class StubTrainingManager:
+            def status(self):
+                return {"ready": True}
+
+            def list_adapters(self):
+                return [
+                    {
+                        "name": "charaf-hook",
+                        "display_name": "charaf hook",
+                        "trigger_tag": "charaf hook",
+                        "adapter_type": "lora",
+                        "path": "/tmp/charaf-hook",
+                        "is_loadable": True,
+                    }
+                ]
+
+        with patch.object(acejam_app, "training_manager", StubTrainingManager()), \
+            patch.object(acejam_app.handler, "get_lora_status", return_value={"loaded": False}):
+            status = client.get("/api/lora/status").json()
+            adapters = client.get("/api/lora/adapters").json()
+
+        self.assertEqual(status["adapters"][0]["display_name"], "charaf hook")
+        self.assertEqual(status["adapters"][0]["trigger_tag"], "charaf hook")
+        self.assertEqual(adapters["adapters"][0]["display_name"], "charaf hook")
 
     def test_lora_payload_reaches_generation_and_official_runner(self):
         adapter_path = "/tmp/unit-adapter"
@@ -833,11 +866,17 @@ class AppParityTest(unittest.TestCase):
             }
 
         request_payload = {
+            "agent_engine": "editable_plan",
             "song_model_strategy": "all_models_album",
             "ace_lm_model": "none",
             "album_use_ace_lm_for_supplied_lyrics": False,
             "track_variants": 1,
             "save_to_library": False,
+            "use_lora": True,
+            "lora_adapter_path": "/tmp/album-charaf-hook",
+            "lora_adapter_name": "charaf hook",
+            "lora_scale": 0.7,
+            "adapter_model_variant": "xl_sft",
             "tracks": [
                 {
                     "track_number": 1,
@@ -888,6 +927,11 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(all(payload.get("audio_code_string", "") == "" for payload in calls))
         self.assertTrue(all(payload.get("src_audio_id", "") == "" for payload in calls))
         self.assertTrue(all(payload.get("reference_audio_id", "") == "" for payload in calls))
+        self.assertTrue(all(payload["use_lora"] for payload in calls))
+        self.assertTrue(all(payload["lora_adapter_path"] == "/tmp/album-charaf-hook" for payload in calls))
+        self.assertTrue(all(payload["lora_adapter_name"] == "charaf hook" for payload in calls))
+        self.assertTrue(all(payload["lora_scale"] == 0.7 for payload in calls))
+        self.assertTrue(all(payload["adapter_model_variant"] == "xl_sft" for payload in calls))
         self.assertEqual(len(data["model_albums"]), len(acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS))
         self.assertIn("album_family_id", data)
         self.assertEqual(data["tracks"][0]["model_results"][0]["album_model"], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS[0])
@@ -918,6 +962,7 @@ class AppParityTest(unittest.TestCase):
             }
 
         request_payload = {
+            "agent_engine": "editable_plan",
             "song_model_strategy": "selected",
             "song_model": "acestep-v15-turbo",
             "ace_lm_model": "none",

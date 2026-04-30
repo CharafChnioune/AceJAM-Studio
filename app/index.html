@@ -1862,6 +1862,21 @@
               <input id="album-shift" type="number" min="1" max="5" step="0.1" value="1" />
             </div>
           </div>
+          <div class="grid-3" style="margin-top:10px;">
+            <div>
+              <label for="album-lora-select">Album adapter</label>
+              <select id="album-lora-select"></select>
+            </div>
+            <div>
+              <label for="album-lora-scale">Album adapter scale</label>
+              <input id="album-lora-scale" type="range" min="0" max="1" step="0.05" value="1" />
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <label class="check"><input type="checkbox" id="album-lora-use" /> Use album adapter</label>
+            </div>
+          </div>
+          <div class="control-note" id="album-lora-note">Album adapter applies to every planned track and model render.</div>
           <div class="row" style="margin-top:10px;">
             <label class="check"><input type="checkbox" id="album-auto-score" /> Score</label>
             <label class="check"><input type="checkbox" id="album-auto-lrc" /> LRC</label>
@@ -2302,7 +2317,7 @@
 
   <script>
     const modes = ["simple", "custom", "cover", "repaint", "extract", "lego", "complete", "album", "lora", "library", "settings"];
-    const CLIENT_UI_VERSION = "acejam-v0.5-bpm-key-audit-2026-04-27";
+    const CLIENT_UI_VERSION = "0.0.1";
     const CLIENT_PAYLOAD_CONTRACT_VERSION = "2026-04-26";
     const DEFAULT_ACE_LM_MODEL = "acestep-5Hz-lm-4B";
     const DOCS_BEST_AUDIO_FORMAT = "wav32";
@@ -2666,14 +2681,15 @@
       );
       setSummary(
         "album-generation",
-        `${controlValue("album-variants") || 1} variant(s), ${controlValue("album-audio-format") || "wav"}, ${controlValue("album-model-strategy") === "all_models_album" ? "all 7 models" : controlValue("album-model-strategy")}`,
+        `${controlValue("album-variants") || 1} variant(s), ${controlValue("album-audio-format") || "wav"}, ${controlValue("album-model-strategy") === "all_models_album" ? "all 7 models" : controlValue("album-model-strategy")}${controlValue("album-lora-use") ? `, adapter ${adapterDisplayName(selectedAlbumAdapter()) || "selected"}` : ""}`,
         defaultsChanged({
           "album-variants": "1", "album-seed": "-1", "album-audio-format": albumDefaults.audio_format,
           "album-inference-steps": String(albumDefaults.inference_steps),
           "album-guidance": String(albumDefaults.guidance_scale),
           "album-shift": String(albumDefaults.shift),
           "album-auto-score": false, "album-auto-lrc": false,
-          "album-audio-codes": false, "album-save-library": true
+          "album-audio-codes": false, "album-save-library": true,
+          "album-lora-use": false, "album-lora-select": "", "album-lora-scale": "1"
         })
       );
       setSummary(
@@ -5503,7 +5519,7 @@
         auto_lrc: $("album-auto-lrc").checked,
         return_audio_codes: $("album-audio-codes").checked,
         save_to_library: $("album-save-library").checked,
-        ...generationAdapterPayload()
+        ...generationAdapterPayload("album")
       };
       if (includeTracks && state.albumPlan.length) payload.tracks = albumPlanFromTable();
       renderAlbumPayloadReview(payload);
@@ -5633,6 +5649,7 @@
         auto_lrc: $("album-auto-lrc").checked,
         return_audio_codes: $("album-audio-codes").checked,
         save_to_library: $("album-save-library").checked,
+        ...generationAdapterPayload("album"),
       };
       const tableTracks = state.albumPlan.length ? albumPlanFromTable() : [];
       const trackPayloads = tableTracks.map((track) => albumTrackGenerationPayload(track, payload));
@@ -5666,6 +5683,13 @@
           thinking: payload.thinking,
           use_format: payload.use_format,
           use_cot_lyrics: payload.use_cot_lyrics,
+          lora_adapter: {
+            use_lora: payload.use_lora,
+            name: payload.lora_adapter_name,
+            path: payload.lora_adapter_path,
+            scale: payload.lora_scale,
+            adapter_model_variant: payload.adapter_model_variant,
+          },
           defaults: {
             duration: payload.track_duration,
             language: payload.language,
@@ -6120,35 +6144,97 @@
       }).filter((item) => item.path);
     }
 
-    function selectedGenerationAdapter() {
-      const path = $("generation-lora-select")?.value || "";
+    function adapterDisplayName(adapter) {
+      if (!adapter) return "";
+      return adapter.display_name || adapter.trigger_tag || adapter.name || "adapter";
+    }
+
+    function adapterOptionLabel(adapter, { trainer = false } = {}) {
+      const name = adapterDisplayName(adapter);
+      const details = [adapter.adapter_type || "lora", adapter.model_variant || ""].filter(Boolean).join(" · ");
+      const blocked = trainer && adapter.adapter_type === "lokr" ? " · trainer only" : "";
+      return `${name}${details ? ` (${details}${blocked})` : blocked ? ` (${blocked.trim().replace(/^·\s*/, "")})` : ""}`;
+    }
+
+    function loadableGenerationAdapters() {
+      return (state.loraAdapters || []).filter((adapter) => {
+        const type = String(adapter.adapter_type || "lora").toLowerCase();
+        return type === "lora" && adapter.is_loadable !== false && adapter.generation_loadable !== false;
+      });
+    }
+
+    function selectedAdapterFrom(selectId) {
+      const path = $(selectId)?.value || "";
       return (state.loraAdapters || []).find((adapter) => adapter.path === path) || null;
     }
 
-    function generationAdapterPayload() {
-      const adapter = selectedGenerationAdapter();
-      const use = Boolean($("generation-lora-use")?.checked && adapter);
-      const scale = Number($("generation-lora-scale")?.value || 1);
+    function selectedGenerationAdapter() {
+      return selectedAdapterFrom("generation-lora-select");
+    }
+
+    function selectedAlbumAdapter() {
+      return selectedAdapterFrom("album-lora-select");
+    }
+
+    function adapterPayloadFrom(adapter, use, scale) {
+      const active = Boolean(use && adapter);
+      const safeScale = Math.max(0, Math.min(1, Number.isFinite(scale) ? scale : 1));
       return {
-        use_lora: use,
-        lora_adapter_path: use ? adapter.path : "",
-        lora_adapter_name: use ? adapter.name : "",
-        lora_scale: Math.max(0, Math.min(1, Number.isFinite(scale) ? scale : 1)),
-        adapter_model_variant: use ? (adapter.model_variant || "") : ""
+        use_lora: active,
+        lora_adapter_path: active ? adapter.path : "",
+        lora_adapter_name: active ? adapterDisplayName(adapter) : "",
+        lora_scale: safeScale,
+        adapter_model_variant: active ? (adapter.model_variant || "") : ""
       };
     }
 
-    function updateGenerationLoraNote() {
-      const note = $("generation-lora-note");
+    function generationAdapterPayload(scope = "generation") {
+      const albumScope = scope === "album";
+      const adapter = albumScope ? selectedAlbumAdapter() : selectedGenerationAdapter();
+      const use = Boolean($(albumScope ? "album-lora-use" : "generation-lora-use")?.checked && adapter);
+      const scale = Number($(albumScope ? "album-lora-scale" : "generation-lora-scale")?.value || 1);
+      return adapterPayloadFrom(adapter, use, scale);
+    }
+
+    function updateAdapterNote(noteId, adapter, useId, scaleId, emptyText) {
+      const note = $(noteId);
       if (!note) return;
-      const adapter = selectedGenerationAdapter();
       if (!adapter) {
-        note.textContent = "Adapters trained in Trainer can be applied to Simple, Custom, Album, Cover, Repaint, Lego and Complete.";
+        note.textContent = emptyText;
         return;
       }
-      const scale = $("generation-lora-scale")?.value || "1";
-      const active = $("generation-lora-use")?.checked ? "active" : "selected";
-      note.textContent = `${adapter.name} ${active} at scale ${scale}${adapter.model_variant ? ` · trained for ${adapter.model_variant}` : ""}.`;
+      const scale = $(scaleId)?.value || "1";
+      const active = $(useId)?.checked ? "active" : "selected";
+      note.textContent = `${adapterDisplayName(adapter)} ${active} at scale ${scale}${adapter.model_variant ? ` · trained for ${adapter.model_variant}` : ""}.`;
+    }
+
+    function updateGenerationLoraNote() {
+      updateAdapterNote(
+        "generation-lora-note",
+        selectedGenerationAdapter(),
+        "generation-lora-use",
+        "generation-lora-scale",
+        "PEFT LoRA adapters trained in Trainer can be applied to Simple, Custom, Cover, Repaint, Lego and Complete."
+      );
+    }
+
+    function updateAlbumLoraNote() {
+      updateAdapterNote(
+        "album-lora-note",
+        selectedAlbumAdapter(),
+        "album-lora-use",
+        "album-lora-scale",
+        "Album adapter applies to every planned track and model render."
+      );
+    }
+
+    function renderAdapterSelect(selectId, adapters, emptyLabel, previous = "") {
+      const select = $(selectId);
+      if (!select) return;
+      select.innerHTML = `<option value="">${esc(emptyLabel)}</option>` + adapters.map((adapter) =>
+        `<option value="${esc(adapter.path)}">${esc(adapterOptionLabel(adapter, { trainer: selectId === "lora-adapter-select" }))}</option>`
+      ).join("");
+      if ([...select.options].some((option) => option.value === previous)) select.value = previous;
     }
 
     function renderTrainerReady(data) {
@@ -6159,18 +6245,12 @@
       badge.textContent = ready ? "Trainer ready" : "Install trainer deps";
       const adapters = data.adapters || [];
       state.loraAdapters = adapters;
-      $("lora-adapter-select").innerHTML = `<option value="">Select adapter</option>` + adapters.map((adapter) =>
-        `<option value="${esc(adapter.path)}">${esc(adapter.name)} (${esc(adapter.adapter_type)}${adapter.model_variant ? ` · ${esc(adapter.model_variant)}` : ""})</option>`
-      ).join("");
-      const generationSelect = $("generation-lora-select");
-      if (generationSelect) {
-        const previous = generationSelect.value;
-        generationSelect.innerHTML = `<option value="">No adapter</option>` + adapters.map((adapter) =>
-          `<option value="${esc(adapter.path)}">${esc(adapter.name)} (${esc(adapter.adapter_type)}${adapter.model_variant ? ` · ${esc(adapter.model_variant)}` : ""})</option>`
-        ).join("");
-        if ([...generationSelect.options].some((option) => option.value === previous)) generationSelect.value = previous;
-      }
+      const loadableAdapters = loadableGenerationAdapters();
+      renderAdapterSelect("lora-adapter-select", adapters, "Select adapter", $("lora-adapter-select")?.value || "");
+      renderAdapterSelect("generation-lora-select", loadableAdapters, "No adapter", $("generation-lora-select")?.value || "");
+      renderAdapterSelect("album-lora-select", loadableAdapters, "No album adapter", $("album-lora-select")?.value || "");
       updateGenerationLoraNote();
+      updateAlbumLoraNote();
       if (!ready) {
         $("lora-log").textContent = JSON.stringify({
           trainer_ready: trainer.ready,
@@ -6364,6 +6444,8 @@
       return {
         tensor_dir: $("tensor-dir").value,
         song_model: $("song-model").value,
+        trigger_tag: $("dataset-tag").value.trim(),
+        language: $("dataset-language").value || "en",
         adapter_type: $("adapter-type").value,
         train_epochs: $("train-epochs").value ? Number($("train-epochs").value) : 10,
         train_batch_size: Number($("train-batch").value),
@@ -6436,6 +6518,7 @@
       if ((job.kind === "train" || job.kind === "one_click_train") && finishedAdapter) {
         $("lora-path").value = finishedAdapter;
         if ($("generation-lora-use")) $("generation-lora-use").checked = true;
+        if ($("album-lora-use")) $("album-lora-use").checked = true;
       }
       if (["queued", "running", "stopping"].includes(job.state)) {
         scheduleLoraPoll();
@@ -6449,6 +6532,12 @@
           $("generation-lora-select").value = adapterPath;
           $("generation-lora-use").checked = true;
           updateGenerationLoraNote();
+        }
+        if (adapterPath && $("album-lora-select") && [...$("album-lora-select").options].some((option) => option.value === adapterPath)) {
+          $("album-lora-select").value = adapterPath;
+          $("album-lora-use").checked = true;
+          updateAlbumLoraNote();
+          renderAlbumPayloadReview();
         }
       }
     }
@@ -6553,14 +6642,33 @@
       $("lora-adapter-select").addEventListener("change", () => {
         if ($("lora-adapter-select").value) {
           $("lora-path").value = $("lora-adapter-select").value;
-          $("generation-lora-select").value = $("lora-adapter-select").value;
-          $("generation-lora-use").checked = true;
+          if ([...$("generation-lora-select").options].some((option) => option.value === $("lora-adapter-select").value)) {
+            $("generation-lora-select").value = $("lora-adapter-select").value;
+            $("generation-lora-use").checked = true;
+          } else {
+            $("generation-lora-select").value = "";
+            $("generation-lora-use").checked = false;
+          }
+          if ($("album-lora-select") && [...$("album-lora-select").options].some((option) => option.value === $("lora-adapter-select").value)) {
+            $("album-lora-select").value = $("lora-adapter-select").value;
+            $("album-lora-use").checked = true;
+            updateAlbumLoraNote();
+            renderAlbumPayloadReview();
+          } else if ($("album-lora-select")) {
+            $("album-lora-select").value = "";
+            $("album-lora-use").checked = false;
+            updateAlbumLoraNote();
+            renderAlbumPayloadReview();
+          }
           updateGenerationLoraNote();
         }
       });
       $("generation-lora-select")?.addEventListener("change", updateGenerationLoraNote);
       $("generation-lora-use")?.addEventListener("change", updateGenerationLoraNote);
       $("generation-lora-scale")?.addEventListener("input", updateGenerationLoraNote);
+      $("album-lora-select")?.addEventListener("change", () => { updateAlbumLoraNote(); renderAlbumPayloadReview(); });
+      $("album-lora-use")?.addEventListener("change", () => { updateAlbumLoraNote(); renderAlbumPayloadReview(); });
+      $("album-lora-scale")?.addEventListener("input", () => { updateAlbumLoraNote(); renderAlbumPayloadReview(); });
       $("dataset-folder")?.addEventListener("change", () => {
         state.datasetImportRoot = "";
         state.datasetId = null;

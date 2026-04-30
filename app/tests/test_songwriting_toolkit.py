@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -117,6 +118,77 @@ Lyrics:
                 else:
                     lines.append(f"Market lanterns carry hopeful voices number {section.lower()} {line_index}")
         return "\n".join(lines)
+
+    def _valid_lyrics_part_payload(self, user_prompt: str, lines_per_section: int = 8):
+        section_match = re.search(r"WRITE_THESE_SECTIONS_ONLY:\n(\[[\s\S]*?\])\n\nPART_TARGETS", user_prompt)
+        sections = json.loads(section_match.group(1)) if section_match else ["[Verse]"]
+        phrase_match = re.search(r"REQUIRED_PHRASES_FOR_THIS_PART:\n(\[[\s\S]*?\])\n\nPREVIOUS_LYRIC_PARTS_CONTEXT", user_prompt)
+        phrases = json.loads(phrase_match.group(1)) if phrase_match else []
+        lines = []
+        phrase_index = 0
+        for section in sections:
+            section_text = str(section or "[Verse]").strip()
+            lines.append(section_text if section_text.startswith("[") else f"[{section_text}]")
+            label = re.sub(r"[^a-z0-9]+", " ", section_text.lower()).strip() or "verse"
+            for line_index in range(lines_per_section):
+                if phrase_index < len(phrases):
+                    lines.append(str(phrases[phrase_index]))
+                    phrase_index += 1
+                else:
+                    lines.append(f"Market lanterns carry hopeful voices {label} {line_index}")
+        return {
+            "sections": sections,
+            "lyrics_lines": lines,
+            "required_phrases_used": phrases,
+            "hook_lines": [line for line in lines if "chorus" in line.lower()][:2],
+            "word_count": len(" ".join(lines).split()),
+            "line_count": len([line for line in lines if line and not line.startswith("[")]),
+        }
+
+    def _micro_settings_payload(self, agent_name: str, user_prompt: str = ""):
+        is_house = "Rooftop Letters" in user_prompt or "melodic house" in user_prompt
+        tags = (
+            "modern house, steady groove, synth, handclap drums, clear vocal chops, bright atmosphere, dynamic drop arrangement, polished studio mix"
+            if is_house
+            else "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
+        )
+        if agent_name == "Track BPM Agent":
+            return {"bpm": 104 if is_house else 92}
+        if agent_name == "Track Key Agent":
+            return {"key_scale": "A minor"}
+        if agent_name == "Track Time Signature Agent":
+            return {"time_signature": "4"}
+        if agent_name == "Track Duration Agent":
+            return {"duration": 45}
+        if agent_name == "Track Language Agent":
+            return {"language": "en", "vocal_language": "en"}
+        if agent_name == "Track Tag List Agent":
+            return {
+                "tag_list": tags.split(", "),
+                "tags": tags,
+                "caption_dimensions_covered": [
+                    "genre_style",
+                    "rhythm_groove",
+                    "instrumentation",
+                    "vocal_style",
+                    "mood_atmosphere",
+                    "arrangement_energy",
+                    "mix_production",
+                ],
+            }
+        if agent_name == "Track Caption Agent":
+            return {"caption": tags}
+        if agent_name == "Track Description Agent":
+            return {"description": "neighbors rebuild trust with a clear chorus."}
+        if agent_name == "Track Hook Agent":
+            return {"hook_promise": "Open the shutters into a brighter block."}
+        if agent_name == "Track Performance Agent":
+            return {
+                "performance_brief": "clear lead vocal, tight breath control, polished hook lift",
+                "negative_control": "no muddy vocals, no random syllables, no prompt text",
+                "genre_profile": "safe polished city pop with rap-friendly phrasing",
+            }
+        return None
 
     def test_user_album_contract_extracts_safe_album_prompt(self):
         contract = extract_user_album_contract(self.SAFE_CONTRACT_PROMPT, 2, "en")
@@ -529,6 +601,78 @@ kill all the rivals
         self.assertEqual(result["tracks"][0]["song_model"], ALBUM_FINAL_MODEL)
         self.assertTrue(result["tracks"][0]["production_team"]["final_model_policy"]["locked"])
 
+    def test_editable_plan_runs_through_acejam_agents_when_enabled(self):
+        bible_payload = {
+            "album_bible": {"album_title": "Market Lights", "concept": "safe city recovery", "arc": "single"},
+            "tracks": [],
+        }
+
+        def fake_agent_json_call(*, agent_name, user_prompt="", **_kwargs):
+            if agent_name == "Album Bible Agent":
+                return bible_payload
+            if agent_name == "Track Blueprint Agent":
+                return {
+                    "track_number": 1,
+                    "title": "Manual Model",
+                    "producer_credit": "Ada North",
+                    "bpm": 92,
+                    "key_scale": "A minor",
+                    "style": "warm boom-bap",
+                    "vibe": "brass stabs and calm crowd energy",
+                    "narrative": "neighbors reopen stalls",
+                    "description": "neighbors reopen stalls",
+                    "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                    "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                    "hook_promise": "Open the shutters into a brighter block.",
+                }
+            micro_payload = self._micro_settings_payload(agent_name, user_prompt)
+            if micro_payload is not None:
+                return micro_payload
+            if agent_name.startswith("Track Lyrics Agent"):
+                return self._valid_lyrics_part_payload(user_prompt)
+            if agent_name == "Track Lyric Continuation Agent":
+                return {"lyrics_lines": ["[Final Chorus - extension]", "Open the shutters carry us home"]}
+            if agent_name == "Quality Repair Agent":
+                return {
+                    "description": "neighbors reopen stalls and trade stories instead of rumors.",
+                    "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                    "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                    "lyrics": self._valid_album_test_lyrics(["Open the shutters"], sections=["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"], lines_per_section=6),
+                    "hook_promise": "Open the shutters into a brighter block.",
+                }
+            raise AssertionError(agent_name)
+
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "embed_ok": True,
+            "embedding_model": "embed-local",
+            "warnings": [],
+            "errors": [],
+        }), patch.object(album_crew_module, "local_llm_embed", return_value=[1.0, 0.0, 0.0]), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_agent_json_call):
+            result = plan_album(
+                "two track pop EP",
+                num_tracks=1,
+                track_duration=45,
+                options={
+                    "installed_models": ["acestep-v15-turbo", "acestep-v15-sft"],
+                    "song_model_strategy": "best_installed",
+                },
+                use_crewai=True,
+                input_tracks=[{"track_number": 1, "title": "Manual Model", "song_model": "acestep-v15-sft", "style": "warm boom-bap"}],
+                planner_provider="ollama",
+                embedding_provider="ollama",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["planning_engine"], "acejam_agents")
+        self.assertTrue(result["custom_agents_used"])
+        self.assertEqual(result["tracks"][0]["title"], "Manual Model")
+        self.assertEqual(result["tracks"][0]["song_model"], "acestep-v15-sft")
+        self.assertTrue(any("Editable album plan received" in line for line in result["logs"]))
+        self.assertTrue(any("Editable plan scaffold" in line for line in result["logs"]))
+        self.assertTrue(any("Micro setting call: Track BPM Agent" in line for line in result["logs"]))
+
     def test_crewai_tool_factory_exposes_real_tools_when_available(self):
         tools = make_crewai_tools(
             {
@@ -612,15 +756,22 @@ kill all the rivals
             "hook_promise": "Open the shutters into a brighter block.",
         }
 
-        def fake_agent_json_call(*, agent_name, **_kwargs):
+        def fake_agent_json_call(*, agent_name, user_prompt="", **_kwargs):
             if agent_name == "Album Bible Agent":
                 return bible_payload
             if agent_name == "Track Blueprint Agent":
                 return bible_payload["tracks"][0]
-            if agent_name == "Track Writer Agent":
+            micro_payload = self._micro_settings_payload(agent_name, user_prompt)
+            if micro_payload is not None:
+                return micro_payload
+            if agent_name == "Track Settings Agent":
                 return writer_payload
-            if agent_name == "Track Finalizer Agent":
-                return {**writer_payload, "title": "Another Rename", "bpm": 140}
+            if agent_name.startswith("Track Lyrics Agent"):
+                return self._valid_lyrics_part_payload(user_prompt)
+            if agent_name == "Track Lyric Continuation Agent":
+                return {"lyrics_lines": ["[Final Chorus - extension]", "Open the shutters carry us home"]}
+            if agent_name == "Quality Repair Agent":
+                return {**writer_payload, "lyrics": self._valid_album_test_lyrics(required, sections=["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"], lines_per_section=4)}
             raise AssertionError(agent_name)
 
         with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
@@ -656,11 +807,13 @@ kill all the rivals
         self.assertTrue(result["memory_enabled"])
         self.assertGreaterEqual(result["context_chunks"], 1)
         self.assertTrue(any("AceJAM Agents produced" in line for line in result["logs"]))
+        self.assertTrue(any("Micro setting call: Track BPM Agent" in line for line in result["logs"]))
+        self.assertTrue(any("Micro setting call: Track Caption Agent" in line for line in result["logs"]))
 
     def test_acejam_agents_continue_when_album_bible_agent_fails(self):
         lyrics = self._valid_album_test_lyrics(["Open the shutters"], lines_per_section=8)
 
-        def fake_agent_json_call(*, agent_name, **_kwargs):
+        def fake_agent_json_call(*, agent_name, user_prompt="", **_kwargs):
             if agent_name == "Album Bible Agent":
                 raise album_crew_module.AceJamAgentError("empty bible response")
             if agent_name == "Track Blueprint Agent":
@@ -679,12 +832,26 @@ kill all the rivals
                     "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
                     "hook_promise": "Open the shutters.",
                 }
-            if agent_name in {"Track Writer Agent", "Track Finalizer Agent"}:
+            micro_payload = self._micro_settings_payload(agent_name, user_prompt)
+            if micro_payload is not None:
+                return micro_payload
+            if agent_name == "Track Settings Agent":
                 return {
                     "description": "neighbors reopen stalls and trade stories instead of rumors.",
                     "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
                     "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
-                    "lyrics": lyrics,
+                    "hook_promise": "Open the shutters into a brighter block.",
+                }
+            if agent_name.startswith("Track Lyrics Agent"):
+                return self._valid_lyrics_part_payload(user_prompt)
+            if agent_name == "Track Lyric Continuation Agent":
+                return {"lyrics_lines": ["[Final Chorus - extension]", "Open the shutters carry us home"]}
+            if agent_name == "Quality Repair Agent":
+                return {
+                    "description": "neighbors reopen stalls and trade stories instead of rumors.",
+                    "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                    "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                    "lyrics": self._valid_album_test_lyrics(["Open the shutters"], sections=["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"], lines_per_section=4),
                     "hook_promise": "Open the shutters into a brighter block.",
                 }
             raise AssertionError(agent_name)
@@ -762,26 +929,30 @@ The Narrative: friends read old letters on a roof as the lights come back.
                     "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
                     "hook_promise": f"Track {number} brings the lights back.",
                 }
-            if agent_name == "Track Writer Agent":
+            micro_payload = self._micro_settings_payload(agent_name, user_prompt)
+            if micro_payload is not None:
+                return micro_payload
+            if agent_name == "Track Settings Agent":
                 is_house = "Rooftop Letters" in user_prompt or "melodic house" in user_prompt
-                track_lyrics = self._valid_album_test_lyrics([], sections=["Intro", "Build", "Drop", "Chorus"], lines_per_section=2) if is_house else lyrics
                 track_tags = "modern house, steady groove, synth, handclap drums, clear vocal chops, bright atmosphere, dynamic drop arrangement, polished studio mix" if is_house else "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
                 return {
                     "description": "neighbors rebuild trust with a clear chorus.",
                     "tags": track_tags,
                     "tag_list": track_tags.split(", "),
-                    "lyrics": track_lyrics,
                     "hook_promise": "Bring the lights back.",
                 }
-            if agent_name == "Track Finalizer Agent":
-                is_house = "Rooftop Letters" in user_prompt or "melodic house" in user_prompt
-                track_lyrics = self._valid_album_test_lyrics([], sections=["Intro", "Build", "Drop", "Chorus"], lines_per_section=2) if is_house else lyrics
-                track_tags = "modern house, steady groove, synth, handclap drums, clear vocal chops, bright atmosphere, dynamic drop arrangement, polished studio mix" if is_house else "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
+            if agent_name.startswith("Track Lyrics Agent"):
+                return self._valid_lyrics_part_payload(user_prompt)
+            if agent_name == "Track Lyric Continuation Agent":
+                return {"lyrics_lines": ["[Final Chorus - extension]", "Bring the lights back home again"]}
+            if agent_name == "Quality Repair Agent":
+                track_tags = "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
+                repair_sections = ["Intro", "Build", "Drop", "Chorus"] if "Rooftop Letters" in user_prompt or "modern house" in user_prompt else ["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
                 return {
                     "description": "neighbors rebuild trust with a clear chorus.",
                     "tags": track_tags,
                     "tag_list": track_tags.split(", "),
-                    "lyrics": track_lyrics,
+                    "lyrics": self._valid_album_test_lyrics(["Open the shutters"], sections=repair_sections, lines_per_section=6),
                     "hook_promise": "Bring the lights back.",
                 }
             raise AssertionError(agent_name)

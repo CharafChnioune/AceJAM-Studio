@@ -57,6 +57,8 @@ Album mode is now a two-stage agent studio:
 
 The model advisor never silently swaps to a different checkpoint. Album final render defaults to `xl_sft_final`, which locks every track to `acestep-v15-xl-sft`. If XL SFT is missing, the UI/API starts a download and retries with a fresh payload instead of rendering with a cheaper fallback. `best_installed`, `maximum_detail`, and `selected` remain available for planning/previews or direct API use.
 
+Album has its own LoRA selector in the Generation disclosure. The selected PEFT LoRA adapter is copied into every generated track payload as `use_lora`, `lora_adapter_path`, `lora_adapter_name`, `lora_scale`, and `adapter_model_variant`, so all selected model renders in the album use the same adapter.
+
 Album planning now uses AceJAM Agents by default: direct local LLM calls for album bible, per-track writer, finalizer, and quality repair, with deterministic Python gates for tag coverage, caption integrity, lyric duration fit, and contract enforcement before audio rendering. The deterministic toolbelt remains available only when `toolbelt_only=true`.
 
 ## Trainer Flow
@@ -66,6 +68,10 @@ Album planning now uses AceJAM Agents by default: direct local LLM calls for alb
 3. Click **Start training**.
 4. AceJAM imports the files into `data/lora_imports/<dataset_id>/`, labels sidecar-first, saves the official dataset JSON, preprocesses tensors, trains LoRA by default, registers the final adapter, and tries to auto-load it for generation.
 5. Advanced users can still edit labels, run preprocess/train separately, or switch to LoKr.
+
+Registration uses the trigger tag as the adapter folder name under `data/loras/`: `mytrigger`, then `mytrigger-2`, `mytrigger-3`, etc. AceJAM writes `acejam_adapter.json` with `display_name`, `trigger_tag`, `adapter_type`, `model_variant`, `song_model`, `job_id`, `trained_at`, and source paths. `/api/lora/status` and `/api/lora/adapters` return those fields for all Studio dropdowns.
+
+The Trainer known-adapters dropdown includes LoRA and LoKr outputs. The generation and Album dropdowns list only loadable PEFT LoRA folders; LoKr remains trainable/visible for trainer inspection but is not offered for ACE-Step generation loading.
 
 The trainer runs as a subprocess with `PYTHONPATH` pointed at `vendor/ACE-Step-1.5`, so the official trainer package does not collide with the local inference package.
 
@@ -174,6 +180,7 @@ job = requests.post(
 job_id = job["job"]["id"]
 
 # Poll /api/lora/jobs/{job_id}; stages are import, label, save_dataset, preprocess, train, register, load.
+# Succeeded jobs expose result.registered_adapter_path, usually data/loras/mytrigger.
 ```
 
 Load an adapter:

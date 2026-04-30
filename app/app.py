@@ -41,7 +41,7 @@ LORA_IMPORTS_DIR = DATA_DIR / "lora_imports"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
-APP_UI_VERSION = "acejam-v0.5-bpm-key-audit-2026-04-27"
+APP_UI_VERSION = "0.0.1"
 PAYLOAD_CONTRACT_VERSION = "2026-04-26"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
@@ -5416,7 +5416,7 @@ def generate_album(
             language=language,
             embedding_model=embedding_model,
             options=album_options,
-            use_crewai=not planned_tracks and not parse_bool(request_payload.get("toolbelt_only"), False),
+            use_crewai=not parse_bool(request_payload.get("toolbelt_only"), False),
             input_tracks=planned_tracks if planned_tracks else None,
             planner_provider=planner_lm_provider,
             embedding_provider=embedding_lm_provider,
@@ -5607,6 +5607,11 @@ def generate_album(
                             return default
                         return parse_bool(track.get(field, request_payload.get(field)), default)
 
+                    lora_source = dict(request_payload)
+                    for lora_key in ("use_lora", "lora_adapter_path", "lora_adapter_name", "lora_scale", "adapter_model_variant"):
+                        if lora_key in track and track.get(lora_key) not in (None, ""):
+                            lora_source[lora_key] = track.get(lora_key)
+                    track_lora_request = _lora_adapter_request(lora_source)
                     quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
                     request_key_scale = request_payload.get("key_scale") or request_payload.get("keyscale") or request_payload.get("key")
@@ -5692,6 +5697,11 @@ def generate_album(
                         "src_result_id": "",
                         "reference_audio_id": "",
                         "reference_result_id": "",
+                        "use_lora": track_lora_request["use_lora"],
+                        "lora_adapter_path": track_lora_request["lora_adapter_path"],
+                        "lora_adapter_name": track_lora_request["lora_adapter_name"],
+                        "lora_scale": track_lora_request["lora_scale"],
+                        "adapter_model_variant": track_lora_request["adapter_model_variant"],
                         "album_metadata": {
                             "album_family_id": album_family_id,
                             "album_family_title": album_family_title,

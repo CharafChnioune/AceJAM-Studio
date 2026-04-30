@@ -17,6 +17,16 @@ module.exports = {
       ]
     }
   }, {
+    when: "{{exists('app')}}",
+    method: "shell.run",
+    params: {
+      venv: "env",
+      path: "app",
+      message: [
+        "python patch_ace_step_vendor.py"
+      ]
+    }
+  }, {
     when: "{{exists('app/requirements.txt')}}",
     method: "script.start",
     params: {

@@ -385,6 +385,16 @@ def _required_lyrics_present(required: str, lyrics: str) -> bool:
     return all(_phrase_present(line, lyric_text) for line in required_lines)
 
 
+def _required_lyrics_is_full_script(required: str) -> bool:
+    text = str(required or "").strip()
+    if not text:
+        return False
+    lines = _lyric_lines(text)
+    word_count = len(re.findall(r"[A-Za-z0-9À-ÖØ-öø-ÿ'’]+", text))
+    section_count = len(re.findall(r"\[[^\]]+\]", text))
+    return section_count >= 3 or len(lines) >= 18 or word_count >= 140
+
+
 def apply_user_album_contract_to_track(
     track: dict[str, Any],
     contract: dict[str, Any] | None,
@@ -433,10 +443,10 @@ def apply_user_album_contract_to_track(
         result["description"] = item["vibe"]
     if item.get("required_lyrics"):
         required = str(item.get("required_lyrics") or "").strip()
-        if required and not _required_lyrics_present(required, str(result.get("lyrics") or "")):
+        if required and _required_lyrics_is_full_script(required) and not _required_lyrics_present(required, str(result.get("lyrics") or "")):
             result["lyrics"] = required + ("\n\n" + str(result.get("lyrics") or "").strip() if str(result.get("lyrics") or "").strip() else "")
             repaired.append("required_lyrics")
-        compliance["required_lyrics"] = "repaired" if "required_lyrics" in repaired else "kept"
+        compliance["required_lyrics"] = "repaired" if "required_lyrics" in repaired else "required_phrases_only"
     required_phrases = [
         str(phrase).strip()
         for phrase in _list_or_empty(item.get("required_phrases"))

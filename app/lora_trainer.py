@@ -461,8 +461,12 @@ class AceTrainingManager:
         adapter_type = str(payload.get("adapter_type") or "lora").lower()
         if adapter_type not in {"lora", "lokr"}:
             raise ValueError("adapter_type must be lora or lokr")
-        variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
-        output_dir = Path(str(payload.get("output_dir") or "")).expanduser() if payload.get("output_dir") else self.training_dir / f"{slug(adapter_type)}-{job_id}"
+        song_model = str(payload.get("song_model") or "acestep-v15-turbo").strip()
+        variant = model_to_variant(str(payload.get("model_variant") or song_model))
+        trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
+        output_name = slug(trigger_tag or adapter_type, "adapter")
+        output_dir = Path(str(payload.get("output_dir") or "")).expanduser() if payload.get("output_dir") else self.training_dir / f"{output_name}-{job_id}"
         log_dir = output_dir / "runs"
         command = [
             sys.executable,
@@ -485,7 +489,7 @@ class AceTrainingManager:
             "--gradient-accumulation",
             str(parse_int(payload.get("gradient_accumulation"), 4, 1, 128)),
             "--epochs",
-            str(parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)),
+            str(epochs),
             "--save-every",
             str(parse_int(payload.get("save_every_n_epochs", payload.get("save_every")), 5, 1, 10000)),
             "--lr",
@@ -564,7 +568,14 @@ class AceTrainingManager:
         return self._start_job(
             kind="train",
             command=command,
-            params={"adapter_type": adapter_type, "model_variant": variant},
+            params={
+                "adapter_type": adapter_type,
+                "model_variant": variant,
+                "song_model": song_model,
+                "trigger_tag": trigger_tag,
+                "display_name": trigger_tag,
+                "epochs": epochs,
+            },
             paths={"dataset_dir": str(dataset_dir), "output_dir": str(output_dir), "final_adapter": str(output_dir / "final"), "log_dir": str(log_dir)},
         )
 
@@ -643,6 +654,7 @@ class AceTrainingManager:
     def list_adapters(self) -> list[dict[str, Any]]:
         roots = [self.exports_dir, self.training_dir]
         adapters: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
         for root in roots:
             if not root.exists():
                 continue
@@ -655,6 +667,10 @@ class AceTrainingManager:
                 has_lokr = (child / "lokr_weights.safetensors").is_file()
                 if not (has_lora or has_lokr):
                     continue
+                child_key = str(child.resolve())
+                if child_key in seen_paths:
+                    continue
+                seen_paths.add(child_key)
                 meta: dict[str, Any] = {}
                 meta_path = child / "acejam_adapter.json"
                 if meta_path.is_file():
@@ -662,11 +678,18 @@ class AceTrainingManager:
                         meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     except Exception:
                         meta = {}
+                adapter_type = str(meta.get("adapter_type") or ("lokr" if has_lokr and not has_lora else "lora")).strip().lower()
+                display_name = str(meta.get("display_name") or meta.get("trigger_tag") or "").strip()
+                if not display_name:
+                    display_name = child.parent.name if child.name == "final" and root == self.training_dir else child.name
+                loadable = bool(has_lora and adapter_type == "lora")
                 adapters.append(
                     {
                         "name": child.name,
+                        "display_name": display_name,
+                        "label": display_name,
                         "path": str(child),
-                        "adapter_type": "lokr" if has_lokr and not has_lora else "lora",
+                        "adapter_type": adapter_type,
                         "source": "exports" if root == self.exports_dir else "training",
                         "updated_at": datetime.fromtimestamp(child.stat().st_mtime, timezone.utc).isoformat(),
                         "trigger_tag": meta.get("trigger_tag", ""),
@@ -674,6 +697,8 @@ class AceTrainingManager:
                         "model_variant": meta.get("model_variant", ""),
                         "song_model": meta.get("song_model", ""),
                         "sample_count": meta.get("sample_count"),
+                        "is_loadable": loadable,
+                        "generation_loadable": loadable,
                         "metadata": meta,
                     }
                 )
@@ -695,20 +720,106 @@ class AceTrainingManager:
             )
         return runs[:20]
 
-    def export_adapter(self, source: Path, name: str | None = None) -> dict[str, Any]:
+    def _unique_export_target(self, base_name: str) -> Path:
+        export_id = slug(base_name, "adapter")
+        target = self.exports_dir / export_id
+        if not target.exists():
+            return target
+        suffix = 2
+        while True:
+            candidate = self.exports_dir / f"{export_id}-{suffix}"
+            if not candidate.exists():
+                return candidate
+            suffix += 1
+
+    def _detect_adapter_type(self, path: Path, fallback: str = "lora") -> str:
+        if (path / "adapter_config.json").is_file() and (
+            (path / "adapter_model.safetensors").is_file() or (path / "adapter_model.bin").is_file()
+        ):
+            return "lora"
+        if (path / "lokr_weights.safetensors").is_file() or path.name == "lokr_weights.safetensors":
+            return "lokr"
+        fallback = str(fallback or "lora").strip().lower()
+        return fallback if fallback in {"lora", "lokr"} else "lora"
+
+    def register_adapter(
+        self,
+        source: Path,
+        *,
+        trigger_tag: str = "",
+        display_name: str = "",
+        adapter_type: str = "",
+        model_variant: str = "",
+        song_model: str = "",
+        job_id: str = "",
+        dataset_id: str = "",
+        sample_count: int | None = None,
+        epochs: int | None = None,
+        language: str = "",
+        metadata: dict[str, Any] | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
         source = source.expanduser()
         if not source.exists():
             raise FileNotFoundError(f"LoRA source path not found: {source}")
-        export_id = slug(name or source.name, "adapter")
-        target = self.exports_dir / export_id
+        source_meta: dict[str, Any] = {}
+        source_meta_path = source / "acejam_adapter.json" if source.is_dir() else None
+        if source_meta_path and source_meta_path.is_file():
+            try:
+                source_meta = json.loads(source_meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                source_meta = {}
+        trigger_tag = str(trigger_tag or source_meta.get("trigger_tag") or "").strip()
+        display_name = str(display_name or source_meta.get("display_name") or trigger_tag or name or source.name).strip()
+        adapter_type = self._detect_adapter_type(source, adapter_type or str(source_meta.get("adapter_type") or "lora"))
+        target = self._unique_export_target(trigger_tag or display_name or name or source.name)
         if source.is_dir():
-            if target.exists():
-                shutil.rmtree(target)
             shutil.copytree(source, target)
         else:
             target.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target / source.name)
-        return {"success": True, "path": str(target), "adapter": target.name}
+        merged_metadata = dict(source_meta)
+        merged_metadata.update(metadata or {})
+        source_paths = dict(merged_metadata.get("source_paths") or {})
+        source_paths.update(
+            {
+                "source": str(source),
+                "registered": str(target),
+            }
+        )
+        adapter_metadata = {
+            **merged_metadata,
+            "display_name": display_name or trigger_tag or target.name,
+            "trigger_tag": trigger_tag,
+            "adapter_type": adapter_type,
+            "model_variant": str(model_variant or merged_metadata.get("model_variant") or ""),
+            "song_model": str(song_model or merged_metadata.get("song_model") or ""),
+            "job_id": str(job_id or merged_metadata.get("job_id") or ""),
+            "trained_at": str(merged_metadata.get("trained_at") or utc_now()),
+            "source_paths": source_paths,
+            "source_path": str(source),
+            "registered_path": str(target),
+        }
+        if dataset_id:
+            adapter_metadata["dataset_id"] = dataset_id
+        if sample_count is not None:
+            adapter_metadata["sample_count"] = sample_count
+        if epochs is not None:
+            adapter_metadata["epochs"] = epochs
+        if language:
+            adapter_metadata["language"] = language
+        (target / "acejam_adapter.json").write_text(json.dumps(adapter_metadata, indent=2), encoding="utf-8")
+        return {
+            "success": True,
+            "path": str(target),
+            "adapter": target.name,
+            "display_name": adapter_metadata["display_name"],
+            "trigger_tag": trigger_tag,
+            "metadata": adapter_metadata,
+        }
+
+    def export_adapter(self, source: Path, name: str | None = None) -> dict[str, Any]:
+        return self.register_adapter(source, display_name=str(name or ""), name=name)
 
     def _one_click_params(self, payload: dict[str, Any], *, dataset_id: str, import_root: Path) -> dict[str, Any]:
         sample_count = parse_int(payload.get("sample_count"), 0, 0, None)
@@ -915,20 +1026,29 @@ class AceTrainingManager:
                 raise FileNotFoundError(f"Training finished but no final adapter was found at {final_adapter}")
 
             self._set_job_state(job.id, stage="register", progress=90)
-            export = self.export_adapter(final_adapter, f"{slug(trigger, 'adapter')}-{job.id}")
-            registered = Path(str(export["path"]))
-            metadata = {
-                "trigger_tag": trigger,
-                "language": language,
-                "adapter_type": adapter_type,
-                "model_variant": params["model_variant"],
-                "song_model": params["song_model"],
-                "dataset_id": dataset_id,
-                "sample_count": len(labels),
-                "epochs": epochs,
-                "trained_at": utc_now(),
-            }
-            (registered / "acejam_adapter.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            registered_info = self.register_adapter(
+                final_adapter,
+                trigger_tag=trigger,
+                display_name=trigger,
+                adapter_type=adapter_type,
+                model_variant=str(params["model_variant"]),
+                song_model=str(params["song_model"]),
+                job_id=job.id,
+                dataset_id=dataset_id,
+                sample_count=len(labels),
+                epochs=int(epochs),
+                language=language,
+                metadata={
+                    "source_paths": {
+                        "import_root": str(import_root),
+                        "dataset_json": dataset_json,
+                        "tensor_output": str(tensor_output),
+                        "output_dir": str(output_dir),
+                        "final_adapter": str(final_adapter),
+                    }
+                },
+            )
+            registered = Path(str(registered_info["path"]))
 
             load_status: dict[str, Any] = {"requested": False}
             if params.get("auto_load") and self.adapter_ready is not None:
@@ -949,6 +1069,9 @@ class AceTrainingManager:
                     "output_dir": str(output_dir),
                     "final_adapter": str(final_adapter),
                     "registered_adapter_path": str(registered),
+                    "adapter_name": registered_info.get("adapter", registered.name),
+                    "display_name": registered_info.get("display_name", trigger),
+                    "trigger_tag": registered_info.get("trigger_tag", trigger),
                     "sample_count": len(labels),
                     "epochs": epochs,
                     "auto_load": bool(params.get("auto_load")),
@@ -1181,7 +1304,36 @@ class AceTrainingManager:
     def _job_result(self, job: TrainingJob) -> dict[str, Any]:
         if job.kind == "train":
             final_adapter = job.paths.get("final_adapter", "")
-            return {"final_adapter": final_adapter, "adapter_exists": Path(final_adapter).exists()}
+            result = {"final_adapter": final_adapter, "adapter_exists": Path(final_adapter).exists()}
+            if result["adapter_exists"]:
+                params = dict(job.params or {})
+                registered = self.register_adapter(
+                    Path(final_adapter),
+                    trigger_tag=str(params.get("trigger_tag") or ""),
+                    display_name=str(params.get("display_name") or params.get("trigger_tag") or ""),
+                    adapter_type=str(params.get("adapter_type") or "lora"),
+                    model_variant=str(params.get("model_variant") or ""),
+                    song_model=str(params.get("song_model") or ""),
+                    job_id=job.id,
+                    epochs=parse_int(params.get("epochs"), 0, 0, None) or None,
+                    metadata={
+                        "source_paths": {
+                            "dataset_dir": job.paths.get("dataset_dir", ""),
+                            "output_dir": job.paths.get("output_dir", ""),
+                            "final_adapter": final_adapter,
+                            "log_dir": job.paths.get("log_dir", ""),
+                        }
+                    },
+                )
+                result.update(
+                    {
+                        "registered_adapter_path": registered["path"],
+                        "adapter_name": registered["adapter"],
+                        "display_name": registered.get("display_name", ""),
+                        "trigger_tag": registered.get("trigger_tag", ""),
+                    }
+                )
+            return result
         if job.kind == "preprocess":
             output = Path(job.paths.get("tensor_output", ""))
             tensors = len(list(output.glob("*.pt"))) if output.is_dir() else 0

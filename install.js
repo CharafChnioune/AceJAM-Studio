@@ -26,6 +26,16 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
+          "python patch_ace_step_vendor.py"
+        ]
+      }
+    },
+    {
+      method: "shell.run",
+      params: {
+        venv: "env",
+        path: "app",
+        message: [
           "uv pip install -r requirements.txt"
         ]
       }

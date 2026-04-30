@@ -21,8 +21,8 @@ AceJAM uses a Clean Studio layout by default: the everyday controls stay visible
 - **Cover/Remix**: source audio plus cover strength.
 - **Repaint**: source audio plus start/end repaint window.
 - **Extract, Lego, Complete**: base-model tasks for stems/layers and arrangement completion.
-- **Album**: Hit Album Agent Studio with CrewAI/Ollama tools, model strategy, tag packs, lyric craft controls, editable track plans, variants, and generation through the same advanced engine.
-- **Trainer Studio**: dataset scan, official dataset JSON export, tensor preprocessing, LoRA/LoKr training, estimate, stop, export/load adapter.
+- **Album**: Hit Album Agent Studio with CrewAI/Ollama tools, model strategy, tag packs, lyric craft controls, editable track plans, variants, a dedicated Album LoRA selector, and generation through the same advanced engine.
+- **Trainer Studio**: dataset scan, official dataset JSON export, tensor preprocessing, LoRA/LoKr training, estimate, stop, export/load adapter. Finished LoRA folders are registered from the trigger tag.
 - **Library**: local saved songs with metadata.
 - **Settings**: runtime/config inspection. Generation defaults now live directly in Custom so they are visible while composing.
 
@@ -59,6 +59,10 @@ The guidance is based on the official ACE-Step 1.5 [Hugging Face model card](htt
 The trainer uses the official ACE-Step 1.5 `training_v2` / Side-Step CLI as an isolated subprocess. AceJAM does not import that vendor package into the running app process, which prevents conflicts with AceJAM's local `app/acestep` runtime.
 
 Training is hardware-dependent. The UI and API report missing vendor files or Python dependencies clearly. During preprocess/train/estimate, generation is locked and the loaded ACE-Step generation model is released to free memory.
+
+Finished one-click and manual training jobs copy the final adapter into `app/data/loras/<trigger-tag>`. If that folder already exists, AceJAM keeps the older adapter and creates `<trigger-tag>-2`, `<trigger-tag>-3`, and so on. Each registered folder includes `acejam_adapter.json` with `display_name`, `trigger_tag`, trainer metadata, model variant, job id, timestamp, and source paths.
+
+The Trainer known-adapters menu shows LoRA and LoKr outputs. Generation menus only list loadable PEFT LoRA adapter folders because ACE-Step's standard generation loading expects PEFT files such as `adapter_config.json` and `adapter_model.safetensors`/`.bin`. The global generation adapter applies to Simple, Custom, Cover, Repaint, Lego and Complete. Album uses its own Album adapter selector and sends the selected LoRA path, name and scale to every track and every model render.
 
 ## Custom Studio Controls
 
@@ -240,7 +244,7 @@ curl -X POST http://127.0.0.1:7860/api/lora/preprocess \
 
 curl -X POST http://127.0.0.1:7860/api/lora/train \
   -H 'Content-Type: application/json' \
-  -d '{"tensor_dir":"/path/to/app/data/lora_tensors/job","adapter_type":"lora","train_epochs":10}'
+  -d '{"tensor_dir":"/path/to/app/data/lora_tensors/job","trigger_tag":"mytrigger","adapter_type":"lora","train_epochs":10}'
 ```
 
 ## Main Endpoints

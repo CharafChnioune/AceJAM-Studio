@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lora_trainer import AceTrainingManager, model_to_variant
+from lora_trainer import AceTrainingManager, TrainingJob, model_to_variant, utc_now
 
 
 class CaptureTrainingManager(AceTrainingManager):
@@ -22,6 +22,12 @@ class LoraTrainerTest(unittest.TestCase):
             model_cache_dir=root / "model_cache",
             release_models=lambda: None,
         )
+
+    def make_peft_adapter(self, path: Path) -> Path:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "adapter_config.json").write_text("{}", encoding="utf-8")
+        (path / "adapter_model.safetensors").write_bytes(b"weights")
+        return path
 
     def test_model_variant_mapping(self):
         self.assertEqual(model_to_variant("acestep-v15-turbo"), "turbo")
@@ -134,6 +140,122 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("--adapter-type", command)
             self.assertIn("lokr", command)
             self.assertIn("--lokr-weight-decompose", command)
+
+    def test_train_command_carries_trigger_tag_for_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tensor_dir = root / "tensors"
+            tensor_dir.mkdir()
+            manager = self.make_manager(root)
+            job = manager.start_train(
+                {
+                    "tensor_dir": str(tensor_dir),
+                    "song_model": "acestep-v15-xl-sft",
+                    "trigger_tag": "charaf hook",
+                    "adapter_type": "lora",
+                    "train_epochs": 3,
+                }
+            )
+
+            self.assertEqual(job["params"]["trigger_tag"], "charaf hook")
+            self.assertEqual(job["params"]["display_name"], "charaf hook")
+            self.assertTrue(Path(job["paths"]["output_dir"]).name.startswith("charaf-hook-"))
+
+    def test_register_adapter_uses_trigger_tag_and_stable_duplicate_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            source = self.make_peft_adapter(root / "training" / "final")
+
+            first = manager.register_adapter(
+                source,
+                trigger_tag="charaf hook",
+                adapter_type="lora",
+                model_variant="xl_sft",
+                song_model="acestep-v15-xl-sft",
+                job_id="job-one",
+            )
+            second = manager.register_adapter(
+                source,
+                trigger_tag="charaf hook",
+                adapter_type="lora",
+                model_variant="xl_sft",
+                song_model="acestep-v15-xl-sft",
+                job_id="job-two",
+            )
+
+            self.assertEqual(Path(first["path"]).name, "charaf-hook")
+            self.assertEqual(Path(second["path"]).name, "charaf-hook-2")
+            metadata = json.loads((Path(first["path"]) / "acejam_adapter.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["display_name"], "charaf hook")
+            self.assertEqual(metadata["trigger_tag"], "charaf hook")
+            self.assertEqual(metadata["adapter_type"], "lora")
+            self.assertEqual(metadata["model_variant"], "xl_sft")
+            self.assertEqual(metadata["job_id"], "job-one")
+            self.assertIn("source_paths", metadata)
+
+            adapters = manager.list_adapters()
+            exported = [item for item in adapters if item["source"] == "exports"]
+            self.assertEqual([item["display_name"] for item in exported], ["charaf hook", "charaf hook"])
+            self.assertTrue(all(item["is_loadable"] for item in exported))
+            self.assertTrue(all(item["trigger_tag"] == "charaf hook" for item in exported))
+
+    def test_lokr_adapter_is_listed_but_not_generation_loadable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            adapter_dir = root / "data" / "loras" / "lokr-style"
+            adapter_dir.mkdir(parents=True)
+            (adapter_dir / "lokr_weights.safetensors").write_bytes(b"weights")
+            (adapter_dir / "acejam_adapter.json").write_text(
+                json.dumps({"display_name": "LoKr Style", "trigger_tag": "lokr-style", "adapter_type": "lokr"}),
+                encoding="utf-8",
+            )
+
+            adapters = manager.list_adapters()
+
+            self.assertEqual(len(adapters), 1)
+            self.assertEqual(adapters[0]["display_name"], "LoKr Style")
+            self.assertEqual(adapters[0]["adapter_type"], "lokr")
+            self.assertFalse(adapters[0]["is_loadable"])
+
+    def test_job_result_registers_manual_training_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            final_adapter = self.make_peft_adapter(root / "data" / "lora_training" / "manual" / "final")
+            job = TrainingJob(
+                id="manualjob",
+                kind="train",
+                state="succeeded",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=[],
+                params={
+                    "trigger_tag": "manual tag",
+                    "display_name": "manual tag",
+                    "adapter_type": "lora",
+                    "model_variant": "turbo",
+                    "song_model": "acestep-v15-turbo",
+                    "epochs": 3,
+                },
+                paths={
+                    "dataset_dir": str(root / "tensors"),
+                    "output_dir": str(final_adapter.parent),
+                    "final_adapter": str(final_adapter),
+                    "log_dir": str(final_adapter.parent / "runs"),
+                },
+                log_path=str(root / "job.log"),
+            )
+
+            result = manager._job_result(job)
+
+            self.assertTrue(result["adapter_exists"])
+            self.assertEqual(Path(result["registered_adapter_path"]).name, "manual-tag")
+            self.assertEqual(result["display_name"], "manual tag")
+            metadata = json.loads((Path(result["registered_adapter_path"]) / "acejam_adapter.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["trigger_tag"], "manual tag")
+            self.assertEqual(metadata["epochs"], 3)
 
     def test_tensorboard_runs_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
