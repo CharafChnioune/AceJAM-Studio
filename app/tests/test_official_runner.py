@@ -106,6 +106,19 @@ class OfficialRunnerTest(unittest.TestCase):
         self.assertIsNone(normalized["repainting_start"])
         self.assertIsNone(normalized["repainting_end"])
 
+    def test_text_budget_enforcement_clips_caption_and_blocks_overlong_lyrics(self):
+        params = {
+            "caption": "bright pop, " * 80,
+            "lyrics": "[Verse]\n" + ("clear line\n" * 20),
+        }
+
+        official_runner._enforce_text_budgets(params, stage="unit")
+
+        self.assertLessEqual(len(params["caption"]), official_runner.ACE_STEP_CAPTION_CHAR_LIMIT)
+        params["lyrics"] = "x" * (official_runner.ACE_STEP_LYRICS_CHAR_LIMIT + 1)
+        with self.assertRaisesRegex(RuntimeError, "lyrics exceed ACE-Step budget"):
+            official_runner._enforce_text_budgets(params, stage="unit")
+
     def test_call_compat_drops_unknown_initialize_kwargs(self):
         calls = {}
 

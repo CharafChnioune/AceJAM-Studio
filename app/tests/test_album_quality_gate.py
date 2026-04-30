@@ -128,7 +128,7 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertEqual(report["caption_integrity"]["status"], "pass")
         self.assertEqual(report["lyric_duration_fit"]["status"], "pass")
 
-    def test_near_miss_rap_lyrics_are_reflowed_to_min_lines(self):
+    def test_near_miss_rap_lyrics_use_effective_singable_line_target(self):
         plan = lyric_length_plan(240, "dense", genre_hint="heavy rap")
         lines = []
         lyric_lines = 0
@@ -155,11 +155,107 @@ class AlbumQualityGateTest(unittest.TestCase):
 
         report = evaluate_album_payload_quality(payload, repair=True)
 
+        self.assertEqual(report["status"], "pass")
+        self.assertTrue(report["gate_passed"])
+        self.assertNotIn("lyrics_reflowed_to_min_lines", " ".join(report["repair_actions"]))
+        effective_min = report["lyric_duration_fit"]["plan"]["effective_min_lines"]
+        self.assertLess(effective_min, plan["min_lines"])
+        self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["line_count"], effective_min)
+        self.assertLessEqual(report["lyric_duration_fit"]["stats"]["char_count"], 4096)
+
+    def test_near_miss_words_and_lines_repair_before_agent_retry(self):
+        plan = lyric_length_plan(240, "dense", genre_hint="heavy rap")
+        lines = []
+        lyric_index = 0
+        for section in plan["sections"]:
+            lines.append(f"[{section}]")
+            for _ in range(6):
+                lines.append(f"Concrete signals carry harder truth {lyric_index:02d}")
+                lyric_index += 1
+        payload = {
+            "title": "Concrete Canyons",
+            "hook_promise": "Concrete canyons still answer",
+            "narrative": "a survivor pushes through heavy city pressure",
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": "\n".join(lines),
+            "duration": 240,
+            "language": "en",
+            "instrumental": False,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+
         self.assertEqual(report["status"], "auto_repair")
         self.assertTrue(report["gate_passed"])
-        self.assertIn("lyrics_reflowed_to_min_lines", " ".join(report["repair_actions"]))
-        self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["line_count"], plan["min_lines"])
+        self.assertIn("lyrics_extended_to_min_words", " ".join(report["repair_actions"]))
+        self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["word_count"], plan["min_words"])
+        effective_min = report["lyric_duration_fit"]["plan"]["effective_min_lines"]
+        self.assertLess(effective_min, plan["min_lines"])
+        self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["line_count"], effective_min)
         self.assertLessEqual(report["lyric_duration_fit"]["stats"]["char_count"], 4096)
+
+    def test_required_phrases_match_typographic_punctuation_variants(self):
+        sections = ["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
+        lyrics = _lyrics_for_sections(sections, lines_per_section=7)
+        lyrics += "\nDeath Row... East Coast... Closed doors"
+        lyrics += "\nThey paved them blocks just to hide what's real"
+        payload = {
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": lyrics,
+            "required_phrases": [
+                "Death Row… East Coast… Closed doors…",
+                "They paved them blocks just to hide what’s real,",
+            ],
+            "duration": 120,
+            "language": "en",
+            "instrumental": False,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertTrue(report["gate_passed"])
+        self.assertNotIn("required_phrases_missing", issue_ids)
+
+    def test_underlength_failure_preserves_required_phrase_lines(self):
+        plan = lyric_length_plan(240, "dense", genre_hint="heavy rap")
+        protected = "They paved them blocks just to hide what’s real,"
+        lines = ["[Intro]", protected, "Boardroom smiles while they cut them deals."]
+        count = 0
+        for section in plan["sections"]:
+            lines.append(f"[{section}]")
+            for _ in range(5):
+                lines.append(f"Concrete signals carry harder truth {count:02d}")
+                count += 1
+        payload = {
+            "title": "Concrete Canyons",
+            "hook_promise": "Concrete canyons still answer",
+            "narrative": "a survivor pushes through heavy city pressure",
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": "\n".join(lines),
+            "required_phrases": [protected, "Boardroom smiles while they cut them deals."],
+            "duration": 240,
+            "language": "en",
+            "instrumental": False,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        repaired_lyrics = report["repaired_payload"]["lyrics"]
+
+        self.assertFalse(report["gate_passed"])
+        self.assertIn(protected, repaired_lyrics)
+        self.assertIn("Boardroom smiles while they cut them deals.", repaired_lyrics)
+        self.assertNotIn("required_phrases_missing", {issue["id"] for issue in report["issues"]})
+        self.assertIn("lyrics_under_length", {issue["id"] for issue in report["issues"]})
 
     def test_escaped_newlines_in_lyrics_are_repaired_before_counting(self):
         sections = ["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]

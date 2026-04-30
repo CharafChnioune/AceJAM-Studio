@@ -5441,6 +5441,13 @@ def generate_album(
                 custom_agents_used=bool(result.get("custom_agents_used")),
                 crewai_used=bool(result.get("crewai_used")),
                 toolbelt_fallback=bool(result.get("toolbelt_fallback")),
+                memory_enabled=bool(result.get("memory_enabled") or actual_memory.get("enabled")),
+                context_chunks=int(result.get("context_chunks") or actual_memory.get("context_chunks") or 0),
+                retrieval_rounds=int(result.get("retrieval_rounds") or actual_memory.get("retrieval_rounds") or 0),
+                agent_context_store=str(result.get("agent_context_store") or actual_memory.get("context_store") or ""),
+                context_store_index=str(result.get("context_store_index") or ""),
+                sequence_repair_count=int(result.get("sequence_repair_count") or 0),
+                sequence_report=result.get("sequence_report") or {},
                 agent_debug_dir=str(result.get("agent_debug_dir") or album_debug.root),
                 agent_repair_count=int(result.get("agent_repair_count") or 0),
                 agent_rounds=result.get("agent_rounds") or [],
@@ -5585,7 +5592,21 @@ def generate_album(
                     if not track_lm_model.strip():
                         track_lm_model = ACE_LM_PREFERRED_MODEL
                     track_has_vocal_lyrics = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
-                    track_lm_enabled = track_lm_model != "none" and not track_has_vocal_lyrics
+                    album_use_supplied_lyrics_lm = parse_bool(
+                        track.get(
+                            "allow_supplied_lyrics_lm",
+                            request_payload.get("album_use_ace_lm_for_supplied_lyrics", request_payload.get("allow_supplied_lyrics_lm", True)),
+                        ),
+                        True,
+                    )
+                    if track_has_vocal_lyrics and album_use_supplied_lyrics_lm and track_lm_model.strip().lower() == "none":
+                        track_lm_model = ACE_LM_PREFERRED_MODEL
+                    track_lm_enabled = track_lm_model.strip().lower() != "none" and (not track_has_vocal_lyrics or album_use_supplied_lyrics_lm)
+                    def _album_lm_switch(field: str, default: bool) -> bool:
+                        if track_has_vocal_lyrics and track_lm_enabled:
+                            return default
+                        return parse_bool(track.get(field, request_payload.get(field)), default)
+
                     quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
                     request_key_scale = request_payload.get("key_scale") or request_payload.get("keyscale") or request_payload.get("key")
@@ -5650,18 +5671,20 @@ def generate_album(
                         "auto_lrc": parse_bool(request_payload.get("auto_lrc"), False),
                         "return_audio_codes": parse_bool(request_payload.get("return_audio_codes"), False),
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
-                        "thinking": False if track_has_vocal_lyrics else parse_bool(track.get("thinking", request_payload.get("thinking")), DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
+                        "allow_supplied_lyrics_lm": bool(track_has_vocal_lyrics and track_lm_enabled),
+                        "lm_backend": _normalize_lm_backend(track.get("lm_backend") or request_payload.get("lm_backend") or ACE_LM_BACKEND_DEFAULT),
+                        "thinking": _album_lm_switch("thinking", DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
                         "sample_mode": False if track_has_vocal_lyrics else parse_bool(track.get("sample_mode", request_payload.get("sample_mode")), False),
                         "sample_query": "" if track_has_vocal_lyrics else str(track.get("sample_query") or request_payload.get("sample_query") or ""),
-                        "use_format": False if track_has_vocal_lyrics else parse_bool(track.get("use_format", request_payload.get("use_format")), DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
+                        "use_format": _album_lm_switch("use_format", DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
                         "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85, 0.0, 2.0),
                         "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
                         "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
                         "lm_top_p": clamp_float(track.get("lm_top_p", request_payload.get("lm_top_p")), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if track_lm_enabled else 0.9, 0.0, 1.0),
                         "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
                         "use_cot_metas": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"] if track_lm_enabled else False),
-                        "use_cot_caption": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_caption", request_payload.get("use_cot_caption")), DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled else False),
-                        "use_cot_lyrics": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_lyrics", request_payload.get("use_cot_lyrics")), DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"] if track_lm_enabled else False),
+                        "use_cot_caption": _album_lm_switch("use_cot_caption", DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled else False),
+                        "use_cot_lyrics": False,
                         "use_cot_language": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if track_lm_enabled else False),
                         "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
                         "audio_code_string": "",
@@ -6592,7 +6615,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
             "Engine: AceJAM Agents",
             f"Planner: {provider_label(planner_provider)} ({planner_model})",
             f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
-            "Agent memory: off; deterministic debug logs are job-scoped.",
+            "Agent memory: pending embedding preflight; deterministic debug logs are job-scoped.",
         ],
     )
     try:
@@ -6646,6 +6669,13 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
             expected_count=int(result.get("expected_renders") or expected_count),
             planner_model=planner_model,
             embedding_model=embedding_model,
+            memory_enabled=bool(result.get("memory_enabled") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("enabled")) if isinstance(result.get("toolkit_report"), dict) else bool(result.get("memory_enabled")),
+            context_chunks=int(result.get("context_chunks") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("context_chunks") or 0) if isinstance(result.get("toolkit_report"), dict) else int(result.get("context_chunks") or 0),
+            retrieval_rounds=int(result.get("retrieval_rounds") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("retrieval_rounds") or 0) if isinstance(result.get("toolkit_report"), dict) else int(result.get("retrieval_rounds") or 0),
+            agent_context_store=str(result.get("agent_context_store") or (((result.get("toolkit_report") or {}).get("memory") or {}).get("context_store") if isinstance(result.get("toolkit_report"), dict) else "") or ""),
+            context_store_index=str(result.get("context_store_index") or ""),
+            sequence_repair_count=int(result.get("sequence_repair_count") or 0),
+            sequence_report=result.get("sequence_report") or {},
             album_id=str(result.get("album_id") or ""),
             album_family_id=album_family_id,
             download_url=download_url,
@@ -6741,7 +6771,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         f"Prompt Kit: {PROMPT_KIT_VERSION}.",
         f"Planner: {provider_label(planner_provider)} ({planner_model})",
         f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
-        "Agent memory: off; prompts/responses go to the job debug folder.",
+        "Agent memory: pending embedding preflight; prompts/responses go to the job debug folder.",
     ]
     if user_album_contract.get("applied"):
         start_logs.append(
@@ -6815,6 +6845,13 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             agent_debug_dir=str(result.get("agent_debug_dir") or ""),
             agent_repair_count=int(result.get("agent_repair_count") or 0),
             agent_rounds=result.get("agent_rounds") or [],
+            memory_enabled=bool(result.get("memory_enabled") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("enabled")) if isinstance(result.get("toolkit_report"), dict) else bool(result.get("memory_enabled")),
+            context_chunks=int(result.get("context_chunks") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("context_chunks") or 0) if isinstance(result.get("toolkit_report"), dict) else int(result.get("context_chunks") or 0),
+            retrieval_rounds=int(result.get("retrieval_rounds") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("retrieval_rounds") or 0) if isinstance(result.get("toolkit_report"), dict) else int(result.get("retrieval_rounds") or 0),
+            agent_context_store=str(result.get("agent_context_store") or (((result.get("toolkit_report") or {}).get("memory") or {}).get("context_store") if isinstance(result.get("toolkit_report"), dict) else "") or ""),
+            context_store_index=str(result.get("context_store_index") or ""),
+            sequence_repair_count=int(result.get("sequence_repair_count") or 0),
+            sequence_report=result.get("sequence_report") or {},
             prompt_kit_version=str(result.get("prompt_kit_version") or PROMPT_KIT_VERSION),
             input_contract=result.get("input_contract") or contract_prompt_context(user_album_contract),
             input_contract_applied=bool(result.get("input_contract_applied") or user_album_contract.get("applied")),

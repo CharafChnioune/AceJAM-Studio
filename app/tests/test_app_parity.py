@@ -835,6 +835,7 @@ class AppParityTest(unittest.TestCase):
         request_payload = {
             "song_model_strategy": "all_models_album",
             "ace_lm_model": "none",
+            "album_use_ace_lm_for_supplied_lyrics": False,
             "track_variants": 1,
             "save_to_library": False,
             "tracks": [
@@ -890,6 +891,90 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(len(data["model_albums"]), len(acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS))
         self.assertIn("album_family_id", data)
         self.assertEqual(data["tracks"][0]["model_results"][0]["album_model"], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS[0])
+
+    def test_album_supplied_vocal_lyrics_use_ace_lm_formatting_by_default(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            return {
+                "success": True,
+                "result_id": "album-lm-01",
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": payload,
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": "take-1",
+                        "result_id": "album-lm-01",
+                        "filename": "take.wav",
+                        "audio_url": "/media/results/album-lm-01/take.wav",
+                        "download_url": "/media/results/album-lm-01/take.wav",
+                        "title": payload["title"],
+                        "seed": payload["seed"],
+                    }
+                ],
+            }
+
+        request_payload = {
+            "song_model_strategy": "selected",
+            "song_model": "acestep-v15-turbo",
+            "ace_lm_model": "none",
+            "thinking": False,
+            "use_format": False,
+            "use_cot_caption": False,
+            "track_variants": 1,
+            "save_to_library": False,
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "artist_name": "Unit Signal",
+                    "title": "Format The Hook",
+                    "tags": (
+                        "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                        "dynamic hook arrangement, crisp modern mix"
+                    ),
+                    "lyrics": (
+                        "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
+                        "Clean chords carry the signal\nThe chorus waits for release\n\n"
+                        "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
+                        "Unit Signal rides tonight\nThe hook lands clean and bright\n\n"
+                        "[Outro]\nThe final note stays clean\nSeven paths land bright"
+                    ),
+                    "duration": 30,
+                    "bpm": 120,
+                    "key_scale": "C minor",
+                    "time_signature": "4",
+                }
+            ],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}), \
+            patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+            patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+            patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
+            raw = acejam_app.generate_album(
+                concept="unit test album",
+                num_tracks=1,
+                track_duration=30,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertTrue(data["success"])
+        self.assertEqual(len(calls), 1)
+        payload = calls[0]
+        self.assertEqual(payload["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
+        self.assertTrue(payload["allow_supplied_lyrics_lm"])
+        self.assertTrue(payload["thinking"])
+        self.assertTrue(payload["use_format"])
+        self.assertTrue(payload["use_cot_caption"])
+        self.assertFalse(payload["sample_mode"])
+        self.assertFalse(payload["use_cot_metas"])
+        self.assertFalse(payload["use_cot_lyrics"])
+        self.assertFalse(payload["use_cot_language"])
+        self.assertEqual(payload["lm_backend"], acejam_app._normalize_lm_backend(acejam_app.ACE_LM_BACKEND_DEFAULT))
 
     def test_album_options_preserve_selected_model_from_payload(self):
         opts = acejam_app._album_options_from_payload(

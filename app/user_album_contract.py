@@ -14,7 +14,8 @@ TRACK_HEADER_RE = re.compile(
 )
 
 LABEL_PATTERNS = [
-    "album", "album title", "album name", "concept", "language", "track", "bpm", "key", "keyscale", "key scale", "style",
+    "album", "album title", "album name", "concept", "language", "track", "bpm", "key", "keyscale", "key scale", "duration",
+    "track duration", "style",
     "vibe", "the vibe", "narrative", "the narrative", "verse", "the verse", "lyrics", "explicit lyrics", "required lyrics",
     "naming drop", "naming drop style", "required hook phrase", "required phrase", "required phrases", "hook phrase",
     "produced by", "producer", "prod", "prod.", "engineered by", "engineer", "mixed by", "artist", "performer",
@@ -113,6 +114,54 @@ def _content_policy_status(value: str) -> str:
     return "safe"
 
 
+def _phrase_norm(value: Any) -> str:
+    text = str(value or "").lower()
+    text = (
+        text.replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("…", " ")
+        .replace("—", " ")
+        .replace("–", " ")
+    )
+    words = re.findall(r"[A-Za-z0-9À-ÿ\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff']+", text)
+    return " ".join(words)
+
+
+def _phrase_present(phrase: Any, text: Any) -> bool:
+    raw_phrase = str(phrase or "").strip()
+    raw_text = str(text or "")
+    if not raw_phrase:
+        return True
+    if raw_phrase.lower() in raw_text.lower():
+        return True
+    normalized = _phrase_norm(raw_phrase)
+    return bool(normalized and normalized in _phrase_norm(raw_text))
+
+
+def _parse_duration_value(value: Any) -> int | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    minutes_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b", text)
+    seconds_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b", text)
+    total = 0.0
+    if minutes_match:
+        total += float(minutes_match.group(1)) * 60.0
+    if seconds_match:
+        total += float(seconds_match.group(1))
+    if total:
+        return int(round(total))
+    colon_match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
+    if colon_match:
+        return int(colon_match.group(1)) * 60 + int(colon_match.group(2))
+    plain = re.search(r"\b(\d{2,3})\b", text)
+    if plain:
+        return int(plain.group(1))
+    return None
+
+
 def _track_blocks(text: str) -> list[tuple[re.Match[str], str]]:
     matches = list(TRACK_HEADER_RE.finditer(text or ""))
     blocks: list[tuple[re.Match[str], str]] = []
@@ -152,6 +201,12 @@ def extract_user_album_contract(
         engineer_credit = re.sub(r"(?i)^\s*(engineered|mixed)\s+by\s*", "", engineer_credit).strip()
         bpm_raw = _capture_inline(block, "BPM") or _capture_field(block, ["bpm"], multiline=False)
         bpm_match = re.search(r"\d{2,3}", bpm_raw)
+        duration_raw = (
+            _capture_inline(block, "Duration")
+            or _capture_inline(block, "Track Duration")
+            or _capture_field(block, ["track duration", "duration"], multiline=False)
+        )
+        duration = _parse_duration_value(duration_raw)
         key_scale = (
             _capture_inline(block, "Key Scale")
             or _capture_inline(block, "Keyscale")
@@ -178,6 +233,7 @@ def extract_user_album_contract(
                 "engineer_credit": _clip(engineer_credit, 160),
                 "artist_role": _clip(_capture_field(block, ["artist", "performer"], multiline=False), 160),
                 "bpm": int(bpm_match.group(0)) if bpm_match else None,
+                "duration": duration,
                 "key_scale": _clip(key_scale, 80),
                 "style": _clip(style, 240),
                 "vibe": _clip(vibe, 500),
@@ -185,7 +241,7 @@ def extract_user_album_contract(
                 "required_lyrics": lyrics,
                 "required_phrases": required_phrases,
                 "blocked_required_excerpt": "",
-                "forbidden_changes": ["title", "track_number", "producer_credit", "bpm", "key_scale", "style", "vibe", "narrative"],
+                "forbidden_changes": ["title", "track_number", "producer_credit", "duration", "bpm", "key_scale", "style", "vibe", "narrative"],
                 "content_policy_status": "safe",
                 "source_excerpt": _clip(block, 650),
             }
@@ -240,6 +296,7 @@ def contract_prompt_context(contract: dict[str, Any] | None) -> dict[str, Any]:
                 "locked_title": item.get("locked_title"),
                 "producer_credit": item.get("producer_credit"),
                 "engineer_credit": item.get("engineer_credit"),
+                "duration": item.get("duration"),
                 "bpm": item.get("bpm"),
                 "key_scale": item.get("key_scale"),
                 "style": item.get("style"),
@@ -269,6 +326,7 @@ def tracks_from_user_album_contract(contract: dict[str, Any] | None) -> list[dic
                 "source_title": item.get("source_title") or title,
                 "producer_credit": item.get("producer_credit") or "",
                 "engineer_credit": item.get("engineer_credit") or "",
+                "duration": item.get("duration"),
                 "bpm": item.get("bpm"),
                 "key_scale": item.get("key_scale") or "",
                 "style": item.get("style") or "",
@@ -295,7 +353,7 @@ def _replace_phrase_fields(track: dict[str, Any], old_title: str, new_title: str
 
 def _ensure_required_phrases(track: dict[str, Any], required_phrases: list[str]) -> list[str]:
     lyrics = str(track.get("lyrics") or "")
-    missing = [phrase for phrase in required_phrases if phrase and phrase not in lyrics]
+    missing = [phrase for phrase in required_phrases if phrase and not _phrase_present(phrase, lyrics)]
     if missing:
         addition = "\n".join(missing[:8])
         if lyrics.strip():
@@ -312,7 +370,6 @@ def _required_lyrics_present(required: str, lyrics: str) -> bool:
         return True
     if required_text in lyric_text:
         return True
-    lyric_lower = lyric_text.lower()
     required_lines = [
         re.sub(r"^[\"'“”‘’]+|[\"'“”‘’]+$", "", line.strip()).strip()
         for line in required_text.splitlines()
@@ -325,7 +382,7 @@ def _required_lyrics_present(required: str, lyrics: str) -> bool:
     ]
     if not required_lines:
         return False
-    return all(line.lower() in lyric_lower for line in required_lines)
+    return all(_phrase_present(line, lyric_text) for line in required_lines)
 
 
 def apply_user_album_contract_to_track(
@@ -365,6 +422,11 @@ def apply_user_album_contract_to_track(
             repaired.append("bpm")
         result["bpm"] = int(item["bpm"])
         compliance["bpm"] = "repaired" if "bpm" in repaired else "kept"
+    if item.get("duration"):
+        if int(result.get("duration") or 0) != int(item["duration"]):
+            repaired.append("duration")
+        result["duration"] = int(item["duration"])
+        compliance["duration"] = "repaired" if "duration" in repaired else "kept"
     if item.get("narrative"):
         result["description"] = item["narrative"]
     elif item.get("vibe") and not result.get("description"):

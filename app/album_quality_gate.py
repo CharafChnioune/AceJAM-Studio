@@ -47,6 +47,13 @@ TAG_DIMENSION_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+GENRE_STYLE_KEYWORDS = {
+    "pop", "rap", "hip-hop", "hip hop", "trap", "drill", "g-funk", "west coast",
+    "boom-bap", "boom bap", "r&b", "soul", "rock", "metal", "punk", "house",
+    "techno", "trance", "dancehall", "reggaeton", "afro", "amapiano",
+    "cinematic", "ambient", "schlager", "latin", "j-pop", "k-pop",
+}
+
 SONIC_CAPTION_TERM_RE = re.compile(
     r"\b(?:"
     r"pop|rap|hip-hop|hip hop|trap|drill|g-funk|r&b|soul|rock|metal|punk|house|techno|trance|"
@@ -97,7 +104,11 @@ FALLBACK_ARTIFACT_RE = re.compile(
     r"midnight paints the\b|breeze reminds me time moves fast|now i build a future from the past|"
     r"every note becomes the reason|turn pressure into perfume|"
     r"light is leaning through the door|kept the receipt from the life before|"
-    r"now i want the sound and nothing more|the you|the was|the are|the is|the but|the end from the floor)\b",
+    r"now i want the sound and nothing more|one more line keeps moving|one more breath holds steady|"
+    r"final echo cuts through stone|last breath keeps the promise|one clear image brings release|"
+    r"\w+\s+carries\s+\w+\s+through pressure\s+\d+|"
+    r"\w+\s+answers\s+\w+\s+with steady breath\s+\d+|"
+    r"the you|the was|the are|the is|the but|the end from the floor)\b",
     re.I,
 )
 PLACEHOLDER_RE = re.compile(r"\b(?:placeholder|repeat chorus|same as before|continue|tbd|todo|\.\.\.)\b", re.I)
@@ -152,6 +163,60 @@ def _jsonable(value: Any) -> Any:
 
 def _words(text: str) -> list[str]:
     return WORD_RE.findall(re.sub(r"\[[^\]]+\]", " ", str(text or "")))
+
+
+def _phrase_norm(text: Any) -> str:
+    value = str(text or "").lower()
+    value = (
+        value.replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("…", " ")
+        .replace("—", " ")
+        .replace("–", " ")
+    )
+    return " ".join(_words(value))
+
+
+def _phrase_present(phrase: Any, lyrics: str) -> bool:
+    raw_phrase = str(phrase or "").strip()
+    if not raw_phrase:
+        return True
+    lyric_text = str(lyrics or "")
+    if raw_phrase.lower() in lyric_text.lower():
+        return True
+    normalized_phrase = _phrase_norm(raw_phrase)
+    if not normalized_phrase:
+        return True
+    return normalized_phrase in _phrase_norm(lyric_text)
+
+
+def _caption_term_is_genre(term: Any) -> bool:
+    lowered = str(term or "").lower()
+    return any(keyword in lowered for keyword in GENRE_STYLE_KEYWORDS)
+
+
+def _prune_caption_terms(terms: list[str]) -> list[str]:
+    pruned: list[str] = []
+    genre_count = 0
+    for term in terms:
+        if _caption_term_is_genre(term):
+            if genre_count >= 2:
+                continue
+            genre_count += 1
+        if term.lower() not in {existing.lower() for existing in pruned}:
+            pruned.append(term)
+    return pruned
+
+
+def _effective_min_lines(raw_min_lines: int, min_words: int) -> int:
+    """Cap line targets so lyrics stay singable instead of over-fragmented."""
+    raw = int(raw_min_lines or 0)
+    if raw <= 0:
+        return 0
+    cap = max(36, int((int(min_words or 0) / 6.25) + 0.999))
+    return min(raw, cap)
 
 
 def _section_key(section: str) -> str:
@@ -237,9 +302,11 @@ def _lyric_stats(lyrics: str) -> dict[str, Any]:
         if count > 1 and len(line) > 8
     ]
     unique_ratio = round(len(set(line.lower() for line in lyric_lines)) / max(1, len(lyric_lines)), 2)
+    avg_words_per_line = round(len(words) / max(1, len(lyric_lines)), 2)
     return {
         "word_count": len(words),
         "line_count": len(lyric_lines),
+        "avg_words_per_line": avg_words_per_line,
         "section_count": len(sections),
         "sections": [f"[{item}]" for item in sections],
         "char_count": len(str(lyrics or "")),
@@ -276,7 +343,7 @@ def _line_word_chunks(line: str, target_words: int = 6) -> list[str]:
         if piece.strip(" ,;:.!?-")
     ]
     words = _words(text)
-    if len(pieces) <= 1 and len(words) > target_words + 2:
+    if len(pieces) <= 1 and len(words) >= max(target_words + 1, 7):
         pieces = [" ".join(words[index : index + target_words]) for index in range(0, len(words), target_words)]
     if len(pieces) > 1 and all(len(_words(piece)) >= 2 for piece in pieces):
         return ([tag_prefix] if tag_prefix else []) + pieces
@@ -300,7 +367,25 @@ def _line_word_chunks(line: str, target_words: int = 6) -> list[str]:
     return segments
 
 
-def _reflow_lyrics_to_min_lines(lyrics: str, min_lines: int, max_chars: int = ACE_STEP_LYRICS_CHAR_LIMIT) -> tuple[str, bool]:
+def _protected_phrase_line(line: str, protected_phrases: list[str]) -> bool:
+    if not protected_phrases:
+        return False
+    normalized_line = _phrase_norm(line)
+    if not normalized_line:
+        return False
+    for phrase in protected_phrases:
+        normalized_phrase = _phrase_norm(phrase)
+        if normalized_phrase and (normalized_phrase in normalized_line or normalized_line in normalized_phrase):
+            return True
+    return False
+
+
+def _reflow_lyrics_to_min_lines(
+    lyrics: str,
+    min_lines: int,
+    max_chars: int = ACE_STEP_LYRICS_CHAR_LIMIT,
+    protected_phrases: list[str] | None = None,
+) -> tuple[str, bool]:
     """Increase line count by splitting long lines, without adding filler words."""
     text = str(lyrics or "").strip()
     stats = _lyric_stats(text)
@@ -308,18 +393,20 @@ def _reflow_lyrics_to_min_lines(lyrics: str, min_lines: int, max_chars: int = AC
     if not text or stats["line_count"] >= target:
         return text, False
     deficit = target - stats["line_count"]
+    target_words = 6
     output: list[str] = []
     changed = False
+    protected = [str(item) for item in (protected_phrases or []) if str(item).strip()]
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
-        if deficit <= 0 or _section_only_line(line) or not line.strip():
+        if deficit <= 0 or _section_only_line(line) or not line.strip() or _protected_phrase_line(line, protected):
             output.append(line)
             continue
         words = _words(line)
-        if len(words) < 8 and len(line) < 48:
+        if len(words) <= target_words + 1 and len(line) < 48:
             output.append(line)
             continue
-        chunks = _line_word_chunks(line, target_words=6)
+        chunks = _line_word_chunks(line, target_words=target_words)
         if len(chunks) > 1:
             keep = min(len(chunks), deficit + 1)
             output.extend(chunks[:keep])
@@ -331,6 +418,70 @@ def _reflow_lyrics_to_min_lines(lyrics: str, min_lines: int, max_chars: int = AC
             output.append(line)
     repaired = "\n".join(output).strip()
     if changed and len(repaired) <= max_chars and _lyric_stats(repaired)["line_count"] > stats["line_count"]:
+        return repaired, True
+    return text, False
+
+
+def _extract_reprise_lines(lyrics: str, max_lines: int = 8) -> list[str]:
+    lines = [_normalize_lyric_section_line(line).strip() for line in str(lyrics or "").splitlines()]
+    collected: list[str] = []
+    in_hook = False
+    for line in lines:
+        if not line:
+            if in_hook and collected:
+                break
+            continue
+        section = SECTION_RE.fullmatch(line)
+        if section:
+            key = _section_key(section.group(1))
+            if any(token in key for token in ("chorus", "hook", "refrain")):
+                in_hook = True
+                continue
+            if in_hook and collected:
+                break
+            in_hook = False
+            continue
+        if in_hook and not META_LEAK_LINE_RE.search(_metadata_probe(line)):
+            collected.append(line)
+            if len(collected) >= max_lines:
+                break
+    return collected
+
+
+def _extend_lyrics_to_min_words(
+    lyrics: str,
+    payload: dict[str, Any],
+    min_words: int,
+    max_chars: int = ACE_STEP_LYRICS_CHAR_LIMIT,
+) -> tuple[str, bool]:
+    """Fix small word-count misses by reusing musical material, not filler."""
+    text = str(lyrics or "").strip()
+    stats = _lyric_stats(text)
+    missing = int(min_words or 0) - int(stats.get("word_count") or 0)
+    if not text or missing <= 0:
+        return text, False
+    if missing > 36:
+        return text, False
+    reprise_lines = _extract_reprise_lines(text, max_lines=8)
+    extension_lines: list[str] = []
+    added_words = 0
+    for line in reprise_lines:
+        clean = re.sub(r"\s+", " ", str(line or "")).strip()
+        if not clean or _section_only_line(clean):
+            continue
+        extension_lines.append(clean)
+        added_words += len(_words(clean))
+        if added_words >= missing:
+            break
+        prospective = (text.rstrip() + "\n\n[Final Chorus - reprise]\n" + "\n".join(extension_lines)).strip()
+        if len(prospective) > max_chars:
+            extension_lines.pop()
+            break
+    if added_words < missing or not extension_lines:
+        return text, False
+    block = "\n\n[Final Chorus - reprise]\n" + "\n".join(extension_lines)
+    repaired = (text.rstrip() + block).strip()
+    if len(repaired) <= max_chars and _lyric_stats(repaired)["word_count"] >= int(min_words or 0):
         return repaired, True
     return text, False
 
@@ -384,12 +535,13 @@ def tag_dimension_coverage(caption: str, tag_list: Any = None) -> dict[str, Any]
 
 def _clean_caption(payload: dict[str, Any], coverage: dict[str, Any]) -> str:
     terms: list[str] = []
-    for value in [payload.get("tag_list"), payload.get("caption"), payload.get("style"), payload.get("vibe")]:
+    for value in [payload.get("style"), payload.get("vibe"), payload.get("caption"), payload.get("tag_list")]:
         for term in _split_terms(value):
             if not _caption_term_allowed(term):
                 continue
             if term.lower() not in {existing.lower() for existing in terms}:
                 terms.append(term)
+    terms = _prune_caption_terms(terms)
     for dimension in coverage.get("missing") or []:
         repair = DIMENSION_REPAIR_TERMS.get(str(dimension), "")
         if repair and repair.lower() not in {existing.lower() for existing in terms}:
@@ -410,6 +562,7 @@ def build_album_global_sonic_caption(concept: str, tracks: list[dict[str, Any]] 
             for term in _split_terms(value):
                 if _caption_term_allowed(term) and term.lower() not in {item.lower() for item in terms}:
                     terms.append(term)
+    terms = _prune_caption_terms(terms)
     if not terms:
         terms = _split_terms(concept)[:8]
     if not terms:
@@ -440,11 +593,22 @@ def evaluate_album_payload_quality(
     coverage = tag_dimension_coverage(caption, tag_list)
     caption_leaks = _caption_has_leakage(caption)
     tag_leaks = [term for term in tag_terms if _caption_has_leakage(term)]
+    caption_terms_for_check = [
+        term
+        for term in [*_split_terms(caption), *tag_terms]
+        if _caption_term_allowed(term)
+    ]
+    genre_terms = []
+    for term in caption_terms_for_check:
+        if _caption_term_is_genre(term) and term.lower() not in {item.lower() for item in genre_terms}:
+            genre_terms.append(term)
     if caption_leaks or tag_leaks:
         issues.append({"id": "caption_leakage", "severity": "repairable", "detail": f"{len(caption_leaks) + len(tag_leaks)} leak marker(s)"})
+    if len(genre_terms) > 2:
+        issues.append({"id": "caption_genre_overload", "severity": "repairable", "detail": ", ".join(genre_terms[:6])})
     if coverage.get("missing"):
         issues.append({"id": "tag_dimension_coverage", "severity": "repairable", "detail": ", ".join(coverage["missing"])})
-    if repair and (caption_leaks or tag_leaks or coverage.get("missing")):
+    if repair and (caption_leaks or tag_leaks or coverage.get("missing") or len(genre_terms) > 2):
         if tag_leaks:
             repaired["tag_list"] = [term for term in tag_terms if not _caption_has_leakage(term)]
             tag_list = repaired["tag_list"]
@@ -495,9 +659,41 @@ def evaluate_album_payload_quality(
 
     if not instrumental:
         min_words = int(plan.get("min_words") or 0)
-        min_lines = int(plan.get("min_lines") or 0)
-        if repair and stats["line_count"] < min_lines and stats["word_count"] >= min_words and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
-            reflowed, changed = _reflow_lyrics_to_min_lines(lyrics, min_lines, ACE_STEP_LYRICS_CHAR_LIMIT)
+        raw_min_lines = int(plan.get("min_lines") or 0)
+        min_lines = _effective_min_lines(raw_min_lines, min_words)
+        if raw_min_lines and min_lines != raw_min_lines:
+            plan = dict(plan)
+            plan["raw_min_lines"] = raw_min_lines
+            plan["effective_min_lines"] = min_lines
+        required_phrases = [str(item).strip() for item in (repaired.get("required_phrases") or []) if str(item).strip()]
+        missing_required = [phrase for phrase in required_phrases if not _phrase_present(phrase, lyrics)]
+        can_extend_near_miss = (
+            stats["word_count"] >= max(80, int(min_words * 0.65))
+            and stats["fallback_artifact_count"] == 0
+            and not stats["meta_leak_lines"]
+            and stats["placeholder_count"] == 0
+        )
+        if missing_required and repair:
+            append_block = "\n\n[Required Hook]\n" + "\n".join(missing_required[:6])
+            if len(lyrics) + len(append_block) <= ACE_STEP_LYRICS_CHAR_LIMIT:
+                repaired["lyrics"] = (lyrics.rstrip() + append_block).strip()
+                lyrics = str(repaired["lyrics"])
+                stats = _lyric_stats(lyrics)
+                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
+                repair_actions.append("missing_required_phrases_appended")
+        if repair and can_extend_near_miss and stats["word_count"] < min_words and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
+            extended, changed = _extend_lyrics_to_min_words(lyrics, repaired, min_words, ACE_STEP_LYRICS_CHAR_LIMIT)
+            if changed:
+                old_words = stats["word_count"]
+                repaired["lyrics"] = extended
+                lyrics = extended
+                stats = _lyric_stats(lyrics)
+                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
+                repair_actions.append(f"lyrics_extended_to_min_words:{old_words}->{stats['word_count']}")
+        if repair and stats["line_count"] < min_lines and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
+            reflowed, changed = _reflow_lyrics_to_min_lines(lyrics, min_lines, ACE_STEP_LYRICS_CHAR_LIMIT, required_phrases)
             if changed:
                 old_lines = stats["line_count"]
                 repaired["lyrics"] = reflowed
@@ -506,14 +702,30 @@ def evaluate_album_payload_quality(
                 actual_keys = {_section_key(section) for section in stats["sections"] if section}
                 section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
                 repair_actions.append(f"lyrics_reflowed_to_min_lines:{old_lines}->{stats['line_count']}")
+        can_extend_near_miss = (
+            stats["word_count"] >= max(80, int(min_words * 0.65))
+            and stats["fallback_artifact_count"] == 0
+            and not stats["meta_leak_lines"]
+            and stats["placeholder_count"] == 0
+        )
+        if repair and can_extend_near_miss and stats["word_count"] < min_words and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
+            extended, changed = _extend_lyrics_to_min_words(lyrics, repaired, min_words, ACE_STEP_LYRICS_CHAR_LIMIT)
+            if changed:
+                old_words = stats["word_count"]
+                repaired["lyrics"] = extended
+                lyrics = extended
+                stats = _lyric_stats(lyrics)
+                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
+                repair_actions.append(f"lyrics_extended_to_min_words_after_reflow:{old_words}->{stats['word_count']}")
         if not has_vocal_lyrics(lyrics):
             issues.append({"id": "lyrics_missing", "severity": "fail", "detail": "vocal track has no lyrics"})
         if stats["char_count"] > ACE_STEP_LYRICS_CHAR_LIMIT:
             issues.append({"id": "lyrics_over_budget", "severity": "fail", "detail": f"{stats['char_count']}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars"})
         if stats["word_count"] < int(plan.get("min_words") or 0):
             issues.append({"id": "lyrics_under_length", "severity": "fail", "detail": f"{stats['word_count']}/{plan.get('min_words')} words"})
-        if stats["line_count"] < int(plan.get("min_lines") or 0):
-            issues.append({"id": "lyrics_too_few_lines", "severity": "fail", "detail": f"{stats['line_count']}/{plan.get('min_lines')} lines"})
+        if stats["line_count"] < min_lines:
+            issues.append({"id": "lyrics_too_few_lines", "severity": "fail", "detail": f"{stats['line_count']}/{min_lines} lines"})
         if section_coverage < 0.72:
             issues.append({"id": "section_coverage_low", "severity": "fail", "detail": f"{section_coverage} coverage"})
         if stats["hook_count"] < 1:
@@ -537,16 +749,9 @@ def evaluate_album_payload_quality(
             issues.append({"id": "lyric_repetition_warning", "severity": "warning", "detail": f"{len(stats['repeated_lines'])} repeated line(s)"})
 
     required_phrases = [str(item).strip() for item in (repaired.get("required_phrases") or []) if str(item).strip()]
-    missing_required = [phrase for phrase in required_phrases if phrase.lower() not in lyrics.lower()]
+    missing_required = [phrase for phrase in required_phrases if not _phrase_present(phrase, lyrics)]
     if missing_required and not instrumental:
-        append_block = "\n\n[Required Hook]\n" + "\n".join(missing_required[:6])
-        if repair and len(lyrics) + len(append_block) <= ACE_STEP_LYRICS_CHAR_LIMIT:
-            repaired["lyrics"] = (lyrics.rstrip() + append_block).strip()
-            lyrics = str(repaired["lyrics"])
-            stats = _lyric_stats(lyrics)
-            repair_actions.append("missing_required_phrases_appended")
-        else:
-            issues.append({"id": "required_phrases_missing", "severity": "fail", "detail": ", ".join(missing_required[:4])})
+        issues.append({"id": "required_phrases_missing", "severity": "fail", "detail": ", ".join(missing_required[:4])})
 
     fail_issues = [issue for issue in issues if issue.get("severity") == "fail"]
     repairable_issues = [issue for issue in issues if issue.get("severity") == "repairable"]

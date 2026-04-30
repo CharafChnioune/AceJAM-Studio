@@ -137,7 +137,7 @@ Lyrics:
             """
 Album: Midnight Bakery
 Track 1: "Neon Bakery Lights" (Produced by Studio House)
-BPM: 95 | Style: upbeat city-pop
+BPM: 95 | Duration: 2:40 | Style: upbeat city-pop
 The Vibe: rubber bass and bright piano.
 The Narrative: the block gathers after midnight.
 Required hook phrase: Neon bakery lights keep calling us home.
@@ -147,9 +147,36 @@ Required hook phrase: Neon bakery lights keep calling us home.
         )
 
         track = contract["tracks"][0]
+        self.assertEqual(track["duration"], 160)
         self.assertEqual(track["narrative"], "the block gathers after midnight.")
         self.assertIn("Neon bakery lights keep calling us home.", track["required_phrases"])
         self.assertNotIn("[]", track["required_phrases"])
+
+    def test_user_album_contract_required_phrase_matching_is_punctuation_tolerant(self):
+        from user_album_contract import apply_user_album_contract_to_track
+
+        contract = extract_user_album_contract(
+            """
+Album: Concrete Test
+Track 1: "Concrete Canyons" (Produced by Studio House)
+Lyrics:
+"They paved them blocks just to hide what’s real,"
+"Death Row… East Coast… Closed doors…"
+""",
+            1,
+            "en",
+        )
+        logs = []
+        track = {
+            "track_number": 1,
+            "title": "Concrete Canyons",
+            "lyrics": "They paved them blocks just to hide what's real\nDeath Row... East Coast... Closed doors",
+        }
+
+        repaired = apply_user_album_contract_to_track(track, contract, 0, logs)
+
+        self.assertNotIn("required_phrase", repaired["contract_repaired_fields"])
+        self.assertNotIn("required_phrase", " ".join(logs))
 
     def test_user_album_contract_handles_prod_shorthand_and_verse_label(self):
         contract = extract_user_album_contract(
@@ -571,8 +598,8 @@ kill all the rivals
                 "title": "Generated Rename",
                 "producer_credit": "Wrong Producer",
                 "description": "wrong",
-                "tags": "warm boom-bap, steady groove, drums, brass, clear lead vocal, hopeful atmosphere, dynamic hook arrangement, polished studio mix",
-                "tag_list": ["warm boom-bap", "steady groove", "brass", "clear lead vocal", "hopeful atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                "tags": "modern pop, steady groove, bass, brass, drums, clear lead vocal, hopeful warm atmosphere, dynamic hook arrangement, polished studio mix",
+                "tag_list": ["modern pop", "steady groove", "bass", "brass", "drums", "clear lead vocal", "hopeful warm atmosphere", "dynamic hook arrangement", "polished studio mix"],
                 "duration": 45,
                 "bpm": 120,
             }],
@@ -588,17 +615,22 @@ kill all the rivals
         def fake_agent_json_call(*, agent_name, **_kwargs):
             if agent_name == "Album Bible Agent":
                 return bible_payload
+            if agent_name == "Track Blueprint Agent":
+                return bible_payload["tracks"][0]
             if agent_name == "Track Writer Agent":
                 return writer_payload
             if agent_name == "Track Finalizer Agent":
                 return {**writer_payload, "title": "Another Rename", "bpm": 140}
             raise AssertionError(agent_name)
 
-        with patch.object(album_crew_module, "preflight_album_agent_llm", return_value={
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
             "ok": True,
             "chat_ok": True,
+            "embed_ok": True,
+            "embedding_model": "embed-local",
             "warnings": [],
-        }), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_agent_json_call):
+            "errors": [],
+        }), patch.object(album_crew_module, "local_llm_embed", return_value=[1.0, 0.0, 0.0]), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_agent_json_call):
             result = plan_album(
                 self.SAFE_CONTRACT_PROMPT,
                 num_tracks=1,
@@ -621,7 +653,168 @@ kill all the rivals
         self.assertEqual(result["tracks"][0]["bpm"], 92)
         self.assertIn("Open the shutters", result["tracks"][0]["lyrics"])
         self.assertIn(result["tracks"][0]["payload_gate_status"], {"pass", "auto_repair"})
+        self.assertTrue(result["memory_enabled"])
+        self.assertGreaterEqual(result["context_chunks"], 1)
         self.assertTrue(any("AceJAM Agents produced" in line for line in result["logs"]))
+
+    def test_acejam_agents_continue_when_album_bible_agent_fails(self):
+        lyrics = self._valid_album_test_lyrics(["Open the shutters"], lines_per_section=8)
+
+        def fake_agent_json_call(*, agent_name, **_kwargs):
+            if agent_name == "Album Bible Agent":
+                raise album_crew_module.AceJamAgentError("empty bible response")
+            if agent_name == "Track Blueprint Agent":
+                return {
+                    "track_number": 1,
+                    "title": "Wrong Rename",
+                    "producer_credit": "Wrong Producer",
+                    "bpm": 120,
+                    "duration": 180,
+                    "key_scale": "C major",
+                    "style": "modern pop",
+                    "vibe": "bright rebuild energy",
+                    "narrative": "neighbors rebuild trust",
+                    "description": "neighbors rebuild trust",
+                    "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                    "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                    "hook_promise": "Open the shutters.",
+                }
+            if agent_name in {"Track Writer Agent", "Track Finalizer Agent"}:
+                return {
+                    "description": "neighbors reopen stalls and trade stories instead of rumors.",
+                    "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                    "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                    "lyrics": lyrics,
+                    "hook_promise": "Open the shutters into a brighter block.",
+                }
+            raise AssertionError(agent_name)
+
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "embed_ok": True,
+            "embedding_model": "embed-local",
+            "warnings": [],
+            "errors": [],
+        }), patch.object(album_crew_module, "local_llm_embed", return_value=[1.0, 0.0, 0.0]), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_agent_json_call):
+            result = plan_album(
+                self.SAFE_CONTRACT_PROMPT,
+                num_tracks=1,
+                track_duration=45,
+                ollama_model="qwen-local",
+                embedding_model="embed-local",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                use_crewai=True,
+                planner_provider="ollama",
+                embedding_provider="ollama",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["tracks"][0]["title"], "Morning Market")
+        self.assertEqual(result["tracks"][0]["duration"], 45)
+        self.assertEqual(result["tracks"][0]["producer_credit"], "Ada North")
+        self.assertIn("empty bible response", result["album_bible_agent_error"])
+        self.assertTrue(any("Album Bible Agent failed explicitly" in line for line in result["logs"]))
+        self.assertTrue(any("Ignored blueprint duration hint" in line for line in result["logs"]))
+
+    def test_acejam_agents_scaffold_fills_missing_tracks_from_short_bible(self):
+        lyrics = self._valid_album_test_lyrics(["Open the shutters"], lines_per_section=8)
+        prompt = """
+Album: Market Lights
+Concept: A safe city album about rebuilding trust after a long blackout.
+Track 1: "Morning Market" (Produced by Ada North)
+(BPM: 92 | Key: A minor | Style: warm boom-bap)
+The Vibe: brass stabs, vinyl dust, calm crowd energy.
+The Narrative: neighbors reopen stalls and trade stories instead of rumors.
+
+Track 2: "Rooftop Letters" (Produced by Mira South)
+(BPM: 104 | Style: melodic house)
+The Vibe: soft synth pulse and bright handclaps.
+The Narrative: friends read old letters on a roof as the lights come back.
+"""
+        bible_payload = {
+            "album_bible": {"album_title": "Market Lights", "concept": "safe city recovery", "arc": "five chapters"},
+            "tracks": [
+                {"track_number": 1, "title": "Morning Market", "tags": "modern pop, steady groove, bass, brass, drums, clear lead vocal, hopeful warm atmosphere, dynamic hook arrangement, polished studio mix"},
+                {"track_number": 2, "title": "Rooftop Letters", "tags": "modern pop, steady groove, synth, handclap drums, clear lead vocal, hopeful bright atmosphere, dynamic hook arrangement, polished studio mix"},
+            ],
+        }
+
+        blueprint_calls = {"count": 0}
+
+        def fake_agent_json_call(*, agent_name, user_prompt="", **_kwargs):
+            if agent_name == "Album Bible Agent":
+                return bible_payload
+            if agent_name == "Track Blueprint Agent":
+                blueprint_calls["count"] += 1
+                number = blueprint_calls["count"]
+                return {
+                    "track_number": number,
+                    "title": f"Generated Track {number}",
+                    "producer_credit": f"Producer {number}",
+                    "bpm": 95 + number,
+                    "key_scale": "A minor",
+                    "style": "modern pop",
+                    "vibe": "bright rebuild energy",
+                    "narrative": f"chapter {number} of the blackout recovery",
+                    "description": f"chapter {number} of the blackout recovery",
+                    "tag_list": ["modern pop", "steady groove", "bass", "bright drums", "clear lead vocal", "emotional atmosphere", "dynamic hook arrangement", "polished studio mix"],
+                    "tags": "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                    "hook_promise": f"Track {number} brings the lights back.",
+                }
+            if agent_name == "Track Writer Agent":
+                is_house = "Rooftop Letters" in user_prompt or "melodic house" in user_prompt
+                track_lyrics = self._valid_album_test_lyrics([], sections=["Intro", "Build", "Drop", "Chorus"], lines_per_section=2) if is_house else lyrics
+                track_tags = "modern house, steady groove, synth, handclap drums, clear vocal chops, bright atmosphere, dynamic drop arrangement, polished studio mix" if is_house else "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
+                return {
+                    "description": "neighbors rebuild trust with a clear chorus.",
+                    "tags": track_tags,
+                    "tag_list": track_tags.split(", "),
+                    "lyrics": track_lyrics,
+                    "hook_promise": "Bring the lights back.",
+                }
+            if agent_name == "Track Finalizer Agent":
+                is_house = "Rooftop Letters" in user_prompt or "melodic house" in user_prompt
+                track_lyrics = self._valid_album_test_lyrics([], sections=["Intro", "Build", "Drop", "Chorus"], lines_per_section=2) if is_house else lyrics
+                track_tags = "modern house, steady groove, synth, handclap drums, clear vocal chops, bright atmosphere, dynamic drop arrangement, polished studio mix" if is_house else "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
+                return {
+                    "description": "neighbors rebuild trust with a clear chorus.",
+                    "tags": track_tags,
+                    "tag_list": track_tags.split(", "),
+                    "lyrics": track_lyrics,
+                    "hook_promise": "Bring the lights back.",
+                }
+            raise AssertionError(agent_name)
+
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "embed_ok": True,
+            "embedding_model": "embed-local",
+            "warnings": [],
+            "errors": [],
+        }), patch.object(album_crew_module, "local_llm_embed", return_value=[1.0, 0.0, 0.0]), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_agent_json_call):
+            result = plan_album(
+                prompt,
+                num_tracks=5,
+                track_duration=45,
+                ollama_model="qwen-local",
+                embedding_model="embed-local",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                use_crewai=True,
+                planner_provider="ollama",
+                embedding_provider="ollama",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(result["tracks"]), 5)
+        self.assertEqual(result["tracks"][0]["title"], "Morning Market")
+        self.assertEqual(result["tracks"][1]["title"], "Rooftop Letters")
+        self.assertTrue(all(int(track.get("duration") or 0) == 45 for track in result["tracks"]))
+        self.assertIn("Bible returned 2 optional blueprint hint(s); scaffold requires 5.", result["logs"])
+        self.assertTrue(all(track.get("payload_gate_status") in {"pass", "auto_repair"} for track in result["tracks"]))
+        self.assertTrue(result["memory_enabled"])
+        self.assertGreaterEqual(result["retrieval_rounds"], 1)
 
     def test_acejam_agent_prompt_contains_full_contract_template_and_counter(self):
         template = render_track_prompt_template(
@@ -649,10 +842,13 @@ kill all the rivals
         self.assertIn("LYRIC_LENGTH_PLAN", prompt)
 
     def test_acejam_agents_empty_response_fails_loudly_without_toolbelt(self):
-        with patch.object(album_crew_module, "preflight_album_agent_llm", return_value={
+        with patch.object(album_crew_module, "preflight_album_local_llm", return_value={
             "ok": True,
             "chat_ok": True,
+            "embed_ok": False,
+            "embedding_model": "embed-local",
             "warnings": [],
+            "errors": [],
         }), patch.object(album_crew_module, "_agent_json_call", side_effect=album_crew_module.AceJamAgentError("empty response")):
             result = plan_album(
                 "safe city recovery album",
@@ -688,6 +884,28 @@ kill all the rivals
         self.assertEqual(parsed["title"], "Lanterns on the Pier")
         self.assertIn("[Chorus]", parsed["lyrics"])
         self.assertIn("calling us home", parsed["lyrics"])
+
+    def test_agent_json_call_uses_plain_ollama_transport_by_default(self):
+        calls = []
+
+        def fake_call_agent_llm(**kwargs):
+            calls.append(kwargs.get("json_format"))
+            return '{"ok": true}'
+
+        with patch.object(album_crew_module, "_call_agent_llm", side_effect=fake_call_agent_llm):
+            payload = album_crew_module._agent_json_call(
+                agent_name="Album Bible Agent",
+                provider="ollama",
+                model_name="qwen-local",
+                user_prompt="Return {\"ok\": true}",
+                logs=[],
+                debug_options={},
+                schema_name="unit",
+                max_retries=0,
+            )
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(calls, [False])
 
     def test_agent_payload_lyrics_lines_are_joined(self):
         payload = _coerce_agent_lyrics_payload({
@@ -1696,7 +1914,9 @@ Lyrics:
         repaired = json.loads(repaired_json)
 
         self.assertTrue(ok)
-        self.assertGreaterEqual(repaired["lyrics_line_count"], lyric_plan["min_lines"])
+        effective_min = repaired["lyric_duration_fit"]["plan"]["effective_min_lines"]
+        self.assertLess(effective_min, lyric_plan["min_lines"])
+        self.assertGreaterEqual(repaired["lyrics_line_count"], effective_min)
         self.assertGreaterEqual(len(repaired["caption_dimensions_covered"]), 7)
 
     def test_empty_crewai_payload_is_explicit_failure_marker(self):

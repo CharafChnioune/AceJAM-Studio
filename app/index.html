@@ -5767,6 +5767,10 @@
       const contractApplied = Boolean(job.input_contract_applied || result.input_contract_applied);
       const contractRepairs = Number(job.contract_repair_count || result.contract_repair_count || 0);
       const blockedUnsafe = Number(job.blocked_unsafe_count || result.blocked_unsafe_count || 0);
+      const contextChunks = Number(job.context_chunks || result.context_chunks || 0);
+      const retrievalRounds = Number(job.retrieval_rounds || result.retrieval_rounds || 0);
+      const sequenceRepairs = Number(job.sequence_repair_count || result.sequence_repair_count || 0);
+      const contextStoreIndex = job.context_store_index || result.context_store_index || "";
       const stateIcon = job.state === "succeeded" ? "\u2713" : job.state === "failed" ? "\u2715" : job.state === "running" ? "\u25B6" : "\u25F7";
       const elapsed = job.started_at ? (() => {
         const end = job.finished_at ? new Date(job.finished_at) : new Date();
@@ -5781,7 +5785,10 @@
         promptKitVersion ? `Prompt Kit: ${promptKitVersion}` : "",
         contractApplied ? `Input Contract: applied · Repairs: ${contractRepairs}` : "",
         `Planner: ${job.planner_provider || "local"} / ${job.planner_model || "unknown"} · Embedding: ${job.embedding_provider || "local"} / ${job.embedding_model || "unknown"} · Memory: ${job.memory_enabled ? "on" : "off"}`,
+        contextChunks ? `Context chunks: ${contextChunks} · Retrieval rounds: ${retrievalRounds}` : "",
+        sequenceRepairs ? `Sequence repairs: ${sequenceRepairs}` : "",
         agentDebugDir ? `Agent debug dir: ${agentDebugDir}` : "",
+        contextStoreIndex ? `Context store index: ${contextStoreIndex}` : "",
         crewaiLogFile ? `Legacy CrewAI log file: ${crewaiLogFile}` : "",
         job.current_model_album ? `Model album: ${job.current_model_album}` : "",
         job.current_track ? `Track: ${job.current_track}` : "",

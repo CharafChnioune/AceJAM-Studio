@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 
+ACE_STEP_CAPTION_CHAR_LIMIT = 512
+ACE_STEP_LYRICS_CHAR_LIMIT = 4096
+
+
 def _prepare_vendor_imports(vendor_dir: Path) -> None:
     app_dir = Path(__file__).resolve().parent
     filtered = []
@@ -52,6 +56,32 @@ def _parse_seeds(value: Any) -> list[int] | None:
         if str(item).strip():
             seeds.append(int(float(item)))
     return seeds or None
+
+
+def _clip_caption_for_acestep(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) <= ACE_STEP_CAPTION_CHAR_LIMIT:
+        return text
+    clipped = text[:ACE_STEP_CAPTION_CHAR_LIMIT].rsplit(",", 1)[0].strip(" ,")
+    return clipped or text[:ACE_STEP_CAPTION_CHAR_LIMIT].strip()
+
+
+def _enforce_text_budgets(params_data: dict[str, Any], *, stage: str) -> None:
+    caption = str(params_data.get("caption") or "")
+    if len(caption) > ACE_STEP_CAPTION_CHAR_LIMIT:
+        print(
+            f"[official_runner] {stage} caption over {ACE_STEP_CAPTION_CHAR_LIMIT} chars; clipping "
+            f"{len(caption)}->{ACE_STEP_CAPTION_CHAR_LIMIT}"
+        )
+        params_data["caption"] = _clip_caption_for_acestep(caption)
+    lyrics = str(params_data.get("lyrics") or "")
+    if lyrics.strip().lower() == "[instrumental]":
+        return
+    if len(lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
+        raise RuntimeError(
+            f"{stage} lyrics exceed ACE-Step budget: {len(lyrics)}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars. "
+            "Shorten, split into parts, or run the app auto-fit step before rendering."
+        )
 
 
 def _resolve_backend(requested: str) -> str:
@@ -462,10 +492,12 @@ def _run(request_path: Path, response_path: Path) -> None:
     if params_data.pop("use_format", False):
         if llm_handler is None:
             raise RuntimeError("use_format requires an initialized ACE-Step LM")
+        original_caption = str(params_data.get("caption") or "")
+        original_lyrics = str(params_data.get("lyrics") or "")
         formatted = format_sample(
             llm_handler=llm_handler,
-            caption=params_data.get("caption") or "",
-            lyrics=params_data.get("lyrics") or "",
+            caption=original_caption,
+            lyrics=original_lyrics,
             user_metadata={
                 key: value
                 for key, value in {
@@ -486,12 +518,23 @@ def _run(request_path: Path, response_path: Path) -> None:
         )
         if not formatted.success:
             raise RuntimeError(formatted.error or formatted.status_message or "format_sample failed")
-        params_data["caption"] = formatted.caption or params_data.get("caption", "")
-        params_data["lyrics"] = formatted.lyrics or params_data.get("lyrics", "")
+        formatted_caption = str(formatted.caption or original_caption)
+        formatted_lyrics = str(formatted.lyrics or original_lyrics)
+        if len(formatted_lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT and 0 < len(original_lyrics) <= ACE_STEP_LYRICS_CHAR_LIMIT:
+            print(
+                "[official_runner] format_sample lyrics exceeded ACE-Step budget; "
+                f"preserving original lyrics ({len(formatted_lyrics)}->{len(original_lyrics)} chars)"
+            )
+            formatted_lyrics = original_lyrics
+        params_data["caption"] = _clip_caption_for_acestep(formatted_caption)
+        params_data["lyrics"] = formatted_lyrics
         params_data["bpm"] = formatted.bpm or params_data.get("bpm")
         params_data["keyscale"] = formatted.keyscale or params_data.get("keyscale", "")
         params_data["timesignature"] = formatted.timesignature or params_data.get("timesignature", "")
         params_data["duration"] = formatted.duration or params_data.get("duration")
+        _enforce_text_budgets(params_data, stage="format_sample output")
+
+    _enforce_text_budgets(params_data, stage="generation input")
 
     config = GenerationConfig(
         batch_size=int(config_data.get("batch_size") or 1),
