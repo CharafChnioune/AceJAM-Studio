@@ -95,13 +95,18 @@ def _print_llm_io(label: str, payload: Any) -> None:
 
 def normalize_provider(provider: Any) -> str:
     value = str(provider or "ollama").strip().lower().replace("_", "-")
+    if value in {"ace-step-lm", "ace-lm", "acestep-lm", "acestep", "ace", "5hz-lm", "ace-step-5hz-lm"}:
+        return "ace_step_lm"
     if value in {"lmstudio", "lm-studio", "lm studio"}:
         return "lmstudio"
     return "ollama"
 
 
 def provider_label(provider: Any) -> str:
-    return "LM Studio" if normalize_provider(provider) == "lmstudio" else "Ollama"
+    provider_name = normalize_provider(provider)
+    if provider_name == "ace_step_lm":
+        return "ACE-Step 5Hz LM"
+    return "LM Studio" if provider_name == "lmstudio" else "Ollama"
 
 
 def _payload_first(payload: dict[str, Any] | None, *names: str) -> Any:
@@ -529,7 +534,19 @@ def lmstudio_model_catalog() -> dict[str, Any]:
 
 
 def model_catalog(provider: Any) -> dict[str, Any]:
-    return lmstudio_model_catalog() if normalize_provider(provider) == "lmstudio" else ollama_model_catalog()
+    provider_name = normalize_provider(provider)
+    if provider_name == "ace_step_lm":
+        return {
+            "ready": False,
+            "provider": "ace_step_lm",
+            "provider_label": provider_label(provider_name),
+            "models": [],
+            "chat_models": [],
+            "embedding_models": [],
+            "details": [],
+            "error": "ACE-Step 5Hz LM is exposed through AceJAM writer helper routes, not the generic local chat/embedding API.",
+        }
+    return lmstudio_model_catalog() if provider_name == "lmstudio" else ollama_model_catalog()
 
 
 def resolve_model(provider: Any, model_name: str, kind: str = "chat") -> str:
@@ -679,6 +696,8 @@ def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: d
 
 def chat_completion(provider: Any, model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
     provider_name = normalize_provider(provider)
+    if provider_name == "ace_step_lm":
+        raise LocalLLMError("ACE-Step 5Hz LM is not a generic chat backend; use the official ACE-Step writer helper route.")
     model = resolve_model(provider_name, model_name, "chat")
     if provider_name == "lmstudio":
         return lmstudio_chat(model, messages, options=options, json_format=json_format)

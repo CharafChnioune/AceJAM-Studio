@@ -80,7 +80,7 @@ ACEJAM_PAYLOAD_JSON
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertEqual(data["payload"]["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
+        self.assertEqual(data["payload"]["ace_lm_model"], "none")
         self.assertEqual(data["payload"]["planner_lm_provider"], "lmstudio")
         self.assertEqual(data["payload"]["planner_model"], "local-qwen")
         self.assertNotIn("planner_ollama_model", data["payload"])
@@ -148,6 +148,43 @@ ACEJAM_PAYLOAD_JSON
         self.assertEqual(settings["planner_timeout"], 90.0)
         self.assertEqual(response.json()["payload"]["planner_temperature"], 0.77)
 
+    def test_prompt_assistant_ace_step_writer_routes_to_official_lm(self):
+        client = TestClient(acejam_app.app)
+        official_payload = {
+            "success": True,
+            "ace_lm_model": acejam_app.ACE_LM_PREFERRED_MODEL,
+            "title": "Official Writer",
+            "artist_name": "Five Hertz",
+            "caption": "alt pop, live drums, sub bass, clear vocal, polished mix",
+            "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook",
+            "bpm": 108,
+            "key_scale": "C minor",
+            "time_signature": "4",
+        }
+
+        with patch.object(acejam_app, "_run_official_lm_aux", return_value=official_payload) as official, \
+            patch.object(acejam_app, "_run_prompt_assistant_local") as local:
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={
+                    "mode": "custom",
+                    "user_prompt": "write a sharp alt pop song",
+                    "planner_lm_provider": "ace_step_lm",
+                    "planner_model": acejam_app.ACE_LM_PREFERRED_MODEL,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(local.called)
+        action, body = official.call_args.args
+        self.assertEqual(action, "create_sample")
+        self.assertEqual(body["planner_lm_provider"], "ace_step_lm")
+        self.assertEqual(body["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
+        payload = response.json()["payload"]
+        self.assertEqual(payload["planner_lm_provider"], "ace_step_lm")
+        self.assertEqual(payload["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
+        self.assertEqual(payload["title"], "Official Writer")
+
     def test_prompt_assistant_blocks_trainer_mode_and_hides_prompt_listing(self):
         client = TestClient(acejam_app.app)
         prompts = client.get("/api/prompt-assistant/prompts")
@@ -190,7 +227,7 @@ ACEJAM_ALBUM_SETTINGS_JSON
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()["payload"]
-        self.assertEqual(payload["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
+        self.assertEqual(payload["ace_lm_model"], "none")
         self.assertEqual(payload["planner_lm_provider"], "ollama")
         self.assertFalse(payload["thinking"])
         self.assertFalse(payload["use_format"])
@@ -198,6 +235,7 @@ ACEJAM_ALBUM_SETTINGS_JSON
         self.assertEqual(payload["prompt_kit_version"], acejam_app.PROMPT_KIT_VERSION)
         self.assertIn("section_map", payload["tracks"][0])
         self.assertIn("quality_checks", payload["tracks"][0])
+        self.assertEqual(payload["tracks"][0]["ace_lm_model"], "none")
         self.assertEqual(payload["song_model_strategy"], "xl_sft_final")
         self.assertEqual(payload["tracks"][0]["artist_name"], "Track Signal")
         self.assertEqual(payload["tracks"][0]["title"], "Track One")

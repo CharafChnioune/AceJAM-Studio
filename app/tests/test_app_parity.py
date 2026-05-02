@@ -823,31 +823,51 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["song_model"], "acestep-v15-xl-sft")
         self.assertEqual(normalized["duration"], 180)
 
-    def test_simple_custom_helpers_default_to_official_4b_lm(self):
+    def test_simple_custom_helpers_default_to_local_writer_unless_ace_engine_selected(self):
         client = TestClient(acejam_app.app)
+        local_payload = {
+            "title": "Local Helper",
+            "tags": "pop, polished vocal, premium mix",
+            "lyrics": "[Verse]\nLine\n\n[Chorus]\nHook",
+        }
+
+        with patch.object(acejam_app, "_run_official_lm_aux") as official, \
+            patch.object(acejam_app, "compose", return_value=json.dumps(local_payload)):
+            response = client.post("/api/create_sample", json={"description": "make a hit", "duration": 180})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["title"], "Local Helper")
+        self.assertFalse(official.called)
+
+        with patch.object(acejam_app, "_run_official_lm_aux") as official, \
+            patch.object(acejam_app, "compose", return_value=json.dumps(local_payload)):
+            response = client.post("/api/format_sample", json={"caption": "polish this", "duration": 180})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(official.called)
+
         official_payload = {
             "success": True,
             "title": "Official Helper",
             "caption": "pop, polished vocal, premium mix",
             "lyrics": "[Verse]\nLine\n\n[Chorus]\nHook",
         }
-
         with patch.object(acejam_app, "_run_official_lm_aux", return_value=official_payload) as official:
-            response = client.post("/api/create_sample", json={"description": "make a hit", "duration": 180})
+            response = client.post(
+                "/api/create_sample",
+                json={
+                    "description": "make a hit",
+                    "duration": 180,
+                    "planner_lm_provider": "ace_step_lm",
+                    "planner_model": acejam_app.ACE_LM_PREFERRED_MODEL,
+                },
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["title"], "Official Helper")
         action, body = official.call_args.args
         self.assertEqual(action, "create_sample")
-        self.assertEqual(body["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
-        self.assertTrue(body["use_official_lm"])
-
-        with patch.object(acejam_app, "_run_official_lm_aux", return_value=official_payload) as official:
-            response = client.post("/api/format_sample", json={"caption": "polish this", "duration": 180})
-
-        self.assertEqual(response.status_code, 200)
-        action, body = official.call_args.args
-        self.assertEqual(action, "format_sample")
+        self.assertEqual(body["planner_lm_provider"], "ace_step_lm")
         self.assertEqual(body["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
         self.assertTrue(body["use_official_lm"])
 
@@ -1042,6 +1062,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('id="epoch-audition-lyrics"', html)
         self.assertIn('id="epoch-audition-seed"', html)
         self.assertIn('id="epoch-audition-scale"', html)
+        self.assertIn('id="train-device"', html)
+        self.assertIn('device: $("train-device")?.value || "auto"', html)
         self.assertIn("epoch_audition_duration: 20", html)
         self.assertIn("...epochAuditionPayload()", html)
         self.assertIn("renderLoraAuditions(job)", html)

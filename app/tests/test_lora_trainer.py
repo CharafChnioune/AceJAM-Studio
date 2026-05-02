@@ -2,8 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from lora_trainer import AceTrainingManager, TrainingJob, model_to_variant, utc_now
+from lora_trainer import AceTrainingManager, TrainingJob, default_training_device, model_to_variant, utc_now
 
 
 class CaptureTrainingManager(AceTrainingManager):
@@ -61,6 +62,23 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertEqual(model_to_variant("acestep-v15-xl-base"), "xl_base")
         self.assertEqual(model_to_variant("my-finetune"), "my-finetune")
 
+    def test_default_training_device_prefers_mps_on_darwin_auto(self):
+        with patch("lora_trainer.sys.platform", "darwin"), \
+            patch("lora_trainer._torch_mps_available", return_value=True), \
+            patch("lora_trainer._torch_cuda_available", return_value=True):
+            self.assertEqual(default_training_device("auto"), "mps")
+
+    def test_default_training_device_uses_cuda_then_cpu_for_auto(self):
+        with patch("lora_trainer.sys.platform", "linux"), \
+            patch("lora_trainer._torch_mps_available", return_value=False), \
+            patch("lora_trainer._torch_cuda_available", return_value=True):
+            self.assertEqual(default_training_device("auto"), "cuda")
+        with patch("lora_trainer.sys.platform", "linux"), \
+            patch("lora_trainer._torch_mps_available", return_value=False), \
+            patch("lora_trainer._torch_cuda_available", return_value=False):
+            self.assertEqual(default_training_device("auto"), "cpu")
+        self.assertEqual(default_training_device("cpu"), "cpu")
+
     def test_scan_and_save_dataset_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -110,17 +128,18 @@ class LoraTrainerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
-            params = manager._one_click_params(
-                {
-                    "dataset_id": "unit",
-                    "import_root": str(root),
-                    "trigger_tag": "voicehook",
-                    "language": "nl",
-                    "sample_count": 12,
-                },
-                dataset_id="unit",
-                import_root=root,
-            )
+            with patch("lora_trainer.default_training_device", return_value="mps"):
+                params = manager._one_click_params(
+                    {
+                        "dataset_id": "unit",
+                        "import_root": str(root),
+                        "trigger_tag": "voicehook",
+                        "language": "nl",
+                        "sample_count": 12,
+                    },
+                    dataset_id="unit",
+                    import_root=root,
+                )
 
             self.assertEqual(params["adapter_type"], "lora")
             self.assertEqual(params["tag_position"], "prepend")
@@ -134,9 +153,28 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIsNone(params["train_epochs"])
             self.assertEqual(params["save_every_n_epochs"], 1)
             self.assertFalse(params["epoch_audition"]["enabled"])
+            self.assertEqual(params["device"], "mps")
             self.assertEqual(manager.auto_epochs(20), 800)
             self.assertEqual(manager.auto_epochs(21), 500)
             self.assertEqual(manager.auto_epochs(101), 300)
+
+    def test_one_click_explicit_cpu_device_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            params = manager._one_click_params(
+                {
+                    "dataset_id": "unit",
+                    "import_root": str(root),
+                    "trigger_tag": "voicehook",
+                    "language": "nl",
+                    "device": "cpu",
+                },
+                dataset_id="unit",
+                import_root=root,
+            )
+
+            self.assertEqual(params["device"], "cpu")
 
     def test_preprocess_command_uses_vendor_module(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +200,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "song_model": "acestep-v15-turbo",
                     "adapter_type": "lokr",
                     "train_epochs": 3,
+                    "device": "cpu",
                 }
             )
             command = job["command"]
@@ -170,6 +209,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("lokr", command)
             self.assertIn("--lokr-weight-decompose", command)
             self.assertEqual(command[command.index("--save-every") + 1], "1")
+            self.assertEqual(command[command.index("--device") + 1], "cpu")
 
     def test_train_command_carries_trigger_tag_for_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -184,6 +224,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "trigger_tag": "charaf hook",
                     "adapter_type": "lora",
                     "train_epochs": 3,
+                    "device": "mps",
                 }
             )
 
@@ -191,7 +232,9 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(job["params"]["trigger_tag"], "charaf hook")
             self.assertEqual(job["params"]["display_name"], "charaf hook")
             self.assertEqual(job["params"]["save_every_n_epochs"], 1)
+            self.assertEqual(job["params"]["device"], "mps")
             self.assertEqual(command[command.index("--save-every") + 1], "1")
+            self.assertEqual(command[command.index("--device") + 1], "mps")
             self.assertTrue(Path(job["paths"]["output_dir"]).name.startswith("charaf-hook-"))
 
     def test_manual_train_accepts_epoch_audition_config(self):

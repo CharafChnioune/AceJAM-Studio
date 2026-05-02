@@ -1250,10 +1250,11 @@
         <div class="advanced-content">
           <div class="assistant-grid">
             <div>
-              <label for="planner-provider">Local AI provider</label>
+              <label for="planner-provider">Writer / Planner engine</label>
               <select id="planner-provider">
                 <option value="ollama" selected>Ollama</option>
                 <option value="lmstudio">LM Studio</option>
+                <option value="ace_step_lm">ACE-Step 5Hz LM</option>
               </select>
             </div>
             <div>
@@ -1706,16 +1707,15 @@
         <details class="section-block disclosure advanced-group" data-advanced-group="custom-lm">
           <summary>
             <span class="disclosure-title">
-              <strong>Advanced ACE-Step lyric model</strong>
-              <small id="summary-custom-lm">Optional 4B lyric/metadata model — only for the official ACE-Step LM workflow</small>
+            <strong>ACE-Step 5Hz writer controls</strong>
+              <small id="summary-custom-lm">Visible only when Writer/Planner Engine is ACE-Step 5Hz LM</small>
             </span>
             <span class="disclosure-actions"><span class="badge warn" data-modified-for="custom-lm" hidden>modified</span></span>
           </summary>
           <div class="advanced-content">
-          <div class="control-note" id="lm-mode-note">Local AI Writer/Planner writes lyrics, captions, BPM and key. ACE-Step 4B LM is only for optional official lyric/metadata actions.</div>
+          <div class="control-note" id="lm-mode-note">Ollama, LM Studio or ACE-Step 5Hz LM writes lyrics/caption/metadata; ACE-Step Audio Model renders music.</div>
           <div class="grid-3">
-            <div>
-              <label for="custom-ace-lm-model">ACE-Step LM (lyric model)</label>
+            <div hidden>
               <select id="custom-ace-lm-model"></select>
             </div>
             <div>
@@ -2290,10 +2290,7 @@
           </summary>
           <div class="advanced-content">
           <div class="grid-2">
-          <div class="control-note">Album planning uses the selected engine with Local AI Writer/Planner. ACE-Step Audio Models render the final music; ACE-Step 4B LM stays off for supplied agent lyrics unless explicitly enabled in advanced workflows.</div>
-          <div hidden>
-            <select id="album-ace-lm-model" aria-label="Advanced album ACE-Step lyric metadata LM"></select>
-          </div>
+          <div class="control-note">Album planning uses Ollama or LM Studio with the selected planning engine. ACE-Step Audio Models render the final music. ACE-Step 5Hz LM is disabled for album agents.</div>
         </div>
         <div class="control-note">If Local AI Writer/Planner cannot complete, AceJAM marks the deterministic fallback explicitly in the job log instead of hiding the engine switch.</div>
         <div class="lm-advice" id="album-lm-advice" hidden></div>
@@ -2634,6 +2631,17 @@
           <div>
             <label for="save-every">Save every</label>
             <input id="save-every" type="text" value="every epoch" readonly />
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="train-device" data-tooltip="Trainer-only device. Auto uses MPS on Apple Silicon, CUDA on NVIDIA, otherwise CPU.">Trainer device</label>
+            <select id="train-device">
+              <option value="auto">auto</option>
+              <option value="mps">mps</option>
+              <option value="cpu">cpu</option>
+              <option value="cuda">cuda</option>
+            </select>
           </div>
         </div>
         <div class="grid-3" style="margin-top:10px;">
@@ -3062,11 +3070,30 @@
       select.innerHTML = languageOptionsHtml(value);
       if ([...select.options].some((option) => option.value === value)) select.value = value;
     }
-    const normalizeProvider = (value) => String(value || "ollama").toLowerCase().replace("_", "-").includes("lmstudio") || String(value || "").toLowerCase().includes("lm studio") ? "lmstudio" : "ollama";
-    const providerLabel = (provider) => normalizeProvider(provider) === "lmstudio" ? "LM Studio" : "Ollama";
-    const plannerProviderForMode = (mode = state.mode) => normalizeProvider($("planner-provider")?.value || state.config?.local_llm?.default_provider || "ollama");
+    function normalizeProvider(value) {
+      const text = String(value || "ollama").toLowerCase().replace(/_/g, "-").trim();
+      if (["ace-step-lm", "ace-lm", "acestep-lm", "acestep", "ace", "5hz-lm", "ace-step-5hz-lm"].includes(text)) return "ace_step_lm";
+      if (text.includes("lmstudio") || text.includes("lm studio") || text === "lm-studio") return "lmstudio";
+      return "ollama";
+    }
+    const providerLabel = (provider) => {
+      const normalized = normalizeProvider(provider);
+      if (normalized === "ace_step_lm") return "ACE-Step 5Hz LM";
+      return normalized === "lmstudio" ? "LM Studio" : "Ollama";
+    };
+    const plannerProviderForMode = (mode = state.mode) => {
+      const provider = normalizeProvider($("planner-provider")?.value || state.config?.local_llm?.default_provider || "ollama");
+      return mode === "album" && provider === "ace_step_lm" ? "ollama" : provider;
+    };
     const embeddingProviderForAlbum = () => "ollama";
-    const selectedPlannerModelForMode = (mode = state.mode) => $("ollama-model")?.value || "";
+    const selectedPlannerModelForMode = (mode = state.mode) => {
+      if (mode === "album" && normalizeProvider($("planner-provider")?.value) === "ace_step_lm") {
+        return state.config?.default_album_planner_ollama_model || "";
+      }
+      const provider = plannerProviderForMode(mode);
+      if (provider === "ace_step_lm") return $("ollama-model")?.value || state.config?.preferred_lm_model || DEFAULT_ACE_LM_MODEL;
+      return $("ollama-model")?.value || "";
+    };
     const selectedAlbumEmbeddingModel = () => {
       return state.config?.default_album_embedding_model || "nomic-embed-text:latest";
     };
@@ -3120,9 +3147,11 @@
     function updateLocalAiUsageSummaries() {
       const provider = providerLabel(plannerProviderForMode());
       const model = selectedPlannerModelForMode() || "selected model";
-      const text = `Using Local AI Writer/Planner: ${provider} ${model}.`;
+      const text = `Using Writer/Planner Engine: ${provider} ${model}.`;
       if ($("ai-fill-model-summary")) $("ai-fill-model-summary").textContent = text;
-      if ($("album-local-ai-summary")) $("album-local-ai-summary").textContent = `${text} Album agents use it for lyrics, tags, BPM, key, duration and captions.`;
+      if ($("album-local-ai-summary")) $("album-local-ai-summary").textContent = provider === "ACE-Step 5Hz LM"
+        ? "Album agents use Ollama or LM Studio only; ACE-Step 5Hz LM is disabled for album planning."
+        : `${text} Album agents use it for lyrics, tags, BPM, key, duration and captions.`;
       if ($("local-llm-provider-summary")) $("local-llm-provider-summary").textContent = `Model manager uses the same Local AI provider: ${provider}.`;
     }
     function persistPlannerSettings() {
@@ -3444,7 +3473,7 @@
       );
       setSummary(
         "custom-lm",
-        `${controlValue("custom-ace-lm-model") && controlValue("custom-ace-lm-model") !== "none" ? `ACE-Step optional LM ${controlValue("custom-ace-lm-model")}` : "Local AI Writer active, ACE-Step LM off"}`,
+        `${plannerProviderForMode("custom") === "ace_step_lm" ? `ACE-Step 5Hz writer ${selectedPlannerModelForMode("custom") || DEFAULT_ACE_LM_MODEL}` : "Hidden unless ACE-Step 5Hz LM writer is selected"}`,
         defaultsChanged({
           "custom-ace-lm-model": DEFAULT_ACE_LM_MODEL, "lm-backend": defaultLmBackend(), thinking: true, "sample-query": "", "lm-negative": "NO USER INPUT",
           "lm-temp": "0.85", "lm-cfg": "2", "lm-top-p": "0.9", "lm-top-k": "0", "lm-repetition": "1", "lm-batch-chunk": "8",
@@ -3481,7 +3510,7 @@
       );
       setSummary(
         "album-runtime",
-        `Local AI Writer/Planner: ${providerLabel(plannerProviderForMode("album"))} ${selectedPlannerModelForMode("album") || "selected"}; planning ${controlValue("album-agent-engine") || "acejam_agents"}; ACE-Step LM off for agent lyrics`,
+        `Writer/Planner: ${providerLabel(plannerProviderForMode("album"))} ${selectedPlannerModelForMode("album") || "selected"}; planning ${controlValue("album-agent-engine") || "acejam_agents"}; ACE-Step LM disabled`,
         false
       );
       const defaultPacks = Object.keys(state.config?.songwriting_toolkit?.tag_taxonomy || {}).slice(0, 4);
@@ -3515,10 +3544,10 @@
       );
       setSummary(
         "trainer-training",
-        `${controlValue("adapter-type") || "lora"}, ${controlValue("train-epochs") || 10} epochs, save every epoch${controlValue("epoch-audition-enabled") ? ", auditions" : ""}`,
+        `${controlValue("adapter-type") || "lora"}, ${controlValue("train-epochs") || 10} epochs, ${controlValue("train-device") || "auto"} trainer, save every epoch${controlValue("epoch-audition-enabled") ? ", auditions" : ""}`,
         defaultsChanged({
           "adapter-type": "lora", "train-epochs": "10", "train-batch": "1", "grad-accum": "4",
-          "learning-rate": "0.0001", "save-every": "every epoch", "lora-rank": "64", "lora-alpha": "128",
+          "learning-rate": "0.0001", "save-every": "every epoch", "train-device": "auto", "lora-rank": "64", "lora-alpha": "128",
           "lora-dropout": "0.1", "lokr-dim": "64", "lokr-alpha": "128", "train-seed": "42",
           "epoch-audition-enabled": false, "epoch-audition-caption": "", "epoch-audition-lyrics": "",
           "epoch-audition-seed": "42", "epoch-audition-scale": "1",
@@ -4225,9 +4254,7 @@
     }
 
     function updateAllLmAdvice() {
-      updateLmAdvice("ace-lm-model", "lm-advice");
       updateLmAdvice("custom-ace-lm-model", "custom-lm-advice");
-      updateLmAdvice("album-ace-lm-model", "album-lm-advice");
     }
 
     function renderAlbumToolkit() {
@@ -4598,7 +4625,12 @@
     function updateLmModeNote() {
       const note = $("lm-mode-note");
       if (!note) return;
-      note.textContent = "Ollama plans and writes. ACE-Step 4B LM is the default for official generation controls.";
+      const provider = plannerProviderForMode();
+      const details = document.querySelector('[data-advanced-group="custom-lm"]');
+      if (details) details.hidden = provider !== "ace_step_lm";
+      note.textContent = provider === "ace_step_lm"
+        ? "ACE-Step 5Hz LM is selected as the writer for non-album lyrics/caption/metadata. Album ignores it; ACE-Step Audio Model still renders the music."
+        : "Ollama/LM Studio writes lyrics, captions, BPM and key. ACE-Step 5Hz LM controls stay hidden until selected as Writer/Planner Engine.";
     }
 
     function renderAceLmManager(data = state.aceLm || state.config?.ace_lm || {}) {
@@ -4614,7 +4646,7 @@
       const installedCount = official.filter((item) => item.installed).length;
       badge.className = `badge ${data.selected_abliterated_model ? "ok" : "warn"}`;
       badge.textContent = data.selected_abliterated_model ? "Abliterated ready" : "Hybrid";
-      summary.textContent = `Local AI Writer/Planner stays primary. ACE-Step 4B LM is only for optional official lyric/metadata actions. Preferred LM: ${data.preferred_model || "4B"}.`;
+      summary.textContent = `ACE-Step 5Hz LM is available as a Writer/Planner Engine outside Album. Preferred LM: ${data.preferred_model || "4B"}.`;
       const cards = [
         ["Policy", data.policy || "hybrid", "Local AI Writer primary, ACE LM only when explicitly needed"],
         ["Official LMs", `${installedCount}/${official.length} installed`, `Recommended: ${data.recommended_lm_model || "none"}`],
@@ -4870,7 +4902,7 @@
       const selectedSongModel = $("song-model")?.value || "auto";
       const firstConfigLoad = !state.config;
       const selectedLmValues = {};
-      for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
+      for (const id of ["ace-lm-model", "custom-ace-lm-model"]) {
         selectedLmValues[id] = $(id)?.value || "";
       }
       const previousUiHash = state.uiHash || state.config?.ui_hash || "";
@@ -4895,7 +4927,7 @@
       if (firstConfigLoad) applyModelDefaults(selectedActualSongModel());
       if (firstConfigLoad) applyAlbumModelDefaults();
       const lmOptions = (state.config.lm_models || ["auto", "none"]).map((name) => `<option value="${esc(name)}">${esc(lmOptionLabel(name))}</option>`).join("");
-      for (const id of ["ace-lm-model", "custom-ace-lm-model", "album-ace-lm-model"]) {
+      for (const id of ["ace-lm-model", "custom-ace-lm-model"]) {
 	        $(id).innerHTML = lmOptions;
 	        const preferred = state.config.preferred_lm_model || state.config.ace_lm?.preferred_model || DEFAULT_ACE_LM_MODEL;
 	        const previous = (!selectedLmValues[id] || selectedLmValues[id] === "none") ? preferred : selectedLmValues[id];
@@ -4967,7 +4999,7 @@
       if ($("settings-summary")) {
         const parity = state.config.official_parity?.manifest || state.config.official_parity || {};
         const manifest = parity.manifest_version || state.config.official_ace_step_manifest?.manifest_version || "unknown";
-        $("settings-summary").textContent = `${state.config.installed_song_models?.length || 0} ACE-Step audio model(s). Local AI Writer/Planner active; ACE-Step 4B LM is optional for official lyric/metadata controls. ${runner.available ? "Official runner ready." : "Official runner missing."} ACE-Step parity ${manifest}.`;
+        $("settings-summary").textContent = `${state.config.installed_song_models?.length || 0} ACE-Step audio model(s). Writer/Planner Engine can be Ollama, LM Studio or ACE-Step 5Hz LM outside Album. ${runner.available ? "Official runner ready." : "Official runner missing."} ACE-Step parity ${manifest}.`;
       }
       renderAlbumToolkit();
       renderAlbumModelPortfolio();
@@ -4988,15 +5020,21 @@
     async function loadOllama() {
       try {
         const current = $("ollama-model")?.value || "";
-        const [ollamaResult, lmstudioResult] = await Promise.all([
+        const [ollamaResult, lmstudioResult, aceWriterResult] = await Promise.all([
           api("/api/local-llm/models?provider=ollama"),
-          api("/api/local-llm/models?provider=lmstudio").catch((err) => ({ ready: false, provider: "lmstudio", error: err.message, chat_models: [], embedding_models: [], models: [], details: [] }))
+          api("/api/local-llm/models?provider=lmstudio").catch((err) => ({ ready: false, provider: "lmstudio", error: err.message, chat_models: [], embedding_models: [], models: [], details: [] })),
+          api("/api/local-llm/models?provider=ace_step_lm").catch((err) => ({ ready: false, provider: "ace_step_lm", error: err.message, chat_models: [], embedding_models: [], models: [], details: [] }))
         ]);
         state.ollama = ollamaResult;
         state.lmstudio = lmstudioResult;
+        state.aceStepWriter = aceWriterResult;
         (ollamaResult.pull_jobs || []).forEach((job) => { if (job?.id) state.ollamaPullJobs[job.id] = job; });
         const plannerProvider = plannerProviderForMode();
-        const catalogFor = (provider) => normalizeProvider(provider) === "lmstudio" ? (state.lmstudio || {}) : (state.ollama || {});
+        const catalogFor = (provider) => {
+          const normalized = normalizeProvider(provider);
+          if (normalized === "ace_step_lm") return state.aceStepWriter || {};
+          return normalized === "lmstudio" ? (state.lmstudio || {}) : (state.ollama || {});
+        };
         const writerModels = catalogFor(plannerProvider).chat_models || [];
         const fillSelect = (id, options, previous, emptyLabel) => {
           const select = $(id);
@@ -5007,11 +5045,15 @@
           if (previous && [...select.options].some((option) => option.value === previous)) select.value = previous;
         };
         fillSelect("ollama-model", writerModels, current, `No ${providerLabel(plannerProvider)} chat models`);
+        if ($("custom-ace-lm-model") && plannerProvider === "ace_step_lm") $("custom-ace-lm-model").value = $("ollama-model")?.value || $("custom-ace-lm-model").value;
         renderOllamaManager(catalogFor(plannerProvider));
+        updateLmModeNote();
+        updateAllLmAdvice();
         updateAdvancedSummaries();
       } catch (err) {
         state.ollama = { ready: false, error: err.message, chat_models: [], embedding_models: [], models: [] };
         state.lmstudio = { ready: false, error: err.message, chat_models: [], embedding_models: [], models: [] };
+        state.aceStepWriter = { ready: false, error: err.message, chat_models: [], embedding_models: [], models: [] };
         ["ollama-model"].forEach((id) => {
           const select = $(id);
           if (select) select.innerHTML = `<option value="">No chat models installed</option>`;
@@ -5028,6 +5070,10 @@
         return;
       }
       const provider = plannerProviderForMode();
+      if (provider === "ace_step_lm") {
+        startModelDownload(model, "ACE-Step 5Hz writer");
+        return;
+      }
       const kind = $("ollama-pull-kind")?.value || (/embed|embedding|bge|e5|gte|nomic/i.test(model) ? "embedding" : "chat");
       const data = await api("/api/local-llm/download", { provider, model, kind, reason: "settings", quantization: $("lmstudio-quantization")?.value || "" });
       if (!data.success) throw new Error(data.error || "Ollama pull failed to start");
@@ -5058,7 +5104,7 @@
         ? `${model} embedding OK (${data.dimensions || 0} dimensions)`
         : `${model} replied: ${data.response || ""}`;
       setStatus(message, "ok");
-      renderOllamaManager(provider === "lmstudio" ? state.lmstudio : state.ollama);
+      renderOllamaManager(provider === "ace_step_lm" ? state.aceStepWriter : (provider === "lmstudio" ? state.lmstudio : state.ollama));
       if ($("ollama-manager-log")) $("ollama-manager-log").textContent += `\n\nTest result:\n${JSON.stringify(data, null, 2)}`;
     }
 
@@ -5750,8 +5796,9 @@
     }
 
     function lmQualityRequestFields(mode) {
-      const selectedLm = activeLmModelFor(mode);
       const plannerProvider = plannerProviderForMode(mode);
+      const usingAceWriter = plannerProvider === "ace_step_lm" && mode !== "album";
+      const selectedLm = usingAceWriter ? activeLmModelFor(mode) : "none";
       const plannerModel = selectedPlannerModelForMode(mode);
       return {
         ace_lm_model: selectedLm,
@@ -5760,14 +5807,14 @@
         planner_ollama_model: plannerProvider === "ollama" ? plannerModel : "",
         ollama_model: plannerProvider === "ollama" ? plannerModel : "",
         ...plannerSettingsForMode(mode),
-        use_official_lm: selectedLm !== "none",
-        thinking: $("thinking")?.checked ?? false,
-        use_format: $("use-format")?.checked ?? false,
-        use_cot_metas: $("use-cot-metas")?.checked ?? true,
-        use_cot_caption: $("use-cot-caption")?.checked ?? true,
-        use_cot_lyrics: $("use-cot-lyrics")?.checked ?? false,
-        use_cot_language: $("use-cot-language")?.checked ?? true,
-        use_constrained_decoding: $("constrained-decoding")?.checked ?? true,
+        use_official_lm: usingAceWriter,
+        thinking: usingAceWriter ? ($("thinking")?.checked ?? false) : false,
+        use_format: usingAceWriter ? ($("use-format")?.checked ?? false) : false,
+        use_cot_metas: usingAceWriter ? ($("use-cot-metas")?.checked ?? true) : false,
+        use_cot_caption: usingAceWriter ? ($("use-cot-caption")?.checked ?? true) : false,
+        use_cot_lyrics: usingAceWriter ? ($("use-cot-lyrics")?.checked ?? false) : false,
+        use_cot_language: usingAceWriter ? ($("use-cot-language")?.checked ?? true) : false,
+        use_constrained_decoding: usingAceWriter ? ($("constrained-decoding")?.checked ?? true) : false,
         lm_temperature: Number($("lm-temp")?.value || 0.85),
         lm_cfg_scale: Number($("lm-cfg")?.value || 2),
         lm_top_k: Number($("lm-top-k")?.value || 0),
@@ -5894,13 +5941,11 @@
       return Array.from($("complete-tracks").querySelectorAll("input:checked")).map((input) => input.value);
     }
 
-	    function activeLmModelFor(mode) {
-	      const preferred = state.config?.preferred_lm_model || state.config?.ace_lm?.preferred_model || DEFAULT_ACE_LM_MODEL;
-	      const selected = mode === "album"
-	        ? $("album-ace-lm-model")?.value
-	        : (mode === "custom" ? $("custom-ace-lm-model")?.value : $("ace-lm-model")?.value);
-	      return (!selected || selected === "none") ? preferred : selected;
-	    }
+    function activeLmModelFor(mode) {
+      if (mode === "album") return "none";
+      if (plannerProviderForMode(mode) !== "ace_step_lm") return "none";
+      return selectedPlannerModelForMode(mode) || state.config?.preferred_lm_model || state.config?.ace_lm?.preferred_model || DEFAULT_ACE_LM_MODEL;
+    }
 
     function allModelsEnabled(mode, payload = null) {
       if (payload?.render_strategy === "all_models_song") return true;
@@ -6592,10 +6637,10 @@
         use_cot_caption: false,
         use_cot_lyrics: false,
         use_cot_language: false,
-        allow_lm_batch: $("allow-lm-batch").checked,
-        lm_batch_chunk_size: Number($("lm-batch-chunk").value),
-        use_constrained_decoding: $("constrained-decoding").checked,
-        constrained_decoding_debug: $("constrained-debug").checked,
+        allow_lm_batch: false,
+        lm_batch_chunk_size: 0,
+        use_constrained_decoding: false,
+        constrained_decoding_debug: false,
         auto_score: $("album-auto-score").checked,
         auto_lrc: $("album-auto-lrc").checked,
         return_audio_codes: $("album-audio-codes").checked,
@@ -6623,7 +6668,7 @@
         batch_size: track.track_variants || defaults.track_variants || 1,
         song_model: track.song_model && track.song_model.startsWith("acestep-v15-") ? track.song_model : "acestep-v15-xl-sft",
         quality_profile: track.quality_profile || defaults.quality_profile || selectedQualityProfile(),
-        ace_lm_model: track.ace_lm_model || defaults.ace_lm_model || activeLmModelFor("album"),
+        ace_lm_model: "none",
         planner_lm_provider: defaults.planner_lm_provider || plannerProviderForMode("album"),
         embedding_lm_provider: defaults.embedding_lm_provider || embeddingProviderForAlbum(),
         planner_model: defaults.planner_model || selectedPlannerModelForMode("album"),
@@ -6641,10 +6686,10 @@
         use_adg: track.use_adg ?? defaults.use_adg ?? false,
         cfg_interval_start: track.cfg_interval_start ?? defaults.cfg_interval_start ?? 0,
         cfg_interval_end: track.cfg_interval_end ?? defaults.cfg_interval_end ?? 1,
-        thinking: track.thinking ?? defaults.thinking ?? false,
-        sample_mode: track.sample_mode ?? defaults.sample_mode ?? false,
-        sample_query: track.sample_query || defaults.sample_query || "",
-        use_format: track.use_format ?? defaults.use_format ?? false,
+        thinking: false,
+        sample_mode: false,
+        sample_query: "",
+        use_format: false,
         lm_temperature: track.lm_temperature ?? defaults.lm_temperature ?? 0.85,
         lm_cfg_scale: track.lm_cfg_scale ?? defaults.lm_cfg_scale ?? 2,
         lm_top_k: track.lm_top_k ?? defaults.lm_top_k ?? 0,
@@ -6652,11 +6697,11 @@
         lm_repetition_penalty: track.lm_repetition_penalty ?? defaults.lm_repetition_penalty ?? 1,
         lm_negative_prompt: track.lm_negative_prompt || defaults.lm_negative_prompt || "NO USER INPUT",
         lm_backend: track.lm_backend || defaults.lm_backend || defaultLmBackend(),
-        use_cot_metas: track.use_cot_metas ?? defaults.use_cot_metas ?? true,
-        use_cot_caption: track.use_cot_caption ?? defaults.use_cot_caption ?? true,
-        use_cot_lyrics: track.use_cot_lyrics ?? defaults.use_cot_lyrics ?? false,
-        use_cot_language: track.use_cot_language ?? defaults.use_cot_language ?? true,
-        use_constrained_decoding: track.use_constrained_decoding ?? defaults.use_constrained_decoding ?? true,
+        use_cot_metas: false,
+        use_cot_caption: false,
+        use_cot_lyrics: false,
+        use_cot_language: false,
+        use_constrained_decoding: false,
         auto_score: track.auto_score ?? defaults.auto_score,
         auto_lrc: track.auto_lrc ?? defaults.auto_lrc,
         return_audio_codes: track.return_audio_codes ?? defaults.return_audio_codes,
@@ -6707,7 +6752,11 @@
         track_duration: Number($("album-duration").value),
         language: $("album-language").value,
         song_model: $("song-model").value,
-        ace_lm_model: activeLmModelFor("album"),
+        ace_lm_model: "none",
+        use_official_lm: false,
+        thinking: false,
+        use_format: false,
+        use_cot_lyrics: false,
         planner_lm_provider: plannerProviderForMode("album"),
         embedding_lm_provider: embeddingProviderForAlbum(),
         planner_model: selectedPlannerModelForMode("album"),
@@ -6721,9 +6770,14 @@
         shift: Number($("album-shift").value),
         infer_method: "ode",
         sampler_mode: "heun",
-        thinking: $("thinking").checked,
-        use_format: $("use-format").checked,
-        use_cot_lyrics: $("use-cot-lyrics").checked,
+        thinking: false,
+        sample_mode: false,
+        sample_query: "",
+        use_format: false,
+        use_cot_metas: false,
+        use_cot_caption: false,
+        use_cot_lyrics: false,
+        use_cot_language: false,
         lm_temperature: Number($("lm-temp").value),
         lm_cfg_scale: Number($("lm-cfg").value),
         lm_top_k: Number($("lm-top-k").value),
@@ -6785,12 +6839,7 @@
             guidance_scale: payload.guidance_scale,
             shift: payload.shift,
           },
-          ace_step_optional_lm: {
-            model: payload.ace_lm_model,
-            thinking: payload.thinking,
-            use_format: payload.use_format,
-            use_cot_lyrics: payload.use_cot_lyrics,
-          },
+          ace_step_optional_lm: { disabled_for_album: true },
           lora_adapter: {
             use_lora: payload.use_lora,
             name: payload.lora_adapter_name,
@@ -6856,12 +6905,7 @@
                   model_strategy: albumDefaults.song_model_strategy || $("album-model-strategy").value,
                   quality_target: albumDefaults.quality_target || $("album-quality").value,
                 },
-                ace_step_optional_lm: {
-                  model: albumDefaults.ace_lm_model,
-                  thinking: albumDefaults.thinking,
-                  use_format: albumDefaults.use_format,
-                  use_cot_lyrics: albumDefaults.use_cot_lyrics,
-                },
+                ace_step_optional_lm: { disabled_for_album: true },
               },
               tracks: validations.map((validation, index) => ({
                 index: index + 1,
@@ -7534,6 +7578,7 @@
         dropout: $("lora-dropout").value || "0.1",
         training_shift: 3,
         training_seed: Number($("train-seed").value || 42),
+        device: $("train-device")?.value || "auto",
         auto_load: true,
         lora_scale: Number($("generation-lora-scale")?.value || 1),
         save_every_n_epochs: 1,
@@ -7592,6 +7637,7 @@
         dataset_id: state.datasetId,
         audio_dir: $("dataset-path").value,
         song_model: $("song-model").value,
+        device: $("train-device")?.value || "auto",
         max_duration: 240
       });
       state.activeLoraJob = data.job.id;
@@ -7620,6 +7666,7 @@
         lokr_linear_alpha: Number($("lokr-alpha").value),
         lokr_weight_decompose: $("lokr-weight").checked,
         training_seed: Number($("train-seed").value),
+        device: $("train-device")?.value || "auto",
         gradient_checkpointing: $("grad-checkpoint").checked,
         offload_encoder: $("offload-encoder").checked,
         ...epochAuditionPayload()
@@ -7646,7 +7693,8 @@
         batch_size: Number($("train-batch").value),
         estimate_batches: 5,
         top_k: 16,
-        granularity: "module"
+        granularity: "module",
+        device: $("train-device")?.value || "auto"
       });
       state.activeLoraJob = data.job.id;
       saveActiveJobs();
@@ -7758,10 +7806,6 @@
         startModelDownload($("custom-ace-lm-model").value, "Custom ACE-Step LM selection");
         updateAllLmAdvice();
       });
-      $("album-ace-lm-model").addEventListener("change", () => {
-        startModelDownload($("album-ace-lm-model").value, "Album ACE-Step LM selection");
-        updateAdvancedSummaries();
-      });
       $("album-model-strategy").addEventListener("change", () => {
         applyAlbumModelDefaults();
         updateCapability();
@@ -7812,11 +7856,17 @@
       $("ollama-test-chat-btn")?.addEventListener("click", () => testOllamaSelection("chat").catch((err) => setStatus(err.message, "error")));
       $("ollama-test-embed-btn")?.addEventListener("click", () => testOllamaSelection("embedding").catch((err) => setStatus(err.message, "error")));
       $("ollama-model")?.addEventListener("change", () => {
+        if (plannerProviderForMode() === "ace_step_lm") {
+          if ($("custom-ace-lm-model")) $("custom-ace-lm-model").value = $("ollama-model").value;
+          startModelDownload($("ollama-model").value, "ACE-Step 5Hz writer selection");
+          updateAllLmAdvice();
+        }
         updatePlannerSettingsSummary();
         renderAlbumPayloadReview();
       });
       ["planner-provider"].forEach((id) => {
         $(id)?.addEventListener("change", () => {
+          updateLmModeNote();
           updatePlannerSettingsSummary();
           loadOllama().catch((err) => setStatus(err.message, "error"));
         });

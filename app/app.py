@@ -430,12 +430,60 @@ def _requested_ace_lm_model(payload: dict[str, Any]) -> str:
     value = str(get_param(payload or {}, "ace_lm_model", "") or "").strip()
     if value:
         lowered = value.lower()
-        if lowered in {"off", "false", "0", "disabled"}:
+        if lowered in {"none", "off", "false", "0", "disabled"}:
             return "none"
         if lowered == "auto":
             return ACE_LM_PREFERRED_MODEL
         return value
     return ACE_LM_PREFERRED_MODEL
+
+
+def _writer_provider_from_payload(payload: dict[str, Any] | None, default: str = "ollama") -> str:
+    source = payload if isinstance(payload, dict) else {}
+    return normalize_provider(source.get("planner_lm_provider") or source.get("planner_provider") or default)
+
+
+def _album_planner_provider_from_payload(payload: dict[str, Any] | None, default: str = "ollama") -> str:
+    provider = _writer_provider_from_payload(payload, default)
+    return "ollama" if provider == "ace_step_lm" else provider
+
+
+def _embedding_provider_from_payload(payload: dict[str, Any] | None, default: str = "ollama") -> str:
+    source = payload if isinstance(payload, dict) else {}
+    provider = normalize_provider(source.get("embedding_lm_provider") or source.get("embedding_provider") or default)
+    return "ollama" if provider == "ace_step_lm" else provider
+
+
+def _album_ace_lm_disabled_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    cleaned = dict(payload or {})
+    original_provider = _writer_provider_from_payload(cleaned)
+    cleaned["planner_lm_provider"] = _album_planner_provider_from_payload(cleaned)
+    if original_provider == "ace_step_lm":
+        fallback_model = str(
+            cleaned.get("planner_ollama_model")
+            or cleaned.get("ollama_model")
+            or globals().get("DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL", "")
+            or ""
+        ).strip()
+        cleaned["planner_model"] = fallback_model
+        cleaned["planner_ollama_model"] = fallback_model
+        cleaned["ollama_model"] = fallback_model
+    cleaned["ace_lm_model"] = "none"
+    cleaned["lm_model"] = "none"
+    cleaned["lm_model_path"] = "none"
+    cleaned["use_official_lm"] = False
+    cleaned["thinking"] = False
+    cleaned["sample_mode"] = False
+    cleaned["sample_query"] = ""
+    cleaned["use_format"] = False
+    cleaned["use_cot_metas"] = False
+    cleaned["use_cot_caption"] = False
+    cleaned["use_cot_lyrics"] = False
+    cleaned["use_cot_language"] = False
+    cleaned["allow_supplied_lyrics_lm"] = False
+    cleaned["album_use_ace_lm_for_supplied_lyrics"] = False
+    cleaned["album_allow_ace_lm_rewrite"] = False
+    return cleaned
 
 
 def _normalize_lm_backend(value: Any) -> str:
@@ -532,13 +580,20 @@ def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
 
 
 def _apply_studio_lm_policy(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep local planner metadata, while allowing explicit ACE-Step LM native controls."""
+    """Keep writer metadata, while routing ACE-Step 5Hz LM only when explicitly selected."""
     cleaned = dict(payload or {})
-    provider = normalize_provider(cleaned.get("planner_lm_provider") or cleaned.get("planner_provider") or "ollama")
+    provider = _writer_provider_from_payload(cleaned)
     cleaned["planner_lm_provider"] = provider
     if provider == "ollama":
         cleaned.setdefault("planner_ollama_model", str(cleaned.get("planner_model") or cleaned.get("ollama_model") or "").strip())
-    cleaned.setdefault("planner_model", str(cleaned.get("planner_model") or cleaned.get("planner_ollama_model") or cleaned.get("ollama_model") or "").strip())
+    if provider == "ace_step_lm":
+        cleaned.pop("planner_ollama_model", None)
+        cleaned.setdefault(
+            "planner_model",
+            str(cleaned.get("planner_model") or cleaned.get("ace_lm_model") or cleaned.get("lm_model") or ACE_LM_PREFERRED_MODEL).strip(),
+        )
+    else:
+        cleaned.setdefault("planner_model", str(cleaned.get("planner_model") or cleaned.get("planner_ollama_model") or cleaned.get("ollama_model") or "").strip())
     if "sample_query" not in cleaned:
         sample_query = str(get_param(cleaned, "sample_query", "") or "").strip()
         if sample_query:
@@ -548,8 +603,17 @@ def _apply_studio_lm_policy(payload: dict[str, Any]) -> dict[str, Any]:
         if use_format not in [None, ""]:
             cleaned["use_format"] = use_format
     cleaned.update(planner_llm_settings_from_payload(cleaned))
-    requested = _requested_ace_lm_model(cleaned)
-    if requested == "none" and _explicit_ace_lm_controls(cleaned):
+    requested_raw = str(
+        get_param(cleaned, "ace_lm_model", "")
+        or cleaned.get("lm_model")
+        or cleaned.get("lm_model_path")
+        or (cleaned.get("planner_model") if provider == "ace_step_lm" else "")
+        or ""
+    ).strip()
+    requested = _requested_ace_lm_model(cleaned) if requested_raw else "none"
+    if provider == "ace_step_lm":
+        requested = ACE_LM_PREFERRED_MODEL if requested in {"", "none"} else requested
+    elif requested == "none" and _explicit_ace_lm_controls(cleaned):
         requested = ACE_LM_PREFERRED_MODEL
     if requested == "none":
         cleaned["ace_lm_model"] = "none"
@@ -897,7 +961,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     normalized = dict(payload or {})
     warnings: list[str] = []
     mode = _prompt_assistant_mode(mode)
-    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or normalized.get("planner_lm_provider") or "ollama")
+    planner_provider = _writer_provider_from_payload({**normalized, **body})
     planner_model = str(
         body.get("planner_model")
         or body.get("planner_ollama_model")
@@ -906,7 +970,13 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         or normalized.get("planner_ollama_model")
         or ""
     ).strip()
-    normalized["ace_lm_model"] = _requested_ace_lm_model(normalized)
+    body_ace_lm = str(body.get("ace_lm_model") or "").strip()
+    if planner_provider == "ace_step_lm":
+        raw_ace_lm = str(get_param(normalized, "ace_lm_model", "") or body_ace_lm or "").strip()
+        normalized["ace_lm_model"] = _requested_ace_lm_model({"ace_lm_model": raw_ace_lm or "auto"})
+        planner_model = planner_model or normalized["ace_lm_model"]
+    else:
+        normalized["ace_lm_model"] = _requested_ace_lm_model({"ace_lm_model": body_ace_lm}) if body_ace_lm else "none"
     normalized["planner_lm_provider"] = planner_provider
     normalized["planner_model"] = planner_model
     normalized.update(planner_llm_settings_from_payload({**normalized, **body}, default_max_tokens=2048, default_timeout=600.0))
@@ -914,15 +984,21 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["planner_ollama_model"] = planner_model
     else:
         normalized.pop("planner_ollama_model", None)
-    if normalized["ace_lm_model"] != "none":
-        if parse_bool(normalized.get("auto_score"), False) or parse_bool(normalized.get("auto_lrc"), False):
-            warnings.append("Auto score/LRC were turned off because official ACE-Step LM generation cannot use the in-process tensor cache.")
-        normalized["auto_score"] = False
-        normalized["auto_lrc"] = False
+    if parse_bool(normalized.get("auto_score"), False) or parse_bool(normalized.get("auto_lrc"), False):
+        reason = "because official ACE-Step LM generation cannot use the in-process tensor cache" if normalized["ace_lm_model"] != "none" else "because AI Fill should not enable post-render automation without user review"
+        warnings.append(f"Auto score/LRC were turned off {reason}.")
+    normalized["auto_score"] = False
+    normalized["auto_lrc"] = False
     quality_profile = normalize_quality_profile(normalized.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
     normalized["quality_profile"] = quality_profile
 
     if mode == "album":
+        if planner_provider == "ace_step_lm":
+            warnings.append("Album agents ignore ACE-Step 5Hz LM; switch Writer/Planner to Ollama or LM Studio for album planning.")
+            planner_provider = "ollama"
+            normalized["planner_lm_provider"] = "ollama"
+            normalized["planner_model"] = str(body.get("ollama_model") or body.get("planner_ollama_model") or normalized.get("planner_ollama_model") or "")
+        normalized = _album_ace_lm_disabled_payload(normalized)
         normalized.setdefault("song_model_strategy", "all_models_album")
         normalized.setdefault("final_song_model", "all_models_album")
         contract_source = _album_contract_source_from_payload(normalized, body)
@@ -950,8 +1026,9 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["infer_method"] = album_defaults["infer_method"]
         normalized["sampler_mode"] = album_defaults["sampler_mode"]
         for field, value in DOCS_BEST_LM_DEFAULTS.items():
-            if field != "ace_lm_model":
+            if field != "ace_lm_model" and field not in ACE_LM_DISABLED_DEFAULTS:
                 normalized[field] = value
+        normalized = _album_ace_lm_disabled_payload(normalized)
         normalized["thinking"] = False
         normalized["use_format"] = False
         normalized["use_cot_lyrics"] = False
@@ -976,11 +1053,16 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
                         int(track.get("track_number") or 1) - 1,
                     ),
                 )
-                track["ace_lm_model"] = normalized["ace_lm_model"]
+                track["ace_lm_model"] = "none"
                 track["quality_profile"] = quality_profile
                 track["thinking"] = False
                 track["use_format"] = False
                 track["use_cot_lyrics"] = False
+                track["use_cot_metas"] = False
+                track["use_cot_caption"] = False
+                track["use_cot_language"] = False
+                track["use_official_lm"] = False
+                track["allow_supplied_lyrics_lm"] = False
                 track["audio_format"] = normalized["audio_format"]
                 track["inference_steps"] = normalized["inference_steps"]
                 track["guidance_scale"] = normalized["guidance_scale"]
@@ -1151,6 +1233,57 @@ def _run_prompt_assistant_local(
 
 def _run_prompt_assistant_ollama(system_prompt: str, user_prompt: str, ollama_model: str, current_payload: dict[str, Any]) -> str:
     return _run_prompt_assistant_local(system_prompt, user_prompt, "ollama", ollama_model, current_payload)
+
+
+def _prompt_assistant_payload_from_official_writer(
+    mode: str,
+    user_prompt: str,
+    current_payload: dict[str, Any],
+    body: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    lm_body = {
+        **(current_payload or {}),
+        **(body or {}),
+        "planner_lm_provider": "ace_step_lm",
+        "ace_lm_model": str(body.get("ace_lm_model") or body.get("planner_model") or body.get("lm_model") or "auto"),
+        "use_official_lm": True,
+        "description": str(body.get("description") or current_payload.get("description") or user_prompt or ""),
+        "caption": str(body.get("caption") or current_payload.get("caption") or user_prompt or ""),
+        "sample_query": str(body.get("sample_query") or user_prompt or ""),
+    }
+    action = "format_sample" if str(current_payload.get("lyrics") or body.get("lyrics") or "").strip() else "create_sample"
+    official = _run_official_lm_aux(action, lm_body)
+    payload = dict(current_payload or {})
+    for key in [
+        "title",
+        "artist_name",
+        "caption",
+        "tags",
+        "lyrics",
+        "bpm",
+        "key_scale",
+        "keyscale",
+        "time_signature",
+        "timesignature",
+        "duration",
+        "vocal_language",
+        "language",
+    ]:
+        if official.get(key) not in (None, ""):
+            payload[key] = official.get(key)
+    if payload.get("tags") and not payload.get("caption"):
+        payload["caption"] = payload["tags"]
+    if payload.get("keyscale") and not payload.get("key_scale"):
+        payload["key_scale"] = payload["keyscale"]
+    if payload.get("timesignature") and not payload.get("time_signature"):
+        payload["time_signature"] = payload["timesignature"]
+    payload["planner_lm_provider"] = "ace_step_lm"
+    payload["planner_model"] = str(official.get("ace_lm_model") or lm_body["ace_lm_model"] or ACE_LM_PREFERRED_MODEL)
+    payload["ace_lm_model"] = payload["planner_model"]
+    payload.setdefault("task_type", _prompt_mode_task_type(mode))
+    payload.setdefault("song_model", _prompt_mode_default_model(mode))
+    raw_text = json.dumps({"ACEJAM_PAYLOAD_JSON": payload, "official_writer": official}, ensure_ascii=False, indent=2)
+    return payload, raw_text
 
 
 def _download_job_active(model_name: str) -> bool:
@@ -3385,7 +3518,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "song_model_strategy": strategy,
         "final_song_model": ALBUM_FINAL_MODEL,
         "prompt_kit_version": str(payload.get("prompt_kit_version") or PROMPT_KIT_VERSION),
-        "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
+        "planner_lm_provider": _album_planner_provider_from_payload(payload),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         **planner_settings,
         "agent_engine": _normalize_album_agent_engine_value(payload.get("agent_engine")),
@@ -3398,8 +3531,8 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "planner_thinking": parse_bool(payload.get("planner_thinking"), False),
         "print_agent_io": parse_bool(payload.get("print_agent_io"), True),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
-        "embedding_lm_provider": normalize_provider(payload.get("embedding_lm_provider") or payload.get("embedding_provider") or "ollama"),
-        "ace_lm_model": _requested_ace_lm_model(payload),
+        "embedding_lm_provider": _embedding_provider_from_payload(payload),
+        "ace_lm_model": "none",
         "album_model_portfolio": album_model_portfolio(installed_models),
         "quality_target": str(payload.get("quality_target") or "hit"),
         "quality_profile": quality_profile,
@@ -7008,7 +7141,7 @@ def generate_album(
     language: str = "en",
     song_model: str = "auto",
     embedding_model: str = DEFAULT_ALBUM_EMBEDDING_MODEL,
-    ace_lm_model: str = ACE_LM_PREFERRED_MODEL,
+    ace_lm_model: str = "none",
     request_json: str = "",
     planner_lm_provider: str = "ollama",
     embedding_lm_provider: str = "ollama",
@@ -7026,10 +7159,9 @@ def generate_album(
             concept = recovered_concept
             request_payload["concept"] = recovered_concept
             request_payload.setdefault("user_prompt", recovered_concept)
-        if "ace_lm_model" not in request_payload and ace_lm_model:
-            request_payload["ace_lm_model"] = ace_lm_model
-        ace_lm_model = _requested_ace_lm_model(request_payload)
-        request_payload["ace_lm_model"] = ace_lm_model
+        request_payload = _album_ace_lm_disabled_payload(request_payload)
+        ace_lm_model = "none"
+        request_payload["ace_lm_model"] = "none"
         album_job_id = str(request_payload.get("album_job_id") or "")
         album_debug_id = album_job_id or f"manual-{uuid.uuid4().hex[:12]}"
         album_debug = AlbumRunDebugLogger(DATA_DIR, album_debug_id)
@@ -7053,8 +7185,10 @@ def generate_album(
             album_debug_dir=str(album_debug.root),
             album_payload_gate_version=ALBUM_PAYLOAD_GATE_VERSION,
         )
-        planner_lm_provider = normalize_provider(request_payload.get("planner_lm_provider") or planner_lm_provider or "ollama")
-        embedding_lm_provider = normalize_provider(request_payload.get("embedding_lm_provider") or request_payload.get("embedding_provider") or embedding_lm_provider or "ollama")
+        planner_lm_provider = _album_planner_provider_from_payload(request_payload, planner_lm_provider or "ollama")
+        request_payload["planner_lm_provider"] = planner_lm_provider
+        embedding_lm_provider = _embedding_provider_from_payload(request_payload, embedding_lm_provider or "ollama")
+        request_payload["embedding_lm_provider"] = embedding_lm_provider
         if not ollama_model:
             ollama_model = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_lm_provider == "ollama" else ""
         if not embedding_model:
@@ -7197,9 +7331,9 @@ def generate_album(
         logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
         logs.append(
             f"Local AI Writer/Planner: {provider_label(planner_lm_provider)} ({ollama_model}) for lyrics, tags, BPM, key and captions; "
-            f"ACE-Step optional lyric/metadata LM "
-            f"{ace_lm_model if ace_lm_model != 'none' else 'off for supplied agent lyrics'}."
+            "ACE-Step LM disabled for album agents."
         )
+        logs.append("ACE-Step LM disabled for album agents.")
         logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
         agent_direct_payloads = str(result.get("planning_engine") or "") in {"acejam_agents", "crewai_micro"}
         album_global_caption = "" if agent_direct_payloads else build_album_global_sonic_caption(
@@ -7354,34 +7488,10 @@ def generate_album(
                     vocal_clarity_recovery = _vocal_clarity_recovery_enabled(vocal_clarity_probe)
                     if vocal_clarity_recovery and track_has_vocal_lyrics:
                         logs.append("  Vocal clarity recovery: direct lyrics render kept; ACE LM rewrite disabled for supplied lyrics.")
-                    album_allow_ace_lm_rewrite = (
-                        False if direct_agent_payload else parse_bool(
-                            track.get("album_allow_ace_lm_rewrite", request_payload.get("album_allow_ace_lm_rewrite")),
-                            False,
-                        )
-                    )
-                    album_use_supplied_lyrics_lm = (
-                        bool(
-                            album_allow_ace_lm_rewrite
-                            and parse_bool(
-                                track.get(
-                                    "allow_supplied_lyrics_lm",
-                                    request_payload.get("album_use_ace_lm_for_supplied_lyrics", request_payload.get("allow_supplied_lyrics_lm", False)),
-                                ),
-                                False,
-                            )
-                        )
-                    )
-                    track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
-                    if direct_agent_payload and track_has_vocal_lyrics and not vocal_clarity_recovery:
-                        track_lm_model = "none"
-                    elif track_has_vocal_lyrics and not album_use_supplied_lyrics_lm:
-                        track_lm_model = "none"
-                    elif track_has_vocal_lyrics and album_use_supplied_lyrics_lm and track_lm_model.strip().lower() == "none":
-                        track_lm_model = ACE_LM_PREFERRED_MODEL
-                    elif not track_lm_model.strip():
-                        track_lm_model = ACE_LM_PREFERRED_MODEL
-                    track_lm_enabled = track_lm_model.strip().lower() != "none" and (not track_has_vocal_lyrics or album_use_supplied_lyrics_lm)
+                    album_allow_ace_lm_rewrite = False
+                    album_use_supplied_lyrics_lm = False
+                    track_lm_model = "none"
+                    track_lm_enabled = False
                     def _album_lm_switch(field: str, default: bool) -> bool:
                         if direct_agent_payload:
                             return False
@@ -7467,20 +7577,18 @@ def generate_album(
                         "allow_supplied_lyrics_lm": bool(track_has_vocal_lyrics and track_lm_enabled),
                         "lm_backend": _normalize_lm_backend(track.get("lm_backend") or request_payload.get("lm_backend") or ACE_LM_BACKEND_DEFAULT),
                         "thinking": _album_lm_switch("thinking", DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
-                        "sample_mode": False if track_has_vocal_lyrics else parse_bool(track.get("sample_mode", request_payload.get("sample_mode")), False),
-                        "sample_query": "" if track_has_vocal_lyrics else str(track.get("sample_query") or request_payload.get("sample_query") or ""),
+                        "sample_mode": False,
+                        "sample_query": "",
                         "use_format": _album_lm_switch("use_format", DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
                         "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), 0.7 if vocal_clarity_recovery and track_lm_enabled else (DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85), 0.0, 2.0),
                         "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
                         "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
                         "lm_top_p": clamp_float(track.get("lm_top_p", request_payload.get("lm_top_p")), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if track_lm_enabled else 0.9, 0.0, 1.0),
                         "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
-                        "use_cot_metas": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"] if track_lm_enabled else False),
-                        "use_cot_caption": _album_lm_switch("use_cot_caption", False if vocal_clarity_recovery and track_has_vocal_lyrics else (DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled else False)),
+                        "use_cot_metas": False,
+                        "use_cot_caption": False,
                         "use_cot_lyrics": False,
-                        "use_cot_language": (
-                            False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if track_lm_enabled else False)
-                        ),
+                        "use_cot_language": False,
                         "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
                         "audio_code_string": "",
                         "src_audio_id": "",
@@ -8666,8 +8774,9 @@ def _album_job_log(job_id: str, line: str, **updates: Any) -> None:
 
 
 def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
-    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
+    body = _album_ace_lm_disabled_payload(body)
+    planner_provider = _album_planner_provider_from_payload(body)
+    embedding_provider = _embedding_provider_from_payload(body)
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else ""))
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
     planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
@@ -8695,6 +8804,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
             f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})",
             f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled.",
             "ACE-Step Audio Models render final music after local text/settings planning.",
+            "ACE-Step LM disabled for album agents.",
             "Agent memory: pending embedding preflight; deterministic debug logs are job-scoped.",
         ],
     )
@@ -8725,7 +8835,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
             language=str(request_body.get("language") or "en"),
             song_model=str(request_body.get("song_model") or "auto"),
             embedding_model=embedding_model,
-            ace_lm_model=str(request_body.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL),
+            ace_lm_model="none",
             request_json=json.dumps(request_body),
             planner_lm_provider=planner_provider,
             embedding_lm_provider=embedding_provider,
@@ -8776,13 +8886,14 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
 
 
 def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[str], None] | None = None) -> dict[str, Any]:
+    body = _album_ace_lm_disabled_payload(body)
     concept = _recover_album_request_concept(body.get("concept") or "", body)
     num_tracks = int(body.get("num_tracks") or 5)
     track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
     language = str(body.get("language") or "en")
     song_model = str(body.get("song_model") or "auto")
-    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
+    planner_provider = _album_planner_provider_from_payload(body)
+    embedding_provider = _embedding_provider_from_payload(body)
     planner_model = _resolve_local_llm_model_selection(
         planner_provider,
         str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
@@ -8824,8 +8935,9 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
 
 
 def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
-    planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
+    body = _album_ace_lm_disabled_payload(body)
+    planner_provider = _album_planner_provider_from_payload(body)
+    embedding_provider = _embedding_provider_from_payload(body)
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
     toolbelt_only = False
@@ -8845,6 +8957,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         f"Prompt Kit: {PROMPT_KIT_VERSION}.",
         f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})",
         f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled.",
+        "ACE-Step LM disabled for album agents.",
         "Agent memory: pending embedding preflight; prompts/responses go to the job debug folder.",
     ]
     if user_album_contract.get("applied"):
@@ -9158,7 +9271,7 @@ async def api_model_download(request: Request):
 @app.post("/api/album/plan")
 async def api_album_plan(request: Request):
     try:
-        body = await request.json()
+        body = _album_ace_lm_disabled_payload(await request.json())
         result = _run_album_plan_from_payload(body)
         return JSONResponse(result, status_code=200 if result.get("success", True) else 400)
     except OllamaPullStarted as exc:
@@ -9170,9 +9283,9 @@ async def api_album_plan(request: Request):
 @app.post("/api/album/plan/jobs")
 async def api_create_album_plan_job(request: Request):
     try:
-        body = await request.json()
-        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
+        body = _album_ace_lm_disabled_payload(await request.json())
+        planner_provider = _album_planner_provider_from_payload(body)
+        embedding_provider = _embedding_provider_from_payload(body)
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
             str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
@@ -9213,7 +9326,11 @@ async def api_create_album_plan_job(request: Request):
             crewai_used=planning_engine == "crewai_micro",
             memory_enabled=False,
             expected_count=int(body.get("num_tracks") or 5),
-            logs=[f"Queued album plan job {job_id}.", f"Planning Engine: {planning_engine_label} ({planning_engine})"],
+            logs=[
+                f"Queued album plan job {job_id}.",
+                f"Planning Engine: {planning_engine_label} ({planning_engine})",
+                "ACE-Step LM disabled for album agents.",
+            ],
         )
         threading.Thread(target=_album_plan_job_worker, args=(job_id, request_body), daemon=True).start()
         return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})
@@ -9265,6 +9382,7 @@ async def api_local_llm_providers():
             "providers": [
                 {"id": "ollama", "label": "Ollama", "host": _ollama_host(), "ready": _ollama_model_catalog().get("ready", False)},
                 {"id": "lmstudio", "label": "LM Studio", "host": lmstudio_model_catalog().get("host", ""), "ready": lmstudio_model_catalog().get("ready", False)},
+                {"id": "ace_step_lm", "label": "ACE-Step 5Hz LM", "host": "local official runner", "ready": bool(_installed_lm_models() - {"none", "auto"})},
             ],
         }
     )
@@ -9273,6 +9391,22 @@ async def api_local_llm_providers():
 @app.get("/api/local-llm/models")
 async def api_local_llm_models(provider: str = "ollama"):
     provider_name = normalize_provider(provider)
+    if provider_name == "ace_step_lm":
+        lm_models = sorted(_installed_lm_models())
+        writer_models = [name for name in lm_models if name not in {"auto", "none"}]
+        return JSONResponse(
+            {
+                "ready": bool(writer_models),
+                "provider": "ace_step_lm",
+                "provider_label": "ACE-Step 5Hz LM",
+                "host": "local official runner",
+                "models": writer_models,
+                "chat_models": writer_models,
+                "embedding_models": [],
+                "details": [{"name": name, "type": "official_ace_step_5hz_lm", "loaded": False} for name in writer_models],
+                "error": "" if writer_models else "No ACE-Step 5Hz LM model is installed.",
+            }
+        )
     if provider_name == "ollama":
         data = _ollama_model_catalog()
         data["provider"] = "ollama"
@@ -9289,6 +9423,18 @@ async def api_local_llm_test(request: Request):
         provider = normalize_provider(body.get("provider") or body.get("planner_lm_provider") or "ollama")
         model = str(body.get("model") or body.get("model_name") or body.get("planner_model") or body.get("ollama_model") or "").strip()
         kind = str(body.get("kind") or "chat").strip().lower()
+        if provider == "ace_step_lm":
+            requested = _concrete_lm_model_or_download(model or "auto", "ACE-Step 5Hz LM writer test")
+            return JSONResponse(
+                {
+                    "success": True,
+                    "provider": "ace_step_lm",
+                    "provider_label": "ACE-Step 5Hz LM",
+                    "model": requested,
+                    "kind": "chat",
+                    "response": "OK",
+                }
+            )
         if provider == "ollama":
             _ensure_ollama_model_or_start_pull(model, context=f"{kind} test", kind="embedding" if kind == "embedding" else "chat")
         planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=16, default_timeout=60.0)
@@ -9334,6 +9480,9 @@ async def api_local_llm_download(request: Request):
         provider = normalize_provider(body.get("provider") or "ollama")
         model_name = str(body.get("model") or body.get("model_name") or "").strip()
         kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat")).strip().lower()
+        if provider == "ace_step_lm":
+            job = _start_model_download(model_name or ACE_LM_PREFERRED_MODEL)
+            return JSONResponse({"success": True, "provider": "ace_step_lm", "job": job})
         if provider == "ollama":
             job = _start_ollama_pull(model_name, reason=str(body.get("reason") or "manual"), kind=kind)
             return JSONResponse({"success": True, "provider": "ollama", "job": job})
@@ -9479,19 +9628,33 @@ async def api_prompt_assistant_run(request: Request):
         if not user_prompt:
             return JSONResponse({"success": False, "error": "Prompt is empty.", "raw_text": ""}, status_code=400)
         current_payload = body.get("current_payload") if isinstance(body.get("current_payload"), dict) else {}
-        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        planner_provider = _writer_provider_from_payload(body)
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
         planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0)
-        system_prompt = _prompt_assistant_system_prompt(mode)
-        raw_text = _run_prompt_assistant_local(
-            system_prompt,
-            user_prompt,
-            planner_provider,
-            planner_model,
-            current_payload,
-            planner_settings,
-        )
-        parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
+        if planner_provider == "ace_step_lm":
+            if mode == "album":
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": "Album AI Fill uses Ollama or LM Studio only. ACE-Step 5Hz LM is disabled for album agents.",
+                        "raw_text": "",
+                        "warnings": [],
+                    },
+                    status_code=400,
+                )
+            parsed_payload, raw_text = _prompt_assistant_payload_from_official_writer(mode, user_prompt, current_payload, body)
+            paste_blocks = []
+        else:
+            system_prompt = _prompt_assistant_system_prompt(mode)
+            raw_text = _run_prompt_assistant_local(
+                system_prompt,
+                user_prompt,
+                planner_provider,
+                planner_model,
+                current_payload,
+                planner_settings,
+            )
+            parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
         payload, warnings = _normalize_prompt_assistant_payload(mode, parsed_payload, body)
         validation = None
         if mode not in {"album", "trainer"}:
@@ -9551,7 +9714,18 @@ async def api_delete_album_family(family_id: str, request: Request):
 async def api_compose(request: Request):
     try:
         body = await request.json()
-        provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
+        provider = _writer_provider_from_payload(body)
+        if provider == "ace_step_lm":
+            official_body = _apply_studio_lm_policy(
+                {
+                    **body,
+                    "planner_lm_provider": "ace_step_lm",
+                    "description": str(body.get("description") or body.get("prompt") or ""),
+                    "duration": body.get("audio_duration") or body.get("duration") or 60.0,
+                    "sample_query": str(body.get("sample_query") or body.get("description") or body.get("prompt") or ""),
+                }
+            )
+            return JSONResponse(_run_official_lm_aux("create_sample", official_body))
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
         planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0)
         raw = compose(
@@ -10557,9 +10731,9 @@ async def api_audio_understand(request: Request):
 @app.post("/api/generate_album")
 async def api_generate_album(request: Request):
     try:
-        body = await request.json()
-        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
+        body = _album_ace_lm_disabled_payload(await request.json())
+        planner_provider = _album_planner_provider_from_payload(body)
+        embedding_provider = _embedding_provider_from_payload(body)
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
             str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
@@ -10590,7 +10764,7 @@ async def api_generate_album(request: Request):
             language=str(body.get("language") or "en"),
             song_model=str(body.get("song_model") or "auto"),
             embedding_model=embedding_model,
-            ace_lm_model=str(body.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL),
+            ace_lm_model="none",
             request_json=json.dumps(request_body),
             planner_lm_provider=planner_provider,
             embedding_lm_provider=embedding_provider,
@@ -10605,9 +10779,9 @@ async def api_generate_album(request: Request):
 @app.post("/api/album/jobs")
 async def api_create_album_job(request: Request):
     try:
-        body = await request.json()
-        planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
+        body = _album_ace_lm_disabled_payload(await request.json())
+        planner_provider = _album_planner_provider_from_payload(body)
+        embedding_provider = _embedding_provider_from_payload(body)
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
             str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
@@ -10646,7 +10820,11 @@ async def api_create_album_job(request: Request):
             custom_agents_used=True,
             crewai_used=planning_engine == "crewai_micro",
             memory_enabled=False,
-            logs=[f"Queued album job {job_id}.", f"Planning Engine: {planning_engine_label} ({planning_engine})"],
+            logs=[
+                f"Queued album job {job_id}.",
+                f"Planning Engine: {planning_engine_label} ({planning_engine})",
+                "ACE-Step LM disabled for album agents.",
+            ],
         )
         threading.Thread(target=_album_job_worker, args=(job_id, request_body), daemon=True).start()
         return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})

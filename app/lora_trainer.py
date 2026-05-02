@@ -84,6 +84,37 @@ def model_to_variant(model_name: str | None) -> str:
     return aliases.get(name, name)
 
 
+def _torch_mps_available() -> bool:
+    try:
+        import torch
+
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        return bool(mps is not None and mps.is_available())
+    except Exception:
+        return False
+
+
+def _torch_cuda_available() -> bool:
+    try:
+        import torch
+
+        cuda = getattr(torch, "cuda", None)
+        return bool(cuda is not None and cuda.is_available())
+    except Exception:
+        return False
+
+
+def default_training_device(requested: Any = None) -> str:
+    device = str(requested or "auto").strip().lower()
+    if device and device != "auto":
+        return device
+    if sys.platform == "darwin" and _torch_mps_available():
+        return "mps"
+    if _torch_cuda_available():
+        return "cuda"
+    return "cpu"
+
+
 @dataclass
 class TrainingJob:
     id: str
@@ -446,6 +477,7 @@ class AceTrainingManager:
         job_id = uuid.uuid4().hex[:12]
         tensor_output = Path(str(payload.get("tensor_output") or "")).expanduser() if payload.get("tensor_output") else self.tensor_dir / job_id
         variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
+        device = default_training_device(payload.get("device"))
         command = [
             sys.executable,
             "-m",
@@ -462,7 +494,7 @@ class AceTrainingManager:
             "--max-duration",
             str(parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0)),
             "--device",
-            str(payload.get("device") or "auto"),
+            device,
             "--precision",
             str(payload.get("precision") or "auto"),
         ]
@@ -473,7 +505,7 @@ class AceTrainingManager:
         return self._start_job(
             kind="preprocess",
             command=command,
-            params={"model_variant": variant, "dataset_json": dataset_json, "audio_dir": audio_dir},
+            params={"model_variant": variant, "dataset_json": dataset_json, "audio_dir": audio_dir, "device": device},
             paths={"tensor_output": str(tensor_output), "dataset_json": dataset_json, "audio_dir": audio_dir},
         )
 
@@ -492,6 +524,7 @@ class AceTrainingManager:
         epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         epoch_audition = self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed)
+        device = default_training_device(payload.get("device"))
         output_name = slug(trigger_tag or adapter_type, "adapter")
         output_dir = Path(str(payload.get("output_dir") or "")).expanduser() if payload.get("output_dir") else self.training_dir / f"{output_name}-{job_id}"
         log_dir = output_dir / "runs"
@@ -546,7 +579,7 @@ class AceTrainingManager:
             "--sample-every-n-epochs",
             str(parse_int(payload.get("sample_every_n_epochs"), 0, 0, 10000)),
             "--device",
-            str(payload.get("device") or "auto"),
+            device,
             "--precision",
             str(payload.get("precision") or "auto"),
         ]
@@ -604,6 +637,7 @@ class AceTrainingManager:
                 "epochs": epochs,
                 "save_every_n_epochs": 1,
                 "epoch_audition": epoch_audition,
+                "device": device,
             },
             paths={
                 "dataset_dir": str(dataset_dir),
@@ -622,6 +656,7 @@ class AceTrainingManager:
         job_id = uuid.uuid4().hex[:12]
         variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
         output = self.training_dir / f"estimate-{job_id}.json"
+        device = default_training_device(payload.get("device"))
         command = [
             sys.executable,
             "train.py",
@@ -645,14 +680,14 @@ class AceTrainingManager:
             "--output",
             str(output),
             "--device",
-            str(payload.get("device") or "auto"),
+            device,
             "--precision",
             str(payload.get("precision") or "auto"),
         ]
         return self._start_job(
             kind="estimate",
             command=command,
-            params={"model_variant": variant},
+            params={"model_variant": variant, "device": device},
             paths={"dataset_dir": str(dataset_dir), "estimate_output": str(output)},
         )
 
@@ -861,6 +896,7 @@ class AceTrainingManager:
         epochs = payload.get("train_epochs", payload.get("epochs"))
         trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
+        device = default_training_device(payload.get("device"))
         return {
             "dataset_id": dataset_id,
             "import_root": str(import_root),
@@ -882,7 +918,7 @@ class AceTrainingManager:
             "save_every_n_epochs": 1,
             "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
-            "device": str(payload.get("device") or ("cpu" if sys.platform == "darwin" else "auto")),
+            "device": device,
             "precision": str(payload.get("precision") or "auto"),
             "auto_load": parse_bool(payload.get("auto_load"), True),
             "lora_scale": parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0),

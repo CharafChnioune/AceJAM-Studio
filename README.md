@@ -60,6 +60,8 @@ The trainer uses the official ACE-Step 1.5 `training_v2` / Side-Step CLI as an i
 
 Training is hardware-dependent. The UI and API report missing vendor files or Python dependencies clearly. During preprocess/train/estimate, generation is locked and the loaded ACE-Step generation model is released to free memory.
 
+Trainer device is separate from the generation runtime device. On Apple Silicon, `auto` uses the M-chip GPU through PyTorch MPS when available; otherwise it falls back to CUDA or CPU. CPU remains selectable for conservative runs.
+
 Finished one-click and manual training jobs copy the final adapter into `app/data/loras/<trigger-tag>`. If that folder already exists, AceJAM keeps the older adapter and creates `<trigger-tag>-2`, `<trigger-tag>-3`, and so on. Each registered folder includes `acejam_adapter.json` with `display_name`, `trigger_tag`, trainer metadata, model variant, job id, timestamp, and source paths.
 
 LoRA and LoKr training now saves a checkpoint every epoch. For PEFT LoRA jobs, Trainer can also run a fixed 20-second epoch audition after each checkpoint using the user-supplied caption/tags and lyrics. Auditions are attached to `/api/lora/jobs/{id}` as `epoch_auditions` with checkpoint path, status, result id, audio URL, and errors; they are not saved to the Music Library. LoKr checkpoints are still saved every epoch, but auditions are skipped because ACE-Step generation loads PEFT LoRA adapters only.

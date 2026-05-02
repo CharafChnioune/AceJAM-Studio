@@ -71,6 +71,8 @@ Album planning now uses AceJAM Agents by default: direct local LLM calls for alb
 
 Registration uses the trigger tag as the adapter folder name under `data/loras/`: `mytrigger`, then `mytrigger-2`, `mytrigger-3`, etc. AceJAM writes `acejam_adapter.json` with `display_name`, `trigger_tag`, `adapter_type`, `model_variant`, `song_model`, `job_id`, `trained_at`, and source paths. `/api/lora/status` and `/api/lora/adapters` return those fields for all Studio dropdowns.
 
+Trainer device selection is independent from generation runtime settings. `auto` resolves to MPS on Apple Silicon when PyTorch MPS is available, CUDA when available elsewhere, and CPU as the fallback; CPU can still be selected explicitly.
+
 All LoRA/LoKr train commands save every epoch. The Trainer also exposes optional epoch auditions for PEFT LoRA: a fixed 20-second generation with user-supplied caption/tags and lyrics runs after each epoch checkpoint, records `epoch_auditions` on the job, and continues training even if an audition fails. These audition renders are job artifacts only and are not saved to the Music Library; LoKr auditions are skipped because standard ACE-Step generation expects PEFT LoRA adapter files.
 
 The Trainer known-adapters dropdown includes LoRA and LoKr outputs. The generation and Album dropdowns list only loadable PEFT LoRA folders; LoKr remains trainable/visible for trainer inspection but is not offered for ACE-Step generation loading.
