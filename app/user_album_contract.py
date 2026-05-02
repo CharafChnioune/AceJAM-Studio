@@ -64,6 +64,31 @@ def _clean_title(value: Any) -> str:
     return text.strip(" \t-:;\"'“”")
 
 
+def _track_title_is_contaminated(value: Any) -> bool:
+    title = str(value or "").strip()
+    if not title:
+        return True
+    if len(title) > 120:
+        return True
+    if len(re.findall(r"[A-Za-z0-9À-ÿ']+", title)) > 18:
+        return True
+    if re.search(r"\[[^\]]+\]", title):
+        return True
+    if re.search(r"\b(?:style|vibe|lyrics?|verse|chorus|hook|bridge|intro|outro|caption|tags?|bpm|duration)\s*:", title, re.I):
+        return True
+    return False
+
+
+def _contract_concept_source(prompt: Any, payload: dict[str, Any]) -> str:
+    for value in (payload.get("raw_user_prompt"), payload.get("user_prompt"), payload.get("prompt")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for value in (prompt, payload.get("concept")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _capture_field(block: str, labels: list[str], *, multiline: bool = True) -> str:
     label_alt = "|".join(re.escape(label) for label in labels)
     if multiline:
@@ -178,19 +203,22 @@ def extract_user_album_contract(
     language: str = "en",
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    text = str(prompt or "")
     payload = payload or {}
+    text = _contract_concept_source(prompt, payload) or str(prompt or "")
     album_title = (
         str(payload.get("album_title") or payload.get("album_name") or "").strip()
         or _capture_field(text, ["album title", "album name", "album"], multiline=False)
     )
-    concept = str(payload.get("concept") or "").strip() or _capture_field(text, ["concept"], multiline=True) or _clip(text, 900)
+    concept_source = text
+    concept = _capture_field(concept_source, ["concept"], multiline=True) or _clip(concept_source, 900)
     requested_tracks = int(num_tracks or payload.get("num_tracks") or 0)
     tracks: list[dict[str, Any]] = []
     for match, block in _track_blocks(text):
         track_number = int(match.group(1))
         raw_title = match.group(2) or match.group(3) or match.group(4) or ""
         title = _clean_title(raw_title)
+        if _track_title_is_contaminated(title):
+            continue
         paren = str(match.group(5) or "")
         producer_credit = ""
         if re.search(r"(?i)\b(?:produced\s+by|prod\.?)\b", paren):

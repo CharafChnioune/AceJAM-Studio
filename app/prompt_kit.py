@@ -248,11 +248,11 @@ GENRE_MODULES: dict[str, dict[str, Any]] = {
     "trap": {
         "label": "Trap",
         "aliases": ["trap rap", "modern trap"],
-        "caption_dna": ["808 bass", "trap hi-hats", "dark synth lead", "wide ad-libs"],
-        "structure": "Intro, Hook, Verse, Hook, Verse, Hook, Outro with ad-libs.",
+        "caption_dna": ["808 bass", "trap hi-hats", "dark synth lead", "wide vocal responses"],
+        "structure": "Intro, Hook, Verse, Hook, Verse, Hook, Outro with backing vocal responses.",
         "bpm": "120-160 with half-time feel",
         "keys": "minor, phrygian color, sparse top lines",
-        "hook_strategy": "minimal phrase, repeated with ad-lib contrast",
+        "hook_strategy": "minimal phrase, repeated with vocal-response contrast",
         "avoid": ["muddy 808", "too many metaphors", "weak consonant hook"],
         "density": "balanced",
     },
@@ -529,7 +529,7 @@ SECTION_TAGS = {
     "rap": ["[Intro]", "[Verse - rap]", "[Hook]", "[Chorus - rap]", "[Bridge - spoken]", "[Outro]"],
     "edm": ["[Intro]", "[Build]", "[Drop]", "[Breakdown]", "[Build-Up]", "[Final Drop]", "[Outro]"],
     "instrumental": ["[Intro]", "[Instrumental]", "[Build]", "[Drop]", "[Breakdown]", "[Climax]", "[Outro]"],
-    "performance": ["[Ad-libs]", "[Call and response]", "[Layered vocals]", "[Whispered]", "[Spoken]"],
+    "performance": ["[Vocal responses]", "[Call and response]", "[Layered vocals]", "[Whispered]", "[Spoken]"],
 }
 
 TROUBLESHOOTING_MATRIX = {
@@ -667,6 +667,36 @@ def section_map_for(duration: Any, genre_hint: Any = "", instrumental: bool = Fa
             ]
         return [
             {"tag": f"[{name}]", "start_sec": int(start), "end_sec": int(min(end, dur)), "vocal_role": "instrumental_or_sparse_motif"}
+            for name, start, end in sections
+            if end > start
+        ]
+    rap_locked = bool(re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", str(genre_hint or ""), re.I))
+    if rap_locked:
+        if dur <= 90:
+            sections = [("Intro", 0, 8), ("Verse", 8, 44), ("Chorus", 44, 72), ("Outro", 72, dur)]
+        elif dur <= 180:
+            sections = [
+                ("Intro", 0, 10),
+                ("Verse 1", 10, 52),
+                ("Chorus", 52, 82),
+                ("Verse 2", 82, 124),
+                ("Bridge", 124, 150),
+                ("Final Chorus", 150, dur),
+            ]
+        else:
+            sections = [
+                ("Intro", 0, 12),
+                ("Verse 1", 12, 58),
+                ("Chorus", 58, 88),
+                ("Verse 2", 88, 136),
+                ("Chorus", 136, 166),
+                ("Beat Switch", 166, max(184, dur - 58)),
+                ("Bridge", max(184, dur - 58), max(206, dur - 34)),
+                ("Final Chorus", max(206, dur - 34), max(224, dur - 12)),
+                ("Outro", max(224, dur - 12), dur),
+            ]
+        return [
+            {"tag": f"[{name}]", "start_sec": int(start), "end_sec": int(min(end, dur)), "vocal_role": "rap_lyrics"}
             for name, start, end in sections
             if end > start
         ]

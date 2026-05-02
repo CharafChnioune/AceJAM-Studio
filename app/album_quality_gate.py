@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from studio_core import ACE_STEP_CAPTION_CHAR_LIMIT, ACE_STEP_LYRICS_CHAR_LIMIT, has_vocal_lyrics
+from studio_core import (
+    ACE_STEP_CAPTION_CHAR_LIMIT,
+    ACE_STEP_LYRICS_CHAR_LIMIT,
+    ACE_STEP_LYRICS_SAFE_HEADROOM,
+    ACE_STEP_LYRICS_WARNING_CHAR_LIMIT,
+    has_vocal_lyrics,
+)
 
 
 ALBUM_PAYLOAD_GATE_VERSION = "album-payload-quality-gate-2026-04-29"
@@ -30,7 +36,7 @@ TAG_DIMENSION_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "vocal_style": (
         "vocal", "voice", "rap", "sung", "singer", "male", "female", "duet",
-        "choir", "harmony", "harmonies", "ad-lib", "hook", "chorus", "chant",
+        "choir", "harmony", "harmonies", "vocal response", "hook", "chorus", "chant",
     ),
     "mood_atmosphere": (
         "dark", "bright", "uplifting", "melancholic", "euphoric", "dreamy",
@@ -114,6 +120,41 @@ FALLBACK_ARTIFACT_RE = re.compile(
 PLACEHOLDER_RE = re.compile(r"\b(?:placeholder|repeat chorus|same as before|continue|tbd|todo|\.\.\.)\b", re.I)
 SECTION_RE = re.compile(r"\[([^\]]+)\]")
 WORD_RE = re.compile(r"[A-Za-z0-9À-ÿ\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff']+")
+
+
+def _producer_credit_aliases(value: Any) -> list[str]:
+    aliases: list[str] = []
+    for item in re.split(r"[,/&;]|\b(?:and|with|prod\.?|produced by)\b", str(value or ""), flags=re.I):
+        text = re.sub(r"\s+", " ", item).strip(" .:-")
+        if len(text) >= 3 and text.lower() not in {"unknown", "none", "producer"}:
+            aliases.append(text)
+    return aliases
+
+
+def _lyrics_contain_any(lyrics: str, aliases: list[str]) -> list[str]:
+    found: list[str] = []
+    lowered = str(lyrics or "").lower()
+    for alias in aliases:
+        if alias.lower() in lowered and alias not in found:
+            found.append(alias)
+    return found
+
+
+def _repair_producer_credit_lyrics(lyrics: str, aliases: list[str]) -> tuple[str, bool]:
+    if not aliases:
+        return lyrics, False
+    changed = False
+    repaired_lines: list[str] = []
+    for line in str(lyrics or "").splitlines():
+        if any(alias.lower() in line.lower() for alias in aliases):
+            if line.strip().startswith("["):
+                repaired_lines.append(line)
+            else:
+                repaired_lines.append("The beat lands heavy, crisp and clean,")
+            changed = True
+        else:
+            repaired_lines.append(line)
+    return "\n".join(repaired_lines), changed
 
 
 def _safe_job_id(value: Any) -> str:
@@ -289,6 +330,223 @@ def _caption_term_allowed(term: Any) -> bool:
     return True
 
 
+RAP_INTENT_RE = re.compile(r"\b(?:rap|hip[-\s]?hop|trap|drill)\b", re.I)
+RAP_CORE_RE = re.compile(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", re.I)
+RAP_VOCAL_RE = re.compile(
+    r"\b(?:rap vocal|rapper|rapped|rap lead|male rap|female rap|spoken[-\s]?word|rhythmic vocal|"
+    r"flow|cadence|vocal pocket|tight pocket)\b",
+    re.I,
+)
+RAP_GROOVE_RE = re.compile(
+    r"\b(?:hip[-\s]?hop drums|boom[-\s]?bap|trap hi[-\s]?hats?|drill drums|rap groove|"
+    r"steady groove|hard[-\s]?hitting drums|drum patterns?|hard drums|kick|snare|"
+    r"hi[-\s]?hats?|rhythmic pocket|bounce)\b",
+    re.I,
+)
+RAP_LOW_END_RE = re.compile(r"\b(?:808|sub[-\s]?bass|deep bass|low[-\s]?end|bassline|bass|g[-\s]?funk bass)\b", re.I)
+CINEMATIC_OVERLAY_RE = re.compile(
+    r"\b(?:cinematic|orchestral|orchestra|strings?|brass|horns?|taiko|choir|score|trailer|epic)\b",
+    re.I,
+)
+ARRANGEMENT_LYRIC_RE = re.compile(
+    r"\b(?:instrumental break|orchestra(?:l)?\s+swells?|strings?\s+(?:fade|swell|enter)|"
+    r"brass\s+(?:swells?|hits?)|taiko\s+drums?|drums?\s+hit\s+hard|low end rumbles|"
+    r"production\s+(?:drops|builds)|mix\s+(?:opens|widens))\b",
+    re.I,
+)
+
+
+def _nested_album_options(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    metadata = payload.get("album_metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("album_options"), dict):
+        return dict(metadata.get("album_options") or {})
+    return {}
+
+
+def _genre_source_text(
+    payload: dict[str, Any] | None,
+    options: dict[str, Any] | None = None,
+    *,
+    primary_only: bool = False,
+) -> str:
+    parts: list[str] = []
+    for source in (options or {}, _nested_album_options(payload), payload or {}):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "album_agent_genre_prompt",
+            "genre_prompt",
+            "album_agent_vocal_type",
+            "vocal_type",
+            "custom_tags",
+            "style",
+            "locked_style",
+            "user_prompt",
+            "raw_user_prompt",
+            "prompt",
+            "concept",
+        ):
+            value = source.get(key)
+            if value:
+                parts.append(" ".join(str(item) for item in value) if isinstance(value, list) else str(value))
+        if primary_only:
+            continue
+        for key in ("genre_profile", "performance_brief", "tags", "caption", "description", "vibe", "narrative"):
+            value = source.get(key)
+            if value:
+                parts.append(" ".join(str(item) for item in value) if isinstance(value, list) else str(value))
+        tag_list = source.get("tag_list")
+        if not primary_only and isinstance(tag_list, list):
+            parts.extend(str(item) for item in tag_list if str(item).strip())
+    return re.sub(r"\s+", " ", "\n".join(parts)).strip()
+
+
+def build_genre_intent_contract(payload: dict[str, Any] | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    existing = (payload or {}).get("genre_intent_contract") if isinstance(payload, dict) else None
+    if isinstance(existing, dict) and existing.get("family"):
+        return dict(existing)
+    primary_source_text = _genre_source_text(payload, options, primary_only=True)
+    source_text = _genre_source_text(payload, options, primary_only=False)
+    primary_rap = bool(RAP_INTENT_RE.search(primary_source_text))
+    secondary_rap = bool(RAP_INTENT_RE.search(source_text))
+    if primary_rap or secondary_rap:
+        return {
+            "version": "genre-intent-contract-2026-05-02",
+            "active": True,
+            "family": "rap",
+            "strict": primary_rap,
+            "required": ["rap_core", "rap_vocal", "rap_groove", "low_end"],
+            "allowed_secondary_color": ["cinematic", "orchestral"],
+            "primary_source_preview": primary_source_text[:260],
+            "source_preview": source_text[:260],
+        }
+    return {
+        "version": "genre-intent-contract-2026-05-02",
+        "active": False,
+        "family": "",
+        "strict": False,
+        "required": [],
+        "allowed_secondary_color": [],
+        "source_preview": source_text[:260],
+    }
+
+
+def _regex_hits(pattern: re.Pattern[str], text: str) -> list[str]:
+    hits: list[str] = []
+    for match in pattern.finditer(text or ""):
+        value = re.sub(r"\s+", " ", match.group(0).strip().lower())
+        if value and value not in hits:
+            hits.append(value)
+    return hits
+
+
+def _non_section_lines(lyrics: str) -> list[str]:
+    return [
+        _normalize_lyric_section_line(line).strip()
+        for line in str(lyrics or "").splitlines()
+        if line.strip() and not _section_only_line(line)
+    ]
+
+
+def evaluate_genre_adherence(payload: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(payload or {})
+    contract = build_genre_intent_contract(payload, options)
+    issues: list[dict[str, Any]] = []
+    if contract.get("family") != "rap":
+        return {
+            "version": "genre-adherence-2026-05-02",
+            "status": "pass",
+            "gate_passed": True,
+            "contract": contract,
+            "issues": [],
+            "issue_ids": [],
+        }
+
+    caption_terms = _split_terms(payload.get("caption") or payload.get("tags") or "")
+    tag_terms = _split_terms(payload.get("tag_list") or [])
+    performance_terms = _split_terms(payload.get("performance_brief") or "") + _split_terms(payload.get("genre_profile") or "")
+    sonic_text = " ".join([*caption_terms, *tag_terms, *performance_terms, str(payload.get("style") or "")])
+    sonic_text_lower = sonic_text.lower()
+    first_terms = [term.lower() for term in [*tag_terms, *caption_terms][:4]]
+
+    rap_hits = _regex_hits(RAP_CORE_RE, sonic_text_lower)
+    vocal_hits = _regex_hits(RAP_VOCAL_RE, sonic_text_lower)
+    groove_hits = _regex_hits(RAP_GROOVE_RE, sonic_text_lower)
+    low_end_hits = _regex_hits(RAP_LOW_END_RE, sonic_text_lower)
+    cinematic_hits = _regex_hits(CINEMATIC_OVERLAY_RE, sonic_text_lower)
+
+    strict = bool(contract.get("strict"))
+    if not strict:
+        return {
+            "version": "genre-adherence-2026-05-02",
+            "status": "pass",
+            "gate_passed": True,
+            "contract": contract,
+            "issues": [],
+            "issue_ids": [],
+            "stats": {
+                "rap_hits": rap_hits,
+                "rap_vocal_hits": vocal_hits,
+                "rap_groove_hits": groove_hits,
+                "low_end_hits": low_end_hits,
+                "cinematic_overlay_hits": cinematic_hits,
+                "rap_front_loaded": any(RAP_CORE_RE.search(term) or RAP_GROOVE_RE.search(term) for term in first_terms),
+            },
+        }
+
+    if not rap_hits:
+        issues.append({"id": "genre_intent_missing_rap_core", "severity": "fail", "detail": "caption/tags need rap or hip-hop as primary genre"})
+    if not vocal_hits:
+        issues.append({"id": "genre_intent_missing_rap_vocal", "severity": "fail", "detail": "caption/tags need rap vocal delivery"})
+    if not groove_hits:
+        issues.append({"id": "genre_intent_missing_rap_groove", "severity": "fail", "detail": "caption/tags need hip-hop drums or rap groove"})
+    if not low_end_hits:
+        issues.append({"id": "genre_intent_missing_low_end", "severity": "fail", "detail": "caption/tags need 808, bassline, sub-bass, or low-end anchor"})
+
+    rap_front_loaded = any(RAP_CORE_RE.search(term) or RAP_GROOVE_RE.search(term) for term in first_terms)
+    if cinematic_hits and (len(cinematic_hits) > len(rap_hits) + 1) and not rap_front_loaded:
+        issues.append({"id": "rap_not_dominant", "severity": "fail", "detail": "cinematic/orchestral color appears before rap anchors"})
+    if len(cinematic_hits) >= 4 and len(rap_hits) <= 2:
+        issues.append({"id": "orchestral_overdominant", "severity": "fail", "detail": "orchestral/cinematic terms dominate the rap prompt"})
+
+    lyric_lines = _non_section_lines(str(payload.get("lyrics") or "\n".join(payload.get("lyrics_lines") or [])))
+    arrangement_lines = [line for line in lyric_lines if ARRANGEMENT_LYRIC_RE.search(line)]
+    if arrangement_lines:
+        issues.append({
+            "id": "non_rap_arrangement_lyric_leakage",
+            "severity": "fail",
+            "detail": " | ".join(arrangement_lines[:3]),
+        })
+    if lyric_lines:
+        long_lines = [line for line in lyric_lines if len(_words(line)) > 13]
+        avg_words = round(sum(len(_words(line)) for line in lyric_lines) / max(1, len(lyric_lines)), 2)
+        if avg_words > 10.5 or len(long_lines) > max(3, len(lyric_lines) // 4):
+            issues.append({
+                "id": "rap_lines_not_bar_like",
+                "severity": "fail",
+                "detail": f"avg_words={avg_words}; long_lines={len(long_lines)}",
+            })
+
+    return {
+        "version": "genre-adherence-2026-05-02",
+        "status": "pass" if not issues else "fail",
+        "gate_passed": not issues,
+        "contract": contract,
+        "issues": issues,
+        "issue_ids": [str(issue.get("id")) for issue in issues],
+        "stats": {
+            "rap_hits": rap_hits,
+            "rap_vocal_hits": vocal_hits,
+            "rap_groove_hits": groove_hits,
+            "low_end_hits": low_end_hits,
+            "cinematic_overlay_hits": cinematic_hits,
+            "rap_front_loaded": rap_front_loaded,
+        },
+    }
+
+
 def _lyric_stats(lyrics: str) -> dict[str, Any]:
     raw_lines = [_normalize_lyric_section_line(line).strip() for line in str(lyrics or "").splitlines() if line.strip()]
     lyric_lines = [re.sub(r"\[[^\]]+\]", "", line).strip() for line in raw_lines]
@@ -317,6 +575,48 @@ def _lyric_stats(lyrics: str) -> dict[str, Any]:
         "fallback_artifact_count": len(FALLBACK_ARTIFACT_RE.findall(str(lyrics or ""))),
         "placeholder_count": len(PLACEHOLDER_RE.findall(str(lyrics or ""))),
     }
+
+
+def _duplicate_section_keys(sections: list[str]) -> dict[str, int]:
+    counts = Counter(_section_key(section) for section in sections if section)
+    return {key: count for key, count in counts.items() if count > 1}
+
+
+def _lyric_terminal_fragment_lines(lyrics: str) -> list[str]:
+    lines = [_normalize_lyric_section_line(line).strip() for line in str(lyrics or "").splitlines() if line.strip()]
+    lyric_lines = [line for line in lines if not _section_only_line(line)]
+    suspect: list[str] = []
+    tail = lyric_lines[-10:]
+    connector_re = re.compile(
+        r"\b(?:a|an|the|to|through|with|while|when|where|and|but|or|from|of|in|on|under|over|into|for|by|as|that|this)\s*$",
+        re.I,
+    )
+    for line in tail:
+        clean = re.sub(r"[\"'“”‘’]+", "", line).strip()
+        words = WORD_RE.findall(clean)
+        if not words:
+            continue
+        if len(words[-1]) <= 1 and re.search(r"[A-Za-zÀ-ÿ]", words[-1]):
+            suspect.append(line)
+            continue
+        if len(words) <= 2 and connector_re.search(clean):
+            suspect.append(line)
+            continue
+        if connector_re.search(clean) and not re.search(r"[,.!?…)]\s*$", clean):
+            suspect.append(line)
+    return suspect
+
+
+def _lyric_ending_is_complete(lyrics: str) -> bool:
+    lines = [_normalize_lyric_section_line(line).strip() for line in str(lyrics or "").splitlines() if line.strip()]
+    lyric_lines = [line for line in lines if not _section_only_line(line)]
+    if not lyric_lines:
+        return False
+    if _lyric_terminal_fragment_lines(lyrics):
+        return False
+    tail = lyric_lines[-1]
+    words = WORD_RE.findall(tail)
+    return len(words) >= 2
 
 
 def _section_only_line(line: str) -> bool:
@@ -609,12 +909,17 @@ def evaluate_album_payload_quality(
     if coverage.get("missing"):
         issues.append({"id": "tag_dimension_coverage", "severity": "repairable", "detail": ", ".join(coverage["missing"])})
     if repair and (caption_leaks or tag_leaks or coverage.get("missing") or len(genre_terms) > 2):
-        if tag_leaks:
-            repaired["tag_list"] = [term for term in tag_terms if not _caption_has_leakage(term)]
+        if tag_leaks or len(genre_terms) > 2:
+            repaired["tag_list"] = _prune_caption_terms([
+                term for term in tag_terms if _caption_term_allowed(term) and not _caption_has_leakage(term)
+            ])
             tag_list = repaired["tag_list"]
+            coverage_source_caption = "" if (caption_leaks or tag_leaks or len(genre_terms) > 2) else caption
+            coverage = tag_dimension_coverage(coverage_source_caption, tag_list)
         repaired_caption = _clean_caption(repaired, coverage)
         repaired["caption"] = repaired_caption
         repaired["tags"] = repaired_caption
+        caption = repaired_caption
         repair_actions.append("caption_rebuilt_from_tag_dimensions")
         repaired["tag_list"] = _split_terms(tag_list) + [
             term for term in _split_terms(repaired_caption) if term.lower() not in {item.lower() for item in _split_terms(tag_list)}
@@ -636,6 +941,13 @@ def evaluate_album_payload_quality(
             repair_actions.append("global_caption_rebuilt")
         else:
             issues.append({"id": "global_caption_leakage", "severity": "fail", "detail": f"{len(global_leaks)} leak marker(s)"})
+    elif global_caption and repair:
+        caption_keys = {term.lower() for term in _split_terms(caption)}
+        global_terms = _split_terms(global_caption)
+        deduped_terms = [term for term in global_terms if term.lower() not in caption_keys]
+        if len(deduped_terms) < len(global_terms):
+            repaired["global_caption"] = ", ".join(deduped_terms[:8])
+            repair_actions.append("global_caption_deduped_against_track_caption")
 
     duration = float(repaired.get("duration") or opts.get("track_duration") or 180)
     density = str(repaired.get("lyric_density") or opts.get("lyric_density") or "dense")
@@ -646,6 +958,20 @@ def evaluate_album_payload_quality(
     )
     plan = _lyric_plan(duration, density, structure_preset, genre_hint)
     lyrics = str(repaired.get("lyrics") or "")
+    producer_credit = (
+        str(repaired.get("producer_credit") or "")
+        or str(((repaired.get("album_metadata") or {}).get("producer_credit") if isinstance(repaired.get("album_metadata"), dict) else "") or "")
+    )
+    producer_aliases = _producer_credit_aliases(producer_credit)
+    producer_hits = _lyrics_contain_any(lyrics, producer_aliases)
+    if producer_hits:
+        issues.append({"id": "producer_credit_in_lyrics", "severity": "repairable", "detail": ", ".join(producer_hits)})
+        if repair:
+            repaired_lyrics, changed = _repair_producer_credit_lyrics(lyrics, producer_hits)
+            if changed:
+                lyrics = repaired_lyrics
+                repaired["lyrics"] = lyrics
+                repair_actions.append("producer_credit_removed_from_lyrics")
     if repair and "\\n" in lyrics and lyrics.count("\\n") >= 3:
         lyrics = lyrics.replace("\\r\\n", "\n").replace("\\n", "\n")
         repaired["lyrics"] = lyrics
@@ -722,6 +1048,22 @@ def evaluate_album_payload_quality(
             issues.append({"id": "lyrics_missing", "severity": "fail", "detail": "vocal track has no lyrics"})
         if stats["char_count"] > ACE_STEP_LYRICS_CHAR_LIMIT:
             issues.append({"id": "lyrics_over_budget", "severity": "fail", "detail": f"{stats['char_count']}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars"})
+        elif stats["char_count"] > ACE_STEP_LYRICS_WARNING_CHAR_LIMIT:
+            issues.append({"id": "lyrics_near_budget_limit", "severity": "warning", "detail": f"{stats['char_count']}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars"})
+        if stats["char_count"] > ACE_STEP_LYRICS_CHAR_LIMIT - ACE_STEP_LYRICS_SAFE_HEADROOM and repair_actions:
+            issues.append({
+                "id": "unsafe_budget_margin",
+                "severity": "fail",
+                "detail": f"{ACE_STEP_LYRICS_CHAR_LIMIT - stats['char_count']} chars headroom after repair",
+            })
+        duplicate_sections = _duplicate_section_keys(stats["sections"])
+        if duplicate_sections.get("outro", 0) > 1:
+            issues.append({"id": "duplicate_outro", "severity": "fail", "detail": f"{duplicate_sections['outro']} outro sections"})
+        terminal_fragments = _lyric_terminal_fragment_lines(lyrics)
+        if terminal_fragments:
+            issues.append({"id": "lyrics_mid_line_truncation", "severity": "fail", "detail": " | ".join(terminal_fragments[:3])})
+        if not _lyric_ending_is_complete(lyrics):
+            issues.append({"id": "ending_not_complete", "severity": "fail", "detail": "last lyric line is incomplete or missing"})
         if stats["word_count"] < int(plan.get("min_words") or 0):
             issues.append({"id": "lyrics_under_length", "severity": "fail", "detail": f"{stats['word_count']}/{plan.get('min_words')} words"})
         if stats["line_count"] < min_lines:
@@ -752,6 +1094,13 @@ def evaluate_album_payload_quality(
     missing_required = [phrase for phrase in required_phrases if not _phrase_present(phrase, lyrics)]
     if missing_required and not instrumental:
         issues.append({"id": "required_phrases_missing", "severity": "fail", "detail": ", ".join(missing_required[:4])})
+
+    genre_adherence = evaluate_genre_adherence(repaired, opts)
+    for issue in genre_adherence.get("issues") or []:
+        issues.append(dict(issue))
+    repaired["genre_intent_contract"] = genre_adherence.get("contract") or {}
+    repaired["genre_adherence"] = {key: value for key, value in genre_adherence.items() if key != "contract"}
+    repaired["genre_validation_issues"] = genre_adherence.get("issue_ids") or []
 
     fail_issues = [issue for issue in issues if issue.get("severity") == "fail"]
     repairable_issues = [issue for issue in issues if issue.get("severity") == "repairable"]
@@ -803,6 +1152,8 @@ def evaluate_album_payload_quality(
         "tag_coverage": coverage,
         "caption_integrity": caption_integrity,
         "lyric_duration_fit": lyric_duration_fit,
+        "genre_intent_contract": genre_adherence.get("contract") or {},
+        "genre_adherence": {key: value for key, value in genre_adherence.items() if key != "contract"},
         "repaired_payload": repaired,
     }
     repaired["payload_gate_status"] = status
@@ -810,6 +1161,8 @@ def evaluate_album_payload_quality(
     repaired["tag_coverage"] = coverage
     repaired["caption_integrity"] = caption_integrity
     repaired["lyric_duration_fit"] = lyric_duration_fit
+    repaired["genre_intent_contract"] = genre_adherence.get("contract") or {}
+    repaired["genre_adherence"] = {key: value for key, value in genre_adherence.items() if key != "contract"}
     repaired["repair_actions"] = repair_actions
     warnings = list(repaired.get("payload_warnings") or [])
     if status != "pass":

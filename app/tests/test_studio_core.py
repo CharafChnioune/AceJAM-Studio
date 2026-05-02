@@ -18,6 +18,7 @@ from studio_core import (
     docs_best_model_settings,
     ensure_task_supported,
     apply_ace_step_text_budget,
+    fit_ace_step_lyrics_to_limit,
     hit_readiness_report,
     lm_model_profile,
     lm_model_profiles_for_models,
@@ -205,6 +206,23 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(payload["ace_step_text_budget"]["source_lyrics_char_count"], len(polluted))
         self.assertLessEqual(payload["ace_step_text_budget"]["runtime_lyrics_char_count"], ACE_STEP_LYRICS_CHAR_LIMIT)
         self.assertIn("Lyrics fit", " ".join(payload["payload_warnings"]))
+
+    def test_ace_step_lyrics_fit_keeps_complete_lines_without_invented_outro(self):
+        lyrics = "\n".join([
+            "[Intro]",
+            "The first complete line",
+            "[Verse]",
+            *[f"The city keeps a complete lyric line number {idx:03d}" for idx in range(280)],
+            "[Outro]",
+            "The final complete line",
+        ])
+
+        fitted = fit_ace_step_lyrics_to_limit(lyrics, ACE_STEP_LYRICS_CHAR_LIMIT)
+
+        self.assertLessEqual(len(fitted), ACE_STEP_LYRICS_CHAR_LIMIT)
+        self.assertNotIn("Let it breathe", fitted)
+        self.assertNotRegex(fitted, r"\b[a-zA-Z]\s*$")
+        self.assertFalse(fitted.endswith("number"))
 
     def test_official_field_detection(self):
         self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": False}), [])

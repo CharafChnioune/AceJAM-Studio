@@ -28,6 +28,28 @@ for name in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROX
     os.environ.pop(name, None)
 os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_CACHE_DIR = BASE_DIR / "model_cache"
 DATA_DIR = BASE_DIR / "data"
@@ -60,6 +82,45 @@ ACE_LM_PRIVATE_UPLOAD_CONFIRM = "PRIVATE_HF_UPLOAD"
 ACE_LM_CLEANUP_CONFIRM = "DELETE_ORIGINAL_ACE_LM_AFTER_SMOKE"
 ACE_LM_SMOKE_CONFIRM = "ACE_LM_SMOKE_PASSED"
 OBLITERATUS_REPO_URL = "https://github.com/elder-plinius/OBLITERATUS"
+ACEJAM_PRINT_ACE_PAYLOAD = _env_flag(
+    "ACEJAM_PRINT_ACE_PAYLOAD",
+    default=True,
+)
+ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS = max(0, _env_int("ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS", 0))
+ACEJAM_REDACT_OFFICIAL_LOG_TEXT = _env_flag("ACEJAM_REDACT_OFFICIAL_LOG_TEXT", default=False)
+ACEJAM_VOCAL_INTELLIGIBILITY_GATE = _env_flag("ACEJAM_VOCAL_INTELLIGIBILITY_GATE", default=True)
+ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS = max(1, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS", 8))
+ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE = _env_flag("ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE", default=True)
+ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_AFTER = max(
+    1,
+    _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_AFTER", 1),
+)
+ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_ATTEMPTS = max(
+    1,
+    _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_ATTEMPTS", 2),
+)
+ACEJAM_VOCAL_INTELLIGIBILITY_RESCUE_MODELS = [
+    item.strip()
+    for item in os.environ.get(
+        "ACEJAM_VOCAL_INTELLIGIBILITY_RESCUE_MODELS",
+        "acestep-v15-turbo,acestep-v15-xl-turbo,acestep-v15-turbo-shift3,acestep-v15-sft",
+    ).split(",")
+    if item.strip()
+]
+ACEJAM_VOCAL_INTELLIGIBILITY_MIN_WORDS = max(1, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_MIN_WORDS", 8))
+ACEJAM_VOCAL_INTELLIGIBILITY_MIN_KEYWORDS = max(0, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_MIN_KEYWORDS", 2))
+ACEJAM_VOCAL_INTELLIGIBILITY_MIN_UNIQUE_WORDS = max(1, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_MIN_UNIQUE_WORDS", 5))
+ACEJAM_VOCAL_INTELLIGIBILITY_MAX_FILLER_RATIO = min(
+    1.0,
+    max(0.0, _env_float("ACEJAM_VOCAL_INTELLIGIBILITY_MAX_FILLER_RATIO", 0.45)),
+)
+ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO = min(
+    1.0,
+    max(0.0, _env_float("ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO", 0.45)),
+)
+ACEJAM_VOCAL_ASR_TIMEOUT = max(30, _env_int("ACEJAM_VOCAL_ASR_TIMEOUT", 240))
+ACEJAM_VOCAL_ASR_MODEL = os.environ.get("ACEJAM_VOCAL_ASR_MODEL", "").strip()
+ACEJAM_VOCAL_ASR_DEVICE = os.environ.get("ACEJAM_VOCAL_ASR_DEVICE", "cpu").strip().lower() or "cpu"
 
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ACE_LM_ABLITERATED_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,6 +173,7 @@ from album_quality_gate import (
     AlbumRunDebugLogger,
     build_album_global_sonic_caption,
     evaluate_album_payload_quality,
+    evaluate_genre_adherence,
 )
 from songwriting_toolkit import (
     ALBUM_FINAL_MODEL,
@@ -122,6 +184,8 @@ from songwriting_toolkit import (
     album_models_for_strategy,
     choose_song_model,
     derive_artist_name,
+    lyric_length_plan,
+    lyric_stats,
     normalize_album_tracks,
     normalize_artist_name,
     parse_duration_seconds,
@@ -338,6 +402,76 @@ def _normalize_lm_backend(value: Any) -> str:
     if backend == "pt" and _IS_APPLE_SILICON and not parse_bool(os.environ.get("ACEJAM_ALLOW_PT_LM_BACKEND_ON_APPLE"), False):
         return ACE_LM_BACKEND_DEFAULT
     return backend if backend in {"pt", "vllm", "mlx"} else ACE_LM_BACKEND_DEFAULT
+
+
+VOCAL_CLARITY_CAPTION_TRAITS = [
+    "clear intelligible English rap vocal",
+    "dry upfront lead vocal",
+    "crisp consonants",
+    "tight spoken-word delivery",
+    "minimal vocal effects",
+    "radio-ready hook",
+]
+
+ACEJAM_AUTO_VOCAL_CLARITY_RECOVERY = _env_flag("ACEJAM_AUTO_VOCAL_CLARITY_RECOVERY", default=True)
+
+
+def _supplied_vocal_lyrics(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if parse_bool(payload.get("instrumental"), False):
+        return False
+    lyrics = str(payload.get("lyrics") or "").strip()
+    return bool(lyrics and lyrics.lower() != "[instrumental]")
+
+
+def _explicit_vocal_clarity_recovery(payload: dict[str, Any] | None) -> bool | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("vocal_clarity_recovery", "album_vocal_clarity_recovery"):
+        if key in payload and payload.get(key) not in [None, ""]:
+            return parse_bool(payload.get(key), False)
+    return None
+
+
+def _album_or_agent_vocal_payload(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    ui_mode = str(payload.get("ui_mode") or "").strip().lower()
+    return bool(
+        ui_mode == "album"
+        or payload.get("album_metadata")
+        or payload.get("album_id")
+        or payload.get("agent_complete_payload")
+        or payload.get("album_vocal_clarity_recovery_auto")
+    )
+
+
+def _vocal_clarity_recovery_enabled(payload: dict[str, Any]) -> bool:
+    explicit = _explicit_vocal_clarity_recovery(payload)
+    if explicit is not None:
+        return explicit
+    if not ACEJAM_AUTO_VOCAL_CLARITY_RECOVERY:
+        return False
+    task_type = str((payload or {}).get("task_type") or "text2music").strip().lower()
+    if task_type != "text2music":
+        return False
+    return _album_or_agent_vocal_payload(payload) and _supplied_vocal_lyrics(payload)
+
+
+def _caption_with_vocal_clarity_traits(caption: Any) -> str:
+    existing = str(caption or "").strip()
+    terms = split_terms(existing)
+    lowered = {term.lower() for term in terms}
+    for trait in VOCAL_CLARITY_CAPTION_TRAITS:
+        if trait.lower() in lowered:
+            continue
+        candidate_terms = [*terms, trait]
+        candidate = ", ".join(candidate_terms).strip(", ")
+        if len(candidate) <= ACE_STEP_CAPTION_CHAR_LIMIT:
+            terms.append(trait)
+            lowered.add(trait.lower())
+    return ", ".join(terms).strip(", ") or ", ".join(VOCAL_CLARITY_CAPTION_TRAITS[:3])
 
 
 def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
@@ -743,15 +877,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     if mode == "album":
         normalized.setdefault("song_model_strategy", "all_models_album")
         normalized.setdefault("final_song_model", "all_models_album")
-        contract_source = "\n\n".join(
-            part for part in [
-                str(body.get("user_prompt") or body.get("prompt") or ""),
-                str(normalized.get("album_title") or normalized.get("album_name") or ""),
-                str(normalized.get("concept") or ""),
-                json.dumps(normalized.get("tracks") or [], ensure_ascii=True, default=str)[:6000],
-            ]
-            if part
-        )
+        contract_source = _album_contract_source_from_payload(normalized, body)
         user_album_contract = normalized.get("user_album_contract")
         if not isinstance(user_album_contract, dict):
             user_album_contract = extract_user_album_contract(
@@ -1197,12 +1323,61 @@ def _unload_llm_models_for_generation() -> None:
         pass
 
 
+def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
+    epoch = int(request.get("epoch") or 0)
+    trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
+    raw_payload = {
+        "task_type": "text2music",
+        "ui_mode": "lora_epoch_audition",
+        "artist_name": "AceJAM LoRA",
+        "title": f"{trigger} epoch {epoch}",
+        "caption": str(request.get("caption") or trigger).strip(),
+        "lyrics": str(request.get("lyrics") or "").strip(),
+        "duration": 20,
+        "song_model": str(request.get("song_model") or "acestep-v15-turbo"),
+        "seed": str(request.get("seed") or "42"),
+        "use_random_seed": False,
+        "batch_size": 1,
+        "use_lora": True,
+        "lora_adapter_path": str(request.get("checkpoint_path") or ""),
+        "lora_adapter_name": f"{trigger} epoch {epoch}",
+        "lora_scale": request.get("lora_scale", 1.0),
+        "adapter_model_variant": str(request.get("model_variant") or ""),
+        "save_to_library": False,
+        "ace_lm_model": "none",
+        "allow_supplied_lyrics_lm": False,
+        "thinking": False,
+        "sample_mode": False,
+        "sample_query": "",
+        "use_format": False,
+        "use_cot_metas": False,
+        "use_cot_caption": False,
+        "use_cot_lyrics": False,
+        "use_cot_language": False,
+        "vocal_intelligibility_gate": False,
+        "auto_score": False,
+        "auto_lrc": False,
+        "audio_format": "wav",
+    }
+    params = _parse_generation_payload(raw_payload)
+    result = _run_advanced_generation_once(params)
+    audios = list(result.get("audios") or [])
+    first_audio = audios[0] if audios else {}
+    return {
+        "success": True,
+        "result_id": str(result.get("result_id") or first_audio.get("result_id") or ""),
+        "audio_url": str(first_audio.get("audio_url") or ""),
+        "audios": audios,
+    }
+
+
 training_manager = AceTrainingManager(
     base_dir=BASE_DIR,
     data_dir=DATA_DIR,
     model_cache_dir=MODEL_CACHE_DIR,
     release_models=_release_models_for_training,
     adapter_ready=_activate_trained_adapter,
+    audition_runner=_run_lora_epoch_audition,
 )
 
 
@@ -1362,6 +1537,191 @@ def _jsonable(value: Any) -> Any:
         except Exception:
             return str(value)
     return value
+
+
+def _ace_payload_debug_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(_jsonable(value), ensure_ascii=False, indent=2)
+
+
+def _ace_payload_debug_block(label: str, value: Any) -> str:
+    text = _ace_payload_debug_text(value)
+    original_len = len(text)
+    if ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS and original_len > ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS:
+        text = (
+            text[:ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS].rstrip()
+            + f"\n[truncated by ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS; original_chars={original_len}]"
+        )
+    return (
+        f"[ace_step_payload][BEGIN {label} chars={original_len}]\n"
+        f"{text}\n"
+        f"[ace_step_payload][END {label}]"
+    )
+
+
+def _print_ace_step_terminal_payload(params: dict[str, Any], request: dict[str, Any], save_dir: Path) -> None:
+    if not ACEJAM_PRINT_ACE_PAYLOAD:
+        return
+    request_params = dict(request.get("params") or {})
+    album_meta = params.get("album_metadata") if isinstance(params.get("album_metadata"), dict) else {}
+    runner_request_path = save_dir.parent / "official_request.json" if save_dir.name == "official" else save_dir / "official_request.json"
+    summary = {
+        "song_model": request.get("song_model"),
+        "lm_model": request.get("lm_model") or "none",
+        "lm_backend": request.get("lm_backend"),
+        "requires_lm": request.get("requires_lm"),
+        "task_type": request_params.get("task_type"),
+        "title": album_meta.get("title") or params.get("title") or "",
+        "track_number": album_meta.get("track_number"),
+        "album_title": album_meta.get("album_title") or album_meta.get("album_name") or "",
+        "save_dir": request.get("save_dir"),
+        "official_request_path": str(runner_request_path),
+        "terminal_payload_text_path": str(save_dir / "ace_step_terminal_payload.txt"),
+        "terminal_payload_json_path": str(save_dir / "ace_step_terminal_payload.json"),
+    }
+    metadata_and_settings = {
+        "metadata": {
+            "duration": request_params.get("duration"),
+            "bpm": request_params.get("bpm"),
+            "keyscale": request_params.get("keyscale"),
+            "timesignature": request_params.get("timesignature"),
+            "vocal_language": request_params.get("vocal_language"),
+            "instrumental": request_params.get("instrumental"),
+        },
+        "diffusion": {
+            "inference_steps": request_params.get("inference_steps"),
+            "guidance_scale": request_params.get("guidance_scale"),
+            "shift": request_params.get("shift"),
+            "infer_method": request_params.get("infer_method"),
+            "sampler_mode": request_params.get("sampler_mode"),
+            "timesteps": request_params.get("timesteps"),
+            "seed": request_params.get("seed"),
+            "use_adg": request_params.get("use_adg"),
+        },
+        "lm_controls": {
+            "ace_lm_model": request.get("lm_model") or "none",
+            "lm_backend": request.get("lm_backend"),
+            "thinking": request_params.get("thinking"),
+            "use_format": request_params.get("use_format"),
+            "use_cot_metas": request_params.get("use_cot_metas"),
+            "use_cot_caption": request_params.get("use_cot_caption"),
+            "use_cot_lyrics": request_params.get("use_cot_lyrics"),
+            "use_cot_language": request_params.get("use_cot_language"),
+            "lm_temperature": request_params.get("lm_temperature"),
+            "lm_cfg_scale": request_params.get("lm_cfg_scale"),
+            "lm_top_k": request_params.get("lm_top_k"),
+            "lm_top_p": request_params.get("lm_top_p"),
+        },
+        "output": dict(request.get("config") or {}),
+        "adapter": {
+            "use_lora": request.get("use_lora"),
+            "lora_adapter_name": request.get("lora_adapter_name"),
+            "lora_adapter_path": request.get("lora_adapter_path"),
+            "lora_scale": request.get("lora_scale"),
+            "adapter_model_variant": request.get("adapter_model_variant"),
+        },
+        "text_budget": request.get("ace_step_text_budget") or {},
+    }
+    request_block_label = "direct_handler_request_json" if request.get("runner") == "direct_handler" else "official_request_json"
+    blocks = [
+        "[ace_step_payload] FULL ACE-Step request dump enabled. Set ACEJAM_PRINT_ACE_PAYLOAD=0 to silence.",
+        _ace_payload_debug_block("summary_json", summary),
+        _ace_payload_debug_block("caption", request_params.get("caption") or ""),
+        _ace_payload_debug_block("global_caption", request_params.get("global_caption") or ""),
+        _ace_payload_debug_block("lyrics", request_params.get("lyrics") or ""),
+        _ace_payload_debug_block("metadata_and_settings_json", metadata_and_settings),
+        _ace_payload_debug_block(request_block_label, request),
+    ]
+    debug_text = "\n".join(blocks)
+    print(debug_text, flush=True)
+    try:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        (save_dir / "ace_step_terminal_payload.txt").write_text(debug_text, encoding="utf-8")
+        (save_dir / "ace_step_terminal_payload.json").write_text(
+            json.dumps(
+                _jsonable({
+                    "summary": summary,
+                    "metadata_and_settings": metadata_and_settings,
+                    "ace_step_request": request,
+                    "official_request": request,
+                }),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        print(f"[ace_step_payload][write_error] {type(exc).__name__}: {exc}", flush=True)
+
+
+def _direct_ace_step_debug_request(params: dict[str, Any], save_dir: Path, active_song_model: str | None = None) -> dict[str, Any]:
+    runtime_caption = str(params.get("caption") or params.get("prompt") or "")
+    runtime_global_caption = str(params.get("global_caption") or "")
+    runtime_lyrics = "[Instrumental]" if params.get("instrumental") else str(params.get("lyrics") or "")
+    params_payload = {
+        "task_type": params.get("task_type") or "text2music",
+        "instruction": params.get("instruction") or "Fill the audio semantic mask based on the given conditions:",
+        "reference_audio": str(params.get("reference_audio")) if params.get("reference_audio") else None,
+        "src_audio": str(params.get("src_audio")) if params.get("src_audio") else None,
+        "audio_codes": params.get("audio_code_string") or params.get("audio_codes") or "",
+        "caption": runtime_caption,
+        "global_caption": runtime_global_caption,
+        "lyrics": runtime_lyrics,
+        "instrumental": bool(params.get("instrumental")),
+        "vocal_language": params.get("vocal_language") or _language_for_generation(str(params.get("language") or "")),
+        "bpm": params.get("bpm"),
+        "keyscale": params.get("key_scale") or params.get("keyscale") or "",
+        "timesignature": params.get("time_signature") or params.get("timesignature") or "",
+        "duration": params.get("duration") if "duration" in params else params.get("audio_duration"),
+        "inference_steps": params.get("inference_steps") if "inference_steps" in params else params.get("infer_steps"),
+        "seed": params.get("seed"),
+        "guidance_scale": params.get("guidance_scale"),
+        "use_adg": params.get("use_adg"),
+        "cfg_interval_start": params.get("cfg_interval_start"),
+        "cfg_interval_end": params.get("cfg_interval_end"),
+        "shift": params.get("shift"),
+        "infer_method": params.get("infer_method"),
+        "sampler_mode": params.get("sampler_mode"),
+        "timesteps": params.get("timesteps"),
+        "repainting_start": params.get("repainting_start"),
+        "repainting_end": params.get("repainting_end"),
+        "audio_cover_strength": params.get("audio_cover_strength"),
+        "thinking": params.get("thinking"),
+        "lm_temperature": params.get("lm_temperature"),
+        "lm_cfg_scale": params.get("lm_cfg_scale"),
+        "lm_top_k": params.get("lm_top_k"),
+        "lm_top_p": params.get("lm_top_p"),
+        "use_cot_metas": params.get("use_cot_metas"),
+        "use_cot_caption": params.get("use_cot_caption"),
+        "use_cot_lyrics": params.get("use_cot_lyrics"),
+        "use_cot_language": params.get("use_cot_language"),
+        "use_format": params.get("use_format"),
+    }
+    return {
+        "runner": "direct_handler",
+        "base_dir": str(BASE_DIR),
+        "model_cache_dir": str(MODEL_CACHE_DIR),
+        "save_dir": str(save_dir),
+        "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+        "song_model": active_song_model or params.get("song_model") or ACE_STEP_CHECKPOINT,
+        "lm_model": None,
+        "requires_lm": False,
+        "use_lora": bool(params.get("use_lora", False)),
+        "lora_adapter_path": params.get("lora_adapter_path", ""),
+        "lora_adapter_name": params.get("lora_adapter_name", ""),
+        "lora_scale": params.get("lora_scale", 1.0),
+        "adapter_model_variant": params.get("adapter_model_variant", ""),
+        "device": params.get("device", "handler"),
+        "dtype": params.get("dtype", "handler"),
+        "lm_backend": params.get("lm_backend", ACE_LM_BACKEND_DEFAULT),
+        "params": params_payload,
+        "config": {
+            "batch_size": params.get("batch_size", 1),
+            "use_random_seed": params.get("use_random_seed"),
+            "audio_format": params.get("audio_format", "wav"),
+        },
+    }
 
 
 def _audio_tensor_to_array(tensor: torch.Tensor) -> np.ndarray:
@@ -1553,6 +1913,35 @@ def _run_inference(
         if is_turbo:
             infer_steps = min(infer_steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
         effective_guidance = float(guidance_scale if guidance_scale and guidance_scale > 0 else model_defaults["guidance_scale"])
+        debug_params = {
+            "song_model": active_song_model,
+            "caption": prompt,
+            "global_caption": "",
+            "lyrics": lyrics,
+            "instrumental": False,
+            "language": language,
+            "vocal_language": _language_for_generation(language),
+            "audio_duration": audio_duration,
+            "duration": audio_duration,
+            "infer_steps": infer_steps,
+            "inference_steps": infer_steps,
+            "guidance_scale": effective_guidance,
+            "bpm": bpm,
+            "key_scale": key_scale,
+            "time_signature": time_signature,
+            "use_random_seed": use_random_seed,
+            "seed": -1 if use_random_seed else seed,
+            "infer_method": "ode",
+            "shift": model_shift,
+            "use_adg": False,
+            "batch_size": 1,
+        }
+        debug_save_dir = RESULTS_DIR / "_direct_handler_payloads" / uuid.uuid4().hex[:12]
+        _print_ace_step_terminal_payload(
+            debug_params,
+            _direct_ace_step_debug_request(debug_params, debug_save_dir, active_song_model),
+            debug_save_dir,
+        )
         result = handler.generate_music(
             captions=prompt,
             lyrics=lyrics,
@@ -2517,6 +2906,219 @@ def _json_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _recover_album_request_concept(concept: Any, payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    primary_prompt = next(
+        (
+            str(value).strip()
+            for value in (payload.get("raw_user_prompt"), payload.get("user_prompt"), payload.get("prompt"))
+            if isinstance(value, str) and value.strip()
+        ),
+        "",
+    )
+    candidate_values = [primary_prompt] if primary_prompt else [concept, payload.get("concept")]
+    candidate_values.extend([payload.get("album_title"), payload.get("album_name")])
+    for value in candidate_values:
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        clean = "\n".join(
+            re.sub(r"[ \t]+", " ", line).strip()
+            for line in str(part or "").splitlines()
+            if line.strip()
+        ).strip()
+        key = re.sub(r"\s+", " ", clean).casefold()
+        if clean and key not in seen:
+            deduped.append(clean)
+            seen.add(key)
+    return "\n".join(deduped).strip()
+
+
+def _album_contract_source_from_payload(payload: dict[str, Any], body: dict[str, Any] | None = None) -> str:
+    payload = payload or {}
+    body = body or {}
+    primary_prompt = next(
+        (
+            str(value).strip()
+            for value in (
+                body.get("raw_user_prompt"),
+                body.get("user_prompt"),
+                body.get("prompt"),
+                payload.get("raw_user_prompt"),
+                payload.get("user_prompt"),
+                payload.get("prompt"),
+            )
+            if isinstance(value, str) and value.strip()
+        ),
+        "",
+    )
+    parts: list[str] = []
+    if primary_prompt:
+        parts.append(primary_prompt)
+    else:
+        for value in (payload.get("concept"), body.get("concept")):
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+                break
+    for value in (
+        payload.get("album_title"),
+        payload.get("album_name"),
+        body.get("album_title"),
+        body.get("album_name"),
+    ):
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+            break
+    if not primary_prompt and not parts:
+        track_rows: list[str] = []
+        tracks = payload.get("tracks") or body.get("tracks") or payload.get("planned_tracks") or body.get("planned_tracks") or []
+        if isinstance(tracks, list):
+            for index, item in enumerate(tracks[:30]):
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or item.get("locked_title") or "").strip()
+                clean_fields = [
+                    str(item.get(key) or "").strip()
+                    for key in ("style", "vibe", "narrative", "description")
+                    if str(item.get(key) or "").strip()
+                ]
+                if title or clean_fields:
+                    row = [f"Track {index + 1}: {title}" if title else f"Track {index + 1}:"]
+                    row.extend(clean_fields)
+                    track_rows.append("\n".join(row))
+        parts.extend(track_rows)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        clean = "\n".join(
+            re.sub(r"[ \t]+", " ", line).strip()
+            for line in str(part or "").splitlines()
+            if line.strip()
+        ).strip()
+        key = re.sub(r"\s+", " ", clean).casefold()
+        if clean and key not in seen:
+            deduped.append(clean)
+            seen.add(key)
+    return "\n\n".join(deduped)
+
+
+def _effective_direct_min_lyric_lines(raw_min_lines: int, min_words: int) -> int:
+    raw = int(raw_min_lines or 0)
+    if raw <= 0:
+        return 0
+    cap = max(36, int((int(min_words or 0) / 6.25) + 0.999))
+    return min(raw, cap)
+
+
+def _direct_album_payload_genre_hint(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("caption", "tags", "description", "style", "vibe", "narrative", "genre_profile"):
+        value = payload.get(key)
+        if value:
+            parts.append(" ".join(str(item) for item in value) if isinstance(value, list) else str(value))
+    tag_list = payload.get("tag_list")
+    if isinstance(tag_list, list):
+        parts.extend(str(item) for item in tag_list if str(item).strip())
+    return re.sub(r"\s+", " ", "\n".join(parts)).strip()
+
+
+def _direct_album_lyric_duration_fit(payload: dict[str, Any]) -> dict[str, Any]:
+    lyrics = str(payload.get("lyrics") or "")
+    duration = parse_duration_seconds(payload.get("duration") or 180, 180)
+    genre_hint = _direct_album_payload_genre_hint(payload)
+    plan = lyric_length_plan(
+        duration,
+        str(payload.get("lyric_density") or "dense"),
+        str(payload.get("structure_preset") or "auto"),
+        genre_hint,
+    )
+    stats = lyric_stats(lyrics)
+    min_words = int(plan.get("min_words") or 0)
+    raw_min_lines = int(plan.get("min_lines") or 0)
+    min_lines = _effective_direct_min_lyric_lines(raw_min_lines, min_words)
+    issues: list[dict[str, Any]] = []
+    instrumental = lyrics.strip().lower() == "[instrumental]" or parse_bool(payload.get("instrumental"), False)
+    if lyrics.strip() and not instrumental:
+        word_count = int(stats.get("word_count") or 0)
+        line_count = int(stats.get("line_count") or 0)
+        if word_count < min_words:
+            issues.append({
+                "id": "lyrics_under_length",
+                "severity": "fail",
+                "detail": f"{word_count}/{min_words} words",
+            })
+        if line_count < min_lines:
+            issues.append({
+                "id": "lyrics_too_few_lines",
+                "severity": "fail",
+                "detail": f"{line_count}/{min_lines} lines",
+            })
+    return {
+        "status": "pass" if not issues else "fail",
+        "issues": issues,
+        "duration": duration,
+        "density": plan.get("density"),
+        "word_count": int(stats.get("word_count") or 0),
+        "line_count": int(stats.get("line_count") or 0),
+        "min_words": min_words,
+        "target_words": int(plan.get("target_words") or 0),
+        "min_lines": min_lines,
+        "target_lines": int(plan.get("target_lines") or 0),
+        "raw_min_lines": raw_min_lines,
+    }
+
+
+def _validate_direct_album_agent_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    caption = str(payload.get("caption") or payload.get("tags") or "")
+    lyrics = str(payload.get("lyrics") or "")
+    if not str(payload.get("title") or "").strip():
+        issues.append({"id": "missing_title", "severity": "fail", "detail": "title is required"})
+    if not caption.strip():
+        issues.append({"id": "missing_caption", "severity": "fail", "detail": "caption is required"})
+    if len(caption) > ACE_STEP_CAPTION_CHAR_LIMIT:
+        issues.append({"id": "caption_over_limit", "severity": "fail", "detail": f"{len(caption)}/{ACE_STEP_CAPTION_CHAR_LIMIT} chars"})
+    if re.search(
+        r"\b(?:\d{2,3}\s*bpm|bpm\s*[:=]|\d+\/\d+\s*time|time\s*signature|"
+        r"[A-G](?:#|b|♯|♭)?\s+(?:major|minor)|duration|seconds?|model|seed|producer|produced by|production)\b",
+        caption,
+        re.I,
+    ):
+        issues.append({"id": "metadata_or_credit_in_caption", "severity": "fail", "detail": "caption contains metadata or production credit"})
+    for field in ("producer_credit", "artist_name", "title"):
+        value = str(payload.get(field) or "").strip()
+        if value and value.lower() in caption.lower():
+            issues.append({"id": f"{field}_in_caption", "severity": "fail", "detail": value})
+    if not lyrics.strip() or lyrics.strip().lower() == "[instrumental]":
+        issues.append({"id": "missing_vocal_lyrics", "severity": "fail", "detail": "album agent payload needs complete lyrics"})
+    if len(lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
+        issues.append({"id": "lyrics_over_limit", "severity": "fail", "detail": f"{len(lyrics)}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars"})
+    sections = re.findall(r"\[([^\]]+)\]", lyrics)
+    if not any(re.search(r"chorus|hook|refrain", section, re.I) for section in sections):
+        issues.append({"id": "hook_missing", "severity": "fail", "detail": "no chorus/hook/refrain section"})
+    lyric_duration_fit = _direct_album_lyric_duration_fit(payload)
+    issues.extend(lyric_duration_fit.get("issues") or [])
+    genre_adherence = evaluate_genre_adherence(payload)
+    issues.extend(dict(issue) for issue in (genre_adherence.get("issues") or []))
+    return {
+        "version": "direct-album-agent-payload-2026-05-01",
+        "gate_passed": not issues,
+        "status": "pass" if not issues else "fail",
+        "issues": issues,
+        "blocking_issues": issues,
+        "caption_chars": len(caption),
+        "lyrics_chars": len(lyrics),
+        "lyrics_word_count": int(lyric_duration_fit.get("word_count") or 0),
+        "lyrics_line_count": int(lyric_duration_fit.get("line_count") or 0),
+        "lyric_duration_fit": lyric_duration_fit,
+        "genre_intent_contract": genre_adherence.get("contract") or {},
+        "genre_adherence": {key: value for key, value in genre_adherence.items() if key != "contract"},
+        "sections": [f"[{section}]" for section in sections],
+    }
+
+
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
     strategy = str(payload.get("song_model_strategy") or "all_models_album")
     quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
@@ -2532,15 +3134,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
     installed_models = sorted(_installed_acestep_models())
     default_model = ALBUM_FINAL_MODEL if strategy != "selected" else (requested_song_model or ALBUM_FINAL_MODEL)
     model_defaults = quality_profile_model_settings(default_model, quality_profile)
-    contract_source = "\n\n".join(
-        part for part in [
-            str(payload.get("user_prompt") or payload.get("prompt") or ""),
-            str(payload.get("album_title") or payload.get("album_name") or ""),
-            str(payload.get("concept") or ""),
-            json.dumps(payload.get("tracks") or payload.get("planned_tracks") or [], ensure_ascii=True, default=str)[:6000],
-        ]
-        if part
-    )
+    contract_source = _album_contract_source_from_payload(payload)
     user_album_contract = payload.get("user_album_contract")
     if not isinstance(user_album_contract, dict):
         user_album_contract = extract_user_album_contract(
@@ -2557,6 +3151,14 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         "agent_engine": str(payload.get("agent_engine") or "acejam_agents"),
+        "user_prompt": str(payload.get("user_prompt") or payload.get("prompt") or payload.get("concept") or ""),
+        "raw_user_prompt": str(payload.get("raw_user_prompt") or payload.get("user_prompt") or payload.get("prompt") or payload.get("concept") or ""),
+        "album_agent_genre_prompt": str(payload.get("album_agent_genre_prompt") or payload.get("genre_prompt") or payload.get("custom_tags") or ""),
+        "album_agent_mood_vibe": str(payload.get("album_agent_mood_vibe") or payload.get("mood_vibe") or ""),
+        "album_agent_vocal_type": str(payload.get("album_agent_vocal_type") or payload.get("vocal_type") or ""),
+        "album_agent_audience": str(payload.get("album_agent_audience") or payload.get("audience_platform") or ""),
+        "planner_thinking": parse_bool(payload.get("planner_thinking"), False),
+        "print_agent_io": parse_bool(payload.get("print_agent_io"), True),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         "embedding_lm_provider": normalize_provider(payload.get("embedding_lm_provider") or payload.get("embedding_provider") or payload.get("planner_lm_provider") or "ollama"),
         "ace_lm_model": _requested_ace_lm_model(payload),
@@ -2575,6 +3177,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "key_strategy": str(payload.get("key_strategy") or "related"),
         "inspiration_queries": payload.get("inspiration_queries") or "",
         "use_web_inspiration": parse_bool(payload.get("use_web_inspiration"), False),
+        "vocal_clarity_recovery": _vocal_clarity_recovery_enabled(payload),
         "track_variants": clamp_int(payload.get("track_variants"), 1, 1, MAX_BATCH_SIZE),
         "seed": str(payload.get("seed") or "-1"),
         "inference_steps": clamp_int(payload.get("inference_steps"), model_defaults["inference_steps"], 1, 200),
@@ -2968,6 +3571,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     bpm = _bpm_from_payload(payload)
     time_signature = _time_signature_from_payload(payload)
 
+    vocal_clarity_recovery = _vocal_clarity_recovery_enabled(payload)
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_fields_used(payload))
     use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
@@ -2993,11 +3597,22 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sample_query = str(get_param(payload, "sample_query", "") or "").strip()
     lm_controls = _explicit_ace_lm_controls(payload)
     supplied_vocal_lyrics = bool(lyrics_text.strip() and lyrics_text.strip().lower() != "[instrumental]")
-    direct_lyrics_render = task_type == "text2music" and supplied_vocal_lyrics and not parse_bool(payload.get("allow_supplied_lyrics_lm"), False)
+    allow_supplied_lyrics_lm = parse_bool(payload.get("allow_supplied_lyrics_lm"), False)
+    direct_lyrics_render = (
+        task_type == "text2music"
+        and supplied_vocal_lyrics
+        and not allow_supplied_lyrics_lm
+    )
     if direct_lyrics_render:
+        requested_lm_model = "none"
         sample_mode = False
         sample_query = ""
-    lm_quality_defaults = requested_lm_model != "none" and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS and not supplied_vocal_lyrics
+        lm_controls = []
+    lm_quality_defaults = (
+        requested_lm_model != "none"
+        and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS
+        and (not supplied_vocal_lyrics or allow_supplied_lyrics_lm)
+    )
     if lm_controls and requested_lm_model == "none":
         raise ValueError(
             "ACE-Step LM controls require ace_lm_model. "
@@ -3050,6 +3665,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lyric_duration_fit": payload.get("lyric_duration_fit") if isinstance(payload.get("lyric_duration_fit"), dict) else {},
         "repair_actions": list(payload.get("repair_actions") or []),
         "instrumental": instrumental,
+        "vocal_clarity_recovery": vocal_clarity_recovery,
         "duration": duration,
         "bpm": bpm,
         "key_scale": _key_scale_from_payload(payload),
@@ -3087,6 +3703,33 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "mp3_sample_rate": clamp_int(payload.get("mp3_sample_rate"), 48000, 16000, 48000),
         "auto_score": parse_bool(payload.get("auto_score"), False),
         "auto_lrc": parse_bool(payload.get("auto_lrc"), False),
+        "vocal_intelligibility_gate": parse_bool(payload.get("vocal_intelligibility_gate"), ACEJAM_VOCAL_INTELLIGIBILITY_GATE),
+        "vocal_intelligibility_attempts": clamp_int(
+            payload.get("vocal_intelligibility_attempts") or payload.get("vocal_intelligibility_retries"),
+            ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS,
+            1,
+            32,
+        ),
+        "vocal_intelligibility_model_rescue": parse_bool(
+            payload.get("vocal_intelligibility_model_rescue"),
+            ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE,
+        ),
+        "vocal_intelligibility_model_rescue_after": clamp_int(
+            payload.get("vocal_intelligibility_model_rescue_after"),
+            ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_AFTER,
+            1,
+            32,
+        ),
+        "vocal_intelligibility_model_rescue_attempts": clamp_int(
+            payload.get("vocal_intelligibility_model_rescue_attempts"),
+            ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_ATTEMPTS,
+            1,
+            32,
+        ),
+        "vocal_intelligibility_rescue_models": payload.get(
+            "vocal_intelligibility_rescue_models",
+            ACEJAM_VOCAL_INTELLIGIBILITY_RESCUE_MODELS,
+        ),
         "return_audio_codes": parse_bool(payload.get("return_audio_codes"), False),
         "save_to_library": parse_bool(payload.get("save_to_library"), False),
         "title": title,
@@ -3095,21 +3738,21 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         **lora_request,
         "album_metadata": payload.get("album_metadata") if isinstance(payload.get("album_metadata"), dict) else {},
         "track_names": track_names,
-        "thinking": False if direct_lyrics_render else parse_bool(payload.get("thinking"), lm_quality_defaults),
+        "thinking": False if direct_lyrics_render else (True if vocal_clarity_recovery and supplied_vocal_lyrics else parse_bool(payload.get("thinking"), lm_quality_defaults)),
         "sample_mode": sample_mode,
         "sample_query": sample_query,
-        "use_format": False if direct_lyrics_render else parse_bool(get_param(payload, "use_format"), lm_quality_defaults),
-        "lm_temperature": clamp_float(payload.get("lm_temperature"), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if lm_quality_defaults else 0.85, 0.0, 2.0),
+        "use_format": False if direct_lyrics_render else (True if vocal_clarity_recovery and supplied_vocal_lyrics else parse_bool(get_param(payload, "use_format"), True if vocal_clarity_recovery else lm_quality_defaults)),
+        "lm_temperature": clamp_float(payload.get("lm_temperature"), 0.7 if vocal_clarity_recovery else (DOCS_BEST_LM_DEFAULTS["lm_temperature"] if lm_quality_defaults else 0.85), 0.0, 2.0),
         "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if lm_quality_defaults else 2.0, 0.0, 10.0),
         "lm_repetition_penalty": clamp_float(payload.get("lm_repetition_penalty") or payload.get("repetition_penalty"), 1.0, 0.1, 4.0),
         "lm_top_k": clamp_int(payload.get("lm_top_k"), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if lm_quality_defaults else 0, 0, 200),
         "lm_top_p": clamp_float(payload.get("lm_top_p"), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if lm_quality_defaults else 0.9, 0.0, 1.0),
         "lm_negative_prompt": str(payload.get("lm_negative_prompt") or "NO USER INPUT"),
         "lm_backend": _normalize_lm_backend(payload.get("lm_backend")),
-        "use_cot_metas": False if direct_lyrics_render else parse_bool(payload.get("use_cot_metas"), lm_quality_defaults),
-        "use_cot_caption": False if direct_lyrics_render else parse_bool(payload.get("use_cot_caption"), lm_quality_defaults),
+        "use_cot_metas": False if direct_lyrics_render else parse_bool(payload.get("use_cot_metas"), False if vocal_clarity_recovery else lm_quality_defaults),
+        "use_cot_caption": False if direct_lyrics_render else (False if vocal_clarity_recovery and supplied_vocal_lyrics else parse_bool(payload.get("use_cot_caption"), True if vocal_clarity_recovery else lm_quality_defaults)),
         "use_cot_lyrics": False if direct_lyrics_render else parse_bool(payload.get("use_cot_lyrics"), False),
-        "use_cot_language": False if direct_lyrics_render else parse_bool(payload.get("use_cot_language"), lm_quality_defaults),
+        "use_cot_language": False if direct_lyrics_render else (True if vocal_clarity_recovery and supplied_vocal_lyrics else parse_bool(payload.get("use_cot_language"), True if vocal_clarity_recovery else lm_quality_defaults)),
         "allow_lm_batch": parse_bool(payload.get("allow_lm_batch"), False),
         "lm_batch_chunk_size": clamp_int(payload.get("lm_batch_chunk_size"), 8, 1, 64),
         "use_constrained_decoding": parse_bool(payload.get("use_constrained_decoding"), True),
@@ -3140,6 +3783,11 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "requires_official_runner": use_official,
         "runner_plan": "official" if use_official else "fast",
     }
+    if vocal_clarity_recovery and task_type == "text2music" and supplied_vocal_lyrics:
+        parsed["caption"] = _caption_with_vocal_clarity_traits(parsed["caption"])
+        parsed["tag_list"] = split_terms(parsed["caption"])
+        if "vocal_clarity_recovery_caption_traits" not in parsed["payload_warnings"]:
+            parsed["payload_warnings"].append("vocal_clarity_recovery_caption_traits")
     settings_compliance = ace_step_settings_compliance(
         parsed,
         task_type=task_type,
@@ -3668,7 +4316,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "Disable official-only controls or turn off Auto score/LRC for this run."
         )
 
-    return {
+    request = {
         "base_dir": str(BASE_DIR),
         "vendor_dir": str(OFFICIAL_ACE_STEP_DIR),
         "model_cache_dir": str(MODEL_CACHE_DIR),
@@ -3762,6 +4410,8 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "mp3_sample_rate": params["mp3_sample_rate"],
         },
     }
+    _print_ace_step_terminal_payload(params, request, save_dir)
+    return request
 
 
 def _generation_metadata_audit(params: dict[str, Any], official_request: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -4090,6 +4740,568 @@ def _build_pro_quality_audit(
     }
 
 
+VOCAL_GATE_STOPWORDS = {
+    "verse",
+    "chorus",
+    "bridge",
+    "intro",
+    "outro",
+    "hook",
+    "final",
+    "instrumental",
+    "fade",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "under",
+    "over",
+    "through",
+    "tonight",
+    "light",
+    "sound",
+    "song",
+    "sing",
+    "will",
+    "your",
+    "they",
+    "them",
+    "then",
+    "when",
+    "where",
+    "what",
+    "have",
+    "still",
+}
+
+VOCAL_GATE_FILLER_WORDS = {
+    "ah",
+    "aha",
+    "ay",
+    "eh",
+    "er",
+    "hey",
+    "hm",
+    "hmm",
+    "la",
+    "mmm",
+    "na",
+    "oh",
+    "ooh",
+    "uh",
+    "um",
+    "woah",
+    "yeah",
+    "yea",
+    "yah",
+    "yo",
+}
+
+
+def _vocal_gate_words(text: str) -> list[str]:
+    return [word.lower().strip("'") for word in re.findall(r"[A-Za-z][A-Za-z']*", str(text or ""))]
+
+
+def _score_vocal_transcript(text: str, expected_keywords: list[str]) -> dict[str, Any]:
+    words = _vocal_gate_words(text)
+    word_count = len(words)
+    word_set = set(words)
+    expected = []
+    for item in expected_keywords or []:
+        keyword = " ".join(_vocal_gate_words(str(item or "")))
+        if keyword and keyword not in expected:
+            expected.append(keyword)
+    lowered_text = " " + " ".join(words) + " "
+    hits = [
+        keyword
+        for keyword in expected
+        if keyword in word_set or f" {keyword} " in lowered_text
+    ]
+    required_keywords = min(ACEJAM_VOCAL_INTELLIGIBILITY_MIN_KEYWORDS, len(expected)) if expected else 0
+    counts: dict[str, int] = {}
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    top_word = ""
+    top_count = 0
+    if counts:
+        top_word, top_count = max(counts.items(), key=lambda item: item[1])
+    filler_count = sum(1 for word in words if word in VOCAL_GATE_FILLER_WORDS)
+    filler_ratio = filler_count / word_count if word_count else 1.0
+    repeat_ratio = top_count / word_count if word_count else 1.0
+    unique_count = len(word_set)
+    issues = []
+    if word_count < ACEJAM_VOCAL_INTELLIGIBILITY_MIN_WORDS:
+        issues.append(f"asr_words_{word_count}_min_{ACEJAM_VOCAL_INTELLIGIBILITY_MIN_WORDS}")
+    if len(hits) < required_keywords:
+        issues.append(f"asr_keywords_{len(hits)}_min_{required_keywords}")
+    if unique_count < ACEJAM_VOCAL_INTELLIGIBILITY_MIN_UNIQUE_WORDS:
+        issues.append(f"asr_unique_{unique_count}_min_{ACEJAM_VOCAL_INTELLIGIBILITY_MIN_UNIQUE_WORDS}")
+    if word_count and filler_ratio > ACEJAM_VOCAL_INTELLIGIBILITY_MAX_FILLER_RATIO:
+        issues.append(f"asr_filler_ratio_{filler_ratio:.2f}")
+    if word_count and repeat_ratio > ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO:
+        issues.append(f"asr_repeat_{top_word}_{repeat_ratio:.2f}")
+    passed = not issues
+    return {
+        "status": "pass" if passed else "fail",
+        "passed": passed,
+        "blocking": not passed,
+        "word_count": word_count,
+        "unique_word_count": unique_count,
+        "keyword_hits": hits,
+        "missing_keywords": [keyword for keyword in expected if keyword not in hits],
+        "filler_ratio": round(filler_ratio, 4),
+        "repeat_ratio": round(repeat_ratio, 4),
+        "top_repeated_word": top_word,
+        "issue": "" if passed else ";".join(issues),
+    }
+
+
+def _append_vocal_gate_debug(event: dict[str, Any]) -> None:
+    try:
+        path = RESULTS_DIR / "vocal_intelligibility_gate.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_jsonable(event), ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"[vocal_gate] debug log failed: {exc}", flush=True)
+
+
+def _resolve_local_whisper_model() -> str | None:
+    if ACEJAM_VOCAL_ASR_MODEL:
+        return ACEJAM_VOCAL_ASR_MODEL
+    candidates: list[Path] = []
+    for root in [
+        Path.home() / ".cache" / "huggingface" / "hub",
+        MODEL_CACHE_DIR / "huggingface" / "hub",
+    ]:
+        snapshots = root / "models--openai--whisper-large-v3-turbo" / "snapshots"
+        if snapshots.is_dir():
+            candidates.extend(sorted((p for p in snapshots.iterdir() if p.is_dir()), reverse=True))
+    return str(candidates[0]) if candidates else None
+
+
+def _vocal_gate_required(params: dict[str, Any]) -> bool:
+    if not parse_bool(params.get("vocal_intelligibility_gate"), ACEJAM_VOCAL_INTELLIGIBILITY_GATE):
+        return False
+    if params.get("instrumental"):
+        return False
+    lyrics = str(params.get("lyrics") or "").strip()
+    if not lyrics or lyrics.lower() == "[instrumental]":
+        return False
+    return str(params.get("task_type") or "text2music") == "text2music"
+
+
+def _vocal_gate_expected_keywords(params: dict[str, Any]) -> list[str]:
+    text = "\n".join(
+        [
+            str(params.get("title") or ""),
+            str(params.get("artist_name") or ""),
+            str(params.get("lyrics") or ""),
+        ]
+    )
+    text = re.sub(r"\[[^\]]+\]", " ", text)
+    counts: dict[str, int] = {}
+    for word in re.findall(r"[A-Za-z][A-Za-z']{2,}", text.lower()):
+        word = word.strip("'")
+        if len(word) < 4 or word in VOCAL_GATE_STOPWORDS:
+            continue
+        counts[word] = counts.get(word, 0) + 1
+    ranked = sorted(counts, key=lambda item: (-counts[item], text.lower().find(item), item))
+    return ranked[:12]
+
+
+def _transcribe_audio_paths(paths: list[Path], *, language: str, expected_keywords: list[str]) -> list[dict[str, Any]]:
+    model_path = _resolve_local_whisper_model()
+    if not model_path:
+        return [
+            {
+                "path": str(path),
+                "status": "error",
+                "passed": False,
+                "blocking": True,
+                "issue": "asr_model_unavailable",
+                "text": "",
+                "word_count": 0,
+                "unique_word_count": 0,
+                "keyword_hits": [],
+                "missing_keywords": expected_keywords,
+            }
+            for path in paths
+        ]
+    request = {
+        "paths": [str(path) for path in paths],
+        "model_path": model_path,
+        "device": ACEJAM_VOCAL_ASR_DEVICE,
+        "language": language if language and language != "unknown" else "english",
+        "expected_keywords": expected_keywords,
+        "min_words": ACEJAM_VOCAL_INTELLIGIBILITY_MIN_WORDS,
+        "min_keywords": ACEJAM_VOCAL_INTELLIGIBILITY_MIN_KEYWORDS,
+    }
+    code = r'''
+import json
+import re
+import sys
+import traceback
+
+import torch
+from transformers import pipeline
+
+payload = json.loads(sys.stdin.read() or "{}")
+requested_device = str(payload.get("device") or "cpu").strip().lower()
+if requested_device in {"mps", "metal"} and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+    device = "mps"
+elif requested_device in {"cuda", "gpu"} and torch.cuda.is_available():
+    device = "cuda"
+else:
+    # Whisper large-v3-turbo on this Apple/MPS stack returned punctuation-only
+    # transcripts for ordinary speech. CPU/float32 is slower but reliable.
+    device = "cpu"
+dtype = torch.float16 if device in {"mps", "cuda"} else torch.float32
+pipe = pipeline(
+    "automatic-speech-recognition",
+    model=payload["model_path"],
+    device=device,
+    torch_dtype=dtype,
+)
+expected = [str(item).lower() for item in payload.get("expected_keywords") or []]
+min_words = int(payload.get("min_words") or 3)
+min_keywords = int(payload.get("min_keywords") or 1)
+language = str(payload.get("language") or "english")
+results = []
+for raw_path in payload.get("paths") or []:
+    item = {
+        "path": raw_path,
+        "status": "fail",
+        "passed": False,
+        "blocking": True,
+        "text": "",
+        "word_count": 0,
+        "keyword_hits": [],
+        "missing_keywords": expected,
+    }
+    try:
+        output = pipe(
+            raw_path,
+            return_timestamps=True,
+            generate_kwargs={"language": language, "task": "transcribe"},
+        )
+        text = re.sub(r"\s+", " ", str(output.get("text") or "")).strip()
+        words = [w.lower().strip("'") for w in re.findall(r"[A-Za-z][A-Za-z']*", text)]
+        word_set = set(words)
+        lowered_text = " " + " ".join(words) + " "
+        hits = [kw for kw in expected if kw in word_set or f" {kw} " in lowered_text]
+        required_keywords = min(min_keywords, len(expected)) if expected else 0
+        passed = len(words) >= min_words and len(hits) >= required_keywords
+        item.update(
+            {
+                "status": "pass" if passed else "fail",
+                "passed": passed,
+                "blocking": not passed,
+                "text": text,
+                "word_count": len(words),
+                "keyword_hits": hits,
+                "missing_keywords": [kw for kw in expected if kw not in hits],
+                "issue": "" if passed else f"asr_words_{len(words)}_keywords_{len(hits)}",
+            }
+        )
+    except Exception as exc:
+        item.update({"status": "error", "issue": str(exc), "traceback": traceback.format_exc()})
+    results.append(item)
+print(json.dumps(results))
+'''
+    env = os.environ.copy()
+    env.setdefault("HF_HUB_OFFLINE", "1")
+    env.setdefault("TRANSFORMERS_OFFLINE", "1")
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        input=json.dumps(request),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=ACEJAM_VOCAL_ASR_TIMEOUT,
+        env=env,
+    )
+    if proc.returncode != 0:
+        issue = (proc.stderr or proc.stdout or "ASR subprocess failed").strip()[-1200:]
+        return [
+            {
+                "path": str(path),
+                "status": "error",
+                "passed": False,
+                "blocking": True,
+                "issue": issue,
+                "text": "",
+                "word_count": 0,
+                "keyword_hits": [],
+                "missing_keywords": expected_keywords,
+            }
+            for path in paths
+        ]
+    try:
+        raw_items = json.loads(proc.stdout.strip().splitlines()[-1])
+        normalized = []
+        for raw_item in raw_items if isinstance(raw_items, list) else []:
+            item = raw_item if isinstance(raw_item, dict) else {"path": "", "text": str(raw_item or "")}
+            status = str(item.get("status") or "").lower()
+            if status in {"error", "unavailable"}:
+                item.update(
+                    {
+                        "status": "error",
+                        "passed": False,
+                        "blocking": True,
+                        "issue": item.get("issue") or status or "asr_error",
+                    }
+                )
+                normalized.append(item)
+                continue
+            item.update(_score_vocal_transcript(str(item.get("text") or ""), expected_keywords))
+            normalized.append(item)
+        return normalized
+    except Exception as exc:
+        return [
+            {
+                "path": str(path),
+                "status": "error",
+                "passed": False,
+                "blocking": True,
+                "issue": f"ASR JSON parse failed: {exc}",
+                "text": "",
+                "word_count": 0,
+                "unique_word_count": 0,
+                "keyword_hits": [],
+                "missing_keywords": expected_keywords,
+            }
+            for path in paths
+        ]
+
+
+def _apply_vocal_intelligibility_gate_to_result(
+    result: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    attempt: int,
+    max_attempts: int,
+) -> dict[str, Any]:
+    if not _vocal_gate_required(params):
+        gate = {"status": "skipped", "passed": True, "blocking": False, "reason": "not_vocal_text2music"}
+        result["vocal_intelligibility_gate"] = gate
+        return gate
+    result_id = str(result.get("result_id") or "")
+    audios = result.get("audios") or []
+    paths = [RESULTS_DIR / safe_id(result_id) / str(audio.get("filename") or "") for audio in audios if audio.get("filename")]
+    keywords = _vocal_gate_expected_keywords(params)
+    transcripts = _transcribe_audio_paths(paths, language=str(params.get("vocal_language") or "en"), expected_keywords=keywords)
+    by_path = {str(item.get("path")): item for item in transcripts}
+    passed_ids: list[str] = []
+    for audio in audios:
+        path = RESULTS_DIR / safe_id(result_id) / str(audio.get("filename") or "")
+        audit = by_path.get(str(path)) or {
+            "status": "error",
+            "passed": False,
+            "blocking": True,
+            "issue": "missing_asr_result",
+            "text": "",
+            "word_count": 0,
+            "keyword_hits": [],
+            "missing_keywords": keywords,
+        }
+        audio["vocal_intelligibility_audit"] = audit
+        if audit.get("passed") and audit.get("status") not in {"error", "unavailable"}:
+            passed_ids.append(str(audio.get("id") or ""))
+    blocking = (not passed_ids) and (
+        not transcripts
+        or any(item.get("blocking") or item.get("status") in {"error", "unavailable"} for item in transcripts)
+    )
+    status = (
+        "pass"
+        if passed_ids
+        else ("error" if transcripts and any(item.get("status") in {"error", "unavailable"} for item in transcripts) else "fail")
+    )
+    gate = {
+        "version": "acejam-vocal-intelligibility-gate-2026-05-01",
+        "status": status,
+        "passed": bool(passed_ids),
+        "blocking": blocking,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "expected_keywords": keywords,
+        "passed_audio_ids": passed_ids,
+        "transcripts": transcripts,
+    }
+    result["vocal_intelligibility_gate"] = gate
+    if passed_ids:
+        for audio in audios:
+            audio["is_recommended_take"] = str(audio.get("id") or "") == passed_ids[0]
+        chosen = next((audio for audio in audios if str(audio.get("id") or "") == passed_ids[0]), None)
+        if chosen:
+            result["recommended_take"] = {
+                "audio_id": chosen.get("id"),
+                "filename": chosen.get("filename"),
+                "score": chosen.get("pro_quality_score", 0),
+                "status": "pass",
+                "reasons": ["vocal_intelligibility_pass"],
+            }
+    else:
+        result["success"] = False
+        result["error"] = "Vocal intelligibility gate rejected every take."
+        suggestions = list(result.get("rerender_suggestions") or [])
+        suggestions.append("Vocal intelligibility gate rejected every take; regenerate with a clearer vocal route.")
+        result["rerender_suggestions"] = suggestions
+    result_path = RESULTS_DIR / safe_id(result_id) / "result.json"
+    if result_path.is_file():
+        try:
+            meta = json.loads(result_path.read_text(encoding="utf-8"))
+            meta["success"] = result.get("success", meta.get("success"))
+            meta["error"] = result.get("error", meta.get("error"))
+            meta["audios"] = audios
+            meta["vocal_intelligibility_gate"] = gate
+            meta["recommended_take"] = result.get("recommended_take")
+            meta["rerender_suggestions"] = result.get("rerender_suggestions") or meta.get("rerender_suggestions") or []
+            result_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"[vocal_gate] result.json update failed for {result_id}: {exc}", flush=True)
+    _append_vocal_gate_debug(
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "event": "vocal_intelligibility_gate",
+            "result_id": result_id,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "song_model": params.get("song_model"),
+            "vocal_intelligibility_rescue_model": params.get("vocal_intelligibility_rescue_model"),
+            "status": status,
+            "blocking": gate["blocking"],
+            "transcript_preview": [
+                {
+                    "path": Path(str(item.get("path") or "")).name,
+                    "status": item.get("status"),
+                    "word_count": item.get("word_count"),
+                    "unique_word_count": item.get("unique_word_count"),
+                    "keyword_hits": item.get("keyword_hits"),
+                    "filler_ratio": item.get("filler_ratio"),
+                    "repeat_ratio": item.get("repeat_ratio"),
+                    "text": str(item.get("text") or "")[:240],
+                    "issue": item.get("issue"),
+                }
+                for item in transcripts
+            ],
+        }
+    )
+    return gate
+
+
+def _vocal_retry_params(params: dict[str, Any], *, attempt: int, last_gate: dict[str, Any] | None) -> dict[str, Any]:
+    retry = dict(params)
+    retry["seed"] = "-1"
+    retry["use_random_seed"] = True
+    retry["caption"] = _caption_with_vocal_clarity_traits(retry.get("caption") or "")
+    retry["tag_list"] = split_terms(retry["caption"])
+    retry["repair_actions"] = list(retry.get("repair_actions") or []) + [
+        {
+            "type": "vocal_intelligibility_retry",
+            "attempt": attempt,
+            "issues": [
+                item.get("issue")
+                for item in ((last_gate or {}).get("transcripts") or [])
+                if item.get("issue")
+            ],
+        }
+    ]
+    payload_warnings = list(retry.get("payload_warnings") or [])
+    if "vocal_intelligibility_retry" not in payload_warnings:
+        payload_warnings.append("vocal_intelligibility_retry")
+    retry["payload_warnings"] = payload_warnings
+    return retry
+
+
+def _vocal_rescue_models(params: dict[str, Any]) -> list[str]:
+    if not parse_bool(
+        params.get("vocal_intelligibility_model_rescue"),
+        ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE,
+    ):
+        return []
+    raw_models = params.get("vocal_intelligibility_rescue_models")
+    if isinstance(raw_models, str):
+        candidates = [item.strip() for item in raw_models.split(",") if item.strip()]
+    elif isinstance(raw_models, (list, tuple, set)):
+        candidates = [str(item).strip() for item in raw_models if str(item).strip()]
+    else:
+        candidates = ACEJAM_VOCAL_INTELLIGIBILITY_RESCUE_MODELS
+    try:
+        installed = set(_installed_acestep_models())
+    except Exception as exc:
+        print(f"Vocal intelligibility model rescue unavailable: installed model scan failed: {exc}", flush=True)
+        return []
+    original_model = str(params.get("song_model") or "").strip()
+    models: list[str] = []
+    for model in candidates:
+        if model == original_model or model in models:
+            continue
+        if model.startswith("acestep-v15-") and model in installed:
+            models.append(model)
+    return models
+
+
+def _vocal_rescue_model_for_attempt(params: dict[str, Any], attempt: int, rescue_models: list[str]) -> str:
+    original_model = str(params.get("song_model") or "").strip()
+    if not rescue_models:
+        return original_model
+    rescue_after = clamp_int(
+        params.get("vocal_intelligibility_model_rescue_after"),
+        ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_AFTER,
+        1,
+        32,
+    )
+    if attempt <= rescue_after:
+        return original_model
+    attempts_per_model = clamp_int(
+        params.get("vocal_intelligibility_model_rescue_attempts"),
+        ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE_ATTEMPTS,
+        1,
+        32,
+    )
+    index = max(0, (attempt - rescue_after - 1) // attempts_per_model)
+    return rescue_models[min(index, len(rescue_models) - 1)]
+
+
+def _with_vocal_rescue_model(params: dict[str, Any], rescue_model: str, *, attempt: int) -> dict[str, Any]:
+    original_model = str(params.get("song_model") or "").strip()
+    if not rescue_model or rescue_model == original_model:
+        return params
+    rescue = dict(params)
+    quality_profile = normalize_quality_profile(rescue.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    model_defaults = quality_profile_model_settings(rescue_model, quality_profile)
+    rescue["song_model"] = rescue_model
+    rescue["inference_steps"] = int(model_defaults["inference_steps"])
+    rescue["guidance_scale"] = float(model_defaults["guidance_scale"])
+    rescue["shift"] = float(model_defaults["shift"])
+    rescue["infer_method"] = str(model_defaults["infer_method"])
+    rescue["sampler_mode"] = str(model_defaults["sampler_mode"])
+    rescue["use_adg"] = bool(model_defaults.get("use_adg", False))
+    rescue["audio_format"] = str(model_defaults.get("audio_format") or rescue.get("audio_format") or "wav32")
+    rescue["vocal_intelligibility_original_model"] = original_model
+    rescue["vocal_intelligibility_rescue_model"] = rescue_model
+    rescue["vocal_intelligibility_rescue_attempt"] = attempt
+    rescue["final_model_policy"] = {
+        **(rescue.get("final_model_policy") if isinstance(rescue.get("final_model_policy"), dict) else {}),
+        "vocal_intelligibility_rescue": True,
+        "original_model": original_model,
+        "rescue_model": rescue_model,
+        "reason": "Original model failed the vocal intelligibility gate; rendering with the clearest installed fallback.",
+    }
+    album_metadata = dict(rescue.get("album_metadata") or {})
+    album_metadata["vocal_intelligibility_original_model"] = original_model
+    album_metadata["vocal_intelligibility_rescue_model"] = rescue_model
+    rescue["album_metadata"] = album_metadata
+    payload_warnings = list(rescue.get("payload_warnings") or [])
+    warning = f"vocal_intelligibility_model_rescue:{original_model}->{rescue_model}"
+    if warning not in payload_warnings:
+        payload_warnings.append(warning)
+    rescue["payload_warnings"] = payload_warnings
+    return rescue
+
+
 def _redact_official_runner_log_line(line: str) -> str:
     """Keep official ACE-Step subprocess logs compact in Pinokio terminals."""
     if "formatted_prompt_with_cot=" in line:
@@ -4114,6 +5326,9 @@ def _redact_official_runner_log_line(line: str) -> str:
 
 def _redact_official_runner_stream_line(line: str, state: dict[str, Any]) -> str:
     if "conditioning_text:_prepare_text_conditioning_inputs" in line:
+        if not ACEJAM_REDACT_OFFICIAL_LOG_TEXT:
+            state["conditioning_block"] = False
+            return _redact_official_runner_log_line(line)
         state["conditioning_block"] = True
         if "text_prompt:" in line:
             return re.sub(r"text_prompt:.*", "text_prompt: [redacted by AceJAM: conditioning prompt]", line)
@@ -4553,17 +5768,21 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
-    _ensure_training_idle()
-    params = _parse_generation_payload(raw_payload)
-    if params["instrumental"] and not params["lyrics"].strip():
-        params["lyrics"] = "[Instrumental]"
+def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
     if params["requires_official_runner"]:
         return _run_official_generation(params)
     use_random_seed = bool(params["use_random_seed"])
+    result_id = uuid.uuid4().hex[:12]
+    result_dir = RESULTS_DIR / result_id
     with handler_lock:
         active_song_model = _ensure_song_model(params["song_model"])
         lora_status = _apply_lora_request(params)
+        debug_save_dir = result_dir / "direct_handler"
+        _print_ace_step_terminal_payload(
+            params,
+            _direct_ace_step_debug_request(params, debug_save_dir, active_song_model),
+            debug_save_dir,
+        )
         result = handler.generate_music(
             captions=params["caption"],
             lyrics="[Instrumental]" if params["instrumental"] else params["lyrics"],
@@ -4596,8 +5815,6 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     if not result.get("success"):
         raise RuntimeError(result.get("error", "generation failed"))
 
-    result_id = uuid.uuid4().hex[:12]
-    result_dir = RESULTS_DIR / result_id
     result_dir.mkdir(parents=True, exist_ok=True)
     extra = result.get("extra_outputs") or {}
     metadata_audit = _generation_metadata_audit(params)
@@ -4799,6 +6016,115 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    _ensure_training_idle()
+    params = _parse_generation_payload(raw_payload)
+    if params["instrumental"] and not params["lyrics"].strip():
+        params["lyrics"] = "[Instrumental]"
+    max_attempts = int(params.get("vocal_intelligibility_attempts") or ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS)
+    max_attempts = max(1, min(32, max_attempts))
+    if not _vocal_gate_required(params):
+        result = _run_advanced_generation_once(params)
+        _apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
+        return result
+
+    history: list[dict[str, Any]] = []
+    last_gate: dict[str, Any] | None = None
+    rescue_models = _vocal_rescue_models(params)
+    if rescue_models:
+        print(
+            "Vocal intelligibility model rescue armed: "
+            f"{params.get('song_model')} -> {', '.join(rescue_models)} "
+            f"after {params.get('vocal_intelligibility_model_rescue_after')} failed attempt(s)",
+            flush=True,
+        )
+    for attempt in range(1, max_attempts + 1):
+        attempt_params = params if attempt == 1 else _vocal_retry_params(params, attempt=attempt, last_gate=last_gate)
+        rescue_model = _vocal_rescue_model_for_attempt(params, attempt, rescue_models)
+        attempt_params = _with_vocal_rescue_model(attempt_params, rescue_model, attempt=attempt)
+        if attempt_params.get("vocal_intelligibility_rescue_model"):
+            print(
+                "Vocal intelligibility model rescue: "
+                f"attempt {attempt}/{max_attempts} using {attempt_params.get('song_model')} "
+                f"after {params.get('song_model')} failed clarity.",
+                flush=True,
+            )
+        result = _run_advanced_generation_once(attempt_params)
+        gate = _apply_vocal_intelligibility_gate_to_result(
+            result,
+            attempt_params,
+            attempt=attempt,
+            max_attempts=max_attempts,
+        )
+        last_gate = gate
+        history_item = {
+            "attempt": attempt,
+            "result_id": result.get("result_id"),
+            "song_model": attempt_params.get("song_model"),
+            "vocal_intelligibility_original_model": attempt_params.get("vocal_intelligibility_original_model"),
+            "vocal_intelligibility_rescue_model": attempt_params.get("vocal_intelligibility_rescue_model"),
+            "inference_steps": attempt_params.get("inference_steps"),
+            "status": gate.get("status"),
+            "blocking": gate.get("blocking"),
+            "passed_audio_ids": gate.get("passed_audio_ids") or [],
+            "transcripts": [
+                {
+                    "file": Path(str(item.get("path") or "")).name,
+                    "status": item.get("status"),
+                    "word_count": item.get("word_count"),
+                    "unique_word_count": item.get("unique_word_count"),
+                    "keyword_hits": item.get("keyword_hits"),
+                    "filler_ratio": item.get("filler_ratio"),
+                    "repeat_ratio": item.get("repeat_ratio"),
+                    "text": str(item.get("text") or "")[:180],
+                    "issue": item.get("issue"),
+                }
+                for item in gate.get("transcripts", [])
+            ],
+        }
+        history.append(history_item)
+        if gate.get("passed") and not gate.get("blocking"):
+            result["vocal_intelligibility_history"] = history
+            return result
+        if gate.get("status") == "error":
+            debug_path = RESULTS_DIR / "vocal_intelligibility_gate.jsonl"
+            raise RuntimeError(
+                "Vocal intelligibility verifier failed before audio quality could be judged. "
+                f"Debug log: {debug_path}. Issues: "
+                + "; ".join(
+                    str(item.get("issue") or "asr_error")
+                    for item in gate.get("transcripts", [])
+                    if item.get("status") == "error"
+                )
+            )
+        issue_summary = ", ".join(
+            sorted(
+                {
+                    str(item.get("issue") or item.get("status") or "failed")
+                    for item in gate.get("transcripts", [])
+                    if not item.get("passed")
+                }
+            )
+        ) or str(gate.get("status") or "failed")
+        print(
+            f"Vocal intelligibility retry: attempt {attempt}/{max_attempts}: {issue_summary} "
+            f"(model {attempt_params.get('song_model')}, result {result.get('result_id')})",
+            flush=True,
+        )
+
+    debug_path = RESULTS_DIR / "vocal_intelligibility_gate.jsonl"
+    compact_history = "; ".join(
+        f"attempt {item['attempt']} model={item.get('song_model')} result {item['result_id']} status={item['status']} "
+        f"transcripts={[t.get('text') or t.get('issue') for t in item['transcripts']]}"
+        for item in history
+    )
+    raise RuntimeError(
+        "Vocal intelligibility gate failed after "
+        f"{max_attempts} attempt(s). ACE-Step kept producing unintelligible vocals. "
+        f"Debug log: {debug_path}. History: {compact_history}"
+    )
+
+
 def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[str, Any], family_id: str) -> dict[str, Any]:
     model_name = str(model_item.get("model") or "")
     quality_profile = normalize_quality_profile(raw_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
@@ -4815,7 +6141,8 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
             "inference_steps": int(model_item.get("default_steps") or _quality_default_steps(model_name, quality_profile)),
             "guidance_scale": float(model_item.get("default_guidance_scale") or model_defaults["guidance_scale"]),
             "shift": float(model_item.get("default_shift") or model_defaults["shift"]),
-            "ace_lm_model": _requested_ace_lm_model(raw_payload),
+            "ace_lm_model": "none" if has_vocal_lyrics else _requested_ace_lm_model(raw_payload),
+            "allow_supplied_lyrics_lm": False if has_vocal_lyrics else parse_bool(raw_payload.get("allow_supplied_lyrics_lm"), False),
             "planner_lm_provider": normalize_provider(raw_payload.get("planner_lm_provider") or raw_payload.get("planner_provider") or "ollama"),
             "planner_model": str(raw_payload.get("planner_model") or raw_payload.get("planner_ollama_model") or raw_payload.get("ollama_model") or ""),
             "render_strategy": SONG_PORTFOLIO_STRATEGY,
@@ -5327,6 +6654,11 @@ def generate_album(
         request_payload.setdefault("num_tracks", num_tracks)
         request_payload.setdefault("track_duration", track_duration)
         request_payload.setdefault("language", language)
+        recovered_concept = _recover_album_request_concept(concept, request_payload)
+        if recovered_concept:
+            concept = recovered_concept
+            request_payload["concept"] = recovered_concept
+            request_payload.setdefault("user_prompt", recovered_concept)
         if "ace_lm_model" not in request_payload and ace_lm_model:
             request_payload["ace_lm_model"] = ace_lm_model
         ace_lm_model = _requested_ace_lm_model(request_payload)
@@ -5416,7 +6748,7 @@ def generate_album(
             language=language,
             embedding_model=embedding_model,
             options=album_options,
-            use_crewai=not parse_bool(request_payload.get("toolbelt_only"), False),
+            use_crewai=True,
             input_tracks=planned_tracks if planned_tracks else None,
             planner_provider=planner_lm_provider,
             embedding_provider=embedding_lm_provider,
@@ -5477,7 +6809,8 @@ def generate_album(
             f"{ace_lm_model if ace_lm_model != 'none' else 'off unless official LM controls are enabled'}."
         )
         logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
-        album_global_caption = build_album_global_sonic_caption(
+        agent_direct_payloads = str(result.get("planning_engine") or "") == "acejam_agents"
+        album_global_caption = "" if agent_direct_payloads else build_album_global_sonic_caption(
             concept,
             tracks,
             existing=request_payload.get("global_caption") or "",
@@ -5588,21 +6921,50 @@ def generate_album(
 
                 try:
                     _cleanup_accelerator_memory()
-                    track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
-                    if not track_lm_model.strip():
-                        track_lm_model = ACE_LM_PREFERRED_MODEL
                     track_has_vocal_lyrics = bool(str(track.get("lyrics") or "").strip() and str(track.get("lyrics") or "").strip().lower() != "[instrumental]")
-                    album_use_supplied_lyrics_lm = parse_bool(
-                        track.get(
-                            "allow_supplied_lyrics_lm",
-                            request_payload.get("album_use_ace_lm_for_supplied_lyrics", request_payload.get("allow_supplied_lyrics_lm", True)),
-                        ),
-                        True,
+                    direct_agent_payload = bool(track.get("agent_complete_payload") or agent_direct_payloads)
+                    vocal_clarity_probe = {
+                        **request_payload,
+                        **track,
+                        "task_type": "text2music",
+                        "lyrics": track.get("lyrics", ""),
+                    }
+                    vocal_clarity_recovery = _vocal_clarity_recovery_enabled(vocal_clarity_probe)
+                    if vocal_clarity_recovery and track_has_vocal_lyrics:
+                        logs.append("  Vocal clarity recovery: direct lyrics render kept; ACE LM rewrite disabled for supplied lyrics.")
+                    album_allow_ace_lm_rewrite = (
+                        False if direct_agent_payload else parse_bool(
+                            track.get("album_allow_ace_lm_rewrite", request_payload.get("album_allow_ace_lm_rewrite")),
+                            False,
+                        )
                     )
-                    if track_has_vocal_lyrics and album_use_supplied_lyrics_lm and track_lm_model.strip().lower() == "none":
+                    album_use_supplied_lyrics_lm = (
+                        bool(
+                            album_allow_ace_lm_rewrite
+                            and parse_bool(
+                                track.get(
+                                    "allow_supplied_lyrics_lm",
+                                    request_payload.get("album_use_ace_lm_for_supplied_lyrics", request_payload.get("allow_supplied_lyrics_lm", False)),
+                                ),
+                                False,
+                            )
+                        )
+                    )
+                    track_lm_model = str(track.get("ace_lm_model") or request_payload.get("ace_lm_model") or ACE_LM_PREFERRED_MODEL)
+                    if direct_agent_payload and track_has_vocal_lyrics and not vocal_clarity_recovery:
+                        track_lm_model = "none"
+                    elif track_has_vocal_lyrics and not album_use_supplied_lyrics_lm:
+                        track_lm_model = "none"
+                    elif track_has_vocal_lyrics and album_use_supplied_lyrics_lm and track_lm_model.strip().lower() == "none":
+                        track_lm_model = ACE_LM_PREFERRED_MODEL
+                    elif not track_lm_model.strip():
                         track_lm_model = ACE_LM_PREFERRED_MODEL
                     track_lm_enabled = track_lm_model.strip().lower() != "none" and (not track_has_vocal_lyrics or album_use_supplied_lyrics_lm)
                     def _album_lm_switch(field: str, default: bool) -> bool:
+                        if direct_agent_payload:
+                            return False
+                        if track_has_vocal_lyrics and not album_use_supplied_lyrics_lm:
+                            return False
                         if track_has_vocal_lyrics and track_lm_enabled:
                             return default
                         return parse_bool(track.get(field, request_payload.get(field)), default)
@@ -5628,6 +6990,7 @@ def generate_album(
                         "artist_name": track_artist,
                         "title": track_title,
                         "description": track.get("description", ""),
+                        "producer_credit": producer_credit,
                         "caption": track.get("tags") or track.get("caption") or "",
                         "tag_list": track.get("tag_list", []),
                         "lyrics": track.get("lyrics", ""),
@@ -5635,6 +6998,8 @@ def generate_album(
                         "style": track.get("style", ""),
                         "vibe": track.get("vibe", ""),
                         "narrative": track.get("narrative", ""),
+                        "lyric_density": track.get("lyric_density") or album_options.get("lyric_density") or "dense",
+                        "structure_preset": track.get("structure_preset") or album_options.get("structure_preset") or "auto",
                         "duration": track.get("duration") or track_duration,
                         "bpm": track.get("bpm") or request_payload.get("bpm") or DEFAULT_BPM,
                         "key_scale": effective_key_scale,
@@ -5644,21 +7009,22 @@ def generate_album(
                         "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
                         "song_model": track_model,
                         "ace_lm_model": track_lm_model,
+                        "vocal_clarity_recovery": vocal_clarity_recovery,
                         "global_caption": album_global_caption,
                         "inference_steps": clamp_int(
-                            model_render_settings.get("inference_steps", model_item.get("default_steps")),
+                            model_render_settings.get("inference_steps", track.get("inference_steps", request_payload.get("inference_steps", model_item.get("default_steps")))),
                             int(model_item.get("default_steps") or _quality_default_steps(track_model, quality_profile)),
                             1,
                             200,
                         ),
                         "guidance_scale": clamp_float(
-                            model_render_settings.get("guidance_scale", model_item.get("default_guidance_scale")),
+                            model_render_settings.get("guidance_scale", track.get("guidance_scale", request_payload.get("guidance_scale", model_item.get("default_guidance_scale")))),
                             float(model_item.get("default_guidance_scale") or model_defaults["guidance_scale"]),
                             1.0,
                             15.0,
                         ),
                         "shift": clamp_float(
-                            model_render_settings.get("shift", model_item.get("default_shift")),
+                            model_render_settings.get("shift", track.get("shift", request_payload.get("shift", model_item.get("default_shift")))),
                             float(model_item.get("default_shift") or model_defaults["shift"]),
                             1.0,
                             5.0,
@@ -5682,15 +7048,17 @@ def generate_album(
                         "sample_mode": False if track_has_vocal_lyrics else parse_bool(track.get("sample_mode", request_payload.get("sample_mode")), False),
                         "sample_query": "" if track_has_vocal_lyrics else str(track.get("sample_query") or request_payload.get("sample_query") or ""),
                         "use_format": _album_lm_switch("use_format", DOCS_BEST_LM_DEFAULTS["use_format"] if track_lm_enabled else False),
-                        "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85, 0.0, 2.0),
+                        "lm_temperature": clamp_float(track.get("lm_temperature", request_payload.get("lm_temperature")), 0.7 if vocal_clarity_recovery and track_lm_enabled else (DOCS_BEST_LM_DEFAULTS["lm_temperature"] if track_lm_enabled else 0.85), 0.0, 2.0),
                         "lm_cfg_scale": clamp_float(track.get("lm_cfg_scale", request_payload.get("lm_cfg_scale")), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if track_lm_enabled else 2.0, 0.0, 10.0),
                         "lm_top_k": clamp_int(track.get("lm_top_k", request_payload.get("lm_top_k")), DOCS_BEST_LM_DEFAULTS["lm_top_k"] if track_lm_enabled else 0, 0, 200),
                         "lm_top_p": clamp_float(track.get("lm_top_p", request_payload.get("lm_top_p")), DOCS_BEST_LM_DEFAULTS["lm_top_p"] if track_lm_enabled else 0.9, 0.0, 1.0),
                         "lm_repetition_penalty": clamp_float(track.get("lm_repetition_penalty", request_payload.get("lm_repetition_penalty")), 1.0, 0.1, 4.0),
                         "use_cot_metas": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_metas", request_payload.get("use_cot_metas")), DOCS_BEST_LM_DEFAULTS["use_cot_metas"] if track_lm_enabled else False),
-                        "use_cot_caption": _album_lm_switch("use_cot_caption", DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled else False),
+                        "use_cot_caption": _album_lm_switch("use_cot_caption", False if vocal_clarity_recovery and track_has_vocal_lyrics else (DOCS_BEST_LM_DEFAULTS["use_cot_caption"] if track_lm_enabled else False)),
                         "use_cot_lyrics": False,
-                        "use_cot_language": False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if track_lm_enabled else False),
+                        "use_cot_language": (
+                            False if track_has_vocal_lyrics else parse_bool(track.get("use_cot_language", request_payload.get("use_cot_language")), DOCS_BEST_LM_DEFAULTS["use_cot_language"] if track_lm_enabled else False)
+                        ),
                         "use_constrained_decoding": parse_bool(track.get("use_constrained_decoding", request_payload.get("use_constrained_decoding")), DOCS_BEST_LM_DEFAULTS["use_constrained_decoding"]),
                         "audio_code_string": "",
                         "src_audio_id": "",
@@ -5737,16 +7105,19 @@ def generate_album(
                             "payload": generation_payload,
                         },
                     )
-                    generation_payload["lyrics"] = strip_ace_step_lyrics_leakage(generation_payload.get("lyrics"))
-                    gate = evaluate_album_payload_quality(
-                        generation_payload,
-                        options={
-                            **album_options,
-                            "track_duration": generation_payload.get("duration") or track_duration,
-                        },
-                        repair=True,
-                    )
-                    generation_payload = gate["repaired_payload"]
+                    if direct_agent_payload:
+                        gate = _validate_direct_album_agent_payload(generation_payload)
+                    else:
+                        generation_payload["lyrics"] = strip_ace_step_lyrics_leakage(generation_payload.get("lyrics"))
+                        gate = evaluate_album_payload_quality(
+                            generation_payload,
+                            options={
+                                **album_options,
+                                "track_duration": generation_payload.get("duration") or track_duration,
+                            },
+                            repair=True,
+                        )
+                        generation_payload = gate["repaired_payload"]
                     for public_field in [
                         "caption",
                         "tags",
@@ -5772,7 +7143,7 @@ def generate_album(
                     track["tag_coverage"] = gate.get("tag_coverage")
                     track["caption_integrity"] = gate.get("caption_integrity")
                     track["lyric_duration_fit"] = gate.get("lyric_duration_fit")
-                    track["repair_actions"] = gate.get("repair_actions") or []
+                    track["repair_actions"] = [] if direct_agent_payload else (gate.get("repair_actions") or [])
                     if model_index == 1:
                         for public_field in [
                             "caption",
@@ -5808,8 +7179,24 @@ def generate_album(
                             f"{item.get('id')}: {item.get('detail')}"
                             for item in blocking_issues[:6]
                         )
+                        rejected_payload_record = {
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "issues": blocking_issues,
+                            "payload": generation_payload,
+                        }
+                        album_debug.append_jsonl("06_rejected_payloads.jsonl", rejected_payload_record)
+                        print(
+                            "[album_payload_gate][REJECTED]\n"
+                            + _ace_payload_debug_block("rejected_gate_issues_json", blocking_issues)
+                            + "\n"
+                            + _ace_payload_debug_block("rejected_payload_json", generation_payload),
+                            flush=True,
+                        )
                         raise ValueError(f"AlbumPayloadQualityGate failed: {issue_preview or gate.get('status')}")
-                    if gate.get("status") == "auto_repair":
+                    if gate.get("status") == "auto_repair" and not direct_agent_payload:
                         logs.append(
                             f"    Payload gate auto-repaired {track_title}: "
                             f"{', '.join(str(item) for item in gate.get('repair_actions') or [])}"
@@ -5856,6 +7243,20 @@ def generate_album(
                     track["result_id"] = generation_result.get("result_id")
                     track["active_song_model"] = generation_result.get("active_song_model")
                     track["audios"] = generation_result.get("audios", [])
+                    actual_render_model = str(
+                        generation_result.get("active_song_model")
+                        or generation_result.get("song_model")
+                        or track_model
+                    )
+                    rescue_model = str(
+                        (generation_result.get("params") or {}).get("vocal_intelligibility_rescue_model") or ""
+                    ).strip()
+                    if actual_render_model and actual_render_model != track_model:
+                        track["requested_album_model"] = track_model
+                        track["render_model"] = actual_render_model
+                        track["album_model_rescued"] = True
+                    if rescue_model:
+                        track["vocal_intelligibility_rescue_model"] = rescue_model
                     track["payload_warnings"] = generation_result.get("payload_warnings", [])
                     track["runner"] = generation_result.get("runner")
                     track["generation_params"] = generation_result.get("params", {})
@@ -5869,8 +7270,11 @@ def generate_album(
                         audio["artist_name"] = track_artist
                         audio["album_id"] = album_id
                         audio["album_family_id"] = album_family_id
-                        audio["album_model"] = track_model
-                        audio["album_model_label"] = model_item.get("label") or track_model
+                        audio["album_model_requested"] = track_model
+                        audio["album_model"] = actual_render_model
+                        audio["album_model_label"] = model_label(actual_render_model)
+                        if rescue_model:
+                            audio["vocal_intelligibility_rescue_model"] = rescue_model
                         audio["payload_gate_status"] = track.get("payload_gate_status")
                         audio["payload_gate_passed"] = track.get("payload_gate_passed")
                         if audio.get("song_id"):
@@ -5881,8 +7285,10 @@ def generate_album(
                                     "album_concept": concept,
                                     "album_family_id": album_family_id,
                                     "album_id": album_id,
-                                    "album_model": track_model,
-                                    "album_model_label": model_item.get("label") or track_model,
+                                    "album_model_requested": track_model,
+                                    "album_model": actual_render_model,
+                                    "album_model_label": model_label(actual_render_model),
+                                    "vocal_intelligibility_rescue_model": rescue_model,
                                     "track_number": track.get("track_number", i + 1),
                                     "track_variant": audio_index + 1,
                                     "album_toolkit_report": result.get("toolkit_report", {}),
@@ -6706,7 +8112,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
 
 
 def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[str], None] | None = None) -> dict[str, Any]:
-    concept = str(body.get("concept") or "")
+    concept = _recover_album_request_concept(body.get("concept") or "", body)
     num_tracks = int(body.get("num_tracks") or 5)
     track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
     language = str(body.get("language") or "en")
@@ -6738,7 +8144,7 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
         language=language,
         embedding_model=embedding_model,
         options=options,
-        use_crewai=not parse_bool(body.get("toolbelt_only"), False),
+        use_crewai=True,
         input_tracks=_json_list(body.get("tracks")) or None,
         planner_provider=planner_provider,
         embedding_provider=embedding_provider,
@@ -6757,19 +8163,11 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
-    toolbelt_only = parse_bool(body.get("toolbelt_only"), False)
-    requested_engine = "deterministic toolbelt" if toolbelt_only else "AceJAM Agents"
+    toolbelt_only = False
+    requested_engine = "AceJAM Agents"
     crewai_output_log_file = str(body.get("crewai_output_log_file") or "")
     user_album_contract = extract_user_album_contract(
-        "\n\n".join(
-            part for part in [
-                str(body.get("user_prompt") or body.get("prompt") or ""),
-                str(body.get("album_title") or body.get("album_name") or ""),
-                str(body.get("concept") or ""),
-                json.dumps(body.get("tracks") or [], ensure_ascii=True, default=str)[:6000],
-            ]
-            if part
-        ),
+        _album_contract_source_from_payload(body, body),
         int(body.get("num_tracks") or 0) or None,
         str(body.get("language") or "en"),
         body,
@@ -6777,7 +8175,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     start_logs = [
         f"Album plan job {job_id} started.",
         f"Planning engine requested: {requested_engine}.",
-        "Engine: AceJAM Agents" if not toolbelt_only else "Engine: deterministic toolbelt",
+        "Engine: AceJAM Agents",
         f"Prompt Kit: {PROMPT_KIT_VERSION}.",
         f"Planner: {provider_label(planner_provider)} ({planner_model})",
         f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
@@ -6803,8 +8201,8 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
         crewai_output_log_file=crewai_output_log_file,
-        planning_engine="toolbelt" if toolbelt_only else "acejam_agents",
-        custom_agents_used=not toolbelt_only,
+        planning_engine="acejam_agents",
+        custom_agents_used=True,
         crewai_used=False,
         prompt_kit_version=PROMPT_KIT_VERSION,
         input_contract=contract_prompt_context(user_album_contract),
@@ -6829,8 +8227,8 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
                 updates.update(status="AceJAM track writing running", progress=55)
             elif "acejam agents produced" in lower:
                 updates.update(status="AceJAM plan ready", progress=95)
-            elif "fell back to deterministic toolbelt" in lower or "toolbelt fallback planned" in lower:
-                updates.update(status="Deterministic toolbelt fallback", progress=90)
+            elif "acejam director produced" in lower:
+                updates.update(status="AceJAM direct payloads ready", progress=90)
             print(f"[album_plan_job][{job_id}] {compact}", file=sys.__stdout__, flush=True)
             _album_job_log(job_id, compact, **updates)
 
@@ -7132,8 +8530,8 @@ async def api_create_album_plan_job(request: Request):
             planner_provider=planner_provider,
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
-            planning_engine="toolbelt" if parse_bool(body.get("toolbelt_only"), False) else "acejam_agents",
-            custom_agents_used=not parse_bool(body.get("toolbelt_only"), False),
+            planning_engine="acejam_agents",
+            custom_agents_used=True,
             crewai_used=False,
             memory_enabled=False,
             expected_count=int(body.get("num_tracks") or 5),

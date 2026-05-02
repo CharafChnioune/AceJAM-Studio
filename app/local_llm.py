@@ -12,10 +12,48 @@ from typing import Any
 
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 LMSTUDIO_DEFAULT_HOST = "http://localhost:1234"
+ACEJAM_PRINT_LLM_IO = os.environ.get(
+    "ACEJAM_PRINT_LLM_IO",
+    os.environ.get("ACEJAM_PRINT_AGENT_IO", "1"),
+).strip().lower() in {"1", "true", "yes", "on"}
+ACEJAM_PRINT_LLM_IO_MAX_CHARS = max(0, int(os.environ.get("ACEJAM_PRINT_LLM_IO_MAX_CHARS", "0") or 0))
 
 
 class LocalLLMError(RuntimeError):
     pass
+
+
+def _llm_debug_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _llm_debug_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_llm_debug_jsonable(item) for item in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _llm_debug_jsonable(value.model_dump())
+        except Exception:
+            return str(value)
+    if hasattr(value, "__dict__") and not isinstance(value, (str, bytes)):
+        try:
+            return _llm_debug_jsonable(vars(value))
+        except Exception:
+            return str(value)
+    return value
+
+
+def _print_llm_io(label: str, payload: Any) -> None:
+    if not ACEJAM_PRINT_LLM_IO:
+        return
+    text = payload if isinstance(payload, str) else json.dumps(_llm_debug_jsonable(payload), ensure_ascii=False, indent=2)
+    original_len = len(text)
+    if ACEJAM_PRINT_LLM_IO_MAX_CHARS and original_len > ACEJAM_PRINT_LLM_IO_MAX_CHARS:
+        text = (
+            text[:ACEJAM_PRINT_LLM_IO_MAX_CHARS].rstrip()
+            + f"\n[truncated by ACEJAM_PRINT_LLM_IO_MAX_CHARS; original_chars={original_len}]"
+        )
+    print(f"[acejam_llm_io][BEGIN {label} chars={original_len}]", flush=True)
+    print(text, flush=True)
+    print(f"[acejam_llm_io][END {label}]", flush=True)
 
 
 def normalize_provider(provider: Any) -> str:
@@ -402,17 +440,22 @@ def lmstudio_download_status(job_id: str) -> dict[str, Any]:
 
 
 def ollama_chat(model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
-    client = _ollama_client()
-    kwargs: dict[str, Any] = {"model": model_name, "messages": messages, "think": False}
+    request_timeout = float(os.environ.get("ACEJAM_OLLAMA_CHAT_TIMEOUT", "600"))
+    kwargs: dict[str, Any] = {"model": model_name, "messages": messages, "think": False, "stream": False}
     if options:
         ollama_options = dict(options)
+        request_timeout = float(ollama_options.pop("timeout", request_timeout) or request_timeout)
         if "max_tokens" in ollama_options and "num_predict" not in ollama_options:
             ollama_options["num_predict"] = ollama_options.pop("max_tokens")
         kwargs["options"] = ollama_options
     if json_format:
         kwargs["format"] = "json"
-    response = client.chat(**kwargs)
-    return str(_attr(_attr(response, "message", {}), "content", "") or "")
+    _print_llm_io("ollama_chat_request_json", {"url": f"{ollama_host().rstrip('/')}/api/chat", "payload": kwargs})
+    data = _http_json("POST", f"{ollama_host().rstrip('/')}/api/chat", kwargs, timeout=request_timeout)
+    _print_llm_io("ollama_chat_response_json", data)
+    content = str(_attr(_attr(data, "message", {}), "content", "") or "")
+    _print_llm_io("ollama_chat_content", content)
+    return content
 
 
 def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
@@ -424,14 +467,22 @@ def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: d
     payload.update(_lmstudio_openai_chat_options(options))
     if json_format:
         payload.setdefault("response_format", {"type": "json_object"})
+    _print_llm_io("lmstudio_chat_request_json", {"url": f"{lmstudio_api_base_url()}/chat/completions", "payload": payload})
     data = _http_json("POST", f"{lmstudio_api_base_url()}/chat/completions", payload, timeout=600)
+    _print_llm_io("lmstudio_chat_response_json", data)
     choices = data.get("choices") if isinstance(data, dict) else None
     if isinstance(choices, list) and choices:
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         if isinstance(message, dict):
-            return str(message.get("content") or "")
-        return str(choices[0].get("text") or "")
-    return str(data.get("raw") if isinstance(data, dict) else data or "")
+            content = str(message.get("content") or "")
+            _print_llm_io("lmstudio_chat_content", content)
+            return content
+        content = str(choices[0].get("text") or "")
+        _print_llm_io("lmstudio_chat_content", content)
+        return content
+    content = str(data.get("raw") if isinstance(data, dict) else data or "")
+    _print_llm_io("lmstudio_chat_content", content)
+    return content
 
 
 def chat_completion(provider: Any, model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
@@ -446,18 +497,23 @@ def embed(provider: Any, model_name: str, text: str) -> list[float]:
     provider_name = normalize_provider(provider)
     model = resolve_model(provider_name, model_name, "embedding")
     if provider_name == "lmstudio":
+        payload = {"model": model, "input": text or "AceJAM"}
+        _print_llm_io("lmstudio_embedding_request_json", {"url": f"{lmstudio_api_base_url()}/embeddings", "payload": payload})
         data = _http_json(
             "POST",
             f"{lmstudio_api_base_url()}/embeddings",
-            {"model": model, "input": text or "AceJAM"},
+            payload,
             timeout=120,
         )
+        _print_llm_io("lmstudio_embedding_response_json", data)
         rows = data.get("data") if isinstance(data, dict) else []
         if isinstance(rows, list) and rows and isinstance(rows[0], dict):
             vector = rows[0].get("embedding") or []
             return [float(x) for x in vector]
         return []
+    _print_llm_io("ollama_embedding_request_json", {"host": ollama_host(), "model": model, "input": text or "AceJAM"})
     response = _ollama_client().embed(model=model, input=text or "AceJAM")
+    _print_llm_io("ollama_embedding_response_json", response)
     vectors = _attr(response, "embeddings", [])
     if isinstance(vectors, list) and vectors:
         return [float(x) for x in vectors[0]]

@@ -151,6 +151,7 @@ class AceTrainingManager:
         model_cache_dir: Path,
         release_models: Callable[[], None] | None = None,
         adapter_ready: Callable[[Path, float], dict[str, Any]] | None = None,
+        audition_runner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = data_dir
@@ -165,6 +166,7 @@ class AceTrainingManager:
         self.jobs_dir = data_dir / "lora_jobs"
         self.release_models = release_models
         self.adapter_ready = adapter_ready
+        self.audition_runner = audition_runner
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen[str]] = {}
 
@@ -334,6 +336,29 @@ class AceTrainingManager:
             return 500
         return 300
 
+    def _epoch_audition_config(
+        self,
+        payload: dict[str, Any],
+        *,
+        trigger_tag: str = "",
+        training_seed: int = 42,
+    ) -> dict[str, Any]:
+        caption = str(payload.get("epoch_audition_caption") or "").strip()
+        lyrics = str(payload.get("epoch_audition_lyrics") or "").strip()
+        enabled = parse_bool(payload.get("epoch_audition_enabled"), False) or bool(caption or lyrics)
+        if enabled and not lyrics:
+            raise ValueError("Epoch audition lyrics are required when epoch auditions are enabled")
+        if enabled and not caption:
+            caption = f"{trigger_tag}, LoRA epoch audition" if trigger_tag else "LoRA epoch audition"
+        return {
+            "enabled": enabled,
+            "caption": caption,
+            "lyrics": lyrics,
+            "duration": 20,
+            "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),
+            "scale": parse_float(payload.get("epoch_audition_scale"), parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
+        }
+
     def start_one_click_train(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.require_ready()
         trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
@@ -465,6 +490,8 @@ class AceTrainingManager:
         variant = model_to_variant(str(payload.get("model_variant") or song_model))
         trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
         epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
+        training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
+        epoch_audition = self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed)
         output_name = slug(trigger_tag or adapter_type, "adapter")
         output_dir = Path(str(payload.get("output_dir") or "")).expanduser() if payload.get("output_dir") else self.training_dir / f"{output_name}-{job_id}"
         log_dir = output_dir / "runs"
@@ -491,13 +518,13 @@ class AceTrainingManager:
             "--epochs",
             str(epochs),
             "--save-every",
-            str(parse_int(payload.get("save_every_n_epochs", payload.get("save_every")), 5, 1, 10000)),
+            "1",
             "--lr",
             str(parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0)),
             "--shift",
             str(parse_float(payload.get("training_shift", payload.get("shift")), 3.0, 0.1, 10.0)),
             "--seed",
-            str(parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)),
+            str(training_seed),
             "--num-inference-steps",
             str(parse_int(payload.get("num_inference_steps"), 8, 1, 200)),
             "--warmup-steps",
@@ -575,8 +602,16 @@ class AceTrainingManager:
                 "trigger_tag": trigger_tag,
                 "display_name": trigger_tag,
                 "epochs": epochs,
+                "save_every_n_epochs": 1,
+                "epoch_audition": epoch_audition,
             },
-            paths={"dataset_dir": str(dataset_dir), "output_dir": str(output_dir), "final_adapter": str(output_dir / "final"), "log_dir": str(log_dir)},
+            paths={
+                "dataset_dir": str(dataset_dir),
+                "output_dir": str(output_dir),
+                "final_adapter": str(output_dir / "final"),
+                "log_dir": str(log_dir),
+                "audition_dir": str(output_dir / "epoch_auditions"),
+            },
         )
 
     def start_estimate(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -824,10 +859,12 @@ class AceTrainingManager:
     def _one_click_params(self, payload: dict[str, Any], *, dataset_id: str, import_root: Path) -> dict[str, Any]:
         sample_count = parse_int(payload.get("sample_count"), 0, 0, None)
         epochs = payload.get("train_epochs", payload.get("epochs"))
+        trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         return {
             "dataset_id": dataset_id,
             "import_root": str(import_root),
-            "trigger_tag": str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip(),
+            "trigger_tag": trigger_tag,
             "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
             "adapter_type": str(payload.get("adapter_type") or "lora").strip().lower(),
             "tag_position": str(payload.get("tag_position") or "prepend").strip().lower(),
@@ -840,9 +877,9 @@ class AceTrainingManager:
             "alpha": parse_int(payload.get("alpha"), 128, 1, 1024),
             "dropout": parse_float(payload.get("dropout"), 0.1, 0.0, 1.0),
             "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), 3.0, 0.1, 10.0),
-            "training_seed": parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1),
+            "training_seed": training_seed,
             "train_epochs": parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None,
-            "save_every_n_epochs": parse_int(payload.get("save_every_n_epochs", payload.get("save_every")), 25, 1, 10000),
+            "save_every_n_epochs": 1,
             "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
             "device": str(payload.get("device") or ("cpu" if sys.platform == "darwin" else "auto")),
@@ -850,6 +887,7 @@ class AceTrainingManager:
             "auto_load": parse_bool(payload.get("auto_load"), True),
             "lora_scale": parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0),
             "use_official_lm_labels": parse_bool(payload.get("use_official_lm_labels"), False),
+            "epoch_audition": self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed),
         }
 
     def _run_one_click_job(self, job: TrainingJob) -> None:
@@ -954,7 +992,7 @@ class AceTrainingManager:
                 "--epochs",
                 str(epochs),
                 "--save-every",
-                str(params["save_every_n_epochs"]),
+                "1",
                 "--lr",
                 str(params["learning_rate"]),
                 "--shift",
@@ -1019,7 +1057,16 @@ class AceTrainingManager:
                 },
                 result={"sample_count": len(labels), "epochs": epochs},
             )
-            self._run_command_step(job.id, train_command, log_path, stage="train")
+            self._run_train_command_with_epoch_auditions(
+                job.id,
+                train_command,
+                output_dir,
+                log_path,
+                epochs=int(epochs),
+                params=params,
+                progress_start=58.0,
+                progress_end=88.0,
+            )
 
             final_adapter = output_dir / "final"
             if not final_adapter.exists():
@@ -1039,6 +1086,7 @@ class AceTrainingManager:
                 epochs=int(epochs),
                 language=language,
                 metadata={
+                    "epoch_audition": params.get("epoch_audition") or {},
                     "source_paths": {
                         "import_root": str(import_root),
                         "dataset_json": dataset_json,
@@ -1057,6 +1105,7 @@ class AceTrainingManager:
 
             with self._lock:
                 current = self._read_job_unlocked(job.id)
+                existing_result = dict(current.result or {})
                 current.state = "succeeded"
                 current.stage = "complete"
                 current.progress = 100.0
@@ -1078,6 +1127,9 @@ class AceTrainingManager:
                     "use_lora": bool(load_status.get("success", False)),
                     "load_status": load_status,
                     "labels": labels[:5],
+                    "epoch_audition": params.get("epoch_audition") or {},
+                    "epoch_auditions": existing_result.get("epoch_auditions", []),
+                    "epoch_auditions_skipped_reason": existing_result.get("epoch_auditions_skipped_reason", ""),
                 }
                 self._write_job_unlocked(current)
             self._append_log(log_path, f"\n[complete] adapter registered at {registered}\n")
@@ -1126,6 +1178,192 @@ class AceTrainingManager:
             self._write_job_unlocked(current)
         if return_code != 0:
             raise RuntimeError(f"{stage} exited with code {return_code}")
+
+    def _epoch_audition_enabled(self, params: dict[str, Any]) -> bool:
+        config = params.get("epoch_audition")
+        return isinstance(config, dict) and parse_bool(config.get("enabled"), False)
+
+    def _command_with_arg(self, command: list[str], flag: str, value: Any) -> list[str]:
+        updated = list(command)
+        if flag in updated:
+            index = updated.index(flag)
+            if index + 1 < len(updated):
+                updated[index + 1] = str(value)
+            else:
+                updated.append(str(value))
+        else:
+            updated.extend([flag, str(value)])
+        return updated
+
+    def _command_without_arg(self, command: list[str], flag: str) -> list[str]:
+        updated = list(command)
+        while flag in updated:
+            index = updated.index(flag)
+            del updated[index : min(index + 2, len(updated))]
+        return updated
+
+    def _latest_checkpoint_for_epoch(self, output_dir: Path, epoch: int) -> Path | None:
+        checkpoints_dir = output_dir / "checkpoints"
+        if not checkpoints_dir.is_dir():
+            return None
+        matches = [path for path in checkpoints_dir.glob(f"epoch_{int(epoch)}_*") if path.exists()]
+        if not matches:
+            matches = [path for path in checkpoints_dir.glob(f"*epoch*{int(epoch)}*") if path.exists()]
+        if not matches:
+            return None
+        return max(matches, key=lambda path: path.stat().st_mtime)
+
+    def _record_epoch_audition(self, job_id: str, audition: dict[str, Any]) -> None:
+        def _audition_epoch(item: dict[str, Any]) -> int:
+            try:
+                return int(item.get("epoch") or -1)
+            except (TypeError, ValueError):
+                return -1
+
+        with self._lock:
+            current = self._read_job_unlocked(job_id)
+            result = dict(current.result or {})
+            audition_epoch = _audition_epoch(audition)
+            auditions = [
+                dict(item)
+                for item in list(result.get("epoch_auditions") or [])
+                if isinstance(item, dict) and _audition_epoch(item) != audition_epoch
+            ]
+            auditions.append(dict(audition))
+            auditions.sort(key=lambda item: _audition_epoch(item))
+            result["epoch_auditions"] = auditions
+            current.result = result
+            current.updated_at = utc_now()
+            self._write_job_unlocked(current)
+
+    def _run_epoch_audition(self, job_id: str, params: dict[str, Any], checkpoint_path: Path, epoch: int, log_path: Path) -> None:
+        config = dict(params.get("epoch_audition") or {})
+        base_record = {
+            "epoch": int(epoch),
+            "checkpoint_path": str(checkpoint_path),
+            "status": "running",
+            "error": "",
+            "result_id": "",
+            "audio_url": "",
+            "created_at": utc_now(),
+        }
+        self._record_epoch_audition(job_id, base_record)
+        if self.audition_runner is None:
+            skipped = {**base_record, "status": "skipped", "error": "No epoch audition runner is configured"}
+            self._record_epoch_audition(job_id, skipped)
+            self._append_log(log_path, f"[audition epoch {epoch}] skipped: no audition runner configured\n")
+            return
+
+        request = {
+            "job_id": job_id,
+            "epoch": int(epoch),
+            "checkpoint_path": str(checkpoint_path),
+            "caption": str(config.get("caption") or ""),
+            "lyrics": str(config.get("lyrics") or ""),
+            "duration": 20,
+            "seed": parse_int(config.get("seed"), parse_int(params.get("training_seed"), 42, 0, 2**31 - 1), 0, 2**31 - 1),
+            "lora_scale": parse_float(config.get("scale"), parse_float(params.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
+            "trigger_tag": str(params.get("trigger_tag") or ""),
+            "song_model": str(params.get("song_model") or "acestep-v15-turbo"),
+            "model_variant": str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or ""))),
+            "adapter_type": str(params.get("adapter_type") or "lora"),
+        }
+        try:
+            result = self.audition_runner(request)
+            audios = list(result.get("audios") or []) if isinstance(result, dict) else []
+            first_audio = audios[0] if audios else {}
+            record = {
+                **base_record,
+                "status": "succeeded",
+                "result_id": str((result or {}).get("result_id") or first_audio.get("result_id") or ""),
+                "audio_url": str(first_audio.get("audio_url") or (result or {}).get("audio_url") or ""),
+                "created_at": utc_now(),
+            }
+            self._record_epoch_audition(job_id, record)
+            self._append_log(log_path, f"[audition epoch {epoch}] generated {record['audio_url'] or record['result_id']}\n")
+        except Exception as exc:
+            record = {**base_record, "status": "failed", "error": str(exc), "created_at": utc_now()}
+            self._record_epoch_audition(job_id, record)
+            self._append_log(log_path, f"[audition epoch {epoch}] failed but training will continue: {exc}\n")
+
+    def _run_train_command_with_epoch_auditions(
+        self,
+        job_id: str,
+        train_command: list[str],
+        output_dir: Path,
+        log_path: Path,
+        *,
+        epochs: int,
+        params: dict[str, Any],
+        progress_start: float = 0.0,
+        progress_end: float = 95.0,
+    ) -> None:
+        command = self._command_with_arg(train_command, "--save-every", "1")
+        audition_enabled = self._epoch_audition_enabled(params)
+        adapter_type = str(params.get("adapter_type") or "lora").lower()
+        if not audition_enabled:
+            self._run_command_step(job_id, command, log_path, stage="train")
+            return
+        if adapter_type != "lora":
+            reason = "Epoch auditions are skipped for LoKr because standard ACE-Step generation can only load PEFT LoRA adapters."
+            self._append_log(log_path, f"[audition] {reason}\n")
+            self._set_job_state(job_id, result={"epoch_auditions_skipped_reason": reason})
+            self._run_command_step(job_id, command, log_path, stage="train")
+            return
+
+        total_epochs = max(1, int(epochs or 1))
+        last_checkpoint: Path | None = None
+        for epoch in range(1, total_epochs + 1):
+            before_progress = progress_start + ((epoch - 1) / total_epochs) * (progress_end - progress_start)
+            self._set_job_state(job_id, stage=f"train epoch {epoch}/{total_epochs}", progress=before_progress)
+            chunk_command = self._command_with_arg(command, "--epochs", str(epoch))
+            chunk_command = self._command_with_arg(chunk_command, "--scheduler-epochs", str(total_epochs))
+            if last_checkpoint is not None:
+                chunk_command = self._command_with_arg(chunk_command, "--resume-from", str(last_checkpoint))
+            else:
+                chunk_command = self._command_without_arg(chunk_command, "--resume-from")
+            self._run_command_step(job_id, chunk_command, log_path, stage=f"train epoch {epoch}/{total_epochs}")
+            checkpoint = self._latest_checkpoint_for_epoch(output_dir, epoch)
+            if checkpoint is None:
+                raise FileNotFoundError(f"Epoch {epoch} finished but no checkpoint was found in {output_dir / 'checkpoints'}")
+            last_checkpoint = checkpoint
+            audition_progress = progress_start + (epoch / total_epochs) * (progress_end - progress_start)
+            self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
+            self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path)
+        self._set_job_state(job_id, stage="train", progress=progress_end)
+
+    def _run_train_job_with_epoch_auditions(self, job: TrainingJob) -> None:
+        with self._lock:
+            job.state = "running"
+            job.stage = "train"
+            job.updated_at = utc_now()
+            self._write_job_unlocked(job)
+        params = dict(job.params or {})
+        output_dir = Path(job.paths.get("output_dir") or "")
+        log_path = Path(job.log_path)
+        epochs = parse_int(params.get("epochs"), 1, 1, 10000)
+        self._run_train_command_with_epoch_auditions(
+            job.id,
+            job.command,
+            output_dir,
+            log_path,
+            epochs=epochs,
+            params=params,
+            progress_start=0.0,
+            progress_end=95.0,
+        )
+        with self._lock:
+            current = self._read_job_unlocked(job.id)
+            current.return_code = 0
+            current.updated_at = utc_now()
+            if current.state == "stopping":
+                current.state = "stopped"
+            else:
+                current.state = "succeeded"
+                current.stage = "complete"
+                current.progress = 100.0
+                current.result = self._job_result(current)
+            self._write_job_unlocked(current)
 
     def _training_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -1232,6 +1470,9 @@ class AceTrainingManager:
         try:
             if self.release_models is not None:
                 self.release_models()
+            if job.kind == "train" and self._epoch_audition_enabled(job.params):
+                self._run_train_job_with_epoch_auditions(job)
+                return
             env = os.environ.copy()
             py_paths = [
                 str(self.vendor_dir),
@@ -1304,7 +1545,15 @@ class AceTrainingManager:
     def _job_result(self, job: TrainingJob) -> dict[str, Any]:
         if job.kind == "train":
             final_adapter = job.paths.get("final_adapter", "")
-            result = {"final_adapter": final_adapter, "adapter_exists": Path(final_adapter).exists()}
+            existing_result = dict(job.result or {})
+            result = {
+                "final_adapter": final_adapter,
+                "adapter_exists": Path(final_adapter).exists(),
+                "epoch_audition": dict((job.params or {}).get("epoch_audition") or {}),
+                "epoch_auditions": list(existing_result.get("epoch_auditions") or []),
+            }
+            if existing_result.get("epoch_auditions_skipped_reason"):
+                result["epoch_auditions_skipped_reason"] = existing_result["epoch_auditions_skipped_reason"]
             if result["adapter_exists"]:
                 params = dict(job.params or {})
                 registered = self.register_adapter(
@@ -1317,6 +1566,7 @@ class AceTrainingManager:
                     job_id=job.id,
                     epochs=parse_int(params.get("epochs"), 0, 0, None) or None,
                     metadata={
+                        "epoch_audition": params.get("epoch_audition") or {},
                         "source_paths": {
                             "dataset_dir": job.paths.get("dataset_dir", ""),
                             "output_dir": job.paths.get("output_dir", ""),

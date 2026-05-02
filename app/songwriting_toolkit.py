@@ -26,9 +26,13 @@ from prompt_kit import (
 )
 from album_quality_gate import evaluate_album_payload_quality
 from studio_core import (
+    ACE_STEP_LYRICS_SAFE_HEADROOM,
+    ACE_STEP_LYRICS_SOFT_TARGET_MAX,
+    ACE_STEP_LYRICS_WARNING_CHAR_LIMIT,
     ace_step_settings_compliance,
     ace_step_settings_registry,
     docs_best_model_settings,
+    fit_ace_step_lyrics_to_limit,
     hit_readiness_report,
     parse_bool,
     pro_quality_policy,
@@ -204,7 +208,7 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "LyricLengthTool", "summary": "Plans sections, words, and lines for the chosen duration."},
     {"name": "GenerationSettingsTool", "summary": "Builds editable per-track seed, steps, guidance, shift, sampler, and format settings."},
     {"name": "ArrangementTool", "summary": "Plans intro, verses, hooks, bridge, outro, BPM/key/time, and energy movement."},
-    {"name": "VocalPerformanceTool", "summary": "Creates persona, cadence, ad-lib, harmony, and lyric performance tags."},
+    {"name": "VocalPerformanceTool", "summary": "Creates persona, cadence, vocal-response, harmony, and lyric performance tags."},
     {"name": "RhymeFlowTool", "summary": "Turns artist references into rhyme and flow technique briefs."},
     {"name": "MetaphorWorldTool", "summary": "Builds one coherent metaphor world per track."},
     {"name": "HookDoctorTool", "summary": "Checks hooks for contrast, repeatability, and title connection."},
@@ -249,7 +253,7 @@ ARTIST_TECHNIQUES = {
     "jay-z": "economical confidence, double meanings, conversational pocket, luxury detail",
     "kendrick lamar": "character perspective shifts, moral tension, rhythmic variation, layered hooks",
     "drake": "melodic rap contrast, conversational hooks, nightlife detail, emotional directness",
-    "travis scott": "psychedelic ad-libs, atmospheric trap, texture-first hooks, floating cadence",
+    "travis scott": "psychedelic vocal textures, atmospheric trap, texture-first hooks, floating cadence",
     "frank ocean": "fragmented memories, sensory intimacy, unusual chord mood, understated hooks",
     "the weeknd": "neon noir atmosphere, falsetto tension, nocturnal pop drama, glossy synths",
 }
@@ -552,7 +556,7 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
     if dur <= 150:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
     if dur <= 240:
-        return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3" if rap else "Breakdown", "Final Chorus", "Outro"]
+        return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Break", "Bridge", "Final Chorus", "Outro"]
     if dur <= 360:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Breakdown", "Final Chorus", "Outro"]
     return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Instrumental Break", "Verse 4", "Final Chorus", "Outro"]
@@ -575,9 +579,9 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         (60, 90, 110, 130),
         (120, 190, 225, 260),
         (180, 300, 360, 420),
-        (240, 430, 500, 560),
-        (300, 520, 630, 720),
-        (600, 560, 720, 780),
+        (240, 340, 430, 500),
+        (300, 390, 500, 560),
+        (600, 430, 560, 620),
     ]
     min_words, base_words, max_words = bands[-1][1:]
     for limit, low, base, high in bands:
@@ -615,9 +619,12 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         "target_lines": target_lines,
         "min_lines": min_lines,
         "max_lyrics_chars": 4096,
+        "safe_lyrics_char_target": ACE_STEP_LYRICS_SOFT_TARGET_MAX,
+        "warning_lyrics_chars": ACE_STEP_LYRICS_WARNING_CHAR_LIMIT,
+        "safe_headroom_chars": ACE_STEP_LYRICS_SAFE_HEADROOM,
         "duration_coverage_note": (
             "At very long durations ACE-Step's lyric cap limits continuous vocals; use enough sections plus intentional instrumental breaks."
-            if dur > 360
+            if dur >= 240
             else "Sparse or instrumental genres should cover the duration with section tags, builds, drops, and short motifs instead of forced full verses."
             if sparse_genre
             else "Lyrics should cover the full selected duration with verses, hooks, bridge, and final chorus."
@@ -743,7 +750,17 @@ def tag_pack_values(packs: list[str]) -> list[str]:
 
 def infer_core_tags(concept: str, track_index: int = 0) -> list[str]:
     lowered = concept.lower()
-    if re.search(r"\b(rap|hip.?hop|trap|drill|bars)\b", lowered):
+    if re.search(r"\b(schlager|accordion|akkordeon|brass|polka|volksmusik)\b", lowered):
+        base = [
+            "German schlager pop",
+            "steady dance groove",
+            "sparkling accordion",
+            "bright brass stabs",
+            "warm lead vocal",
+            "uplifting singalong chorus",
+            "clean radio-ready mix",
+        ]
+    elif re.search(r"\b(rap|hip.?hop|trap|drill|bars)\b", lowered):
         base = ["hip-hop", "808 bass", "trap hi-hats", "male rap vocal", "crisp modern mix"]
     elif "r&b" in lowered or "soul" in lowered:
         base = ["R&B", "Rhodes", "sub-bass", "breathy vocal", "warm analog mix"]
@@ -975,16 +992,7 @@ def trim_lyrics_to_limit(lyrics: str, limit: int = 4096) -> str:
     text = str(lyrics or "").strip()
     if len(text) <= limit:
         return text
-    chunks: list[str] = []
-    total = 0
-    for block in text.split("\n\n"):
-        addition = ("\n\n" if chunks else "") + block
-        if total + len(addition) > limit - 48:
-            break
-        chunks.append(block)
-        total += len(addition)
-    trimmed = "\n\n".join(chunks).strip()
-    return (trimmed or text[: limit - 32].rstrip()) + "\n\n[Outro]\nLet it breathe."
+    return fit_ace_step_lyrics_to_limit(text, limit)
 
 
 def expand_lyrics_for_duration(
@@ -1276,17 +1284,27 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
             str(track.get(key) or "")
             for key in ("title", "tags", "style", "vibe", "narrative", "description")
         ).strip() or genre_hint
-    tags = build_track_tags(
-        " ".join([genre_hint, str(track.get("tags") or ""), str(track.get("description") or "")]),
-        index,
-        options.get("tag_packs"),
-        " ".join(split_terms(options.get("custom_tags")) + split_terms(track.get("custom_tags"))),
-        options.get("negative_tags"),
-    )
-    raw_tags = split_terms(track.get("tags"))
-    for raw in raw_tags:
-        if raw.lower() not in {t.lower() for t in tags} and len(tags) < 12:
-            tags.append(raw)
+    micro_agent_tags = []
+    if strict_album_agents and track.get("agent_micro_settings_flow"):
+        micro_agent_tags = (
+            split_terms(track.get("tag_list"))
+            or split_terms(track.get("tags"))
+            or split_terms(track.get("caption"))
+        )
+    if micro_agent_tags:
+        tags = micro_agent_tags[:12]
+    else:
+        tags = build_track_tags(
+            " ".join([genre_hint, str(track.get("tags") or ""), str(track.get("description") or "")]),
+            index,
+            options.get("tag_packs"),
+            " ".join(split_terms(options.get("custom_tags")) + split_terms(track.get("custom_tags"))),
+            options.get("negative_tags"),
+        )
+        raw_tags = split_terms(track.get("tags"))
+        for raw in raw_tags:
+            if raw.lower() not in {t.lower() for t in tags} and len(tags) < 12:
+                tags.append(raw)
     bpm_strategy = str(options.get("bpm_strategy") or "varied")
     if not _is_nullish(track.get("bpm")):
         bpm = _int_or_default(track.get("bpm"), 92)
@@ -1315,12 +1333,16 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
             str(options.get("lyric_density") or "balanced"),
             str(options.get("structure_preset") or "auto"),
         )
-    caption = polish_caption(
-        tags,
-        str(track.get("description") or ""),
-        str(options.get("global_caption") or ""),
-        strict=strict_album_agents,
-    )
+    if micro_agent_tags:
+        caption = str(track.get("caption") or track.get("tags") or ", ".join(tags)).strip()
+        caption = caption[:512]
+    else:
+        caption = polish_caption(
+            tags,
+            str(track.get("description") or ""),
+            str(options.get("global_caption") or ""),
+            strict=strict_album_agents,
+        )
     installed_models = set(options.get("installed_models") or [])
     requested_track_model = str(track.get("song_model") or "").strip()
     final_locked = str(options.get("song_model_strategy") or "") == "xl_sft_final"
@@ -1905,7 +1927,7 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
 
     @tool("VocalPerformanceTool")
     def vocal_performance(goal: str = "") -> str:
-        """Return persona, cadence, ad-lib, harmony, and performance tag guidance."""
+        """Return persona, cadence, vocal-response, harmony, and performance tag guidance."""
         cleaned, notes = sanitize_artist_references(goal)
         return json.dumps(
             {
@@ -1920,7 +1942,7 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
                 "delivery_rules": [
                     "clear original persona",
                     "breath-control planning",
-                    "ad-libs only where they support the hook",
+                    "backing vocal responses only where they support the hook",
                 ],
             }
         )

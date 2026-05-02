@@ -227,6 +227,10 @@ ACE_STEP_SETTINGS_POLICY_VERSION = "ace-step-settings-parity-2026-04-26"
 PRO_QUALITY_AUDIT_VERSION = "ace-step-pro-quality-audit-2026-04-27"
 ACE_STEP_CAPTION_CHAR_LIMIT = 512
 ACE_STEP_LYRICS_CHAR_LIMIT = 4096
+ACE_STEP_LYRICS_SOFT_TARGET_MIN = 3200
+ACE_STEP_LYRICS_SOFT_TARGET_MAX = 3600
+ACE_STEP_LYRICS_WARNING_CHAR_LIMIT = 3800
+ACE_STEP_LYRICS_SAFE_HEADROOM = 200
 ACE_STEP_DIT_LYRICS_TOKEN_LIMIT = 2048
 DOCS_BEST_SOURCE_TASK_LM_SKIPS = {"cover", "repaint", "extract"}
 DOCS_BEST_LM_TASKS = {"text2music", "lego", "complete"}
@@ -1872,31 +1876,66 @@ def strip_ace_step_lyrics_leakage(lyrics: str | None) -> str:
     return cleaned
 
 
+def _lyric_section_blocks(text: str) -> list[str]:
+    lines = str(text or "").splitlines()
+    blocks: list[str] = []
+    current: list[str] = []
+    section_re = re.compile(r"^\s*\[[^\]]+\]\s*$")
+    for line in lines:
+        if section_re.match(line) and current:
+            block = "\n".join(current).strip()
+            if block:
+                blocks.append(block)
+            current = [line]
+        else:
+            current.append(line)
+    tail = "\n".join(current).strip()
+    if tail:
+        blocks.append(tail)
+    return blocks
+
+
+def _join_lyric_blocks(blocks: list[str]) -> str:
+    return "\n".join(block.strip() for block in blocks if str(block or "").strip()).strip()
+
+
 def fit_ace_step_lyrics_to_limit(lyrics: str | None, limit: int = ACE_STEP_LYRICS_CHAR_LIMIT) -> str:
-    """Fit lyrics into the official ACE-Step one-request text budget without inventing new content."""
+    """Fit lyrics using complete sections/lines only; never slice through a word or invent an outro."""
     text = str(lyrics or "").strip()
     if len(text) <= limit:
         return text
-    budget = max(256, int(limit) - 96)
-    blocks = re.split(r"\n\s*\n", text)
+    hard_limit = max(256, int(limit or ACE_STEP_LYRICS_CHAR_LIMIT))
+    target_limit = min(hard_limit - ACE_STEP_LYRICS_SAFE_HEADROOM, ACE_STEP_LYRICS_SOFT_TARGET_MAX)
+    target_limit = max(512, target_limit)
+    blocks = _lyric_section_blocks(text)
     kept: list[str] = []
-    total = 0
+    outro_blocks = [block for block in blocks if re.match(r"^\s*\[.*outro.*\]", block, re.I)]
     for block in blocks:
-        block = block.strip()
-        if not block:
+        candidate = _join_lyric_blocks([*kept, block])
+        if len(candidate) <= target_limit:
+            kept.append(block)
             continue
-        addition_len = len(block) + (2 if kept else 0)
-        if total + addition_len > budget:
+        break
+    if outro_blocks and not any(re.match(r"^\s*\[.*outro.*\]", block, re.I) for block in kept):
+        outro = outro_blocks[-1]
+        while kept and len(_join_lyric_blocks([*kept, outro])) > target_limit:
+            kept.pop()
+        if len(_join_lyric_blocks([*kept, outro])) <= target_limit:
+            kept.append(outro)
+    fitted = _join_lyric_blocks(kept)
+    if fitted:
+        return fitted
+
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        candidate = "\n".join([*kept_lines, line]).strip()
+        if len(candidate) > target_limit:
             break
-        kept.append(block)
-        total += addition_len
-    fitted = "\n\n".join(kept).strip()
-    if not fitted:
-        fitted = text[:budget].rstrip()
-    if "[Outro]" not in fitted[-240:]:
-        outro = "\n\n[Outro]\nLet it breathe."
-        fitted = fitted[: max(0, limit - len(outro))].rstrip() + outro
-    return fitted[:limit].rstrip()
+        kept_lines.append(line)
+    return "\n".join(kept_lines).strip()
 
 
 def apply_ace_step_text_budget(payload: dict[str, Any], *, task_type: str | None = None) -> dict[str, Any]:

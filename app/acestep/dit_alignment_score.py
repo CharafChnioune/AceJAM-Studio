@@ -834,9 +834,11 @@ class MusicLyricScorer:
         Returns:
             AlignmentScore object containing individual metrics and final score.
         """
-        # Ensure Inputs are Tensors on the correct device
+        # Ensure inputs are tensors on a usable device. The upstream scorer used
+        # CUDA unconditionally here, which breaks local Apple Silicon runs.
         if not isinstance(energy_matrix, torch.Tensor):
-            energy_matrix = torch.tensor(energy_matrix, device='cuda', dtype=torch.float32)
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+            energy_matrix = torch.tensor(energy_matrix, device=device_name, dtype=torch.float32)
 
         device = energy_matrix.device
 

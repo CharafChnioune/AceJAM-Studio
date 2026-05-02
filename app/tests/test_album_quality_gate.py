@@ -8,6 +8,7 @@ from album_quality_gate import (
     AlbumRunDebugLogger,
     build_album_global_sonic_caption,
     evaluate_album_payload_quality,
+    evaluate_genre_adherence,
     tag_dimension_coverage,
 )
 from songwriting_toolkit import lyric_length_plan
@@ -59,6 +60,95 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertNotIn("{", repaired["caption"])
         self.assertNotIn("{'bpm'", repaired["tag_list"])
 
+    def test_producer_credit_in_lyrics_is_repaired_before_render(self):
+        sections = ["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"]
+        lyrics = _lyrics_for_sections(sections, lines_per_section=5)
+        lyrics = lyrics.replace("Intro melody carries the promise home 0", "Dr. Dre on the beat, crisp and clean,")
+        payload = {
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "tag_list": ["hip-hop", "steady groove", "808 bass", "male rap vocal", "gritty mood", "dynamic hook arrangement", "polished studio mix"],
+            "lyrics": lyrics,
+            "producer_credit": "Dr. Dre",
+            "duration": 60,
+            "language": "en",
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        repaired = report["repaired_payload"]
+
+        self.assertTrue(report["gate_passed"])
+        self.assertIn("producer_credit_in_lyrics", {issue["id"] for issue in report["issues"]})
+        self.assertIn("producer_credit_removed_from_lyrics", report["repair_actions"])
+        self.assertNotIn("Dr. Dre", repaired["lyrics"])
+
+    def test_genre_overload_prunes_tags_without_adding_unselected_defaults(self):
+        payload = {
+            "caption": "West Coast Hip-Hop, boom-bap drums, 808 bass, sirens, melodic rap vocal, cinematic, hard-hitting drums, atmospheric mix",
+            "tag_list": ["West Coast Hip-Hop", "boom-bap drums", "808 bass", "sirens", "melodic rap vocal", "cinematic", "hard-hitting drums", "atmospheric mix"],
+            "lyrics": "[Instrumental]",
+            "instrumental": True,
+            "duration": 60,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        repaired_terms = " ".join(report["repaired_payload"]["tag_list"]).lower()
+
+        self.assertTrue(report["gate_passed"])
+        self.assertNotIn("trap", repaired_terms)
+        self.assertNotIn("drill", repaired_terms)
+        self.assertNotIn("pop", repaired_terms)
+
+    def test_rap_intent_rejects_orchestral_dominant_tags(self):
+        payload = {
+            "caption": "cinematic orchestral strings, brass swells, taiko drums, epic score, wide stereo, polished mix",
+            "tag_list": ["cinematic orchestral strings", "brass swells", "taiko drums", "epic score", "wide stereo", "polished mix"],
+            "style": "West Coast rap",
+            "lyrics": _lyrics_for_sections(["Intro", "Verse 1", "Hook", "Verse 2", "Final Hook", "Outro"], lines_per_section=6),
+            "duration": 90,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("genre_intent_missing_rap_vocal", issue_ids)
+        self.assertIn("genre_intent_missing_rap_groove", issue_ids)
+        self.assertIn("rap_not_dominant", issue_ids)
+        self.assertEqual(report["genre_intent_contract"]["family"], "rap")
+
+    def test_rap_lyrics_reject_arrangement_stage_directions(self):
+        lyrics = (
+            "[Intro]\n"
+            "City lights are leaning while the corner keeps score\n"
+            "[Verse 1]\n"
+            "Every block remembers what the suits ignore\n" * 16
+            + "[Hook]\n"
+            "We keep the truth alive when the pressure gets raw\n"
+            + "[Verse 2]\n"
+            "The orchestra swells like sirens calling home\n"
+            "Every signature cracks when the bass hits floor\n" * 14
+            + "[Final Hook]\n"
+            "We keep the truth alive when the pressure gets raw\n"
+            "[Outro]\n"
+            "Concrete talks clear when the night gets low\n"
+        )
+        payload = {
+            "caption": "West Coast hip-hop, boom-bap drums, 808 bass, male rap vocal, gritty mood, dynamic hook, polished studio mix",
+            "tag_list": ["West Coast hip-hop", "boom-bap drums", "808 bass", "male rap vocal", "gritty mood", "dynamic hook", "polished studio mix"],
+            "style": "West Coast rap",
+            "lyrics": lyrics,
+            "duration": 120,
+        }
+
+        adherence = evaluate_genre_adherence(payload)
+        issue_ids = {issue["id"] for issue in adherence["issues"]}
+
+        self.assertFalse(adherence["gate_passed"])
+        self.assertIn("non_rap_arrangement_lyric_leakage", issue_ids)
+
     def test_global_caption_is_compact_album_sonic_dna_not_track_list(self):
         tracks = [{
             "tags": "hip-hop, boom-bap, dusty piano, male rap vocal, gritty mood, anthemic hook, punchy studio mix",
@@ -107,6 +197,66 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertIn("lyrics_under_length", issue_ids)
         self.assertIn("fallback_lyric_artifacts", issue_ids)
         self.assertIn("section_coverage_low", issue_ids)
+
+    def test_mid_line_truncated_near_budget_payload_fails_before_render(self):
+        verse_lines = [f"Concrete pressure carries the signal home {idx:02d}" for idx in range(85)]
+        lyrics = "\n".join([
+            "[Intro]",
+            "Low-end rumble shakes the floor,",
+            "[Verse 1]",
+            *verse_lines[:28],
+            "[Chorus]",
+            "Concrete canyons answer back tonight,",
+            "Ghosts don't sleep when the city lies,",
+            "[Verse 2]",
+            *verse_lines[28:58],
+            "[Final Chorus]",
+            *verse_lines[58:72],
+            "[Outro]",
+            *verse_lines[72:82],
+            "Through t",
+            "",
+            "[Outro]",
+            "Let it breathe.",
+        ])
+        payload = {
+            "caption": (
+                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": lyrics,
+            "duration": 240,
+            "language": "en",
+            "instrumental": False,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("lyrics_mid_line_truncation", issue_ids)
+        self.assertIn("duplicate_outro", issue_ids)
+
+    def test_global_caption_dedupes_against_track_caption(self):
+        payload = {
+            "caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "global_caption": (
+                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
+                "dynamic hook arrangement, polished studio mix"
+            ),
+            "lyrics": "[Instrumental]",
+            "instrumental": True,
+            "duration": 60,
+        }
+
+        report = evaluate_album_payload_quality(payload, repair=True)
+
+        self.assertTrue(report["gate_passed"])
+        self.assertIn("global_caption_deduped_against_track_caption", report["repair_actions"])
+        self.assertEqual(report["repaired_payload"]["global_caption"], "")
 
     def test_complete_duration_fit_payload_passes(self):
         sections = ["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"]

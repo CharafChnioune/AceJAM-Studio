@@ -609,6 +609,22 @@
       padding: 8px;
       font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .epoch-auditions {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .epoch-audition-item {
+      display: grid;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: rgba(255,255,255,0.018);
+      font-size: 12px;
+    }
+    .epoch-audition-item strong { color: var(--text); }
+    .epoch-audition-item a { color: var(--accent); }
     .library-list { max-height: 66vh; overflow: auto; }
     .album-saved-list {
       display: grid;
@@ -1596,6 +1612,24 @@
           <label for="album-concept">Concept</label>
           <textarea id="album-concept" placeholder="A seven-track Dutch rap album about ambition, family, night shifts and winning quietly"></textarea>
         </div>
+        <div class="grid-2" style="margin-top:10px;">
+          <div>
+            <label for="album-agent-genre-prompt">Genre prompt for agents</label>
+            <input id="album-agent-genre-prompt" type="text" placeholder="cinematic West Coast rap, clear hook, polished modern mix" />
+          </div>
+          <div>
+            <label for="album-agent-mood">Mood/vibe</label>
+            <input id="album-agent-mood" type="text" placeholder="dark, tense, triumphant, cinematic" />
+          </div>
+          <div>
+            <label for="album-agent-vocal-type">Vocal type</label>
+            <input id="album-agent-vocal-type" type="text" placeholder="male rap lead, clear chorus response" />
+          </div>
+          <div>
+            <label for="album-agent-audience">Audience/platform</label>
+            <input id="album-agent-audience" type="text" placeholder="streaming release, car speakers, club-ready low end" />
+          </div>
+        </div>
         <div class="grid-3">
           <div>
             <label for="album-tracks">Tracks</label>
@@ -1653,6 +1687,8 @@
               <option value="experimental">Experimental</option>
             </select>
           </div>
+          <label class="checkline"><input id="album-planner-thinking" type="checkbox" /> Planner thinking</label>
+          <label class="checkline"><input id="album-print-agent-io" type="checkbox" checked /> Print full agent I/O</label>
         </div>
         <div class="album-plan-actions">
           <button class="primary" id="album-btn">Generate Album</button>
@@ -2056,7 +2092,7 @@
           </div>
           <div>
             <label for="save-every">Save every</label>
-            <input id="save-every" type="number" min="1" value="5" />
+            <input id="save-every" type="text" value="every epoch" readonly />
           </div>
         </div>
         <div class="grid-3" style="margin-top:10px;">
@@ -2088,6 +2124,34 @@
           </div>
         </div>
         <div class="row" style="margin-top:10px;">
+          <label class="check"><input type="checkbox" id="epoch-audition-enabled" /> Epoch audition</label>
+          <span class="tiny">20 seconds, saved on the LoRA job only.</span>
+        </div>
+        <div class="grid-2" style="margin-top:10px;">
+          <div>
+            <label for="epoch-audition-caption">Audition caption/tags</label>
+            <textarea id="epoch-audition-caption" placeholder="genre, instruments, mood, trigger tag"></textarea>
+          </div>
+          <div>
+            <label for="epoch-audition-lyrics">Audition lyrics</label>
+            <textarea id="epoch-audition-lyrics" placeholder="[Verse]&#10;...&#10;&#10;[Chorus]&#10;..."></textarea>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:10px;">
+          <div>
+            <label for="epoch-audition-seed">Audition seed</label>
+            <input id="epoch-audition-seed" type="number" min="0" value="42" />
+          </div>
+          <div>
+            <label for="epoch-audition-scale">Audition scale</label>
+            <input id="epoch-audition-scale" type="number" min="0" max="1" step="0.05" value="1" />
+          </div>
+          <div>
+            <label>Audition duration</label>
+            <input type="text" value="20 seconds" readonly />
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;">
           <label class="check"><input type="checkbox" id="grad-checkpoint" checked /> Gradient checkpointing</label>
           <label class="check"><input type="checkbox" id="offload-encoder" /> Offload encoder</label>
           <label class="check"><input type="checkbox" id="lokr-weight" checked /> LoKr weight decompose</label>
@@ -2098,6 +2162,7 @@
           </div>
         </details>
         <pre id="lora-log">Trainer logs appear here.</pre>
+        <div id="lora-auditions" class="epoch-auditions"></div>
       </section>
 
       <section class="panel mode-panel" data-mode="library">
@@ -2694,11 +2759,13 @@
       );
       setSummary(
         "trainer-training",
-        `${controlValue("adapter-type") || "lora"}, ${controlValue("train-epochs") || 10} epochs, batch ${controlValue("train-batch") || 1}`,
+        `${controlValue("adapter-type") || "lora"}, ${controlValue("train-epochs") || 10} epochs, save every epoch${controlValue("epoch-audition-enabled") ? ", auditions" : ""}`,
         defaultsChanged({
           "adapter-type": "lora", "train-epochs": "10", "train-batch": "1", "grad-accum": "4",
-          "learning-rate": "0.0001", "save-every": "5", "lora-rank": "64", "lora-alpha": "128",
+          "learning-rate": "0.0001", "save-every": "every epoch", "lora-rank": "64", "lora-alpha": "128",
           "lora-dropout": "0.1", "lokr-dim": "64", "lokr-alpha": "128", "train-seed": "42",
+          "epoch-audition-enabled": false, "epoch-audition-caption": "", "epoch-audition-lyrics": "",
+          "epoch-audition-seed": "42", "epoch-audition-scale": "1",
           "grad-checkpoint": true, "offload-encoder": false, "lokr-weight": true
         })
       );
@@ -4987,6 +5054,22 @@
         base.lyrics = "";
         base.track_names = completeTracks();
       }
+      const hasSuppliedVocalLyrics = base.task_type === "text2music"
+        && !base.instrumental
+        && Boolean((base.lyrics || "").trim())
+        && (base.lyrics || "").trim().toLowerCase() !== "[instrumental]";
+      if ((mode === "simple" || mode === "custom") && hasSuppliedVocalLyrics) {
+        base.vocal_clarity_recovery = true;
+        base.allow_supplied_lyrics_lm = false;
+        base.thinking = false;
+        base.use_format = false;
+        base.use_cot_caption = false;
+        base.use_cot_language = false;
+        base.use_cot_metas = false;
+        base.use_cot_lyrics = false;
+        base.ace_lm_model = "none";
+        if (!base.lm_temperature || Number(base.lm_temperature) === 0.85) base.lm_temperature = 0.7;
+      }
       const repaired = repairGenerationPayload(base);
       if (allModelsEnabled(mode)) repaired.render_strategy = "all_models_song";
       state.lastPayload = { ...repaired };
@@ -5454,6 +5537,14 @@
       const plannerModel = $("album-ollama").value || (plannerProvider === "ollama" ? state.config?.default_album_planner_ollama_model : "") || "";
       const payload = {
         concept: $("album-concept").value,
+        user_prompt: $("album-concept").value,
+        raw_user_prompt: $("album-concept").value,
+        album_agent_genre_prompt: $("album-agent-genre-prompt").value,
+        album_agent_mood_vibe: $("album-agent-mood").value,
+        album_agent_vocal_type: $("album-agent-vocal-type").value,
+        album_agent_audience: $("album-agent-audience").value,
+        planner_thinking: $("album-planner-thinking").checked,
+        print_agent_io: $("album-print-agent-io").checked,
         num_tracks: Number($("album-tracks").value),
         track_duration: Number($("album-duration").value),
         bpm: DEFAULT_BPM,
@@ -5467,7 +5558,7 @@
         language: $("album-language").value,
         song_model: $("album-model-strategy").value === "all_models_album" ? "auto" : $("album-model-strategy").value,
         final_song_model: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : $("album-model-strategy").value,
-        ace_lm_model: activeLmModelFor("album"),
+        ace_lm_model: "none",
         song_model_strategy: $("album-model-strategy").value === "all_models_album" ? "all_models_album" : "selected",
         requested_song_model: $("album-model-strategy").value === "all_models_album" ? "auto" : $("album-model-strategy").value,
         quality_profile: selectedQualityProfile(),
@@ -5486,7 +5577,7 @@
         hook_intensity: Number($("album-hook-intensity").value),
         track_variants: Number($("album-variants").value),
         seed: $("album-seed").value,
-        global_caption: $("album-concept").value,
+        global_caption: "",
         audio_format: $("album-audio-format").value,
         mp3_bitrate: $("mp3-bitrate")?.value || "128k",
         mp3_sample_rate: Number($("mp3-sample-rate")?.value || 48000),
@@ -5496,10 +5587,10 @@
         infer_method: "ode",
         sampler_mode: "heun",
         timesteps: "",
-        thinking: $("thinking").checked,
-        sample_mode: $("sample-mode").checked,
-        sample_query: $("sample-query").value,
-        use_format: $("use-format").checked,
+        thinking: false,
+        sample_mode: false,
+        sample_query: "",
+        use_format: false,
         lm_temperature: Number($("lm-temp").value),
         lm_cfg_scale: Number($("lm-cfg").value),
         lm_top_k: Number($("lm-top-k").value),
@@ -5507,10 +5598,10 @@
         lm_repetition_penalty: Number($("lm-repetition").value),
         lm_negative_prompt: $("lm-negative").value,
         lm_backend: $("lm-backend").value,
-        use_cot_metas: $("use-cot-metas").checked,
-        use_cot_caption: $("use-cot-caption").checked,
-        use_cot_lyrics: $("use-cot-lyrics").checked,
-        use_cot_language: $("use-cot-language").checked,
+        use_cot_metas: false,
+        use_cot_caption: false,
+        use_cot_lyrics: false,
+        use_cot_language: false,
         allow_lm_batch: $("allow-lm-batch").checked,
         lm_batch_chunk_size: Number($("lm-batch-chunk").value),
         use_constrained_decoding: $("constrained-decoding").checked,
@@ -5784,7 +5875,7 @@
       const engineText = String(engine || "").toLowerCase();
       const engineStatus = result.custom_agents_used || job.custom_agents_used || engineText.includes("acejam")
         ? "AceJAM Agents used"
-        : (result.toolbelt_fallback || job.toolbelt_fallback ? "toolbelt fallback" : (engineText.includes("toolbelt") ? "toolbelt used" : "pending"));
+        : "pending";
       const crewaiLogFile = job.crewai_output_log_file || result.crewai_output_log_file || "";
       const agentDebugDir = job.agent_debug_dir || result.agent_debug_dir || job.album_debug_dir || result.album_debug_dir || "";
       const promptKitVersion = job.prompt_kit_version || result.prompt_kit_version || state.config?.prompt_kit_version || state.config?.songwriting_toolkit?.prompt_kit_version || "";
@@ -6327,6 +6418,42 @@
       $("lora-log").textContent = JSON.stringify(data, null, 2);
     }
 
+    function epochAuditionPayload() {
+      const caption = $("epoch-audition-caption")?.value.trim() || "";
+      const lyrics = $("epoch-audition-lyrics")?.value.trim() || "";
+      const enabled = Boolean($("epoch-audition-enabled")?.checked || caption || lyrics);
+      return {
+        epoch_audition_enabled: enabled,
+        epoch_audition_caption: caption,
+        epoch_audition_lyrics: lyrics,
+        epoch_audition_duration: 20,
+        epoch_audition_seed: Number($("epoch-audition-seed")?.value || $("train-seed")?.value || 42),
+        epoch_audition_scale: Number($("epoch-audition-scale")?.value || $("generation-lora-scale")?.value || 1)
+      };
+    }
+
+    function renderLoraAuditions(job = null) {
+      const target = $("lora-auditions");
+      if (!target) return;
+      const auditions = job?.result?.epoch_auditions || [];
+      if (!auditions.length) {
+        target.innerHTML = "";
+        return;
+      }
+      target.innerHTML = auditions.map((item) => {
+        const audio = item.audio_url ? `<audio controls src="${esc(item.audio_url)}"></audio>` : "";
+        const error = item.error ? `<small>${esc(item.error)}</small>` : "";
+        return `
+          <div class="epoch-audition-item">
+            <strong>Epoch ${esc(item.epoch || "?")} · ${esc(item.status || "pending")}</strong>
+            ${audio}
+            ${item.result_id ? `<small>Result ${esc(item.result_id)}</small>` : ""}
+            ${error}
+          </div>
+        `;
+      }).join("");
+    }
+
     async function oneClickTrainLora() {
       const trigger = $("dataset-tag").value.trim();
       const language = $("dataset-language").value || "en";
@@ -6377,13 +6504,16 @@
         training_shift: 3,
         training_seed: Number($("train-seed").value || 42),
         auto_load: true,
-        lora_scale: Number($("generation-lora-scale")?.value || 1)
+        lora_scale: Number($("generation-lora-scale")?.value || 1),
+        save_every_n_epochs: 1,
+        ...epochAuditionPayload()
       };
       if ($("train-epochs").value) payload.train_epochs = Number($("train-epochs").value);
       const data = await api("/api/lora/one-click-train", payload);
       state.activeLoraJob = data.job.id;
       saveActiveJobs();
       $("lora-log").textContent = JSON.stringify(data, null, 2);
+      renderLoraAuditions(data.job);
       scheduleLoraPoll();
     }
 
@@ -6451,7 +6581,7 @@
         train_batch_size: Number($("train-batch").value),
         gradient_accumulation: Number($("grad-accum").value),
         learning_rate: $("learning-rate").value,
-        save_every_n_epochs: Number($("save-every").value),
+        save_every_n_epochs: 1,
         rank: Number($("lora-rank").value),
         alpha: Number($("lora-alpha").value),
         dropout: $("lora-dropout").value,
@@ -6460,7 +6590,8 @@
         lokr_weight_decompose: $("lokr-weight").checked,
         training_seed: Number($("train-seed").value),
         gradient_checkpointing: $("grad-checkpoint").checked,
-        offload_encoder: $("offload-encoder").checked
+        offload_encoder: $("offload-encoder").checked,
+        ...epochAuditionPayload()
       };
     }
 
@@ -6470,6 +6601,7 @@
         state.activeLoraJob = data.job.id;
         saveActiveJobs();
         $("lora-log").textContent = JSON.stringify(data, null, 2);
+        renderLoraAuditions(data.job);
         scheduleLoraPoll();
       } catch (err) {
         $("lora-log").textContent = err.message;
@@ -6505,6 +6637,7 @@
       const job = data.job;
       updateJobBadgeState(state.activeLoraJob, job.state, job.progress || 0);
       $("lora-log").textContent = `${job.kind} ${job.state}\\n\\n${log.log || ""}`;
+      renderLoraAuditions(job);
       if (job.kind === "preprocess" && job.result?.tensor_output) {
         $("tensor-dir").value = job.result.tensor_output;
       }
@@ -6733,7 +6866,7 @@
       });
 
       /* ── Form state persistence ── */
-      const persistIds = ["ai-fill-prompt", "simple-description", "caption", "lyrics", "cover-caption", "repaint-caption", "album-concept", "album-custom-tags", "album-negative-tags", "album-inspiration"];
+      const persistIds = ["ai-fill-prompt", "simple-description", "caption", "lyrics", "cover-caption", "repaint-caption", "album-concept", "album-agent-genre-prompt", "album-agent-mood", "album-agent-vocal-type", "album-agent-audience", "album-custom-tags", "album-negative-tags", "album-inspiration"];
       persistIds.forEach((id) => {
         const el = $(id);
         if (!el) return;

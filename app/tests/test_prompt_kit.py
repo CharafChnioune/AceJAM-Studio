@@ -46,6 +46,12 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("troubleshooting_matrix", payload)
         self.assertGreaterEqual(len(VALIDATION_CHECKLIST), 8)
 
+    def test_prompt_kit_does_not_expose_adlib_terms(self):
+        payload_text = str(prompt_kit_payload()).lower()
+        self.assertNotIn("ad-lib", payload_text)
+        self.assertNotIn("ad libs", payload_text)
+        self.assertNotIn("ad-libs", payload_text)
+
     def test_genre_routing_and_section_maps(self):
         rap_modules = infer_genre_modules("raw boom bap rap with internal rhyme")
         self.assertEqual(rap_modules[0]["slug"], "boom_bap")
