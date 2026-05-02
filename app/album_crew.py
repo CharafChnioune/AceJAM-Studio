@@ -1,10 +1,10 @@
 """
-Album generation using AceJAM's direct local-agent planner plus deterministic tools.
+Album generation using AceJAM's local-agent planner plus deterministic tools.
 
-The album runtime no longer depends on CrewAI. It parses the user's album
-contract, calls the selected local planner directly, runs deterministic
-ACE-Step gates, and only returns tracks that are ready for audio rendering.
-Legacy CrewAI constructors remain in this module for import compatibility.
+AceJAM Direct is the default album runtime. CrewAI Micro Tasks is available as
+an experimental wrapper around the same tiny agent calls, delimiter parser, and
+deterministic gates. Legacy large CrewAI constructors remain for import
+compatibility only.
 """
 
 from __future__ import annotations
@@ -34,7 +34,16 @@ from ace_step_track_prompt_template import (
     compact_full_tag_library,
     render_track_prompt_template,
 )
-from album_quality_gate import build_genre_intent_contract, evaluate_album_payload_quality, evaluate_genre_adherence
+from album_quality_gate import (
+    build_genre_intent_contract,
+    build_lyrical_craft_contract,
+    build_producer_grade_sonic_contract,
+    evaluate_album_payload_quality,
+    evaluate_genre_adherence,
+    lyric_craft_gate,
+    lyric_density_gate,
+    producer_grade_readiness,
+)
 from local_llm import (
     chat_completion as local_llm_chat_completion,
     embed as local_llm_embed,
@@ -43,6 +52,8 @@ from local_llm import (
     lmstudio_model_catalog,
     normalize_provider,
     ollama_host,
+    planner_llm_options_for_provider,
+    planner_llm_settings_from_payload,
     provider_label,
     test_model as local_llm_test_model,
 )
@@ -136,7 +147,14 @@ CREWAI_LOG_DIR.mkdir(parents=True, exist_ok=True)
 ALBUM_FINAL_DOCS_BEST = docs_best_model_settings(ALBUM_FINAL_MODEL)
 
 ACEJAM_AGENT_ENGINE = "acejam_agents"
+CREWAI_MICRO_AGENT_ENGINE = "crewai_micro"
+ACTIVE_ALBUM_AGENT_ENGINES = {ACEJAM_AGENT_ENGINE, CREWAI_MICRO_AGENT_ENGINE}
+ALBUM_AGENT_ENGINE_LABELS = {
+    ACEJAM_AGENT_ENGINE: "AceJAM Direct",
+    CREWAI_MICRO_AGENT_ENGINE: "CrewAI Micro Tasks",
+}
 ACEJAM_AGENT_JSON_RETRIES = int(os.environ.get("ACEJAM_AGENT_JSON_RETRIES", "2"))
+ACEJAM_AGENT_BLOCK_RETRIES = int(os.environ.get("ACEJAM_AGENT_BLOCK_RETRIES", str(ACEJAM_AGENT_JSON_RETRIES)))
 ACEJAM_AGENT_EMPTY_RETRIES = int(os.environ.get("ACEJAM_AGENT_EMPTY_RETRIES", "1"))
 ACEJAM_AGENT_GATE_REPAIR_RETRIES = int(os.environ.get("ACEJAM_AGENT_GATE_REPAIR_RETRIES", "8"))
 ACEJAM_AGENT_TEMPERATURE = float(os.environ.get("ACEJAM_AGENT_TEMPERATURE", "0.25"))
@@ -161,14 +179,40 @@ ACEJAM_PROMPT_KIT_MD_PATH = Path(
 
 ACE_STEP_PAYLOAD_CONTRACT_VERSION = "ace-step-track-payload-contract-2026-04-29"
 
+
+def normalize_album_agent_engine(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[\s-]+", "_", text)
+    aliases = {
+        "": ACEJAM_AGENT_ENGINE,
+        "acejam": ACEJAM_AGENT_ENGINE,
+        "acejam_agent": ACEJAM_AGENT_ENGINE,
+        "acejam_agents": ACEJAM_AGENT_ENGINE,
+        "acejam_direct": ACEJAM_AGENT_ENGINE,
+        "direct": ACEJAM_AGENT_ENGINE,
+        "editable_plan": ACEJAM_AGENT_ENGINE,
+        "crewai": CREWAI_MICRO_AGENT_ENGINE,
+        "crew_ai": CREWAI_MICRO_AGENT_ENGINE,
+        "crewai_micro": CREWAI_MICRO_AGENT_ENGINE,
+        "micro_crewai": CREWAI_MICRO_AGENT_ENGINE,
+        "crewai_micro_tasks": CREWAI_MICRO_AGENT_ENGINE,
+        "legacy_crewai": CREWAI_MICRO_AGENT_ENGINE,
+    }
+    return aliases.get(text, ACEJAM_AGENT_ENGINE)
+
+
+def album_agent_engine_label(engine: Any) -> str:
+    return ALBUM_AGENT_ENGINE_LABELS.get(normalize_album_agent_engine(engine), ALBUM_AGENT_ENGINE_LABELS[ACEJAM_AGENT_ENGINE])
+
 ACE_STEP_CAPTION_DIMENSIONS = [
-    "genre_style",
-    "rhythm_groove",
-    "instrumentation",
-    "vocal_style",
-    "mood_atmosphere",
-    "arrangement_energy",
-    "mix_production",
+    "primary_genre",
+    "drum_groove",
+    "low_end_bass",
+    "melodic_identity",
+    "vocal_delivery",
+    "arrangement_movement",
+    "texture_space",
+    "mix_master",
 ]
 
 AGENT_EXACT_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -215,6 +259,10 @@ AGENT_EXACT_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
         "keys": ["hook_title", "hook_lines", "hook_promise"],
         "example": {"hook_title": "", "hook_lines": [], "hook_promise": ""},
     },
+    "lyric_craft_repair_payload": {
+        "keys": ["sections", "lyrics_lines", "craft_fixes"],
+        "example": {"sections": [], "lyrics_lines": [], "craft_fixes": []},
+    },
     "caption_agent_payload": {"keys": ["caption"], "example": {"caption": ""}},
     "performance_agent_payload": {
         "keys": ["performance_brief", "negative_control", "genre_profile"],
@@ -253,6 +301,85 @@ AGENT_EXACT_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
             "performance_brief": "",
             "quality_checks": {},
         },
+    },
+}
+
+AGENT_BLOCK_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
+    "album_intake_payload": {
+        "fields": ["album_title", "one_sentence_concept", "style_guardrails", "track_roles"],
+        "list_fields": {"style_guardrails", "track_roles"},
+        "required_nonempty": {"album_title", "one_sentence_concept"},
+    },
+    "track_concept_payload": {
+        "fields": ["title", "description", "style", "vibe", "narrative", "required_phrases"],
+        "list_fields": {"required_phrases"},
+        "required_nonempty": {"title", "description", "style"},
+    },
+    "tag_agent_payload": {
+        "fields": ["tag_list", "caption_dimensions_covered"],
+        "list_fields": {"tag_list", "caption_dimensions_covered"},
+        "required_nonempty": {"tag_list"},
+        "derived_fields": {"tags": "tag_list_csv"},
+    },
+    "bpm_agent_payload": {
+        "fields": ["bpm"],
+        "number_fields": {"bpm"},
+        "required_nonempty": {"bpm"},
+    },
+    "key_agent_payload": {
+        "fields": ["key_scale"],
+        "required_nonempty": {"key_scale"},
+    },
+    "time_signature_agent_payload": {
+        "fields": ["time_signature"],
+        "required_nonempty": {"time_signature"},
+    },
+    "duration_agent_payload": {
+        "fields": ["duration"],
+        "number_fields": {"duration"},
+        "required_nonempty": {"duration"},
+    },
+    "section_map_payload": {
+        "fields": ["section_map", "rationale"],
+        "list_fields": {"section_map"},
+        "required_nonempty": {"section_map"},
+    },
+    "hook_payload": {
+        "fields": ["hook_title", "hook_lines", "hook_promise"],
+        "list_fields": {"hook_lines"},
+        "required_nonempty": {"hook_lines"},
+    },
+    "lyric_craft_repair_payload": {
+        "fields": ["sections", "lyrics_lines", "craft_fixes"],
+        "list_fields": {"sections", "lyrics_lines", "craft_fixes"},
+        "required_nonempty": {"sections", "lyrics_lines"},
+    },
+    "caption_agent_payload": {
+        "fields": ["caption"],
+        "required_nonempty": {"caption"},
+    },
+    "performance_agent_payload": {
+        "fields": ["performance_brief", "negative_control", "genre_profile"],
+        "required_nonempty": {"performance_brief"},
+    },
+    "final_payload": {
+        "fields": [
+            "track_number",
+            "title",
+            "description",
+            "caption",
+            "tag_list",
+            "lyrics_lines",
+            "bpm",
+            "key_scale",
+            "time_signature",
+            "duration",
+            "language",
+            "performance_brief",
+        ],
+        "list_fields": {"tag_list", "lyrics_lines"},
+        "number_fields": {"track_number", "bpm", "duration"},
+        "derived_fields": {"tags": "tag_list_csv", "quality_checks": "deterministic_block_payload"},
     },
 }
 
@@ -617,15 +744,7 @@ def _ace_step_track_payload_contract(
         },
         "caption_contract": {
             "max_chars": 512,
-            "required_dimensions": [
-                "genre_style",
-                "rhythm_groove",
-                "instrumentation",
-                "vocal_style",
-                "mood_atmosphere",
-                "arrangement_energy",
-                "mix_production",
-            ],
+            "required_dimensions": ACE_STEP_CAPTION_DIMENSIONS,
             "full_tag_library_tool": "Call TagLibraryTool before final JSON; it returns the complete caption tag taxonomy and lyric meta tag library.",
             "forbidden": [
                 "lyrics",
@@ -818,6 +937,11 @@ def _track_json_guardrail_factory(
         repaired["hook_count"] = sum(
             1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
         )
+        repaired["lyric_duration_fit"] = report.get("lyric_duration_fit") or {}
+        repaired["lyric_density_gate"] = report.get("lyric_density_gate") or {}
+        repaired["producer_grade_sonic_contract"] = report.get("producer_grade_sonic_contract") or {}
+        repaired["sonic_dna_coverage"] = report.get("sonic_dna_coverage") or {}
+        repaired["producer_grade_readiness"] = report.get("producer_grade_readiness") or {}
         covered = [
             item.get("dimension")
             for item in ((report.get("tag_coverage") or {}).get("dimensions") or [])
@@ -1423,9 +1547,15 @@ class AlbumContextStore:
             return
 
 
-def preflight_album_agent_llm(planner_provider: str, planner_model: str) -> dict[str, Any]:
+def preflight_album_agent_llm(
+    planner_provider: str,
+    planner_model: str,
+    planner_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     provider_name = normalize_provider(planner_provider)
     model = str(planner_model or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL).strip()
+    settings = planner_llm_settings_from_payload(planner_settings or {})
+    requested_context = int(settings.get("planner_context_length") or CREWAI_LLM_CONTEXT_WINDOW)
     errors: list[str] = []
     warnings: list[str] = []
     chat_ok = False
@@ -1447,17 +1577,17 @@ def preflight_album_agent_llm(planner_provider: str, planner_model: str) -> dict
                 detail = _lmstudio_detail(catalog, model)
                 loaded = bool(detail.get("loaded") or model in set(catalog.get("loaded_models") or []))
                 loaded_context = int(detail.get("loaded_context_length") or 0)
-                if (not loaded) or (CREWAI_LMSTUDIO_PIN_CONTEXT and loaded_context != CREWAI_LLM_CONTEXT_WINDOW):
+                if (not loaded) or (CREWAI_LMSTUDIO_PIN_CONTEXT and loaded_context != requested_context):
                     lmstudio_load_model(
                         model,
                         kind="chat",
-                        context_length=CREWAI_LLM_CONTEXT_WINDOW if CREWAI_LMSTUDIO_PIN_CONTEXT else None,
+                        context_length=requested_context if CREWAI_LMSTUDIO_PIN_CONTEXT else None,
                     )
                     warnings.append(
                         f"Loaded LM Studio chat model {model} for AceJAM Agents"
-                        + (f" with context_length={CREWAI_LLM_CONTEXT_WINDOW}." if CREWAI_LMSTUDIO_PIN_CONTEXT else ".")
+                        + (f" with context_length={requested_context}." if CREWAI_LMSTUDIO_PIN_CONTEXT else ".")
                     )
-        test = local_llm_test_model(provider_name, model, "chat")
+        test = local_llm_test_model(provider_name, model, "chat", settings)
         chat_ok = bool(test.get("success"))
         if not chat_ok:
             errors.append(str(test.get("error") or "chat preflight returned no success flag"))
@@ -1468,6 +1598,7 @@ def preflight_album_agent_llm(planner_provider: str, planner_model: str) -> dict
         "ok": not errors and chat_ok,
         "planner_provider": provider_name,
         "planner_model": model,
+        "planner_llm_settings": settings,
         "chat_ok": chat_ok,
         "errors": errors,
         "warnings": warnings,
@@ -3077,7 +3208,7 @@ def create_album_crew(
             "- Language script is correct for target language\n"
             "- Duration matches lyrics word count (calculated above)\n"
             "- Caption and lyrics do not conflict\n"
-            "- tag_coverage confirms genre, rhythm/groove, instrumentation, vocal style, mood, arrangement energy, and mix/production\n"
+            "- tag_coverage and sonic_dna_coverage confirm genre, drums, low-end, melodic identity, vocal delivery, arrangement movement, texture, and mix/master\n"
             "- payload_gate_status is pass or auto_repair, never pass when lyrics are too short or caption leaks prompt text\n"
             f"{schema_rules} "
             f"For planning, song_model may be {ALBUM_FINAL_MODEL}; final audio generation will render all models: "
@@ -3164,7 +3295,7 @@ def _agent_completion_cap(agent_name: str, provider_name: str) -> int:
     return max(512, int(os.environ.get(env_key, defaults.get(str(agent_name), min(4500, int(fallback))))))
 
 
-def _agent_llm_options(provider: str, agent_name: str = "") -> dict[str, Any]:
+def _agent_llm_options(provider: str, agent_name: str = "", planner_settings: dict[str, Any] | None = None) -> dict[str, Any]:
     provider_name = normalize_provider(provider)
     completion_cap = _agent_completion_cap(agent_name, provider_name)
     timeouts = {
@@ -3192,16 +3323,19 @@ def _agent_llm_options(provider: str, agent_name: str = "") -> dict[str, Any]:
         "ACEJAM_AGENT_TIMEOUT_" + re.sub(r"[^A-Z0-9]+", "_", str(agent_name or "agent").upper()).strip("_"),
         default_timeout,
     ))
-    options: dict[str, Any] = {
-        "temperature": ACEJAM_AGENT_TEMPERATURE,
-        "top_p": ACEJAM_AGENT_TOP_P,
-        "timeout": timeout,
-    }
-    if provider_name == "ollama":
-        options["num_ctx"] = int(os.environ.get("ACEJAM_AGENT_OLLAMA_NUM_CTX", "8192"))
-        options["num_predict"] = completion_cap
-    else:
-        options["max_tokens"] = completion_cap
+    source = dict(planner_settings or {})
+    if "planner_temperature" not in source and "local_llm_temperature" not in source:
+        source["planner_temperature"] = os.environ.get("ACEJAM_PLANNER_TEMPERATURE", ACEJAM_AGENT_TEMPERATURE)
+    if "planner_top_p" not in source and "local_llm_top_p" not in source:
+        source["planner_top_p"] = os.environ.get("ACEJAM_PLANNER_TOP_P", ACEJAM_AGENT_TOP_P)
+    if "planner_context_length" not in source and "local_llm_context_length" not in source and "planner_num_ctx" not in source:
+        source["planner_context_length"] = os.environ.get("ACEJAM_PLANNER_CONTEXT_LENGTH", os.environ.get("ACEJAM_AGENT_OLLAMA_NUM_CTX", "8192"))
+    options = planner_llm_options_for_provider(
+        provider_name,
+        source,
+        default_max_tokens=completion_cap,
+        default_timeout=timeout,
+    )
     return options
 
 
@@ -3215,29 +3349,210 @@ def _agent_schema_contract(schema_name: str) -> dict[str, Any] | None:
     return AGENT_EXACT_RESPONSE_SCHEMAS.get(key)
 
 
-def _agent_json_instruction(schema_name: str) -> str:
-    contract = _agent_schema_contract(schema_name)
-    exact = ""
-    if contract:
-        exact = (
-            "\nEXACT_RESPONSE_CONTRACT:\n"
-            "- Your entire response must be one JSON object and nothing else.\n"
-            "- Use exactly these top-level keys, no more and no fewer, in this order: "
-            + ", ".join(contract["keys"])
-            + "\n"
-            "- If you add any extra key, prose, markdown, analysis, comments, code fence, or text outside the JSON object, the call fails.\n"
-            "- This is machine-parsed. Any deviation means the album renderer rejects your answer and cannot continue.\n"
-            "ANSWER EXACTLY LIKE THIS JSON SHAPE:\n"
-            + json.dumps(contract["example"], ensure_ascii=False, separators=(",", ":"))
+def _agent_block_contract(schema_name: str) -> dict[str, Any] | None:
+    key = str(schema_name or "").strip()
+    if key.startswith("lyrics_part_") and key.endswith("_payload"):
+        return {
+            "fields": ["part_index", "sections", "lyrics_lines"],
+            "list_fields": {"sections", "lyrics_lines"},
+            "number_fields": {"part_index"},
+            "required_nonempty": {"part_index", "sections", "lyrics_lines"},
+        }
+    if key.startswith("track_micro_") and key.endswith("_payload"):
+        field = key[len("track_micro_"):-len("_payload")]
+        if field == "tag_list":
+            return {
+                "fields": ["tag_list", "caption_dimensions_covered"],
+                "list_fields": {"tag_list", "caption_dimensions_covered"},
+                "required_nonempty": {"tag_list"},
+                "derived_fields": {"tags": "tag_list_csv"},
+            }
+        if field == "performance_brief":
+            return {
+                "fields": ["performance_brief", "negative_control", "genre_profile"],
+                "required_nonempty": {"performance_brief"},
+            }
+        if field == "language":
+            return {
+                "fields": ["language", "vocal_language"],
+                "required_nonempty": {"language", "vocal_language"},
+            }
+        if field in {"bpm", "duration"}:
+            return {
+                "fields": [field],
+                "number_fields": {field},
+                "required_nonempty": {field},
+            }
+        return {
+            "fields": [field],
+            "required_nonempty": {field},
+        }
+    return AGENT_BLOCK_RESPONSE_SCHEMAS.get(key)
+
+
+def _agent_block_template(schema_name: str) -> str:
+    contract = _agent_block_contract(schema_name) or {}
+    fields = list(contract.get("fields") or [])
+    examples = {
+        "album_title": "Album title",
+        "one_sentence_concept": "One compact sentence",
+        "style_guardrails": "Rule one\nRule two",
+        "track_roles": "Track 1 role\nTrack 2 role",
+        "title": "Track title",
+        "description": "Short description",
+        "style": "Genre and production style",
+        "vibe": "Mood and energy",
+        "narrative": "Narrative purpose",
+        "required_phrases": "Phrase one\nPhrase two",
+        "tag_list": "West Coast hip-hop\nboom-bap drums\n808 bass\npiano sample motif\nmale rap vocal\ndynamic hook response\ngritty street texture\npunchy polished rap mix",
+        "caption_dimensions_covered": "\n".join(ACE_STEP_CAPTION_DIMENSIONS),
+        "bpm": str(DEFAULT_BPM),
+        "key_scale": DEFAULT_KEY_SCALE,
+        "time_signature": "4",
+        "duration": "240",
+        "section_map": "[Intro]\n[Verse 1]\n[Chorus]\n[Verse 2]\n[Bridge]\n[Final Chorus]\n[Outro]",
+        "rationale": "Compact structure note",
+        "hook_title": "Hook title",
+        "hook_lines": "Hook line one\nHook line two",
+        "hook_promise": "What the hook delivers",
+        "part_index": "1",
+        "sections": "[Intro]\n[Verse 1]\n[Chorus]",
+        "lyrics_lines": "[Intro]\nFirst lyric line\n[Verse 1]\nSecond lyric line\n[Chorus]\nHook lyric line",
+        "craft_fixes": "Replaced generic phrase with concrete image\nTightened breath length",
+        "caption": "West Coast hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook response, gritty street texture, punchy polished rap mix",
+        "performance_brief": "Clear lead vocal, tight cadence, confident pocket, drums and bass forward",
+        "negative_control": "no muddy vocals, no gibberish, no prompt text",
+        "genre_profile": "Rap-first performance with hip-hop drums, low-end focus, melodic motif, and punchy mix",
+        "track_number": "1",
+        "language": "en",
+    }
+    lines: list[str] = []
+    for field in fields:
+        lines.append(f"******{field}******")
+        lines.append(examples.get(field, "content"))
+        lines.append(f"******/{field}******")
+    return "\n".join(lines)
+
+
+def _agent_block_instruction(schema_name: str) -> str:
+    contract = _agent_block_contract(schema_name)
+    if not contract:
+        return (
+            f"Return only delimiter blocks for {schema_name}. No JSON, no markdown, no commentary, no thoughts. "
+            "Every block must open with ******field_name****** and close with ******/field_name****** on its own line."
         )
+    fields = list(contract.get("fields") or [])
+    list_fields = sorted(str(item) for item in (contract.get("list_fields") or set()))
+    scalar_fields = [field for field in fields if field not in set(list_fields)]
     return (
-        f"Return strict JSON only for {schema_name}. No markdown fences, no commentary, no thoughts. "
-        "If you need to repair, output the corrected JSON object directly. "
-        "Do not rename locked user titles, producers, BPM, style, vibe, or narrative. "
-        "For long lyrics, prefer a lyrics_lines array with one section tag or lyric line per item; "
-        "do not place raw line breaks inside JSON string values."
-        f"{exact}"
+        f"Return only delimiter blocks for {schema_name}. No JSON, no markdown, no commentary, no thoughts.\n"
+        "DELIMITER_RESPONSE_CONTRACT:\n"
+        "- Your entire response must contain only the required blocks, in this exact order: "
+        + ", ".join(fields)
+        + "\n"
+        "- Open each block on its own line as ******field_name****** and close it as ******/field_name******.\n"
+        "- Field names are lowercase snake_case. Delimiters count only when they are the whole line.\n"
+        "- Array fields use one item per line: "
+        + (", ".join(list_fields) if list_fields else "none")
+        + "\n"
+        "- Scalar fields keep their text inside one block: "
+        + (", ".join(scalar_fields) if scalar_fields else "none")
+        + "\n"
+        "- Do not output JSON, code fences, bullets outside blocks, analysis, explanations, or extra blocks.\n"
+        "ANSWER EXACTLY LIKE THIS BLOCK SHAPE:\n"
+        + _agent_block_template(schema_name)
     )
+
+
+def _agent_json_instruction(schema_name: str) -> str:
+    return _agent_block_instruction(schema_name)
+
+
+_AGENT_BLOCK_DELIMITER_RE = re.compile(r"^\*{6}(/?)([a-z][a-z0-9_]*)\*{6}$")
+
+
+def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
+    contract = _agent_block_contract(schema_name)
+    if not contract:
+        raise ValueError(f"block_parse_failed:no_block_contract:{schema_name}")
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("block_parse_failed:empty_response")
+    if text.startswith("{") or text.startswith("["):
+        raise ValueError("block_parse_failed:json_response_not_allowed")
+    expected = list(contract.get("fields") or [])
+    expected_set = set(expected)
+    blocks: dict[str, list[str]] = {}
+    current_field = ""
+    current_lines: list[str] = []
+    for line_number, raw_line in enumerate(str(raw or "").splitlines(), start=1):
+        stripped = raw_line.strip()
+        delimiter = _AGENT_BLOCK_DELIMITER_RE.fullmatch(stripped)
+        if delimiter:
+            is_close = bool(delimiter.group(1))
+            field = delimiter.group(2)
+            if field not in expected_set:
+                raise ValueError(f"extra_block:{field}")
+            if is_close:
+                if not current_field:
+                    raise ValueError(f"block_parse_failed:orphan_close:{field}:line_{line_number}")
+                if field != current_field:
+                    raise ValueError(f"block_parse_failed:mismatched_close:{current_field}!={field}:line_{line_number}")
+                if field in blocks:
+                    raise ValueError(f"block_parse_failed:duplicate_block:{field}")
+                blocks[field] = current_lines
+                current_field = ""
+                current_lines = []
+            else:
+                if current_field:
+                    raise ValueError(f"block_parse_failed:nested_block:{field}:inside:{current_field}:line_{line_number}")
+                if field in blocks:
+                    raise ValueError(f"block_parse_failed:duplicate_block:{field}")
+                current_field = field
+                current_lines = []
+            continue
+        if current_field:
+            current_lines.append(raw_line)
+        elif stripped:
+            raise ValueError(f"block_parse_failed:text_outside_blocks:line_{line_number}")
+    if current_field:
+        raise ValueError(f"block_parse_failed:unclosed_block:{current_field}")
+    missing = [field for field in expected if field not in blocks]
+    if missing:
+        raise ValueError("missing_block:" + ",".join(missing))
+    list_fields = set(contract.get("list_fields") or set())
+    number_fields = set(contract.get("number_fields") or set())
+    required_nonempty = set(contract.get("required_nonempty") or set())
+    payload: dict[str, Any] = {}
+    for field in expected:
+        raw_lines = blocks.get(field) or []
+        while raw_lines and not str(raw_lines[0]).strip():
+            raw_lines = raw_lines[1:]
+        while raw_lines and not str(raw_lines[-1]).strip():
+            raw_lines = raw_lines[:-1]
+        if field in list_fields:
+            value = [str(line).strip() for line in raw_lines if str(line).strip()]
+            if field in required_nonempty and not value:
+                raise ValueError(f"empty_required_block:{field}")
+            payload[field] = value
+            continue
+        value_text = "\n".join(raw_lines).strip()
+        if field in required_nonempty and not value_text:
+            raise ValueError(f"empty_required_block:{field}")
+        if field in number_fields and value_text:
+            number_match = re.search(r"-?\d+(?:\.\d+)?", value_text)
+            if not number_match:
+                raise ValueError(f"invalid_scalar:{field}")
+            number_value = float(number_match.group(0))
+            payload[field] = int(number_value) if number_value.is_integer() else number_value
+        else:
+            payload[field] = value_text
+    for field, strategy in (contract.get("derived_fields") or {}).items():
+        if strategy == "tag_list_csv":
+            payload[field] = ", ".join(str(item).strip() for item in (payload.get("tag_list") or []) if str(item).strip())
+        elif strategy == "deterministic_block_payload":
+            payload[field] = {"deterministic_block_payload": True}
+    return payload
 
 
 def _validate_agent_response_shape(schema_name: str, payload: dict[str, Any]) -> None:
@@ -3268,7 +3583,7 @@ def _agent_system_prompt(agent_name: str) -> str:
     name = str(agent_name or "AceJAM Agent")
     common = (
         f"You are {name}, a single-purpose ACE-Step album planning agent.\n"
-        "Return only the requested JSON object. No prose, markdown, thoughts, or extra keys.\n"
+        "Return only the requested delimiter blocks. No JSON, prose, markdown, thoughts, or extra blocks.\n"
         "Keep locked fields unchanged. Producer credit is metadata, never a lyric.\n"
         "ACE-Step fields are separate: caption=sound, lyrics=temporal script, BPM/key/time/duration=metadata.\n"
     )
@@ -3305,6 +3620,22 @@ def _agent_system_prompt(agent_name: str) -> str:
             "Task: assemble one ACE-Step track JSON from existing fields. Do not rewrite creative content.\n"
         )
     return common + "Task scope: follow the provided schema for this one agent call only.\n"
+
+
+def _agent_full_system_prompt(
+    *,
+    agent_name: str,
+    schema_name: str,
+    extra_system: str = "",
+    debug_options: dict[str, Any] | None = None,
+) -> str:
+    system_prompt = _agent_full_system_prompt(
+        agent_name=agent_name,
+        schema_name=schema_name,
+        extra_system=extra_system,
+        debug_options=debug_options,
+    )
+    return system_prompt
 
 
 def _call_agent_llm(
@@ -3401,14 +3732,14 @@ def _agent_json_call(
     extra_system: str = "",
     max_retries: int | None = None,
 ) -> dict[str, Any]:
-    retries = ACEJAM_AGENT_JSON_RETRIES if max_retries is None else int(max_retries)
+    retries = ACEJAM_AGENT_BLOCK_RETRIES if max_retries is None else int(max_retries)
     attempts = max(1, retries + ACEJAM_AGENT_EMPTY_RETRIES + 1) if max_retries is None else max(1, retries + 1)
-    options = _agent_llm_options(provider, agent_name)
+    options = _agent_llm_options(provider, agent_name, debug_options)
     system_prompt = _agent_system_prompt(agent_name)
     if extra_system:
         system_prompt += "\n" + str(extra_system).strip()
     if _truthy((debug_options or {}).get("planner_thinking"), False):
-        system_prompt += "\nPlanner thinking is enabled: you may reason internally, but final visible content must be strict JSON only."
+        system_prompt += "\nPlanner thinking is enabled: you may reason internally, but final visible content must be delimiter blocks only."
     else:
         system_prompt += "\nPlanner thinking is disabled: do not emit <think>, hidden reasoning, chain-of-thought, markdown, or prose."
     system_prompt += "\n" + _agent_json_instruction(schema_name)
@@ -3416,10 +3747,6 @@ def _agent_json_call(
     last_error = ""
     for attempt in range(1, attempts + 1):
         try:
-            use_json_format = normalize_provider(provider) != "ollama" or ACEJAM_AGENT_OLLAMA_JSON_FORMAT
-            if normalize_provider(provider) == "ollama" and attempt > 1 and last_error == "empty response":
-                use_json_format = False
-                logs.append(f"AceJAM Agent retry: {agent_name} without Ollama JSON transport mode after empty response.")
             raw = _call_agent_llm(
                 agent_name=agent_name,
                 provider=provider,
@@ -3430,7 +3757,7 @@ def _agent_json_call(
                 logs=logs,
                 debug_options=debug_options,
                 attempt=attempt,
-                json_format=use_json_format,
+                json_format=False,
             )
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
@@ -3443,32 +3770,32 @@ def _agent_json_call(
                 break
             prompt = (
                 f"{user_prompt}\n\nRECOVERY: The previous {agent_name} call raised {last_error}. "
-                "Return the requested strict JSON object now."
+                "Return the requested delimiter blocks now."
             )
             continue
         if not raw.strip():
             last_error = "empty response"
             if attempt >= attempts:
                 break
-            logs.append(f"AceJAM Agent empty response: {agent_name}; retrying without tool-loop assumptions.")
+            logs.append(f"AceJAM Agent empty response: {agent_name}; retrying delimiter block output.")
             prompt = (
                 f"{user_prompt}\n\nRECOVERY: Your previous response was empty. "
-                "Return the requested strict JSON object only. Do not call tools."
+                "Return the requested delimiter blocks only. Do not call tools."
             )
             continue
         try:
-            payload = _json_object_from_text(raw)
+            payload = _parse_agent_block_payload(raw, schema_name)
             if not isinstance(payload, dict):
-                raise ValueError("JSON root was not an object")
+                raise ValueError("block_parse_failed:root_was_not_object")
             _validate_agent_response_shape(schema_name, payload)
             parsed = _coerce_agent_lyrics_payload(payload)
-            _print_agent_io(debug_options, f"{agent_name.replace(' ', '_')}_parsed_json_attempt_{attempt}", parsed)
+            _print_agent_io(debug_options, f"{agent_name.replace(' ', '_')}_parsed_blocks_attempt_{attempt}", parsed)
             _append_album_debug_jsonl(
                 debug_options,
                 "04_agent_responses.jsonl",
-                {"agent": agent_name, "attempt": attempt, "parsed_json": parsed},
+                {"agent": agent_name, "attempt": attempt, "parsed_blocks": parsed},
             )
-            logs.append(f"AceJAM Agent parsed JSON: {agent_name} attempt {attempt} ok.")
+            logs.append(f"AceJAM Agent parsed delimiter blocks: {agent_name} attempt {attempt} ok.")
             return parsed
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
@@ -3478,29 +3805,326 @@ def _agent_json_call(
                 {
                     "agent": agent_name,
                     "attempt": attempt,
-                    "parse_error": last_error,
+                    "block_parse_error": last_error,
                     "response_preview": _monitor_preview(raw, 500),
                 },
             )
             if attempt >= attempts:
                 break
-            logs.append(f"AceJAM Agent JSON repair: {agent_name}; {last_error}.")
-            contract = _agent_schema_contract(schema_name)
-            exact_shape = ""
-            if contract:
-                exact_shape = (
-                    " Required exact top-level keys, no extra keys: "
-                    + ", ".join(contract["keys"])
-                    + ". Example shape: "
-                    + json.dumps(contract["example"], ensure_ascii=False, separators=(",", ":"))
-                )
+            logs.append(f"AceJAM Agent block repair: {agent_name}; {last_error}.")
             prompt = (
-                f"{user_prompt}\n\nJSON REPAIR: The previous response failed to parse as strict JSON: {last_error}. "
-                "Return exactly one valid JSON object matching the requested schema. No markdown. "
-                "If lyrics are long, use lyrics_lines as an array of strings instead of one multiline JSON string."
-                f"{exact_shape}"
+                f"{user_prompt}\n\nBLOCK REPAIR: The previous response failed delimiter-block parsing: {last_error}. "
+                "Return exactly the required delimiter blocks, in order, with no JSON, markdown, commentary, or extra text.\n"
+                "EXPECTED_BLOCK_SHAPE:\n"
+                f"{_agent_block_template(schema_name)}"
             )
-    raise AceJamAgentError(f"{agent_name} failed to produce valid JSON after {attempts} attempt(s): {last_error}")
+    raise AceJamAgentError(f"{agent_name} failed to produce valid delimiter blocks after {attempts} attempt(s): {last_error}")
+
+
+def _crewai_micro_llm_kwargs(
+    model_name: str,
+    provider: str,
+    agent_name: str,
+    planner_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    provider_name = normalize_provider(provider)
+    options = _agent_llm_options(provider_name, agent_name, planner_settings)
+    seed = options.get("seed")
+    try:
+        seed_value = int(seed) if seed not in (None, "") else None
+    except Exception:
+        seed_value = None
+    max_tokens = int(options.get("num_predict") or options.get("max_tokens") or _agent_completion_cap(agent_name, provider_name))
+    common: dict[str, Any] = {
+        "model": str(model_name or "").strip(),
+        "temperature": float(options.get("temperature") if options.get("temperature") is not None else ACEJAM_AGENT_TEMPERATURE),
+        "top_p": float(options.get("top_p") if options.get("top_p") is not None else ACEJAM_AGENT_TOP_P),
+        "max_tokens": max_tokens,
+        "timeout": float(options.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
+    }
+    if seed_value is not None:
+        common["seed"] = seed_value
+    top_k = options.get("top_k")
+    repeat_penalty = options.get("repeat_penalty")
+    if provider_name == "lmstudio":
+        params: dict[str, Any] = {}
+        if top_k is not None:
+            params["top_k"] = int(top_k)
+        if repeat_penalty is not None:
+            params["repeat_penalty"] = float(repeat_penalty)
+        payload = {
+            **common,
+            "provider": "openai",
+            "base_url": lmstudio_api_base_url(),
+            "api_key": os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
+        }
+        if params:
+            payload["additional_params"] = params
+        return payload
+    ollama_options: dict[str, Any] = {
+        "num_ctx": int(options.get("num_ctx") or CREWAI_LLM_CONTEXT_WINDOW),
+        "num_predict": max_tokens,
+    }
+    if top_k is not None:
+        ollama_options["top_k"] = int(top_k)
+    if repeat_penalty is not None:
+        ollama_options["repeat_penalty"] = float(repeat_penalty)
+    if seed_value is not None:
+        ollama_options["seed"] = seed_value
+    return {
+        **common,
+        "provider": "ollama",
+        "base_url": OLLAMA_BASE_URL,
+        "api_base": _ollama_v1_base_url(),
+        "additional_params": {
+            "extra_body": {
+                "think": False,
+                "options": ollama_options,
+            },
+        },
+    }
+
+
+def _make_crewai_micro_llm(
+    model_name: str,
+    provider: str,
+    agent_name: str,
+    planner_settings: dict[str, Any] | None = None,
+):
+    from crewai import LLM
+
+    llm = LLM(**_crewai_micro_llm_kwargs(model_name, provider, agent_name, planner_settings))
+    llm.supports_function_calling = lambda: False
+    return llm
+
+
+def _crewai_micro_block_guardrail(schema_name: str):
+    def _guardrail(output: Any) -> Tuple[bool, Any]:
+        try:
+            raw = _task_output_raw_text(output)
+            payload = _parse_agent_block_payload(_strip_thinking_blocks(raw), schema_name)
+            _validate_agent_response_shape(schema_name, payload)
+            return True, output
+        except Exception as exc:
+            return False, f"block_parse_failed:{type(exc).__name__}: {exc}"
+
+    _guardrail.__annotations__["return"] = Tuple[bool, Any]
+    _guardrail.__annotations__["output"] = Any
+    return _guardrail
+
+
+def _crewai_micro_block_call(
+    *,
+    agent_name: str,
+    provider: str,
+    model_name: str,
+    user_prompt: str,
+    logs: list[str],
+    debug_options: dict[str, Any],
+    schema_name: str,
+    extra_system: str = "",
+    max_retries: int | None = None,
+) -> dict[str, Any]:
+    from crewai import Agent, Crew, Process, Task
+
+    provider_name = normalize_provider(provider)
+    retries = ACEJAM_AGENT_BLOCK_RETRIES if max_retries is None else int(max_retries)
+    attempts = max(1, retries + ACEJAM_AGENT_EMPTY_RETRIES + 1) if max_retries is None else max(1, retries + 1)
+    planner_settings = planner_llm_settings_from_payload(debug_options or {})
+    options = _agent_llm_options(provider_name, agent_name, planner_settings)
+    system_prompt = _agent_full_system_prompt(
+        agent_name=agent_name,
+        schema_name=schema_name,
+        extra_system=extra_system,
+        debug_options=debug_options,
+    )
+    prompt = user_prompt
+    last_error = ""
+    task_name = re.sub(r"[^a-z0-9]+", "_", str(agent_name or "agent").lower()).strip("_") or "agent"
+    for attempt in range(1, attempts + 1):
+        user_content = prompt
+        planner_thinking = _truthy((debug_options or {}).get("planner_thinking"), False)
+        no_think_directive = str((debug_options or {}).get("planner_no_think_directive") or CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE or "/no_think").strip()
+        if not planner_thinking and no_think_directive and no_think_directive not in user_content:
+            user_content = f"{no_think_directive}\n\n{user_content}"
+        prompt_chars = len(system_prompt) + len(user_content)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        _print_agent_io(
+            debug_options,
+            f"{agent_name.replace(' ', '_')}_crewai_micro_prompt_attempt_{attempt}",
+            {
+                "agent": agent_name,
+                "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                "crewai_task_name": task_name,
+                "provider": provider_name,
+                "model": model_name,
+                "prompt_chars": prompt_chars,
+                "system_chars": len(system_prompt),
+                "user_chars": len(user_content),
+                "messages": messages,
+                "options": options,
+            },
+        )
+        _append_album_debug_jsonl(
+            debug_options,
+            "03_agent_prompts.jsonl",
+            {
+                "agent": agent_name,
+                "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                "crewai_task_name": task_name,
+                "provider": provider_name,
+                "model": model_name,
+                "attempt": attempt,
+                "prompt_chars": prompt_chars,
+                "system_chars": len(system_prompt),
+                "user_chars": len(user_content),
+                "messages": messages,
+                "options": options,
+            },
+        )
+        logs.append(
+            f"CrewAI Micro Agent call: {agent_name} attempt {attempt} via {provider_label(provider_name)} "
+            f"(prompt_chars={prompt_chars}, system={len(system_prompt)}, user={len(user_content)})."
+        )
+        started = time.perf_counter()
+        try:
+            llm = _make_crewai_micro_llm(model_name, provider_name, agent_name, planner_settings)
+            micro_agent = Agent(
+                role=agent_name,
+                goal=f"Return only delimiter blocks for {schema_name}.",
+                backstory="You are a tiny AceJAM planning worker. One task, one schema, no tools.",
+                llm=llm,
+                tools=[],
+                verbose=False,
+                allow_delegation=False,
+                max_iter=1,
+                max_retry_limit=1,
+                respect_context_window=False,
+                reasoning=False,
+                system_template="{{ .System }}",
+                prompt_template="{{ .Prompt }}",
+                response_template="{{ .Response }}",
+                use_system_prompt=True,
+            )
+            micro_task = Task(
+                description=user_content,
+                expected_output=f"Only delimiter blocks for {schema_name}; no JSON or commentary.",
+                agent=micro_agent,
+                guardrail=_crewai_micro_block_guardrail(schema_name),
+                guardrail_max_retries=0,
+            )
+            micro_crew = Crew(
+                agents=[micro_agent],
+                tasks=[micro_task],
+                process=Process.sequential,
+                memory=False,
+                planning=False,
+                verbose=False,
+                cache=False,
+            )
+            result = _kickoff_crewai_compact(micro_crew, logs, f"CrewAI Micro {agent_name}")
+            raw_crewai_output = _task_output_raw_text(result)
+            raw = _strip_thinking_blocks(raw_crewai_output)
+            elapsed = round(time.perf_counter() - started, 3)
+        except Exception as exc:
+            elapsed = round(time.perf_counter() - started, 3)
+            last_error = f"{type(exc).__name__}: {exc}"
+            _append_album_debug_jsonl(
+                debug_options,
+                "04_agent_responses.jsonl",
+                {
+                    "agent": agent_name,
+                    "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                    "crewai_task_name": task_name,
+                    "attempt": attempt,
+                    "elapsed": elapsed,
+                    "error": last_error,
+                },
+            )
+            if attempt >= attempts:
+                break
+            logs.append(f"CrewAI Micro Agent exception: {agent_name}; {last_error}.")
+            prompt = (
+                f"{user_prompt}\n\nRECOVERY: The previous CrewAI Micro {agent_name} call raised {last_error}. "
+                "Return the requested delimiter blocks now."
+            )
+            continue
+        _print_agent_io(debug_options, f"{agent_name.replace(' ', '_')}_crewai_micro_raw_response_attempt_{attempt}", raw)
+        _append_album_debug_jsonl(
+            debug_options,
+            "04_agent_responses.jsonl",
+            {
+                "agent": agent_name,
+                "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                "crewai_task_name": task_name,
+                "provider": provider_name,
+                "model": model_name,
+                "attempt": attempt,
+                "elapsed": elapsed,
+                "response_chars": len(raw),
+                "raw_crewai_output": str(raw_crewai_output or ""),
+                "raw_response": str(raw_crewai_output or ""),
+                "response": raw,
+            },
+        )
+        logs.append(f"CrewAI Micro Agent response: {agent_name} {len(raw)} chars in {elapsed}s (parse pending).")
+        if not raw.strip():
+            last_error = "empty response"
+            if attempt >= attempts:
+                break
+            logs.append(f"CrewAI Micro Agent empty response: {agent_name}; retrying delimiter block output.")
+            prompt = (
+                f"{user_prompt}\n\nRECOVERY: Your previous response was empty. "
+                "Return the requested delimiter blocks only. Do not call tools."
+            )
+            continue
+        try:
+            payload = _parse_agent_block_payload(raw, schema_name)
+            if not isinstance(payload, dict):
+                raise ValueError("block_parse_failed:root_was_not_object")
+            _validate_agent_response_shape(schema_name, payload)
+            parsed = _coerce_agent_lyrics_payload(payload)
+            _print_agent_io(debug_options, f"{agent_name.replace(' ', '_')}_crewai_micro_parsed_blocks_attempt_{attempt}", parsed)
+            _append_album_debug_jsonl(
+                debug_options,
+                "04_agent_responses.jsonl",
+                {
+                    "agent": agent_name,
+                    "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                    "crewai_task_name": task_name,
+                    "attempt": attempt,
+                    "parsed_blocks": parsed,
+                },
+            )
+            logs.append(f"CrewAI Micro Agent parsed delimiter blocks: {agent_name} attempt {attempt} ok.")
+            return parsed
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            _append_album_debug_jsonl(
+                debug_options,
+                "04_agent_responses.jsonl",
+                {
+                    "agent": agent_name,
+                    "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                    "crewai_task_name": task_name,
+                    "attempt": attempt,
+                    "block_parse_error": last_error,
+                    "response_preview": _monitor_preview(raw, 500),
+                },
+            )
+            if attempt >= attempts:
+                break
+            logs.append(f"CrewAI Micro Agent block repair: {agent_name}; {last_error}.")
+            prompt = (
+                f"{user_prompt}\n\nBLOCK REPAIR: The previous CrewAI Micro response failed delimiter-block parsing: {last_error}. "
+                "Return exactly the required delimiter blocks, in order, with no JSON, markdown, commentary, or extra text.\n"
+                "EXPECTED_BLOCK_SHAPE:\n"
+                f"{_agent_block_template(schema_name)}"
+            )
+    raise AceJamAgentError(f"{agent_name} failed to produce valid CrewAI Micro delimiter blocks after {attempts} attempt(s): {last_error}")
 
 
 def _public_gate_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -3541,7 +4165,7 @@ def _director_effective_min_lines(raw_min_lines: int, min_words: int) -> int:
     raw = int(raw_min_lines or 0)
     if raw <= 0:
         return 0
-    cap = max(36, int((int(min_words or 0) / 6.25) + 0.999))
+    cap = max(36, int((int(min_words or 0) / 5.7) + 0.999))
     return min(raw, cap)
 
 
@@ -3698,6 +4322,17 @@ def _director_lyric_duration_fit(track: dict[str, Any], options: dict[str, Any] 
             issues.append(f"lyrics_under_length:{stats.get('word_count', 0)}/{min_words}_words")
         if stats.get("line_count", 0) < min_lines:
             issues.append(f"lyrics_too_few_lines:{stats.get('line_count', 0)}/{min_lines}_lines")
+    density_gate = lyric_density_gate(
+        lyrics,
+        plan,
+        duration=duration,
+        genre_hint=genre_hint,
+        instrumental=instrumental,
+    )
+    for issue in density_gate.get("issues") or []:
+        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
+        detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
+        issues.append(f"{issue_id}:{detail}" if detail else issue_id)
     return {
         "status": "pass" if not issues else "fail",
         "issues": issues,
@@ -3711,6 +4346,7 @@ def _director_lyric_duration_fit(track: dict[str, Any], options: dict[str, Any] 
         "min_lines": min_lines,
         "target_lines": int(plan.get("target_lines") or 0),
         "raw_min_lines": raw_min_lines,
+        "lyric_density_gate": density_gate,
     }
 
 
@@ -3733,6 +4369,22 @@ def _director_genre_validation_issues(
         issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
         if issue_id:
             issues.append(issue_id)
+    return issues
+
+
+def _director_producer_grade_validation_issues(
+    payload: dict[str, Any],
+    base: dict[str, Any] | None = None,
+    options: dict[str, Any] | None = None,
+) -> list[str]:
+    merged = {**(base or {}), **(payload or {})}
+    report = producer_grade_readiness(merged, options=options)
+    issues: list[str] = []
+    for issue in report.get("issues") or []:
+        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
+        detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
+        if issue_id:
+            issues.append(f"{issue_id}:{detail}" if detail else issue_id)
     return issues
 
 
@@ -3860,23 +4512,16 @@ def _album_bible_agent_prompt(
 
 def _agent_tag_library_summary() -> dict[str, Any]:
     return {
-        "caption_dimensions": [
-            "genre_style",
-            "rhythm_groove",
-            "instrumentation",
-            "vocal_style",
-            "mood_atmosphere",
-            "arrangement_energy",
-            "mix_production",
-        ],
+        "caption_dimensions": ACE_STEP_CAPTION_DIMENSIONS,
         "tag_examples": {
-            "genre_style": TAG_TAXONOMY.get("genre_style", [])[:14],
-            "rhythm_groove": TAG_TAXONOMY.get("speed_rhythm", [])[:10] + ["boom-bap drums", "trap hi-hats", "handclaps"],
-            "instrumentation": TAG_TAXONOMY.get("instruments", [])[:18],
-            "vocal_style": TAG_TAXONOMY.get("vocal_character", [])[:12],
-            "mood_atmosphere": TAG_TAXONOMY.get("mood_atmosphere", [])[:14],
-            "arrangement_energy": TAG_TAXONOMY.get("structure_hints", [])[:10],
-            "mix_production": TAG_TAXONOMY.get("production_style", [])[:12],
+            "primary_genre": TAG_TAXONOMY.get("genre_style", [])[:14],
+            "drum_groove": TAG_TAXONOMY.get("speed_rhythm", [])[:10] + ["boom-bap drums", "trap hi-hats", "punchy snare"],
+            "low_end_bass": ["808 bass", "sub-bass", "deep low end", "synth bass", "bass guitar", "sliding 808s"],
+            "melodic_identity": TAG_TAXONOMY.get("instruments", [])[:18] + ["soul chop", "piano motif", "synth lead"],
+            "vocal_delivery": TAG_TAXONOMY.get("vocal_character", [])[:12],
+            "arrangement_movement": TAG_TAXONOMY.get("structure_hints", [])[:10],
+            "texture_space": TAG_TAXONOMY.get("timbre_texture", [])[:12] + TAG_TAXONOMY.get("mood_atmosphere", [])[:6],
+            "mix_master": TAG_TAXONOMY.get("production_style", [])[:12],
         },
         "selection_rule": "Final caption/tags must be compact comma-separated sonic terms covering every caption dimension.",
     }
@@ -4404,8 +5049,8 @@ def _track_settings_prompt(
         f"LOCKED_TRACK_BLUEPRINT:\n{json.dumps(_compact_lyric_blueprint_for_agent(blueprint), ensure_ascii=True, indent=2)}\n\n"
         f"LYRIC_LENGTH_PLAN_FOR_CONTEXT_ONLY:\n{json.dumps({key: lyric_plan.get(key) for key in ('duration', 'sections', 'target_words', 'min_words', 'target_lines', 'min_lines')}, ensure_ascii=True, indent=2)}\n\n"
         f"FULL_TAG_LIBRARY_COMPACT:\n{json.dumps(_agent_tag_library_summary(), ensure_ascii=True, indent=2)}\n\n"
-        "CAPTION RULE: caption is only comma-separated sound traits. It must cover: genre/style, rhythm/groove, "
-        "instrumentation, vocal style, mood/atmosphere, arrangement energy, mix/production. "
+        "CAPTION RULE: caption is only comma-separated sound traits. It must cover: primary genre, drum groove, "
+        "low-end/bass, melodic identity, vocal delivery, arrangement movement, texture/space, and mix/master. "
         "Do not include lyrics, section tags, BPM, key, duration, model, seed, JSON, or album story prose in caption.\n\n"
         "OUTPUT_SCHEMA:\n"
         '{"description":"","caption":"","tags":"","tag_list":[],"bpm":95,"key_scale":"A minor",'
@@ -4497,19 +5142,11 @@ def _micro_setting_specs(*, duration: float, language: str) -> list[dict[str, An
             "schema": {
                 "tag_list": [],
                 "tags": "",
-                "caption_dimensions_covered": [
-                    "genre_style",
-                    "rhythm_groove",
-                    "instrumentation",
-                    "vocal_style",
-                    "mood_atmosphere",
-                    "arrangement_energy",
-                    "mix_production",
-                ],
+                "caption_dimensions_covered": ACE_STEP_CAPTION_DIMENSIONS,
             },
             "instruction": (
-                "Choose only compact sonic tags. Cover every caption dimension: genre/style, rhythm/groove, "
-                "instrumentation, vocal style, mood/atmosphere, arrangement energy, and mix/production. "
+                "Choose only compact sonic tags. Cover every producer-grade dimension: primary genre, drum groove, "
+                "low-end/bass, melodic identity, vocal delivery, arrangement movement, texture/space, and mix/master. "
                 "Do not write a sentence and do not include lyrics."
             ),
             "include_tag_library": True,
@@ -4599,8 +5236,8 @@ def _track_micro_setting_prompt(
         f"LYRIC_PLAN_CONTEXT:\n{json.dumps({key: lyric_plan.get(key) for key in ('duration', 'target_words', 'min_words', 'target_lines', 'min_lines')}, ensure_ascii=True, separators=(',', ':'))}\n"
         f"{tag_library}\n"
         f"INSTRUCTION:\n{spec.get('instruction')}\n\n"
-        f"OUTPUT_SCHEMA:\n{json.dumps(schema, ensure_ascii=True, separators=(',', ':'))}\n"
-        "Return strict JSON only."
+        f"OUTPUT_BLOCKS:\n{_agent_block_template(f'track_micro_{field}_payload')}\n"
+        "Return delimiter blocks only."
     )
 
 
@@ -4681,28 +5318,12 @@ def _micro_setting_fallback_payload(
     if field == "tag_list":
         return {
             "tag_list": tags[:12],
-            "caption_dimensions_covered": [
-                "genre_style",
-                "rhythm_groove",
-                "instrumentation",
-                "vocal_style",
-                "mood_atmosphere",
-                "arrangement_energy",
-                "mix_production",
-            ],
+            "caption_dimensions_covered": ACE_STEP_CAPTION_DIMENSIONS,
         }
     if field == "caption":
         return {
             "caption": _clip_text(caption, 508),
-            "caption_dimensions_covered": [
-                "genre_style",
-                "rhythm_groove",
-                "instrumentation",
-                "vocal_style",
-                "mood_atmosphere",
-                "arrangement_energy",
-                "mix_production",
-            ],
+            "caption_dimensions_covered": ACE_STEP_CAPTION_DIMENSIONS,
         }
     if field == "description":
         return {"description": _clip_text(narrative or f"{style}. {vibe}".strip(), 360)}
@@ -5233,6 +5854,27 @@ def _director_section_groups(section_tags: list[str]) -> list[list[str]]:
     return [group for group in (tags[:3], tags[3:6], tags[6:]) if group]
 
 
+def _director_section_line_minimums(section_tags: list[str], *, duration: float, genre_hint: str = "") -> dict[str, int]:
+    rap = bool(re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", genre_hint or "", re.I))
+    dur = int(float(duration or 0))
+    long_form = dur >= 210
+    minimums: dict[str, int] = {}
+    for tag in section_tags or []:
+        label = str(tag or "")
+        lower = label.lower()
+        if rap and "verse" in lower:
+            minimums[label] = 12 if long_form else 8 if dur >= 120 else 3
+        elif rap and re.search(r"beat\s*switch|bridge", lower):
+            minimums[label] = 6 if long_form else 4 if dur >= 120 else 2
+        elif re.search(r"chorus|hook|refrain", lower):
+            minimums[label] = 3 if long_form else 2
+        elif re.search(r"intro|outro", lower):
+            minimums[label] = 2
+        elif rap:
+            minimums[label] = 3
+    return minimums
+
+
 def _compact_json(value: Any, limit: int | None = None) -> str:
     text = json.dumps(_debug_jsonable(value), ensure_ascii=False, separators=(",", ":"))
     return _clip_text(text, int(limit)) if limit else text
@@ -5265,6 +5907,66 @@ def _clip_context_value(key: str, value: Any) -> Any:
 def _director_payload_lines(payload: dict[str, Any]) -> list[str]:
     lines = _agent_payload_lines(payload)
     return [line for line in lines if str(line or "").strip()]
+
+
+def _director_section_blocks_from_lines(lines: list[str]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in [str(item or "").strip() for item in lines if str(item or "").strip()]:
+        if re.fullmatch(r"\[[^\]]+\]", line):
+            current = {"tag": line, "key": _section_key_for_director(line), "lines": []}
+            blocks.append(current)
+            continue
+        if current is None:
+            current = {"tag": "[untagged]", "key": "untagged", "lines": []}
+            blocks.append(current)
+        current["lines"].append(line)
+    return blocks
+
+
+def _director_replace_section_blocks(
+    original_lines: list[str],
+    replacement_lines: list[str],
+    target_sections: list[str],
+) -> tuple[list[str], bool, list[str]]:
+    issues: list[str] = []
+    target_keys = {_section_key_for_director(tag) for tag in target_sections}
+    target_by_key = {_section_key_for_director(tag): tag for tag in target_sections}
+    replacement_blocks = _director_section_blocks_from_lines(replacement_lines)
+    replacement_by_key: dict[str, list[str]] = {}
+    for block in replacement_blocks:
+        key = str(block.get("key") or "")
+        if key == "untagged":
+            issues.append("replacement_lyrics_before_first_section_tag")
+            continue
+        if key not in target_keys:
+            issues.append(f"replacement_extra_section:{block.get('tag')}")
+            continue
+        if key in replacement_by_key:
+            issues.append(f"replacement_duplicate_section:{block.get('tag')}")
+            continue
+        replacement_by_key[key] = [target_by_key[key], *[str(line) for line in block.get("lines") or [] if str(line).strip()]]
+    missing = [tag for tag in target_sections if _section_key_for_director(tag) not in replacement_by_key]
+    if missing:
+        issues.append("replacement_missing_sections:" + ",".join(missing))
+    if issues:
+        return original_lines, False, issues
+    merged: list[str] = []
+    pos = 0
+    replaced = False
+    while pos < len(original_lines):
+        line = str(original_lines[pos] or "").strip()
+        if re.fullmatch(r"\[[^\]]+\]", line) and _section_key_for_director(line) in target_keys:
+            key = _section_key_for_director(line)
+            merged.extend(replacement_by_key[key])
+            replaced = True
+            pos += 1
+            while pos < len(original_lines) and not re.fullmatch(r"\[[^\]]+\]", str(original_lines[pos] or "").strip()):
+                pos += 1
+            continue
+        merged.append(line)
+        pos += 1
+    return merged, replaced, []
 
 
 def _section_key_for_director(tag: Any) -> str:
@@ -5574,15 +6276,7 @@ def _caption_fallback_payload(track: dict[str, Any]) -> dict[str, Any]:
         caption = "hip-hop drums, deep low end, clear lead vocal, tight rhythmic pocket, polished modern mix"
     return {
         "caption": caption,
-        "caption_dimensions_covered": [
-            "genre_style",
-            "rhythm_groove",
-            "instrumentation",
-            "vocal_style",
-            "mood_atmosphere",
-            "arrangement_energy",
-            "mix_production",
-        ],
+        "caption_dimensions_covered": ACE_STEP_CAPTION_DIMENSIONS,
     }
 
 
@@ -5639,10 +6333,31 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
         issues.append("section_map_missing_hook")
     if not any(re.search(r"chorus|hook|refrain", section, re.I) for section in re.findall(r"\[[^\]]+\]", lyrics)):
         issues.append("lyrics_missing_hook_section")
-    lyric_duration_fit = _director_lyric_duration_fit(track)
+    lyric_duration_fit = _director_lyric_duration_fit(track, options)
     issues.extend(lyric_duration_fit.get("issues") or [])
+    density_plan = ((lyric_duration_fit.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(lyric_duration_fit.get("lyric_density_gate"), dict) else {}
+    instrumental = str(lyrics or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental"))
+    lyric_craft = lyric_craft_gate(
+        lyrics,
+        track,
+        options=options,
+        plan=density_plan,
+        duration=parse_duration_seconds(track.get("duration") or (options or {}).get("track_duration") or 180, 180),
+        genre_hint=_director_track_genre_hint(track, options),
+        instrumental=instrumental,
+    )
+    if lyric_craft.get("status") != "pass":
+        for issue in lyric_craft.get("issues") or []:
+            issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
+            detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
+            issues.append(f"{issue_id}:{detail}" if detail else issue_id)
     genre_adherence = evaluate_genre_adherence(track, options)
     issues.extend(str(issue.get("id") or issue) for issue in (genre_adherence.get("issues") or []))
+    producer_ready = producer_grade_readiness(track, options=options)
+    for issue in producer_ready.get("issues") or []:
+        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
+        detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
+        issues.append(f"{issue_id}:{detail}" if detail else issue_id)
     return {
         "version": ACEJAM_ALBUM_DIRECTOR_VERSION,
         "gate_passed": not issues,
@@ -5653,8 +6368,16 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
         "lyrics_word_count": int(lyric_duration_fit.get("word_count") or 0),
         "lyrics_line_count": int(lyric_duration_fit.get("line_count") or 0),
         "lyric_duration_fit": lyric_duration_fit,
+        "lyric_density_gate": lyric_duration_fit.get("lyric_density_gate") or {},
+        "lyrical_craft_contract": lyric_craft.get("contract") or {},
+        "lyric_craft_gate": lyric_craft,
+        "lyric_craft_score": lyric_craft.get("score"),
+        "lyric_craft_issues": lyric_craft.get("issue_ids") or [],
         "genre_intent_contract": genre_adherence.get("contract") or {},
         "genre_adherence": {key: value for key, value in genre_adherence.items() if key != "contract"},
+        "producer_grade_sonic_contract": (producer_ready.get("sonic_dna_coverage") or {}).get("contract") or {},
+        "sonic_dna_coverage": producer_ready.get("sonic_dna_coverage") or {},
+        "producer_grade_readiness": producer_ready,
         "section_tags": section_tags,
     }
 
@@ -5749,7 +6472,7 @@ class AceJamAlbumDirector:
         self.language = language or "en"
         self.opts = opts
         self.planner_provider = normalize_provider(planner_provider or "ollama")
-        self.embedding_provider = normalize_provider(embedding_provider or self.planner_provider)
+        self.embedding_provider = normalize_provider(embedding_provider or "ollama")
         self.embedding_model = str(embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL).strip()
         self.logs = logs
         self.contract = contract or {}
@@ -5759,11 +6482,16 @@ class AceJamAlbumDirector:
         self.agent_rounds: list[dict[str, Any]] = []
         self.agent_repair_count = 0
         self.agent_debug_dir = str(opts.get("album_debug_dir") or "")
+        self.planner_llm_settings = planner_llm_settings_from_payload(opts)
+        self.agent_runtime = normalize_album_agent_engine(opts.get("agent_engine"))
+        self.crewai_used = self.agent_runtime == CREWAI_MICRO_AGENT_ENGINE
+        self.agent_runtime_label = album_agent_engine_label(self.agent_runtime)
 
     def run(self) -> dict[str, Any]:
         if not self.concept.strip():
             raise AceJamAgentError("Album concept is empty. Provide concept, user_prompt, album_title, or track hints before planning.")
-        self.logs.append(f"Agent engine: AceJAM Agents ({ACEJAM_ALBUM_DIRECTOR_VERSION}).")
+        self.logs.append(f"Planning Engine: {self.agent_runtime_label} ({self.agent_runtime}).")
+        self.logs.append(f"Agent engine: {self.agent_runtime_label} ({ACEJAM_ALBUM_DIRECTOR_VERSION}).")
         if self.agent_debug_dir:
             self.logs.append(f"Agent debug log dir: {self.agent_debug_dir}")
             self.logs.append(f"Agent raw prompts JSONL: {Path(self.agent_debug_dir) / '03_agent_prompts.jsonl'}")
@@ -5771,7 +6499,7 @@ class AceJamAlbumDirector:
             self.logs.append(f"Agent track state JSONL: {Path(self.agent_debug_dir) / '05_track_state.jsonl'}")
             self.logs.append(f"Agent gate reports JSONL: {Path(self.agent_debug_dir) / '06_gate_reports.jsonl'}")
             self.logs.append(f"Agent final payloads JSONL: {Path(self.agent_debug_dir) / '07_final_payloads.jsonl'}")
-        preflight = preflight_album_agent_llm(self.planner_provider, self.planner_model)
+        preflight = preflight_album_agent_llm(self.planner_provider, self.planner_model, self.planner_llm_settings)
         self.logs.append(f"{provider_label(self.planner_provider)} preflight: planner chat={preflight.get('chat_ok')}.")
         for warning in preflight.get("warnings") or []:
             self.logs.append(f"Local LLM preflight warning: {warning}")
@@ -5781,10 +6509,13 @@ class AceJamAlbumDirector:
             self.opts,
             "02_contract.json",
             {
-                "planning_engine": ACEJAM_AGENT_ENGINE,
+                "planning_engine": self.agent_runtime,
+                "agent_runtime": self.agent_runtime,
+                "crewai_used": self.crewai_used,
                 "director_version": ACEJAM_ALBUM_DIRECTOR_VERSION,
                 "concept": self.concept,
                 "user_album_contract": self.contract,
+                "planner_llm_settings": self.planner_llm_settings,
                 "input_contract_applied": bool(self.contract.get("applied")),
                 "editable_plan_tracks_as_hints": self.opts.get("editable_plan_tracks") or [],
             },
@@ -5808,21 +6539,107 @@ class AceJamAlbumDirector:
         }
         tracks: list[dict[str, Any]] = []
         previous_summaries: list[dict[str, Any]] = []
+        planning_failures: list[dict[str, Any]] = []
         for index in range(self.num_tracks):
-            track = self._write_track(index, album_bible, previous_summaries)
-            tracks.append(track)
-            previous_summaries.append(_track_summary_for_agent(track))
-        sequence_report = _album_sequence_report(tracks, self.contract, self.num_tracks)
+            try:
+                track = self._write_track(index, album_bible, previous_summaries)
+                track["planning_status"] = "completed"
+                tracks.append(track)
+                previous_summaries.append(_track_summary_for_agent(track))
+            except Exception as exc:
+                failed_track = self._failed_track_payload(index, exc)
+                tracks.append(failed_track)
+                planning_failures.append(
+                    {
+                        "track_number": failed_track.get("track_number"),
+                        "title": failed_track.get("title"),
+                        "error": failed_track.get("planning_error"),
+                        "debug_paths": failed_track.get("debug_paths") or {},
+                    }
+                )
+                self.logs.append(
+                    "Track planning failed but album continues: "
+                    f"track {index + 1} {failed_track.get('title')}: {_monitor_preview(exc, 280)}"
+                )
+                _append_album_debug_jsonl(
+                    self.opts,
+                    "07_rejected_payloads.jsonl",
+                    {
+                        "track_number": index + 1,
+                        "title": failed_track.get("title"),
+                        "planning_status": "failed",
+                        "planning_error": str(exc),
+                        "debug_paths": failed_track.get("debug_paths") or {},
+                    },
+                )
+        completed_tracks = [track for track in tracks if track.get("planning_status") != "failed"]
+        if not completed_tracks:
+            error = (
+                f"Album planning failed: 0/{self.num_tracks} tracks produced. "
+                f"Failed tracks: {json.dumps(planning_failures, ensure_ascii=False)}"
+            )
+            _write_album_debug_json(
+                self.opts,
+                "08_sequence_report.json",
+                {
+                    "version": "acejam-sequence-critic-2026-04-30",
+                    "gate_passed": False,
+                    "status": "fail",
+                    "issues": [{"id": "all_tracks_failed_planning", "detail": error}],
+                    "planning_failures": planning_failures,
+                    "track_count": 0,
+                    "expected_track_count": self.num_tracks,
+                },
+            )
+            contract_repairs = len([line for line in self.logs if str(line).startswith("Contract repaired:")]) - self.repair_lines_before
+            return {
+                "tracks": tracks,
+                "logs": self.logs,
+                "success": False,
+                "error": str(planning_failures[0].get("error") if planning_failures else error),
+                "planning_engine": self.agent_runtime,
+                "custom_agents_used": True,
+                "crewai_used": self.crewai_used,
+                "toolbelt_fallback": False,
+                "crewai_output_log_file": "",
+                "agent_debug_dir": self.agent_debug_dir,
+                "agent_rounds": self.agent_rounds,
+                "agent_repair_count": self.agent_repair_count,
+                "memory_enabled": False,
+                "context_chunks": 0,
+                "retrieval_rounds": 0,
+                "planning_status": "failed",
+                "planning_failed_count": len(planning_failures),
+                "planning_failures": planning_failures,
+                "failed_tracks": planning_failures,
+                "prompt_kit_version": PROMPT_KIT_VERSION,
+                "prompt_kit": prompt_kit_payload(),
+                "toolkit": toolkit_payload(self.opts.get("installed_models")),
+                "input_contract": contract_prompt_context(self.contract),
+                "input_contract_applied": bool(self.contract.get("applied")),
+                "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
+                "blocked_unsafe_count": int(self.contract.get("blocked_unsafe_count") or 0),
+                "contract_repair_count": max(0, contract_repairs),
+            }
+        sequence_report = _album_sequence_report(completed_tracks, self.contract, len(completed_tracks))
+        if planning_failures:
+            sequence_report["planning_failures"] = planning_failures
+            sequence_report["planning_failed_count"] = len(planning_failures)
+            sequence_report["partial_album"] = True
         _write_album_debug_json(self.opts, "08_sequence_report.json", sequence_report)
-        if not sequence_report.get("gate_passed"):
+        if not sequence_report.get("gate_passed") and not planning_failures:
             reasons = "; ".join(f"{item.get('id')}: {item.get('detail')}" for item in (sequence_report.get("issues") or [])[:8])
             raise AceJamAgentError(f"Album sequence critic failed: {reasons or 'sequence gate failed'}")
+        if not sequence_report.get("gate_passed") and planning_failures:
+            reasons = "; ".join(f"{item.get('id')}: {item.get('detail')}" for item in (sequence_report.get("issues") or [])[:8])
+            self.logs.append(f"Album sequence critic warning kept partial album: {reasons or 'sequence gate failed'}")
         _write_album_debug_json(
             self.opts,
             "debug_index.json",
             {
                 "version": ACEJAM_ALBUM_DIRECTOR_VERSION,
-                "planning_engine": ACEJAM_AGENT_ENGINE,
+                "planning_engine": self.agent_runtime,
+                "agent_runtime": self.agent_runtime,
                 "agent_debug_dir": self.agent_debug_dir,
                 "files": {
                     "prompts": str(Path(self.agent_debug_dir) / "03_agent_prompts.jsonl") if self.agent_debug_dir else "",
@@ -5833,15 +6650,28 @@ class AceJamAlbumDirector:
                 },
             },
         )
-        self.logs.append(f"AceJAM Director produced {len(tracks)} direct ACE-Step track payload(s).")
+        output_label = "AceJAM Director" if self.agent_runtime == ACEJAM_AGENT_ENGINE else self.agent_runtime_label
+        self.logs.append(
+            f"{output_label} produced {len(completed_tracks)} direct ACE-Step track payload(s) "
+            f"({len(completed_tracks)}/{self.num_tracks} planned)."
+        )
+        if planning_failures:
+            failed_preview = ", ".join(
+                f"{item.get('track_number')} {item.get('title')}" for item in planning_failures[:8]
+            )
+            self.logs.append(f"AceJAM Director partial plan: failed tracks: {failed_preview}.")
         contract_repairs = len([line for line in self.logs if str(line).startswith("Contract repaired:")]) - self.repair_lines_before
         return {
             "tracks": tracks,
             "logs": self.logs,
             "success": True,
-            "planning_engine": ACEJAM_AGENT_ENGINE,
+            "planning_status": "partial" if planning_failures else "completed",
+            "planning_failed_count": len(planning_failures),
+            "planning_failures": planning_failures,
+            "failed_tracks": planning_failures,
+            "planning_engine": self.agent_runtime,
             "custom_agents_used": True,
-            "crewai_used": False,
+            "crewai_used": self.crewai_used,
             "toolbelt_fallback": False,
             "crewai_output_log_file": "",
             "agent_debug_dir": self.agent_debug_dir,
@@ -5866,6 +6696,7 @@ class AceJamAlbumDirector:
                 "user_album_contract": self.contract,
                 "custom_agents": {
                     "enabled": True,
+                    "agent_runtime": self.agent_runtime,
                     "planner_model": self.planner_model,
                     "planner_provider": self.planner_provider,
                     "agent_debug_dir": self.agent_debug_dir,
@@ -5875,7 +6706,8 @@ class AceJamAlbumDirector:
         }
 
     def _call(self, agent_name: str, user_prompt: str, schema_name: str, max_retries: int | None = 0) -> dict[str, Any]:
-        payload = _agent_json_call(
+        call_fn = _crewai_micro_block_call if self.crewai_used else _agent_json_call
+        payload = call_fn(
             agent_name=agent_name,
             provider=self.planner_provider,
             model_name=self.planner_model,
@@ -5886,7 +6718,7 @@ class AceJamAlbumDirector:
             extra_system=self.prompt_library.system_rules(),
             max_retries=max_retries,
         )
-        self.agent_rounds.append({"agent": agent_name, "status": "completed"})
+        self.agent_rounds.append({"agent": agent_name, "status": "completed", "agent_runtime": self.agent_runtime})
         return payload
 
     def _call_until_valid(
@@ -5908,39 +6740,37 @@ class AceJamAlbumDirector:
             try:
                 payload = self._call(agent_name, prompt, schema_name, max_retries=json_max_retries)
             except AceJamAgentError as exc:
-                last_issues = [f"json_parse_failed:{_monitor_preview(exc, 260)}"]
+                last_issues = [f"block_parse_failed:{_monitor_preview(exc, 260)}"]
                 if repair_attempt >= max_repairs:
                     break
                 next_attempt = repair_attempt + 1
                 self.agent_repair_count += 1
                 issue_text = "; ".join(last_issues)
                 self.logs.append(
-                    f"Agent JSON validation retry: {agent_name} attempt {next_attempt}/{max_repairs}: {issue_text}"
+                    f"Agent block validation retry: {agent_name} attempt {next_attempt}/{max_repairs}: {issue_text}"
                 )
                 _append_album_debug_jsonl(
                     self.opts,
                     "04_agent_responses.jsonl",
                     {
                         "agent": agent_name,
-                        "json_validation": "failed",
+                        "agent_runtime": self.agent_runtime,
+                        "block_validation": "failed",
                         "repair_attempt": next_attempt,
                         "max_repair_retries": max_repairs,
                         "validation_issues": last_issues,
                         "rejected_payload_preview": "",
                     },
                 )
-                contract = _agent_schema_contract(schema_name) or {}
-                expected_shape = json.dumps(contract.get("example") or {}, ensure_ascii=False, separators=(",", ":"))
                 prompt = (
-                    "JSON REPAIR REQUIRED.\n"
-                    "Your previous response was not one valid JSON object.\n"
+                    "BLOCK REPAIR REQUIRED.\n"
+                    "Your previous response was not valid delimiter-block output.\n"
                     f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(last_issues, ensure_ascii=False)}\n\n"
-                    "EXPECTED_JSON_SHAPE:\n"
-                    f"{expected_shape}\n\n"
+                    "EXPECTED_BLOCK_SHAPE:\n"
+                    f"{_agent_block_template(schema_name)}\n\n"
                     f"{repair_context.strip()}\n\n"
-                    "Do not include thoughts, refusal text, markdown, analysis, or any text outside JSON. "
-                    "Return one corrected strict JSON object only. "
-                    "If lyrics_lines are easier as objects, use section_tag and line fields with valid quoted strings.\n\n"
+                    "Do not include thoughts, refusal text, markdown, analysis, JSON, or any text outside the blocks. "
+                    "Return one corrected delimiter-block response only.\n\n"
                     "ORIGINAL_TASK:\n"
                     f"{user_prompt}"
                 )
@@ -5963,6 +6793,7 @@ class AceJamAlbumDirector:
                 "04_agent_responses.jsonl",
                 {
                     "agent": agent_name,
+                    "agent_runtime": self.agent_runtime,
                     "semantic_validation": "failed",
                     "repair_attempt": next_attempt,
                     "max_repair_retries": max_repairs,
@@ -5970,17 +6801,15 @@ class AceJamAlbumDirector:
                     "rejected_payload_preview": _monitor_preview(_compact_json(payload), 700),
                 },
             )
-            contract = _agent_schema_contract(schema_name) or {}
-            expected_shape = json.dumps(contract.get("example") or {}, ensure_ascii=False, separators=(",", ":"))
             prompt = (
                 "SEMANTIC REPAIR REQUIRED.\n"
-                "Your previous JSON parsed correctly but failed AceJAM's content validator.\n"
+                "Your previous delimiter-block response parsed correctly but failed AceJAM's content validator.\n"
                 f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(issues, ensure_ascii=False)}\n\n"
-                "EXPECTED_JSON_SHAPE:\n"
-                f"{expected_shape}\n\n"
+                "EXPECTED_BLOCK_SHAPE:\n"
+                f"{_agent_block_template(schema_name)}\n\n"
                 f"{repair_context.strip()}\n\n"
                 "Do not include previous invalid sections/lines. Do not copy rejected content. "
-                "Return one corrected strict JSON object only, no prose, no markdown, no extra keys.\n\n"
+                "Return corrected delimiter blocks only, no JSON, no prose, no markdown, no extra blocks.\n\n"
                 "ORIGINAL_TASK:\n"
                 f"{user_prompt}"
             )
@@ -5989,6 +6818,7 @@ class AceJamAlbumDirector:
             "04_agent_responses.jsonl",
             {
                 "agent": agent_name,
+                "agent_runtime": self.agent_runtime,
                 "semantic_validation": "exhausted",
                 "max_repair_retries": max_repairs,
                 "validation_issues": last_issues,
@@ -6009,16 +6839,58 @@ class AceJamAlbumDirector:
         schema_name: str,
         issues: list[str],
     ) -> dict[str, Any]:
-        contract = _agent_schema_contract(schema_name) or {}
         prompt = (
-            "Your previous JSON had this validation failure and cannot be rendered by ACE-Step:\n"
+            "Your previous delimiter-block response had this validation failure and cannot be rendered by ACE-Step:\n"
             f"{'; '.join(issues)}\n\n"
-            "ANSWER AGAIN EXACTLY AS THIS JSON SHAPE, with no extra keys or prose:\n"
-            f"{json.dumps(contract.get('example') or {}, ensure_ascii=False, separators=(',', ':'))}\n\n"
+            "ANSWER AGAIN EXACTLY AS DELIMITER BLOCKS, with no JSON, extra blocks, or prose:\n"
+            f"{_agent_block_template(schema_name)}\n\n"
             "Original compact task follows:\n"
             f"{user_prompt}"
         )
         return self._call(agent_name, prompt, schema_name, max_retries=0)
+
+    def _debug_paths(self) -> dict[str, str]:
+        if not self.agent_debug_dir:
+            return {}
+        root = Path(self.agent_debug_dir)
+        return {
+            "prompts": str(root / "03_agent_prompts.jsonl"),
+            "responses": str(root / "04_agent_responses.jsonl"),
+            "track_state": str(root / "05_track_state.jsonl"),
+            "gate_reports": str(root / "06_gate_reports.jsonl"),
+            "final_payloads": str(root / "07_final_payloads.jsonl"),
+            "rejected_payloads": str(root / "07_rejected_payloads.jsonl"),
+        }
+
+    def _failed_track_payload(self, index: int, exc: Exception) -> dict[str, Any]:
+        slot = self._locked_track_slot(index)
+        title = str(slot.get("title") or slot.get("locked_title") or f"Track {index + 1}").strip()
+        error = str(exc)
+        return {
+            **{key: value for key, value in slot.items() if value not in (None, "", [])},
+            "track_number": index + 1,
+            "title": title,
+            "duration": parse_duration_seconds(slot.get("duration") or self.track_duration, self.track_duration),
+            "planning_status": "failed",
+            "planning_error": error,
+            "error": error,
+            "generated": False,
+            "skip_render": True,
+            "agent_complete_payload": False,
+            "payload_gate_status": "planning_failed",
+            "payload_gate_passed": False,
+            "payload_gate_blocking_issues": [{"id": "planning_failed", "detail": error}],
+            "payload_quality_gate": {
+                "status": "planning_failed",
+                "gate_passed": False,
+                "issues": ["planning_failed"],
+                "detail": error,
+            },
+            "agent_debug_dir": self.agent_debug_dir,
+            "debug_paths": self._debug_paths(),
+            "model_results": [],
+            "audios": [],
+        }
 
     def _album_intake_prompt(self) -> str:
         return (
@@ -6032,8 +6904,9 @@ class AceJamAlbumDirector:
             f"VOCAL_TYPE: {self.opts.get('album_agent_vocal_type') or ''}\n"
             f"AUDIENCE_PLATFORM: {self.opts.get('album_agent_audience') or ''}\n"
             f"USER_ALBUM_CONTRACT:\n{json.dumps(contract_prompt_context(self.contract), ensure_ascii=False, indent=2)}\n\n"
-            'OUTPUT_SCHEMA: {"album_title":"","one_sentence_concept":"","style_guardrails":[],"track_roles":[]}\n'
-            "Return strict JSON only."
+            "OUTPUT_BLOCKS:\n"
+            f"{_agent_block_template('album_intake_payload')}\n"
+            "Return delimiter blocks only."
         )
 
     def _locked_track_slot(self, index: int) -> dict[str, Any]:
@@ -6104,12 +6977,19 @@ class AceJamAlbumDirector:
         repair_note = ""
         genre_contract = build_genre_intent_contract(current, self.opts)
         current["genre_intent_contract"] = genre_contract
+        producer_contract = build_producer_grade_sonic_contract(current, self.opts)
+        current["producer_grade_sonic_contract"] = producer_contract
         if repair_issues:
             repair_note = (
                 "\nTAG_REPAIR_ISSUES:\n"
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Write fresh sonic tags. Do not preserve invalid tag order or non-dominant genre emphasis.\n"
             )
+        producer_note = (
+            "\nPRODUCER_GRADE_SONIC_CONTRACT:\n"
+            f"{json.dumps(producer_contract, ensure_ascii=False)}\n"
+            "tag_list must cover every required dimension with concrete sound traits; avoid generic-only tags like polished modern mix by itself.\n"
+        )
         rap_note = ""
         if genre_contract.get("family") == "rap":
             rap_note = (
@@ -6122,22 +7002,28 @@ class AceJamAlbumDirector:
             "Tag Agent",
             self._base_track_context(index, album_bible, current, fields=sonic_fields)
             + repair_note
+            + producer_note
             + rap_note
             + "\nTASK:\nChoose the track Sonic DNA before any lyric writing. Output sonic tags only. "
             "Do not include BPM, key, time signature, duration, model, seed, producer/person names, track title, lyric phrases, or story prose. "
             f"caption_dimensions_covered must use only: {json.dumps(ACE_STEP_CAPTION_DIMENSIONS)}.\n"
-            + 'OUTPUT_SCHEMA: {"tag_list":[],"tags":"","caption_dimensions_covered":[]}\n',
+            + f"OUTPUT_BLOCKS:\n{_agent_block_template('tag_agent_payload')}\n",
             "tag_agent_payload",
             lambda payload: _validate_tag_payload(payload, current)
-            + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False),
+            + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
+            + _director_producer_grade_validation_issues(payload, current, self.opts),
             repair_context=(
                 "tag_list and tags must be filled with sonic traits only. No BPM, key, duration, title, producer, person names, "
-                "section tags, story prose, or lyric lines. If rap is requested, rap/hip-hop must be primary and front-loaded."
+                "section tags, story prose, or lyric lines. If rap is requested, rap/hip-hop must be primary and front-loaded. "
+                "Cover primary_genre, drum_groove, low_end_bass, melodic_identity, vocal_delivery, arrangement_movement, texture_space, and mix_master."
             ),
         )
         current.update(tag_payload)
         current["genre_intent_contract"] = build_genre_intent_contract(current, self.opts)
         current["genre_adherence"] = evaluate_genre_adherence(current, self.opts)
+        current["producer_grade_sonic_contract"] = build_producer_grade_sonic_contract(current, self.opts)
+        current["producer_grade_readiness"] = producer_grade_readiness(current, options=self.opts)
+        current["sonic_dna_coverage"] = (current["producer_grade_readiness"].get("sonic_dna_coverage") or {})
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Tag Agent", "state": current})
         return tag_payload
 
@@ -6187,7 +7073,7 @@ class AceJamAlbumDirector:
             + long_track_note
             + rap_note
             + "\nThe lyric part agents must use these tags exactly; do not output lyrics here.\n"
-            + 'OUTPUT_SCHEMA: {"section_map":["[Intro]","[Verse 1]","[Pre-Chorus]","[Chorus]","[Verse 2]","[Break]","[Bridge]","[Final Chorus]","[Outro]"],"rationale":""}\n',
+            + f"OUTPUT_BLOCKS:\n{_agent_block_template('section_map_payload')}\n",
             "section_map_payload",
             _section_validator,
             repair_context=(
@@ -6219,14 +7105,20 @@ class AceJamAlbumDirector:
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Write a fresh hook. Do not include previous invalid hook lines or bracket tags.\n"
             )
+        craft_contract = build_lyrical_craft_contract(current, self.opts)
+        current["lyrical_craft_contract"] = craft_contract
         hook_payload = self._call_until_valid(
             "Hook Agent",
             self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
             + repair_note
+            + "\nLYRICAL_CRAFT_CONTRACT:\n"
+            + f"{json.dumps(craft_contract, ensure_ascii=False)}\n"
             + "\nWrite only the hook idea and exact hook lines for chorus/hook/refrain sections. "
             "The hook must be singable/rappable and must not mention BPM, key, producer, or metadata. "
+            "Make the hook title-connected and emotionally specific: one clear promise, one concrete image, no motivational poster lines, no random imagery, no filler. "
+            "For sung hooks, keep vowel-friendly short phrases. For rap hooks, keep chantable cadence and clean breath length. "
             "hook_lines must be plain lyric lines only, with no bracketed section tags.\n"
-            + 'OUTPUT_SCHEMA: {"hook_title":"","hook_lines":[],"hook_promise":""}\n',
+            + f"OUTPUT_BLOCKS:\n{_agent_block_template('hook_payload')}\n",
             "hook_payload",
             _validate_hook_payload,
             repair_context=(
@@ -6261,6 +7153,8 @@ class AceJamAlbumDirector:
             str(current.get("structure_preset") or self.opts.get("structure_preset") or "auto"),
             genre_hint,
         )
+        craft_contract = build_lyrical_craft_contract(current, self.opts)
+        current["lyrical_craft_contract"] = craft_contract
         min_words = int(lyric_plan.get("min_words") or 0)
         min_lines = _director_effective_min_lines(int(lyric_plan.get("min_lines") or 0), min_words)
         target_words = int(lyric_plan.get("target_words") or min_words)
@@ -6271,6 +7165,23 @@ class AceJamAlbumDirector:
         if repair_issues and any(str(issue).startswith("lyrics_over_4096") for issue in repair_issues):
             safe_lyrics_budget = min(3000, ACE_STEP_LYRICS_CHAR_LIMIT - 900)
         part_budget = max(420, int(safe_lyrics_budget / max(1, len(groups))))
+        whole_section_minimums = _director_section_line_minimums(
+            section_tags,
+            duration=requested_duration,
+            genre_hint=genre_hint,
+        )
+        if whole_section_minimums:
+            current["lyric_section_minimums"] = whole_section_minimums
+        current["lyric_density_plan"] = {
+            "duration": requested_duration,
+            "density": lyric_plan.get("density"),
+            "target_words": target_words,
+            "min_words": min_words,
+            "target_lines": target_lines,
+            "min_lines": min_lines,
+            "section_minimums": whole_section_minimums,
+            "max_lyrics_chars": lyric_plan.get("max_lyrics_chars") or ACE_STEP_LYRICS_CHAR_LIMIT,
+        }
         forbidden_sections: list[str] = []
         repair_note = ""
         if repair_issues:
@@ -6282,10 +7193,13 @@ class AceJamAlbumDirector:
                     "If the issue says lyrics_under_length or lyrics_too_few_lines, expand with fresh clear bars and one breath per line.\n"
                 )
         for part_index, group in enumerate(groups):
+            part_section_minimums = {tag: whole_section_minimums[tag] for tag in group if tag in whole_section_minimums}
             lyric_prompt = (
                 self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
                 + repair_note
                 + f"\nWHOLE_SONG_LYRIC_LENGTH_PLAN:\n{json.dumps({'duration': requested_duration, 'density': lyric_plan.get('density'), 'target_words': target_words, 'min_words': min_words, 'target_lines': target_lines, 'min_lines': min_lines, 'max_lyrics_chars': lyric_plan.get('max_lyrics_chars') or ACE_STEP_LYRICS_CHAR_LIMIT}, ensure_ascii=False)}\n"
+                + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
+                + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
                 + f"\nONLY_ALLOWED_SECTION_TAGS:\n{json.dumps(group, ensure_ascii=False)}\n"
                 + f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
                 + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
@@ -6297,11 +7211,16 @@ class AceJamAlbumDirector:
                 + "Write lyrics_lines only. sections must equal ONLY_ALLOWED_SECTION_TAGS exactly; do not add any other section tag. "
                 "Each allowed section tag must appear once in lyrics_lines, in the same order. "
                 "Never write a forbidden previous section. Never copy earlier sections. "
+                "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
+                "Write award-level lyric craft: concrete scene details, one coherent metaphor world, natural human phrasing, no motivational-poster slogans, no random image pileups, no filler. "
+                "Every verse should move the story forward with specific nouns and actions; every hook should simplify into a memorable emotional promise. "
                 "For rap or hip-hop, write short intelligible bars, one breath per line, with enough unique lyric lines to cover the full duration. "
+                "For rap or hip-hop, include cadence, internal/slant rhyme, bar momentum, and concrete punchlines without forcing pop singing. "
+                "For pop, R&B, rock, country, soul, latin, afro, dancehall, or sung tracks, keep vowel-friendly singable line lengths and title-connected hooks. "
                 "For rap or hip-hop, never write stage directions like Instrumental break, orchestra swells, strings fade, taiko drums hit, or production notes as lyrics. "
                 "For [Break] or [Instrumental Break], write the allowed section tag and one short rap ad-lib or crowd-response line only. "
                 "Do not include BPM, key, caption, explanation, producer names, metadata, markdown, or escaped newlines.\n"
-                + f'OUTPUT_SCHEMA: {{"part_index":{part_index + 1},"sections":{json.dumps(group, ensure_ascii=False)},"lyrics_lines":[]}}\n'
+                + f"OUTPUT_BLOCKS:\n{_agent_block_template(f'lyrics_part_{part_index + 1}_payload')}\n"
             )
 
             def _part_validator(part_payload: dict[str, Any], *, expected_group: list[str] = group, previous_sections: list[str] = list(forbidden_sections), expected_part: int = part_index + 1) -> list[str]:
@@ -6311,17 +7230,56 @@ class AceJamAlbumDirector:
                     forbidden_sections=previous_sections,
                     expected_part_index=expected_part,
                 )
+                genre_issues = _director_genre_validation_issues(
+                    {"lyrics_lines": _director_payload_lines(part_payload)},
+                    current,
+                    self.opts,
+                    include_lyrics=True,
+                )
                 issues.extend(
-                    _director_genre_validation_issues(
-                        {"lyrics_lines": _director_payload_lines(part_payload)},
-                        current,
-                        self.opts,
-                        include_lyrics=True,
-                    )
+                    issue for issue in genre_issues
+                    if not str(issue).startswith("non_rap_arrangement_lyric_leakage")
                 )
                 char_count = len("\n".join(_director_payload_lines(part_payload)))
                 if char_count > part_budget + 300:
                     issues.append(f"lyrics_part_over_budget:{char_count}>{part_budget}")
+                part_lines = _director_payload_lines(part_payload)
+                part_craft = lyric_craft_gate(
+                    "\n".join(part_lines),
+                    current,
+                    options=self.opts,
+                    plan=lyric_plan,
+                    duration=requested_duration,
+                    genre_hint=genre_hint,
+                    partial=True,
+                )
+                for craft_issue in part_craft.get("issues") or []:
+                    craft_id = str(craft_issue.get("id") if isinstance(craft_issue, dict) else craft_issue)
+                    if craft_id in {
+                        "lyric_craft_placeholder",
+                        "lyric_craft_fallback_artifact",
+                        "lyric_craft_metadata_leakage",
+                        "lyric_craft_generic_ai_phrase",
+                        "lyric_craft_adjective_stacking",
+                        "lyric_craft_line_breathability",
+                        "lyric_craft_mixed_metaphor",
+                    }:
+                        issues.append(craft_id)
+                if part_section_minimums:
+                    section_counts: dict[str, int] = {}
+                    active_section = ""
+                    for raw_line in _director_payload_lines(part_payload):
+                        clean_line = str(raw_line or "").strip()
+                        if re.fullmatch(r"\[[^\]]+\]", clean_line):
+                            active_section = clean_line
+                            section_counts.setdefault(active_section, 0)
+                            continue
+                        if active_section:
+                            section_counts[active_section] = section_counts.get(active_section, 0) + 1
+                    for section, minimum in part_section_minimums.items():
+                        actual = section_counts.get(section, 0)
+                        if actual < minimum:
+                            issues.append(f"section_under_min_lines:{section}={actual}/{minimum}")
                 return issues
 
             try:
@@ -6333,9 +7291,11 @@ class AceJamAlbumDirector:
                     repair_context=(
                         f"ONLY_ALLOWED_SECTION_TAGS={json.dumps(group, ensure_ascii=False)}. "
                         f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN={json.dumps(forbidden_sections, ensure_ascii=False)}. "
+                        f"SECTION_LINE_MINIMUMS_FOR_THIS_PART={json.dumps(part_section_minimums, ensure_ascii=False)}. "
                         "sections must equal ONLY_ALLOWED_SECTION_TAGS exactly. Each allowed tag appears once. "
                         "Do not include previous invalid sections/lines. If rap is requested, write short rap bars only: "
-                        "no Instrumental break text, no orchestral/stage-direction lines, no pop-ballad prose."
+                        "no Instrumental break text, no orchestral/stage-direction lines, no pop-ballad prose. "
+                        "Fix craft issues with concrete nouns, coherent imagery, breathable lines, and no generic AI phrases."
                     ),
                 )
             except AceJamAgentError as exc:
@@ -6442,6 +7402,8 @@ class AceJamAlbumDirector:
                 "section_map",
             )
         }
+        producer_contract = build_producer_grade_sonic_contract(current, self.opts)
+        current["producer_grade_sonic_contract"] = producer_contract
         repair_note = ""
         if repair_issues:
             repair_note = (
@@ -6449,22 +7411,35 @@ class AceJamAlbumDirector:
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Write a fresh sound-only caption. Do not include previous invalid caption text.\n"
             )
+        producer_note = (
+            "\nPRODUCER_GRADE_SONIC_CONTRACT:\n"
+            f"{json.dumps(producer_contract, ensure_ascii=False)}\n"
+            "The caption must cover every required dimension with concrete beat, vocal, texture, arrangement, and mix information.\n"
+        )
         try:
             caption_payload = self._call_until_valid(
                 "Caption Agent",
                 self._base_track_context(index, album_bible, caption_context, fields=sonic_fields | {"caption"})
                 + repair_note
+                + producer_note
                 + "\nTASK:\nWrite the final compact ACE-Step caption from tag_list/Sonic DNA only. "
                 "It must be a comma-separated sound prompt under 512 chars. "
+                "Include primary genre, drum pocket, bass behavior, melodic/sample/riff identity, vocal delivery, arrangement movement, texture/space, and mix/master character. "
                 "Do not include BPM, key, time signature, duration, model, seed, producer/person names, track title, story prose, or lyrics.\n"
-                + 'OUTPUT_SCHEMA: {"caption":""}\n',
+                + f"OUTPUT_BLOCKS:\n{_agent_block_template('caption_agent_payload')}\n",
                 "caption_agent_payload",
                 lambda payload: _validate_caption_payload(payload, current)
-                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False),
+                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
+                + _director_producer_grade_validation_issues(
+                    payload,
+                    {"style": current.get("style"), "vibe": current.get("vibe")},
+                    self.opts,
+                ),
                 repair_context=(
                     "caption must be non-empty, under 512 chars, sound-only, and must not contain BPM, key, duration, "
                     "producer credits, person names, track title, story prose, section tags, or lyric leakage. "
-                    "If rap is requested, include rap/hip-hop as primary, rap vocal delivery, hip-hop drums/groove, and low-end."
+                    "Cover primary_genre, drum_groove, low_end_bass, melodic_identity, vocal_delivery, arrangement_movement, "
+                    "texture_space, and mix_master. If rap is requested, include rap/hip-hop as primary, rap vocal delivery, hip-hop drums/groove, and low-end."
                 ),
             )
         except AceJamAgentError as exc:
@@ -6474,6 +7449,10 @@ class AceJamAlbumDirector:
                 current,
                 self.opts,
                 include_lyrics=False,
+            ) + _director_producer_grade_validation_issues(
+                caption_payload,
+                {"style": current.get("style"), "vibe": current.get("vibe")},
+                self.opts,
             )
             self.agent_repair_count += 1
             self.logs.append(
@@ -6495,6 +7474,8 @@ class AceJamAlbumDirector:
                     f"Caption Agent fallback failed validation: {'; '.join(fallback_issues)}"
                 ) from exc
         current.update(caption_payload)
+        current["producer_grade_readiness"] = producer_grade_readiness(current, options=self.opts)
+        current["sonic_dna_coverage"] = (current["producer_grade_readiness"].get("sonic_dna_coverage") or {})
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Caption Agent", "state": current})
         return caption_payload
 
@@ -6505,17 +7486,38 @@ class AceJamAlbumDirector:
         current: dict[str, Any],
         sonic_fields: set[str],
     ) -> dict[str, Any]:
+        producer_contract = build_producer_grade_sonic_contract(current, self.opts)
+        producer_note = (
+            "\nPRODUCER_GRADE_SONIC_CONTRACT:\n"
+            f"{json.dumps(producer_contract, ensure_ascii=False)}\n"
+            "Performance guidance must reinforce all required dimensions without writing caption text or lyrics.\n"
+        )
+        def _performance_sonic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+            text = ", ".join(
+                str(payload.get(field) or "").strip()
+                for field in ("performance_brief", "negative_control", "genre_profile")
+                if str(payload.get(field) or "").strip()
+            )
+            return {
+                "caption": text,
+                "style": current.get("style"),
+                "vibe": current.get("vibe"),
+            }
+
         try:
             performance_payload = self._call_until_valid(
                 "Performance Agent",
                 self._base_track_context(index, album_bible, current, fields=sonic_fields | {"caption", "hook_promise"})
+                + producer_note
                 + "\nTASK:\nWrite performance/mix guidance only for debug metadata. Do not write caption, tags, lyrics, BPM, key, or duration.\n"
-                + 'OUTPUT_SCHEMA: {"performance_brief":"","negative_control":"","genre_profile":""}\n',
+                + f"OUTPUT_BLOCKS:\n{_agent_block_template('performance_agent_payload')}\n",
                 "performance_agent_payload",
                 lambda payload: _validate_performance_payload(payload)
-                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False),
+                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
+                + _director_producer_grade_validation_issues(_performance_sonic_payload(payload), None, self.opts),
                 repair_context=(
                     "Return only performance_brief, negative_control, and genre_profile. No caption, tags, lyrics, BPM, key, duration, or extra keys. "
+                    "Cover producer-grade intent across drums, bass, melody/riff/sample, vocal delivery, movement, texture, and mix. "
                     "If rap is requested, genre_profile and performance_brief must preserve rap delivery and hip-hop groove as primary."
                 ),
             )
@@ -6526,7 +7528,7 @@ class AceJamAlbumDirector:
                 current,
                 self.opts,
                 include_lyrics=False,
-            )
+            ) + _director_producer_grade_validation_issues(_performance_sonic_payload(performance_payload), None, self.opts)
             self.agent_repair_count += 1
             self.logs.append(
                 f"Agent deterministic fallback: Performance Agent after planner failure: {_monitor_preview(exc, 260)}"
@@ -6547,8 +7549,419 @@ class AceJamAlbumDirector:
                     f"Performance Agent fallback failed validation: {'; '.join(fallback_issues)}"
                 ) from exc
         current.update(performance_payload)
+        current["producer_grade_readiness"] = producer_grade_readiness(current, options=self.opts)
+        current["sonic_dna_coverage"] = (current["producer_grade_readiness"].get("sonic_dna_coverage") or {})
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Performance Agent", "state": current})
         return performance_payload
+
+    def _sanitize_arrangement_lyric_leakage(
+        self,
+        index: int,
+        current: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> bool:
+        genre_report = gate.get("genre_adherence") if isinstance(gate.get("genre_adherence"), dict) else {}
+        stats = genre_report.get("stats") if isinstance(genre_report.get("stats"), dict) else {}
+        scan = stats.get("arrangement_lyric_scan") if isinstance(stats.get("arrangement_lyric_scan"), list) else []
+        blocked_items = [
+            item for item in scan
+            if isinstance(item, dict) and item.get("status") == "blocked" and str(item.get("line") or "").strip()
+        ]
+        if not blocked_items:
+            return False
+        blocked_lines = {str(item.get("line") or "").strip() for item in blocked_items}
+        lines = _director_payload_lines(current)
+        if not lines:
+            lines = [line for line in str(current.get("lyrics") or "").splitlines() if str(line).strip()]
+        safe_bars = [
+            "Street truth cuts clear through the city smoke",
+            "Pressure talks loud but the cadence stays clear",
+            "Cold blocks know where the money went",
+            "Every bar lands where the silence broke",
+            "Paper trails crack when the bassline talks",
+            "Loyalty stands tall when the lights get low",
+        ]
+        required_phrases = [
+            str(item).strip()
+            for item in (current.get("required_phrases") or current.get("required_lyrics") or [])
+            if str(item).strip()
+        ]
+        replacements: list[dict[str, str]] = []
+        safe_index = 0
+        updated_lines: list[str] = []
+        for line in lines:
+            clean = str(line or "").strip()
+            if clean in blocked_lines and not re.fullmatch(r"\[[^\]]+\]", clean):
+                replacement = ""
+                for phrase in required_phrases:
+                    if phrase.casefold() in clean.casefold():
+                        replacement = f"{phrase} while the block speaks clear"
+                        break
+                if not replacement:
+                    replacement = safe_bars[safe_index % len(safe_bars)]
+                    safe_index += 1
+                updated_lines.append(replacement)
+                replacements.append({"from": clean, "to": replacement})
+            else:
+                updated_lines.append(line)
+        if not replacements:
+            return False
+        current["lyrics_lines"] = updated_lines
+        current["lyrics"] = "\n".join(updated_lines).strip()
+        self.agent_repair_count += 1
+        self.logs.append(
+            "Final gate deterministic lyric sanitizer: "
+            f"track {index + 1} replaced {len(replacements)} arrangement-leakage line(s): "
+            f"{_monitor_preview('; '.join(item['from'] for item in replacements), 240)}"
+        )
+        _append_album_debug_jsonl(
+            self.opts,
+            "06_gate_reports.jsonl",
+            {
+                "track_number": index + 1,
+                "stage": "deterministic_lyric_sanitizer",
+                "validation_issues": gate.get("issues") or [],
+                "arrangement_lyric_scan": scan,
+                "blocked_lines": [item.get("line") for item in blocked_items],
+                "replacement_lines": replacements,
+                "payload_preview": _monitor_preview(_compact_json({"lyrics_lines": updated_lines}), 900),
+            },
+        )
+        return True
+
+    def _repair_weak_lyric_sections(
+        self,
+        index: int,
+        current: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> bool:
+        issue_texts = [str(issue) for issue in (gate.get("issues") or [])]
+        repairable_names = {
+            "lyrics_under_length",
+            "lyrics_too_few_lines",
+            "lyrics_under_hit_density",
+            "lyrics_under_hit_line_density",
+            "rap_verses_underfilled",
+            "hook_underwritten",
+        }
+        if not any(any(text == name or text.startswith(name + ":") for name in repairable_names) for text in issue_texts):
+            return False
+        lines = _director_payload_lines(current)
+        if not lines:
+            lines = [line.strip() for line in str(current.get("lyrics") or "").splitlines() if line.strip()]
+        if not any(re.fullmatch(r"\[[^\]]+\]", line) for line in lines):
+            return False
+        duration = parse_duration_seconds(current.get("duration") or self.track_duration, self.track_duration)
+        genre_hint = _director_track_genre_hint(current, self.opts)
+        density_gate = gate.get("lyric_density_gate") if isinstance(gate.get("lyric_density_gate"), dict) else {}
+        plan = dict(density_gate.get("plan") or {})
+        if not plan:
+            plan = lyric_length_plan(
+                duration,
+                str(current.get("lyric_density") or self.opts.get("lyric_density") or "dense"),
+                str(current.get("structure_preset") or self.opts.get("structure_preset") or "auto"),
+                genre_hint,
+            )
+        min_words = max(int(plan.get("min_words") or 0), int((int(plan.get("target_words") or 0)) * 0.82))
+        min_lines = max(
+            _director_effective_min_lines(int(plan.get("min_lines") or 0), int(plan.get("min_words") or 0)),
+            int((int(plan.get("target_lines") or 0)) * 0.82),
+        )
+        max_chars = min(3600, int(plan.get("max_lyrics_chars") or ACE_STEP_LYRICS_SAFE_HEADROOM), ACE_STEP_LYRICS_CHAR_LIMIT - 360)
+        tags = [line for line in lines if re.fullmatch(r"\[[^\]]+\]", line)]
+        minimums = current.get("lyric_section_minimums") if isinstance(current.get("lyric_section_minimums"), dict) else {}
+        if not minimums:
+            minimums = _director_section_line_minimums(tags, duration=duration, genre_hint=genre_hint)
+        bars = _director_lyric_extension_lines(current)
+        used = {line.casefold() for line in lines}
+        added: list[dict[str, str]] = []
+        bar_index = 0
+
+        def _section_counts(source: list[str]) -> dict[str, int]:
+            counts: dict[str, int] = {}
+            active = ""
+            for raw_line in source:
+                clean = str(raw_line or "").strip()
+                if re.fullmatch(r"\[[^\]]+\]", clean):
+                    active = clean
+                    counts.setdefault(active, 0)
+                elif active:
+                    counts[active] = counts.get(active, 0) + 1
+            return counts
+
+        def _next_bar() -> str:
+            nonlocal bar_index
+            for _ in range(len(bars) * 3):
+                bar = bars[bar_index % len(bars)]
+                bar_index += 1
+                if bar.casefold() not in used:
+                    used.add(bar.casefold())
+                    return bar
+            bar = f"Street truth rises in measure {bar_index}"
+            bar_index += 1
+            used.add(bar.casefold())
+            return bar
+
+        def _insert(section: str, line: str) -> bool:
+            try:
+                section_index = lines.index(section)
+            except ValueError:
+                return False
+            insert_at = len(lines)
+            for pos in range(section_index + 1, len(lines)):
+                if re.fullmatch(r"\[[^\]]+\]", lines[pos]):
+                    insert_at = pos
+                    break
+            candidate = lines[:insert_at] + [line] + lines[insert_at:]
+            if len("\n".join(candidate)) > max_chars:
+                return False
+            lines[:] = candidate
+            added.append({"section": section, "line": line})
+            return True
+
+        counts = _section_counts(lines)
+        preferred_sections = [tag for tag in tags if re.search(r"verse", tag, re.I)] or [
+            tag for tag in tags if not re.search(r"intro|outro|break|instrumental", tag, re.I)
+        ] or tags
+        for section, minimum in minimums.items():
+            if section not in tags:
+                continue
+            while counts.get(section, 0) < int(minimum or 0):
+                if not _insert(section, _next_bar()):
+                    break
+                counts = _section_counts(lines)
+        stats = lyric_stats("\n".join(lines))
+        round_index = 0
+        while (
+            (int(stats.get("word_count") or 0) < min_words or int(stats.get("line_count") or 0) < min_lines)
+            and round_index < 96
+        ):
+            section = preferred_sections[round_index % len(preferred_sections)]
+            if not _insert(section, _next_bar()):
+                break
+            stats = lyric_stats("\n".join(lines))
+            round_index += 1
+        if not added:
+            return False
+        current["lyrics_lines"] = lines
+        current["lyrics"] = "\n".join(lines).strip()
+        current["lyric_density_gate"] = lyric_density_gate(
+            current["lyrics"],
+            plan,
+            duration=duration,
+            genre_hint=genre_hint,
+            instrumental=False,
+        )
+        self.agent_repair_count += 1
+        self.logs.append(
+            "Final gate deterministic lyric density repair: "
+            f"track {index + 1} inserted {len(added)} targeted bar(s) into weak sections"
+        )
+        _append_album_debug_jsonl(
+            self.opts,
+            "06_gate_reports.jsonl",
+            {
+                "track_number": index + 1,
+                "stage": "deterministic_lyric_density_repair",
+                "validation_issues": issue_texts,
+                "lyric_density_plan": plan,
+                "section_minimums": minimums,
+                "inserted_lines": added,
+                "lyric_density_gate": current["lyric_density_gate"],
+                "payload_preview": _monitor_preview(_compact_json({"lyrics_lines": lines}), 900),
+            },
+        )
+        return True
+
+    def _repair_lyric_craft(
+        self,
+        index: int,
+        album_bible: dict[str, Any],
+        current: dict[str, Any],
+        gate: dict[str, Any],
+        section_tags: list[str],
+        hook_payload: dict[str, Any],
+        lyric_fields: set[str],
+    ) -> bool:
+        craft_gate = gate.get("lyric_craft_gate") if isinstance(gate.get("lyric_craft_gate"), dict) else {}
+        craft_issue_ids = [str(item) for item in (craft_gate.get("issue_ids") or [])]
+        if not craft_issue_ids:
+            return False
+        repairable = {
+            "lyric_craft_generic_ai_phrase",
+            "lyric_craft_adjective_stacking",
+            "lyric_craft_mixed_metaphor",
+            "lyric_craft_hook_weak",
+            "lyric_craft_no_concrete_scene",
+            "lyric_craft_line_breathability",
+            "lyric_craft_rhyme_chaos",
+            "lyric_craft_section_blur",
+        }
+        if not any(issue in repairable for issue in craft_issue_ids):
+            return False
+        lines = _director_payload_lines(current)
+        if not lines:
+            lines = [line.strip() for line in str(current.get("lyrics") or "").splitlines() if line.strip()]
+        if not lines or not any(re.fullmatch(r"\[[^\]]+\]", line) for line in lines):
+            return False
+        blocks = _director_section_blocks_from_lines(lines)
+        existing_by_key = {_section_key_for_director(str(block.get("tag") or "")): str(block.get("tag") or "") for block in blocks}
+        weak_sections: list[str] = []
+        for item in craft_gate.get("weak_sections") or []:
+            section = str(item.get("section") if isinstance(item, dict) else item).strip()
+            key = _section_key_for_director(section)
+            if key in existing_by_key and existing_by_key[key] not in weak_sections and key != "untagged":
+                weak_sections.append(existing_by_key[key])
+        if "lyric_craft_hook_weak" in craft_issue_ids:
+            for block in blocks:
+                tag = str(block.get("tag") or "")
+                if re.search(r"chorus|hook|refrain", tag, re.I) and tag not in weak_sections:
+                    weak_sections.append(tag)
+        if not weak_sections:
+            for block in blocks:
+                tag = str(block.get("tag") or "")
+                if re.search(r"verse|chorus|hook|bridge", tag, re.I) and tag not in weak_sections:
+                    weak_sections.append(tag)
+                if len(weak_sections) >= 2:
+                    break
+        target_sections = [tag for tag in section_tags if _section_key_for_director(tag) in {_section_key_for_director(item) for item in weak_sections}]
+        if not target_sections:
+            target_sections = weak_sections[:3]
+        target_sections = target_sections[:3]
+        if not target_sections:
+            return False
+        current_sections: list[str] = []
+        target_keys = {_section_key_for_director(tag) for tag in target_sections}
+        for block in blocks:
+            tag = str(block.get("tag") or "")
+            if _section_key_for_director(tag) not in target_keys:
+                continue
+            current_sections.append(tag)
+            current_sections.extend(str(line) for line in block.get("lines") or [])
+        duration = parse_duration_seconds(current.get("duration") or self.track_duration, self.track_duration)
+        genre_hint = _director_track_genre_hint(current, self.opts)
+        density_plan = ((gate.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(gate.get("lyric_density_gate"), dict) else {}
+        craft_contract = build_lyrical_craft_contract(current, self.opts)
+        repair_prompt = (
+            self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
+            + "\nLYRIC_CRAFT_REPAIR_ISSUES:\n"
+            + f"{json.dumps(craft_issue_ids, ensure_ascii=False)}\n"
+            + "LYRICAL_CRAFT_CONTRACT:\n"
+            + f"{json.dumps(craft_contract, ensure_ascii=False)}\n"
+            + "TARGET_SECTIONS_TO_REWRITE:\n"
+            + f"{json.dumps(target_sections, ensure_ascii=False)}\n"
+            + "CURRENT_TARGET_SECTION_LINES:\n"
+            + f"{json.dumps(current_sections, ensure_ascii=False)}\n"
+            + "FULL_SECTION_MAP_DO_NOT_CHANGE:\n"
+            + f"{json.dumps(section_tags, ensure_ascii=False)}\n"
+            + "HOOK_LINES_TO_PRESERVE_OR_IMPROVE:\n"
+            + f"{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
+            + "Rewrite only the target sections. Keep each target bracket tag exactly once. "
+            "Do not output any non-target section. Do not include previous weak lines unless they are genuinely strong. "
+            "Replace generic phrases with concrete human details, coherent metaphor, breathable lines, and genre-correct flow. "
+            "Never include BPM, key, caption, metadata, producer names, markdown, explanations, or stage directions.\n"
+            + f"OUTPUT_BLOCKS:\n{_agent_block_template('lyric_craft_repair_payload')}\n"
+        )
+
+        def _repair_validator(payload: dict[str, Any]) -> list[str]:
+            issues: list[str] = []
+            actual_sections = _director_section_tags({"section_map": payload.get("sections") or []})
+            if [_section_key_for_director(item) for item in actual_sections] != [_section_key_for_director(item) for item in target_sections]:
+                issues.append("sections_mismatch")
+            replacement_lines = _director_payload_lines(payload)
+            _merged, _changed, merge_issues = _director_replace_section_blocks(lines, replacement_lines, target_sections)
+            issues.extend(merge_issues)
+            partial_craft = lyric_craft_gate(
+                "\n".join(replacement_lines),
+                current,
+                options=self.opts,
+                plan=density_plan,
+                duration=duration,
+                genre_hint=genre_hint,
+                partial=True,
+            )
+            for craft_issue in partial_craft.get("issues") or []:
+                craft_id = str(craft_issue.get("id") if isinstance(craft_issue, dict) else craft_issue)
+                if craft_id in {
+                    "lyric_craft_placeholder",
+                    "lyric_craft_fallback_artifact",
+                    "lyric_craft_metadata_leakage",
+                    "lyric_craft_generic_ai_phrase",
+                    "lyric_craft_adjective_stacking",
+                    "lyric_craft_line_breathability",
+                    "lyric_craft_mixed_metaphor",
+                    "lyric_craft_low_score",
+                }:
+                    issues.append(craft_id)
+            return sorted(set(issues))
+
+        try:
+            repair_payload = self._call_until_valid(
+                "Lyric Craft Repair Agent",
+                repair_prompt,
+                "lyric_craft_repair_payload",
+                _repair_validator,
+                repair_context=(
+                    f"Rewrite only TARGET_SECTIONS_TO_REWRITE={json.dumps(target_sections, ensure_ascii=False)}. "
+                    "sections must match exactly. Use delimiter blocks only. Remove generic AI phrases, mixed metaphors, "
+                    "overlong lines, weak hook wording, and filler while preserving the bracket tags."
+                ),
+            )
+        except AceJamAgentError as exc:
+            self.logs.append(
+                f"Lyric Craft Repair Agent failed for track {index + 1}; falling back to lyric part regeneration: "
+                f"{_monitor_preview(exc, 240)}"
+            )
+            _append_album_debug_jsonl(
+                self.opts,
+                "06_gate_reports.jsonl",
+                {
+                    "track_number": index + 1,
+                    "stage": "lyric_craft_repair_failed",
+                    "validation_issues": craft_issue_ids,
+                    "target_sections": target_sections,
+                    "source_error": str(exc),
+                    "repair_strategy": "part_regeneration",
+                },
+            )
+            return False
+        replacement_lines = _director_payload_lines(repair_payload)
+        merged, changed, merge_issues = _director_replace_section_blocks(lines, replacement_lines, target_sections)
+        if not changed or merge_issues:
+            return False
+        current["lyrics_lines"] = merged
+        current["lyrics"] = "\n".join(merged).strip()
+        current["lyrical_craft_contract"] = craft_contract
+        current["lyric_craft_gate"] = lyric_craft_gate(
+            current["lyrics"],
+            current,
+            options=self.opts,
+            plan=density_plan,
+            duration=duration,
+            genre_hint=genre_hint,
+            partial=False,
+        )
+        self.agent_repair_count += 1
+        self.logs.append(
+            "Final gate lyric craft repair: "
+            f"track {index + 1} rewrote {', '.join(target_sections)} for {', '.join(craft_issue_ids)}"
+        )
+        _append_album_debug_jsonl(
+            self.opts,
+            "06_gate_reports.jsonl",
+            {
+                "track_number": index + 1,
+                "stage": "lyric_craft_repair",
+                "validation_issues": craft_issue_ids,
+                "weak_sections": craft_gate.get("weak_sections") or [],
+                "target_sections": target_sections,
+                "repair_strategy": "section_rewrite",
+                "lyric_craft_gate": current["lyric_craft_gate"],
+                "rejected_lyric_preview": _monitor_preview("\n".join(current_sections), 900),
+                "payload_preview": _monitor_preview(_compact_json(repair_payload), 900),
+            },
+        )
+        return True
 
     def _assemble_track(
         self,
@@ -6593,10 +8006,26 @@ class AceJamAlbumDirector:
         track["genre_intent_contract"] = genre_adherence.get("contract") or {}
         track["genre_adherence"] = {key: value for key, value in genre_adherence.items() if key != "contract"}
         track["genre_validation_issues"] = genre_adherence.get("issue_ids") or []
+        producer_readiness = producer_grade_readiness(track, options=self.opts)
+        track["producer_grade_sonic_contract"] = (producer_readiness.get("sonic_dna_coverage") or {}).get("contract") or {}
+        track["sonic_dna_coverage"] = producer_readiness.get("sonic_dna_coverage") or {}
+        track["producer_grade_readiness"] = producer_readiness
+        craft_gate = lyric_craft_gate(
+            track.get("lyrics") or "",
+            track,
+            options=self.opts,
+            duration=track.get("duration") or self.track_duration,
+            genre_hint=_director_track_genre_hint(track, self.opts),
+            instrumental=str(track.get("lyrics") or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental")),
+        )
+        track["lyrical_craft_contract"] = craft_gate.get("contract") or {}
+        track["lyric_craft_gate"] = craft_gate
+        track["lyric_craft_score"] = craft_gate.get("score")
+        track["lyric_craft_issues"] = craft_gate.get("issue_ids") or []
         track["agent_complete_payload"] = True
         track["agent_director_version"] = ACEJAM_ALBUM_DIRECTOR_VERSION
         _set_track_stats(track)
-        gate = _director_minimal_validate(track, section_tags)
+        gate = _director_minimal_validate(track, section_tags, self.opts)
         track["payload_gate_status"] = gate["status"]
         track["payload_quality_gate"] = gate
         _append_album_debug_jsonl(self.opts, "06_gate_reports.jsonl", {"track_number": index + 1, "title": track.get("title"), "gate": gate})
@@ -6625,7 +8054,7 @@ class AceJamAlbumDirector:
             "Track Concept Agent",
             self._base_track_context(index, album_bible, slot, include_lyric_constraints=True, fields=concept_fields)
             + f"\nPREVIOUS_TRACK_SUMMARIES:\n{json.dumps(previous_summaries, ensure_ascii=False, indent=2)}\n"
-            + 'OUTPUT_SCHEMA: {"title":"","description":"","style":"","vibe":"","narrative":"","required_phrases":[]}\n',
+            + f"OUTPUT_BLOCKS:\n{_agent_block_template('track_concept_payload')}\n",
             "track_concept_payload",
             _validate_track_concept_payload,
             repair_context="title, description, and style must be non-empty. Preserve any locked user title.",
@@ -6666,10 +8095,13 @@ class AceJamAlbumDirector:
                 "duration must be plausible seconds or m:ss between 10 and 600 seconds.",
             ),
         ]:
+            schema_name = agent_name.lower().replace(" ", "_") + "_payload"
             payload = self._call_until_valid(
                 agent_name,
-                self._base_track_context(index, album_bible, current, fields=sonic_fields) + f"\nTASK:\n{instruction}\nOUTPUT_SCHEMA: {schema}\n",
-                agent_name.lower().replace(" ", "_") + "_payload",
+                self._base_track_context(index, album_bible, current, fields=sonic_fields)
+                + f"\nTASK:\n{instruction}\n"
+                + f"OUTPUT_BLOCKS:\n{_agent_block_template(schema_name)}\n",
+                schema_name,
                 validator,
                 repair_context=repair_context,
             )
@@ -6722,6 +8154,59 @@ class AceJamAlbumDirector:
                     "rejected_payload_preview": _monitor_preview(_compact_json(track), 900),
                 },
             )
+            if (
+                _has_issue(issues, "non_rap_arrangement_lyric_leakage")
+                and all(_has_issue([issue], "non_rap_arrangement_lyric_leakage") for issue in issues)
+                and self._sanitize_arrangement_lyric_leakage(index, current, gate)
+            ):
+                track, gate = self._assemble_track(index, slot, current, section_tags)
+                if gate.get("gate_passed"):
+                    break
+                issues = [str(issue) for issue in (gate.get("issues") or [])]
+                if not _has_issue(issues, "non_rap_arrangement_lyric_leakage"):
+                    continue
+            if (
+                _has_issue(
+                    issues,
+                    "lyrics_under_length",
+                    "lyrics_too_few_lines",
+                    "lyrics_under_hit_density",
+                    "lyrics_under_hit_line_density",
+                    "rap_verses_underfilled",
+                    "hook_underwritten",
+                )
+                and self._repair_weak_lyric_sections(index, current, gate)
+            ):
+                track, gate = self._assemble_track(index, slot, current, section_tags)
+                if gate.get("gate_passed"):
+                    break
+                issues = [str(issue) for issue in (gate.get("issues") or [])]
+            craft_issue_names = {
+                "lyric_craft_generic_ai_phrase",
+                "lyric_craft_adjective_stacking",
+                "lyric_craft_mixed_metaphor",
+                "lyric_craft_hook_weak",
+                "lyric_craft_no_concrete_scene",
+                "lyric_craft_line_breathability",
+                "lyric_craft_rhyme_chaos",
+                "lyric_craft_section_blur",
+                "lyric_craft_low_score",
+            }
+            if _has_issue(issues, "lyric_craft_hook_weak"):
+                hook_payload = self._generate_hook(index, album_bible, current, lyric_fields, repair_issues=issues)
+            if _has_issue(issues, *sorted(craft_issue_names)) and self._repair_lyric_craft(
+                index,
+                album_bible,
+                current,
+                gate,
+                section_tags,
+                hook_payload,
+                lyric_fields,
+            ):
+                track, gate = self._assemble_track(index, slot, current, section_tags)
+                if gate.get("gate_passed"):
+                    break
+                issues = [str(issue) for issue in (gate.get("issues") or [])]
             needs_section_hook_lyrics = _has_issue(issues, "section_map_missing_hook", "lyrics_missing_hook_section")
             needs_lyrics = needs_section_hook_lyrics or _has_issue(
                 issues,
@@ -6732,8 +8217,14 @@ class AceJamAlbumDirector:
                 "lyrics_under_length",
                 "lyrics_too_few_lines",
                 "lyrics_under_hit_density",
+                "lyrics_under_hit_line_density",
+                "rap_verses_underfilled",
+                "hook_underwritten",
+                "lyric_unique_line_ratio_low",
+                "fallback_reprise_overuse",
                 "non_rap_arrangement_lyric_leakage",
                 "rap_lines_not_bar_like",
+                *sorted(craft_issue_names),
             )
             needs_tags = _has_issue(
                 issues,
@@ -6743,6 +8234,15 @@ class AceJamAlbumDirector:
                 "genre_intent_missing_low_end",
                 "rap_not_dominant",
                 "orchestral_overdominant",
+                "producer_grade_missing_primary_genre",
+                "producer_grade_missing_drum_groove",
+                "producer_grade_missing_low_end_bass",
+                "producer_grade_missing_melodic_identity",
+                "producer_grade_missing_vocal_delivery",
+                "producer_grade_missing_arrangement_movement",
+                "producer_grade_missing_texture_space",
+                "producer_grade_missing_mix_master",
+                "producer_grade_sonic_dna_unrepaired",
             )
             needs_caption = _has_issue(
                 issues,
@@ -6825,8 +8325,8 @@ class AceJamAlbumDirector:
         return track
 
 
-# The active album runtime starts here. Legacy CrewAI/RAG planner paths were removed;
-# plan_album is the compatibility facade for AceJamAlbumDirector.
+# The active album runtime starts here. Legacy large CrewAI/RAG planner paths are
+# kept only for import compatibility; plan_album selects AceJAM Direct or CrewAI Micro.
 
 def plan_album(
     concept: str,
@@ -6843,8 +8343,11 @@ def plan_album(
     log_callback: Callable[[str], None] | None = None,
     crewai_output_log_file: str | None = None,
 ) -> dict[str, Any]:
-    """Compatibility facade for the pure sequential AceJAM album director."""
+    """Compatibility facade for AceJAM Direct and CrewAI Micro album planning."""
     logs: list[str] = _AlbumPlanLogs(log_callback)
+    requested_engine_raw = (options or {}).get("agent_engine")
+    requested_engine_text = str(requested_engine_raw or "").strip().lower()
+    requested_engine = normalize_album_agent_engine(requested_engine_raw)
     recovered_concept = _recover_album_concept(concept, options, input_tracks)
     if not recovered_concept:
         message = "Album concept is empty. Provide concept, user_prompt, album_title, or track hints before planning."
@@ -6854,9 +8357,9 @@ def plan_album(
             "logs": logs,
             "success": False,
             "error": message,
-            "planning_engine": ACEJAM_AGENT_ENGINE,
+            "planning_engine": requested_engine,
             "custom_agents_used": True,
-            "crewai_used": False,
+            "crewai_used": requested_engine == CREWAI_MICRO_AGENT_ENGINE,
             "toolbelt_fallback": False,
             "crewai_output_log_file": "",
             "agent_debug_dir": str((options or {}).get("album_debug_dir") or ""),
@@ -6865,18 +8368,24 @@ def plan_album(
     opts["concept"] = recovered_concept
     opts["sanitized_concept"] = recovered_concept
     opts["genre_hint"] = _album_genre_hint(opts)
-    opts["agent_engine"] = ACEJAM_AGENT_ENGINE
+    opts["agent_engine"] = requested_engine
     opts["print_agent_io"] = _truthy(opts.get("print_agent_io"), ACEJAM_PRINT_AGENT_IO_DEFAULT)
+    planner_settings = planner_llm_settings_from_payload(opts)
+    opts.update(planner_settings)
     if input_tracks:
         opts["editable_plan_tracks"] = [dict(item) for item in input_tracks if isinstance(item, dict)]
         logs.append(
             f"Editable album plan received with {len(opts['editable_plan_tracks'])} track hint(s); "
-            "the pure director will still prompt every setting and lyrics part before render."
+            "the selected planner will still prompt every setting and lyrics part before render."
         )
-    if not use_crewai:
-        logs.append("Legacy use_crewai/toolbelt flag ignored: pure AceJAM Director is the only active album runtime.")
-    if crewai_output_log_file:
-        logs.append("Legacy CrewAI output log requested but ignored: pure AceJAM Director writes agent JSONL logs.")
+    if requested_engine_text == "legacy_crewai":
+        logs.append("legacy_crewai alias selected: using CrewAI Micro Tasks; the old large CrewAI flow is not active.")
+    if not use_crewai and requested_engine == ACEJAM_AGENT_ENGINE:
+        logs.append("Legacy use_crewai/toolbelt flag ignored: AceJAM Direct is selected.")
+    if crewai_output_log_file and requested_engine == ACEJAM_AGENT_ENGINE:
+        logs.append("Legacy CrewAI output log requested but ignored: AceJAM Direct writes agent JSONL logs.")
+    elif crewai_output_log_file and requested_engine == CREWAI_MICRO_AGENT_ENGINE:
+        logs.append("CrewAI Micro Tasks writes standard AceJAM debug JSONL; legacy large CrewAI logs are not used.")
 
     lang_name = LANG_NAMES.get(language, language)
     logs.append(f"Concept preview: {_monitor_preview(recovered_concept, 220)}")
@@ -6899,15 +8408,24 @@ def plan_album(
         )
     logs.append(f"Tracks: {num_tracks} x {int(track_duration)}s")
     planner_provider = normalize_provider(planner_provider or opts.get("planner_lm_provider") or "ollama")
-    embedding_provider = normalize_provider(embedding_provider or opts.get("embedding_lm_provider") or planner_provider)
+    embedding_provider = normalize_provider(embedding_provider or opts.get("embedding_lm_provider") or "ollama")
     ollama_model = str(ollama_model or opts.get("planner_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL).strip()
     embedding_model = str(embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL).strip()
-    logs.append(f"Planner LM: {provider_label(planner_provider)} ({ollama_model}); ACE-Step LM is disabled for album-agent payloads.")
-    logs.append(f"Embedding: {provider_label(embedding_provider)} ({embedding_model}); not used by the pure sequential director.")
+    logs.append(f"Local AI Writer/Planner: {provider_label(planner_provider)} ({ollama_model}) for lyrics, tags, BPM, key and captions.")
+    logs.append(f"Planning Engine: {album_agent_engine_label(requested_engine)} ({requested_engine}).")
+    logs.append("ACE-Step optional lyric/metadata LM: off for album-agent payloads; ACE-Step Audio Models render the final music.")
+    logs.append(f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled and not used by the selected micro/direct director.")
     logs.append(
-        "AceJAM Director runtime: "
-        f"json_retries={ACEJAM_AGENT_JSON_RETRIES}, "
-        f"temperature={ACEJAM_AGENT_TEMPERATURE}, "
+        "Album planner runtime: "
+        f"block_retries={ACEJAM_AGENT_BLOCK_RETRIES}, "
+        f"planner_preset={planner_settings.get('planner_creativity_preset')}, "
+        f"temperature={planner_settings.get('planner_temperature')}, "
+        f"top_p={planner_settings.get('planner_top_p')}, "
+        f"top_k={planner_settings.get('planner_top_k')}, "
+        f"repeat_penalty={planner_settings.get('planner_repeat_penalty')}, "
+        f"max_tokens={planner_settings.get('planner_max_tokens')}, "
+        f"context={planner_settings.get('planner_context_length')}, "
+        f"timeout={planner_settings.get('planner_timeout')}, "
         f"print_agent_io={opts['print_agent_io']}, "
         f"planner_thinking={_truthy(opts.get('planner_thinking'), False)}."
     )
@@ -6933,9 +8451,9 @@ def plan_album(
             "logs": logs,
             "success": False,
             "error": error,
-            "planning_engine": ACEJAM_AGENT_ENGINE,
+            "planning_engine": requested_engine,
             "custom_agents_used": True,
-            "crewai_used": False,
+            "crewai_used": requested_engine == CREWAI_MICRO_AGENT_ENGINE,
             "toolbelt_fallback": False,
             "crewai_output_log_file": "",
             "agent_debug_dir": str(opts.get("album_debug_dir") or ""),
@@ -6958,14 +8476,15 @@ def plan_album(
         ).run()
     except Exception as exc:
         agent_error = str(exc)
-        logs.append(f"AceJAM Director planning failed loudly: {agent_error}")
+        failure_label = "AceJAM Director" if requested_engine == ACEJAM_AGENT_ENGINE else album_agent_engine_label(requested_engine)
+        logs.append(f"{failure_label} planning failed loudly: {agent_error}")
         _write_album_debug_json(
             opts,
             "07_agent_failure.json",
             {
                 "error": agent_error,
                 "error_type": type(exc).__name__,
-                "planning_engine": ACEJAM_AGENT_ENGINE,
+                "planning_engine": requested_engine,
                 "director_version": ACEJAM_ALBUM_DIRECTOR_VERSION,
             },
         )
@@ -6974,9 +8493,9 @@ def plan_album(
             "tracks": [],
             "logs": logs,
             "success": False,
-            "planning_engine": ACEJAM_AGENT_ENGINE,
+            "planning_engine": requested_engine,
             "custom_agents_used": True,
-            "crewai_used": False,
+            "crewai_used": requested_engine == CREWAI_MICRO_AGENT_ENGINE,
             "toolbelt_fallback": False,
             "crewai_error": "",
             "agent_error": agent_error,

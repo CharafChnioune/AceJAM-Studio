@@ -1,0 +1,26 @@
+[   13337ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)
+[   31446ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7403:22)
+[   31541ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)
+[   66321ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7403:22)
+[   66423ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)
+[   76784ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7403:22)
+[  105295ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)
+[  111928ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7403:22)
+[  112037ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)
+[  125994ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7403:22)
+[  126420ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)
+[  141085ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7403:22)
+[  141164ms] TypeError: e.target.closest is not a function
+    at HTMLDocument.<anonymous> (http://127.0.0.1:8765/:7399:28)

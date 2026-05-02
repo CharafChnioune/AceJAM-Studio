@@ -12,13 +12,14 @@ from studio_core import ACE_STEP_CAPTION_CHAR_LIMIT, ACE_STEP_LYRICS_CHAR_LIMIT
 ACE_STEP_TRACK_PROMPT_TEMPLATE_VERSION = "ace-step-track-prompt-template-2026-04-29"
 
 CAPTION_DIMENSIONS = [
-    "genre_style",
-    "rhythm_groove",
-    "instrumentation",
-    "vocal_style",
-    "mood_atmosphere",
-    "arrangement_energy",
-    "mix_production",
+    "primary_genre",
+    "drum_groove",
+    "low_end_bass",
+    "melodic_identity",
+    "vocal_delivery",
+    "arrangement_movement",
+    "texture_space",
+    "mix_master",
 ]
 
 OUTPUT_SCHEMA_FIELDS = [
@@ -98,7 +99,7 @@ class AceStepTrackPromptTemplate:
                 "caption_max_chars": ACE_STEP_CAPTION_CHAR_LIMIT,
                 "lyrics_max_chars": ACE_STEP_LYRICS_CHAR_LIMIT,
                 "caption_role": "short musical portrait: genre, groove, instruments, vocal style, mood, arrangement energy, production mix",
-                "lyrics_role": "temporal script: concise section/performance tags plus actual lyrics only",
+                "lyrics_role": "temporal script: concise section/performance tags plus actual lyrics only; human craft with concrete scenes, coherent metaphor, memorable hooks, and genre-natural flow",
                 "caption_forbidden": [
                     "lyrics",
                     "section tags",
@@ -114,9 +115,11 @@ class AceStepTrackPromptTemplate:
                     "metadata blocks",
                     "placeholder lines",
                     "escaped literal \\n sequences",
+                    "generic AI slogans like neon dreams, fire inside, we rise",
                 ],
                 "consistency_rule": "Caption and lyric section tags must agree on instruments, vocal role, mood, and energy.",
                 "section_tag_rule": "Keep section tags concise; put complex sound detail in caption.",
+                "craft_rule": "Rap needs cadence/internal rhyme/bar momentum; sung genres need vowel-friendly emotional clarity; EDM/instrumental should use sparse motifs instead of forced literary verses.",
             },
             "FULL_TAG_LIBRARY": compact_full_tag_library(),
             "LYRIC_LENGTH_PLAN": lyric_length_plan or {},
@@ -154,4 +157,3 @@ class AceStepTrackPromptTemplate:
 
 def render_track_prompt_template(**kwargs: Any) -> str:
     return AceStepTrackPromptTemplate().render(**kwargs)
-

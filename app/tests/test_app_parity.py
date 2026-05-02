@@ -258,22 +258,170 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("not fully downloaded", status)
             self.assertIn("missing usable weight files", status)
 
+    def test_helper_checkpoint_readiness_accepts_ckpt_weights(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoints" / "ace-step-v1.5-1d-vae-stable-audio-format"
+            path.mkdir(parents=True)
+            (path / "config.json").write_text("{}", encoding="utf-8")
+            (path / "checkpoint.ckpt").write_bytes(b"weights")
+
+            self.assertTrue(acejam_app._checkpoint_dir_ready(path))
+
     def test_official_parity_payload_exposes_wrappers_and_runtime(self):
-        payload = acejam_app._official_parity_payload()
+        source_status = {
+            "vendor_dir": str(acejam_app.OFFICIAL_ACE_STEP_DIR),
+            "local_commit": "local-sha",
+            "local_branch": "main",
+            "dirty": False,
+            "dirty_files": [],
+            "remote_url": "https://github.com/ace-step/ACE-Step-1.5.git",
+            "remote_main_head": "remote-sha",
+            "behind_main": True,
+            "status": "behind",
+            "sync_confirm": acejam_app.ACE_STEP_VENDOR_SYNC_CONFIRM,
+            "sync_mode": "patch-preserving manual endpoint",
+            "update_note": "Status only.",
+        }
+        with patch.object(acejam_app, "_official_source_status", return_value=source_status):
+            payload = acejam_app._official_parity_payload()
 
         self.assertTrue(payload["success"])
         self.assertIn("/v1/init", payload["manifest"]["api_endpoints"])
         self.assertIn("/v1/training/start_lokr", payload["manifest"]["api_endpoints"])
         self.assertIn("backend_hash", payload["manifest"]["runtime"])
         self.assertIn("api_key_enabled", payload["manifest"]["runtime"])
+        self.assertEqual(payload["manifest"]["runtime"]["source_status"]["status"], "behind")
+        self.assertTrue(payload["manifest"]["source_status"]["behind_main"])
+        self.assertTrue(any("behind official main" in item for item in payload["manifest"]["recommended_actions"]))
         self.assertIn("quality_policy", payload["manifest"])
         self.assertIn("schema_parity", payload["manifest"])
         self.assertIn("settings_registry", payload["manifest"])
+        self.assertIn("model_registry", payload["manifest"])
+        self.assertIn("main", payload["manifest"]["model_registry"])
+        self.assertIn("acestep-v15-turbo-shift1", payload["manifest"]["model_registry"])
+        self.assertIn("acestep-v15-turbo-continuous", payload["manifest"]["model_registry"])
+        self.assertIn("acestep-captioner", payload["manifest"]["boot_quality_models"])
+        self.assertIn("acestep-v15-xl-sft", payload["manifest"]["boot_quality_models"])
+        self.assertEqual(payload["manifest"]["model_registry"]["acestep-v15-turbo-rl"]["status"], "unreleased")
+        self.assertIn("component_status", payload["manifest"]["core_bundle"])
+        self.assertIn("boot_downloads", payload["manifest"]["runtime"])
         self.assertEqual(payload["manifest"]["settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
         self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 64)
         self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
         self.assertEqual(payload["manifest"]["quality_policy"]["default_profile"], "chart_master")
         self.assertEqual(payload["manifest"]["quality_policy"]["turbo_models"]["inference_steps"], 8)
+
+    def test_official_downloadable_names_include_helpers_and_new_render_models(self):
+        downloads = acejam_app._downloadable_model_names()
+
+        self.assertIn("main", downloads)
+        self.assertIn("acestep-v15-turbo-shift1", downloads)
+        self.assertIn("acestep-v15-turbo-continuous", downloads)
+        self.assertIn("acestep-captioner", downloads)
+        self.assertIn("acestep-transcriber", downloads)
+        self.assertNotIn("acestep-v15-turbo-rl", downloads)
+
+    def test_boot_download_bundle_queues_best_quality_and_helper_models(self):
+        names = acejam_app._boot_download_model_names()
+
+        self.assertIn("main", names)
+        self.assertIn("acestep-v15-xl-sft", names)
+        self.assertIn("acestep-v15-xl-base", names)
+        self.assertIn(acejam_app.ACE_LM_PREFERRED_MODEL, names)
+        self.assertIn("acestep-captioner", names)
+        self.assertIn("acestep-transcriber", names)
+
+        started: list[str] = []
+        with patch.object(acejam_app, "ACEJAM_BOOT_DOWNLOAD_ENABLED", True), \
+            patch.dict(os.environ, {"ACEJAM_SKIP_MODEL_INIT_FOR_TESTS": "0"}), \
+            patch.object(acejam_app, "_is_model_installed", return_value=False), \
+            patch.object(acejam_app, "_start_model_download", side_effect=lambda model: started.append(model) or {"model_name": model}):
+            status = acejam_app._queue_boot_model_downloads()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["queued"], names)
+        self.assertEqual(started, names)
+
+    def test_quality_profile_defaults_choose_highest_practical_models(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}):
+            self.assertEqual(
+                acejam_app._song_model_for_quality_profile(None, "chart_master", "text2music"),
+                "acestep-v15-xl-sft",
+            )
+            self.assertEqual(
+                acejam_app._song_model_for_quality_profile("auto", "chart_master", "extract"),
+                "acestep-v15-xl-base",
+            )
+            self.assertEqual(
+                acejam_app._song_model_for_quality_profile("auto", "chart_master", "lego"),
+                "acestep-v15-xl-base",
+            )
+
+    def test_new_expert_fields_reach_official_request_payload(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "West Coast rap, tight drums, 808 bass, talkbox lead, male rap vocal, polished loud mix",
+                    "lyrics": "[Verse]\nConcrete lines land clean\n\n[Chorus]\nThe hook comes back clear",
+                    "duration": 30,
+                    "audio_format": "wav32",
+                    "dcw_enabled": False,
+                    "dcw_mode": "low",
+                    "dcw_scaler": 0.07,
+                    "dcw_high_scaler": 0.03,
+                    "dcw_wavelet": "db4",
+                    "retake_seed": "321",
+                    "retake_variance": 0.25,
+                    "flow_edit_morph": True,
+                    "flow_edit_source_caption": "source vocal pocket",
+                    "flow_edit_source_lyrics": "[Verse]\nsource line",
+                    "flow_edit_n_min": 0.8,
+                    "flow_edit_n_max": 0.2,
+                    "flow_edit_n_avg": 4,
+                    "analysis_only": True,
+                    "full_analysis_only": False,
+                    "extract_codes_only": True,
+                    "use_tiled_decode": False,
+                    "is_format_caption": True,
+                    "track_name": "vocals",
+                    "track_classes": ["vocals", "drums"],
+                    "lm_repetition_penalty": 1.15,
+                    "song_intent": {"genre_family": "rap", "caption": "structured intent caption"},
+                    "source_task_intent": "clean source vocal before morph",
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+
+        official_params = request["params"]
+        self.assertFalse(official_params["dcw_enabled"])
+        self.assertEqual(official_params["dcw_mode"], "low")
+        self.assertEqual(official_params["dcw_scaler"], 0.07)
+        self.assertEqual(official_params["dcw_high_scaler"], 0.03)
+        self.assertEqual(official_params["dcw_wavelet"], "db4")
+        self.assertEqual(official_params["retake_seed"], "321")
+        self.assertEqual(official_params["retake_variance"], 0.25)
+        self.assertTrue(official_params["flow_edit_morph"])
+        self.assertEqual(official_params["flow_edit_source_caption"], "source vocal pocket")
+        self.assertEqual(official_params["flow_edit_source_lyrics"], "[Verse]\nsource line")
+        self.assertEqual(official_params["flow_edit_n_min"], 0.2)
+        self.assertEqual(official_params["flow_edit_n_max"], 0.8)
+        self.assertEqual(official_params["flow_edit_n_avg"], 4)
+        self.assertNotIn("analysis_only", official_params)
+        self.assertEqual(request["official_api_fields"]["analysis_only"], True)
+        self.assertEqual(request["official_api_fields"]["extract_codes_only"], True)
+        self.assertEqual(request["official_api_fields"]["use_tiled_decode"], False)
+        self.assertEqual(request["official_api_fields"]["is_format_caption"], True)
+        self.assertEqual(request["official_api_fields"]["track_name"], "vocals")
+        self.assertEqual(request["official_api_fields"]["track_classes"], ["vocals", "drums"])
+        self.assertEqual(request["official_api_fields"]["lm_repetition_penalty"], 1.15)
+        self.assertEqual(request["lm_sampling"]["repetition_penalty"], 1.15)
+        self.assertEqual(params["song_intent"]["genre_family"], "rap")
+        self.assertEqual(params["source_task_intent"], "clean source vocal before morph")
 
     def test_official_response_wrapper_shape(self):
         wrapped = acejam_app._official_api_response({"ok": True})
@@ -326,6 +474,78 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["inference_steps"], 64)
         self.assertEqual(normalized["quality_profile"], "chart_master")
         self.assertEqual(normalized["runner_plan"], "official")
+
+    def test_planner_settings_stay_separate_from_ace_step_lm_controls(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-base",
+            "caption": "cinematic pop, live drums, rich vocal chain",
+            "lyrics": "[Verse]\nLine one\n[Chorus]\nHook",
+            "planner_lm_provider": "lmstudio",
+            "planner_model": "qwen-local",
+            "planner_temperature": 0.9,
+            "planner_top_p": 0.97,
+            "planner_top_k": 90,
+            "planner_repeat_penalty": 1.04,
+            "planner_seed": "777",
+            "planner_max_tokens": 4096,
+            "planner_context_length": 12288,
+            "planner_timeout": 240,
+            "lm_temperature": 0.55,
+            "lm_top_p": 0.7,
+            "lm_top_k": 12,
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-base"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            normalized = acejam_app._parse_generation_payload(payload)
+
+        self.assertEqual(normalized["planner_lm_provider"], "lmstudio")
+        self.assertEqual(normalized["planner_model"], "qwen-local")
+        self.assertEqual(normalized["planner_temperature"], 0.9)
+        self.assertEqual(normalized["planner_top_p"], 0.97)
+        self.assertEqual(normalized["planner_top_k"], 90)
+        self.assertEqual(normalized["planner_repeat_penalty"], 1.04)
+        self.assertEqual(normalized["planner_seed"], 777)
+        self.assertEqual(normalized["planner_max_tokens"], 4096)
+        self.assertEqual(normalized["planner_context_length"], 12288)
+        self.assertEqual(normalized["planner_timeout"], 240.0)
+        self.assertEqual(normalized["lm_temperature"], 0.55)
+        self.assertEqual(normalized["lm_top_p"], 0.7)
+        self.assertEqual(normalized["lm_top_k"], 12)
+
+    def test_album_options_include_planner_settings(self):
+        options = acejam_app._album_options_from_payload(
+            {
+                "concept": "Album about pressure",
+                "planner_lm_provider": "lmstudio",
+                "planner_model": "qwen-local",
+                "planner_creativity_preset": "wild",
+                "planner_temperature": 1.1,
+                "planner_top_p": 0.98,
+                "planner_top_k": 100,
+                "planner_repeat_penalty": 1.0,
+                "planner_seed": "222",
+                "planner_max_tokens": 5120,
+                "planner_context_length": 16384,
+                "planner_timeout": 300,
+                "lm_temperature": 0.42,
+            }
+        )
+
+        self.assertEqual(options["planner_lm_provider"], "lmstudio")
+        self.assertEqual(options["planner_model"], "qwen-local")
+        self.assertEqual(options["planner_creativity_preset"], "wild")
+        self.assertEqual(options["planner_temperature"], 1.1)
+        self.assertEqual(options["planner_top_p"], 0.98)
+        self.assertEqual(options["planner_top_k"], 100)
+        self.assertEqual(options["planner_repeat_penalty"], 1.0)
+        self.assertEqual(options["planner_seed"], 222)
+        self.assertEqual(options["planner_max_tokens"], 5120)
+        self.assertEqual(options["planner_context_length"], 16384)
+        self.assertEqual(options["planner_timeout"], 300.0)
+        self.assertEqual(options["lm_temperature"], 0.42)
+        self.assertEqual(options["embedding_lm_provider"], "ollama")
 
     def test_studio_generation_with_supplied_lyrics_leaves_ace_lm_format_off(self):
         payload = {
@@ -770,6 +990,39 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("lora-health-grid", html)
         self.assertNotIn('id="key-scale" type="text"', html)
 
+    def test_ui_has_single_local_ai_writer_planner_selector(self):
+        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("Local AI Writer/Planner", html)
+        self.assertIn('id="planner-provider"', html)
+        self.assertIn('id="ollama-model"', html)
+        self.assertIn("ACE-Step Audio Model", html)
+        self.assertIn('id="album-agent-engine"', html)
+        self.assertIn("AceJAM Direct (recommended)", html)
+        self.assertIn("CrewAI Micro Tasks (experimental)", html)
+        self.assertIn("agent_engine:", html)
+        self.assertIn("planning_engine", html)
+        self.assertIn("local_ai_writer", html)
+        self.assertIn("ace_step_audio", html)
+        self.assertIn("ace_step_optional_lm", html)
+        self.assertNotIn('id="ai-fill-provider"', html)
+        self.assertNotIn('id="ai-fill-ollama"', html)
+        self.assertNotIn('id="album-planner-provider"', html)
+        self.assertNotIn('id="album-ollama"', html)
+        self.assertNotIn('id="album-embed-provider"', html)
+        self.assertNotIn('id="album-embed"', html)
+        self.assertNotIn('id="local-llm-provider"', html)
+        self.assertNotIn("Legacy LM", html)
+        self.assertNotIn("Planner provider", html)
+        self.assertNotIn("Album planner", html)
+
+    def test_album_payload_options_normalize_planning_engine(self):
+        direct = acejam_app._album_options_from_payload({"concept": "one song"}, song_model="auto")
+        micro = acejam_app._album_options_from_payload({"concept": "one song", "agent_engine": "legacy_crewai"}, song_model="auto")
+
+        self.assertEqual(direct["agent_engine"], "acejam_agents")
+        self.assertEqual(micro["agent_engine"], "crewai_micro")
+
     def test_lora_one_click_ui_and_adapterbar_are_exposed(self):
         html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
 
@@ -1159,6 +1412,99 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("album_family_id", data)
         self.assertEqual(data["tracks"][0]["model_results"][0]["album_model"], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS[0])
 
+    def test_album_skips_planning_failed_track_and_renders_remaining_tracks(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            return {
+                "success": True,
+                "result_id": "partial-album-01",
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": payload,
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": "take-1",
+                        "result_id": "partial-album-01",
+                        "filename": "take.wav",
+                        "audio_url": "/media/results/partial-album-01/take.wav",
+                        "download_url": "/media/results/partial-album-01/take.wav",
+                        "title": payload["title"],
+                        "seed": payload["seed"],
+                    }
+                ],
+            }
+
+        request_payload = {
+            "agent_engine": "editable_plan",
+            "toolbelt_only": True,
+            "song_model_strategy": "selected",
+            "song_model": "acestep-v15-turbo",
+            "ace_lm_model": "none",
+            "track_variants": 1,
+            "save_to_library": False,
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "title": "Failed First",
+                    "tags": "West Coast hip-hop, boom-bap drums, 808 bass, male rap vocal, polished mix",
+                    "lyrics": "",
+                    "duration": 30,
+                },
+                {
+                    "track_number": 2,
+                    "title": "Second Still Renders",
+                    "tags": "West Coast hip-hop, boom-bap drums, 808 bass, male rap vocal, polished mix",
+                    "lyrics": "[Verse]\nSecond track keeps the signal live\n[Chorus]\nSecond track keeps the signal live\n[Outro]\nSecond track lands clear",
+                    "duration": 30,
+                    "bpm": 92,
+                    "key_scale": "A minor",
+                    "time_signature": "4",
+                },
+            ],
+        }
+        planned = self._mock_direct_album_plan(request_payload["tracks"])
+        planned["tracks"][0].update(
+            {
+                "planning_status": "failed",
+                "skip_render": True,
+                "planning_error": "Hook Agent failed semantic validation",
+                "error": "Hook Agent failed semantic validation",
+                "agent_complete_payload": False,
+                "payload_gate_status": "planning_failed",
+                "payload_gate_passed": False,
+            }
+        )
+        planned["planning_status"] = "partial"
+        planned["planning_failed_count"] = 1
+        planned["planning_failures"] = [{"track_number": 1, "title": "Failed First", "error": "Hook Agent failed semantic validation"}]
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}), \
+            patch.object(album_crew_module, "plan_album", return_value=planned), \
+            patch.object(acejam_app, "_validate_direct_album_agent_payload", return_value={"gate_passed": True, "status": "pass", "issues": [], "blocking_issues": []}), \
+            patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+            patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+            patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
+            raw = acejam_app.generate_album(
+                concept="unit test album",
+                num_tracks=2,
+                track_duration=30,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertFalse(data["success"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["title"], "Second Still Renders")
+        self.assertEqual(data["generated_count"], 1)
+        self.assertEqual(data["expected_renders"], 2)
+        self.assertEqual(data["failed_count"], 1)
+        self.assertIn("Failed tracks", data["error"])
+        self.assertEqual(data["model_albums"][0]["tracks"][0]["planning_status"], "failed")
+        self.assertTrue(data["model_albums"][0]["tracks"][1]["generated"])
+
     def test_album_supplied_vocal_lyrics_can_explicitly_disable_ace_lm_formatting(self):
         calls = []
 
@@ -1362,13 +1708,20 @@ class AppParityTest(unittest.TestCase):
                     "track_number": 1,
                     "artist_name": "Unit Signal",
                     "title": "Clear The Hook",
-                    "tags": "West Coast rap, piano, drums, male rap vocal, polished mix",
+                    "tags": "West Coast rap, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook response, gritty street texture, punchy polished mix",
                     "lyrics": (
                         "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
-                        "Clean chords carry the signal\nThe chorus waits for release\n\n"
+                        "Clean chords carry the signal\nThe chorus waits for release\n"
+                        "Kick drum locks the cadence tight\nPiano flickers under city light\n"
+                        "Low end moves but the words stay clear\nSignal in front for every ear\n\n"
                         "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
-                        "Unit Signal rides tonight\nThe hook lands clean and bright\n\n"
-                        "[Outro]\nThe final note stays clean\nSeven paths land bright"
+                        "Unit Signal rides tonight\nThe hook lands clean and bright\n"
+                        "Hands come up when the chorus hits\nClear lead cuts through the mix\n"
+                        "Every line lands right on time\nNo blurred words inside the rhyme\n\n"
+                        "[Outro]\nThe final note stays clean\nSeven paths land bright\n"
+                        "Bass rolls out and the voice stays near\nOne last hook for the engineer\n"
+                        "Timing stays locked as the room lets go\nBright route echoes when the credits roll\n"
+                        "Clear words ring through the final snare\nUnit Signal leaves the hook in air"
                     ),
                     "duration": 30,
                     "bpm": 120,
@@ -1722,12 +2075,15 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(all(not item["sample_mode"] for item in calls))
         self.assertTrue(all(item["sample_query"] == "" for item in calls))
         self.assertTrue(all(not item["use_cot_lyrics"] for item in calls))
-        self.assertEqual(calls[0]["inference_steps"], 8)
-        self.assertEqual(calls[2]["inference_steps"], 64)
-        self.assertEqual(calls[0]["guidance_scale"], 7.0)
-        self.assertEqual(calls[2]["guidance_scale"], 8.0)
-        self.assertEqual(calls[0]["shift"], 3.0)
-        self.assertEqual(calls[2]["shift"], 3.0)
+        by_model = {item["song_model"]: item for item in calls}
+        self.assertEqual(by_model["acestep-v15-turbo"]["inference_steps"], 8)
+        self.assertEqual(by_model["acestep-v15-turbo-shift1"]["inference_steps"], 8)
+        self.assertEqual(by_model["acestep-v15-turbo-continuous"]["inference_steps"], 8)
+        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 64)
+        self.assertEqual(by_model["acestep-v15-turbo"]["guidance_scale"], 7.0)
+        self.assertEqual(by_model["acestep-v15-sft"]["guidance_scale"], 8.0)
+        self.assertEqual(by_model["acestep-v15-turbo"]["shift"], 3.0)
+        self.assertEqual(by_model["acestep-v15-sft"]["shift"], 3.0)
         self.assertEqual(data["render_strategy"], "all_models_song")
 
     def test_delete_generated_outputs_preserves_uploads_and_lora(self):

@@ -1,0 +1,1337 @@
+- generic [active] [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#workspace"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e8]: AceJAM Studio
+      - generic [ref=e9]: ACE-Step 1.5
+      - navigation "Main navigation" [ref=e10]:
+        - generic [ref=e11]: Create
+        - button "Simple" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Simple
+        - button "Custom" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Custom
+        - generic [ref=e20]: Edit
+        - button "Cover" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - text: Cover
+        - button "Repaint" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - text: Repaint
+        - button "Extract" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - text: Extract
+        - button "Lego" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - text: Lego
+        - button "Complete" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - text: Complete
+        - generic [ref=e39]: Produce
+        - button "Album" [ref=e40] [cursor=pointer]:
+          - img [ref=e41]
+          - text: Album
+        - button "Trainer" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+          - text: Trainer
+        - generic [ref=e48]: Manage
+        - button "Library" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Library
+        - button "Settings" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - text: Settings
+      - status [ref=e56]: ✓ Studio ready.
+    - main [ref=e57]:
+      - generic [ref=e58]:
+        - generic [ref=e59]:
+          - generic [ref=e60]: ACE-Step Audio Model
+          - combobox "ACE-Step Audio Model" [ref=e61]:
+            - option "Auto (Turbo - best default, fast)"
+            - option "Turbo - best default, fast"
+            - option "Turbo Shift3 - clear timbre, dry (not installed)"
+            - option "SFT - CFG detail tuning"
+            - option "Base - all tasks, fine-tuning (not installed)"
+            - option "XL Turbo - best 20GB+ daily driver (not installed)"
+            - option "XL SFT - highest detail, CFG" [selected]
+            - option "XL Base - all tasks, XL quality"
+            - option "Turbo RL - official, unreleased (unreleased)"
+          - generic [ref=e62]: "XL SFT: Turbo is recommended for fast prompt-to-song; XL Turbo is the quality daily driver on 20GB+ GPUs."
+          - generic [ref=e63]:
+            - generic [ref=e64]:
+              - generic [ref=e65]: XL SFT
+              - generic [ref=e66]: Installed
+            - generic [ref=e67]: Turbo is recommended for fast prompt-to-song; XL Turbo is the quality daily driver on 20GB+ GPUs.
+            - group [ref=e68]:
+              - generic "Model details" [ref=e69] [cursor=pointer]:
+                - strong [ref=e71]: Model details
+        - generic [ref=e72]:
+          - generic [ref=e73]: Duration (s)
+          - spinbutton "Duration (s)" [ref=e74]: "60"
+        - generic [ref=e75]:
+          - generic [ref=e76]: Variants
+          - spinbutton "Variants" [ref=e77]: "3"
+        - generic [ref=e80] [cursor=pointer]:
+          - checkbox "Save to library" [checked] [ref=e81]
+          - text: Save to library
+      - generic [ref=e82]:
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: Adapter
+            - combobox "Adapter" [ref=e86]
+          - generic [ref=e87]:
+            - generic [ref=e88]: Adapter strength
+            - slider "Adapter strength" [ref=e89]: "1"
+          - generic [ref=e92] [cursor=pointer]:
+            - checkbox "Use adapter" [ref=e93]
+            - text: Use adapter
+        - generic [ref=e94]: Adapters trained in Trainer apply to Simple, Custom, Album, Cover, Repaint, Lego and Complete.
+      - group [ref=e95]:
+        - generic "Start here — describe your song Local LLM fills the form. You can edit anything before generating." [ref=e96] [cursor=pointer]:
+          - generic [ref=e97]:
+            - strong [ref=e98]: Start here — describe your song
+            - generic [ref=e99]: Local LLM fills the form. You can edit anything before generating.
+        - generic [ref=e100]:
+          - generic [ref=e101]:
+            - generic [ref=e102]:
+              - generic [ref=e103]: Prompt mode
+              - combobox "Prompt mode" [ref=e104]:
+                - option "Current mode" [selected]
+                - option "Simple"
+                - option "Custom"
+                - option "News to song"
+                - option "Improve lyrics"
+                - option "Cover / Remix"
+                - option "Repaint"
+                - option "Extract"
+                - option "Lego"
+                - option "Complete"
+                - option "Album"
+            - generic [ref=e105]: "Using Local AI Writer/Planner: Ollama selected model."
+            - button "Fill all fields" [ref=e108] [cursor=pointer]
+          - generic [ref=e109]:
+            - generic [ref=e110]: Describe what you want
+            - textbox "Describe what you want" [ref=e111]:
+              - /placeholder: A late-night Dutch rap about Rotterdam, warm 808 bass and an emotional hook…
+          - generic [ref=e112]: Uses Local AI Writer/Planner. Updates the current mode directly — every field stays editable.
+      - group [ref=e113]:
+        - generic "Local AI Writer/Planner Ollama selected model · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192" [ref=e114] [cursor=pointer]:
+          - generic [ref=e115]:
+            - strong [ref=e116]: Local AI Writer/Planner
+            - generic [ref=e117]: Ollama selected model · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - generic [ref=e121]: Local AI provider
+              - combobox "Local AI provider" [ref=e122]:
+                - option "Ollama" [selected]
+                - option "LM Studio"
+            - generic [ref=e123]:
+              - generic [ref=e124]: Writer / planner model
+              - combobox "Writer / planner model" [ref=e125]
+            - generic [ref=e126]:
+              - generic [ref=e127]: Preset
+              - combobox "Preset" [ref=e128]:
+                - option "Stable"
+                - option "Balanced" [selected]
+                - option "Creative"
+                - option "Wild"
+            - generic [ref=e129]:
+              - generic [ref=e130]: Temperature
+              - spinbutton "Temperature" [ref=e131]: "0.45"
+            - generic [ref=e132]:
+              - generic [ref=e133]: Top-p
+              - spinbutton "Top-p" [ref=e134]: "0.92"
+            - generic [ref=e135]:
+              - generic [ref=e136]: Top-k
+              - spinbutton "Top-k" [ref=e137]: "40"
+          - group [ref=e138]:
+            - generic "Advanced Repeat control, seed, output and context" [ref=e139] [cursor=pointer]:
+              - generic [ref=e140]:
+                - strong [ref=e141]: Advanced
+                - generic [ref=e142]: Repeat control, seed, output and context
+      - generic [ref=e143]:
+        - generic [ref=e144]:
+          - generic [ref=e145]:
+            - generic [ref=e146]: Prompt to song
+            - heading "Simple" [level=2] [ref=e147]
+            - paragraph [ref=e148]: Type one idea, let the local LLM fill in the rest, then click Generate. The fastest path from concept to audio — perfect for first-time use.
+          - generic [ref=e149]: Beginner friendly
+        - generic [ref=e150]:
+          - generic [ref=e151]: Song idea
+          - textbox "Song idea" [ref=e152]:
+            - /placeholder: A Dutch melodic rap song about late-night Rotterdam, warm keys, 808 bass, emotional hook
+        - generic [ref=e153]:
+          - generic [ref=e156] [cursor=pointer]:
+            - checkbox "Instrumental" [ref=e157]
+            - text: Instrumental
+          - generic [ref=e158]:
+            - generic [ref=e159]: Quality preset
+            - combobox "Quality preset" [ref=e160]:
+              - option "Chart Master — final quality" [selected]
+              - option "Balanced Pro — 50-step quality"
+              - option "Preview Fast — Turbo draft"
+              - option "Official Raw — ACE-Step defaults"
+          - generic [ref=e163] [cursor=pointer]:
+            - checkbox "All 7 models" [ref=e164]
+            - text: All 7 models
+        - generic [ref=e165]: "Final-quality render: ~50 inference steps on the highest model variant. Best fidelity, slowest."
+        - generic [ref=e166]:
+          - generic [ref=e167]:
+            - strong [ref=e168]: lyrics
+            - text: missing
+          - generic [ref=e169]:
+            - strong [ref=e170]: tags
+            - text: missing
+          - generic [ref=e171]:
+            - strong [ref=e172]: model
+            - text: installed
+          - generic [ref=e173]:
+            - strong [ref=e174]: task
+            - text: compatible
+          - generic [ref=e175]:
+            - strong [ref=e176]: payload
+            - text: check pending
+        - generic [ref=e177]: Songwriting and planning use the Local AI Writer/Planner selected above. ACE-Step only renders the audio.
+        - generic [ref=e178]:
+          - generic [ref=e179]:
+            - generic [ref=e180]: 4B LM
+            - generic [ref=e181]: Installed
+          - generic [ref=e182]: Strongest official ACE-Step planner for complex composition and audio understanding on large GPUs.
+          - group [ref=e183]:
+            - generic "LM details Complex planning, Audio understanding, Copy melody" [ref=e184] [cursor=pointer]:
+              - generic [ref=e185]:
+                - strong [ref=e186]: LM details
+                - generic [ref=e187]: Complex planning, Audio understanding, Copy melody
+        - generic [ref=e188]:
+          - button "Fill from idea" [ref=e189] [cursor=pointer]
+          - button "Generate" [ref=e190] [cursor=pointer]:
+            - text: Generate
+            - generic [ref=e191]: ⌘↵
+      - generic [ref=e192]:
+        - generic [ref=e193]:
+          - generic [ref=e194]:
+            - generic [ref=e195]: Full control
+            - heading "Custom" [level=2] [ref=e196]
+            - paragraph [ref=e197]: Edit lyrics, tags, BPM, key, duration and reference audio directly. Pro settings (sampler, ACE-Step LM, post-processing) stay tucked away — open them only when you need to.
+          - generic [ref=e198]: Text-to-music
+        - generic [ref=e199]:
+          - generic [ref=e200]:
+            - heading "Song" [level=3] [ref=e201]
+            - generic [ref=e202]: Needs lyrics/tags
+          - generic [ref=e203]:
+            - generic [ref=e204]:
+              - generic [ref=e205]: Title
+              - textbox "Title" [ref=e206]:
+                - /placeholder: e.g. Neon Dreams
+            - generic [ref=e207]:
+              - generic [ref=e208]: Artist
+              - textbox "Artist" [ref=e209]:
+                - /placeholder: Leave blank for auto stage name
+            - generic [ref=e210]:
+              - generic [ref=e211]: Vocal language
+              - combobox "Vocal language" [ref=e212]:
+                - option "ar"
+                - option "az"
+                - option "bg"
+                - option "bn"
+                - option "ca"
+                - option "cs"
+                - option "da"
+                - option "de"
+                - option "el"
+                - option "en" [selected]
+                - option "es"
+                - option "fa"
+                - option "fi"
+                - option "fr"
+                - option "he"
+                - option "hi"
+                - option "hr"
+                - option "ht"
+                - option "hu"
+                - option "id"
+                - option "is"
+                - option "it"
+                - option "ja"
+                - option "ko"
+                - option "la"
+                - option "lt"
+                - option "ms"
+                - option "ne"
+                - option "nl"
+                - option "no"
+                - option "pa"
+                - option "pl"
+                - option "pt"
+                - option "ro"
+                - option "ru"
+                - option "sa"
+                - option "sk"
+                - option "sr"
+                - option "sv"
+                - option "sw"
+                - option "ta"
+                - option "te"
+                - option "th"
+                - option "tl"
+                - option "tr"
+                - option "uk"
+                - option "ur"
+                - option "vi"
+                - option "yue"
+                - option "zh"
+                - option "unknown"
+            - generic [ref=e215] [cursor=pointer]:
+              - checkbox "Instrumental" [ref=e216]
+              - text: Instrumental
+          - generic [ref=e217]:
+            - generic [ref=e218]: Caption / tags
+            - textbox "Caption / tags" [ref=e219]:
+              - /placeholder: genre, instruments, mood, vocal character, production style
+          - generic [ref=e220]:
+            - generic [ref=e221]: Lyrics
+            - textbox "Lyrics" [ref=e222]:
+              - /placeholder: "[Verse]\n...\n\n[Chorus]\n..."
+          - generic [ref=e223]:
+            - button "Write lyrics with AI" [ref=e224] [cursor=pointer]
+            - generic [ref=e225]: Vocal songs need real lyrics. Tick Instrumental to skip them.
+          - generic [ref=e226]:
+            - generic [ref=e227]: Reference audio (optional)
+            - button "Reference audio (optional)" [ref=e228]
+            - generic [ref=e229]: No reference selected.
+        - generic [ref=e230]:
+          - generic [ref=e231]:
+            - heading "Music metadata" [level=3] [ref=e232]
+            - generic [ref=e233]: Leave blank to let the AI infer; fill in to override.
+          - generic [ref=e234]:
+            - generic [ref=e235]:
+              - generic [ref=e236]: BPM
+              - spinbutton "BPM" [ref=e237]: "95"
+            - generic [ref=e238]:
+              - generic [ref=e239]: Key
+              - combobox "Key" [ref=e240]:
+                - option "Auto"
+                - option "A major"
+                - option "A minor" [selected]
+                - option "A# major"
+                - option "A# minor"
+                - option "Ab major"
+                - option "Ab minor"
+                - option "A♯ major"
+                - option "A♯ minor"
+                - option "A♭ major"
+                - option "A♭ minor"
+                - option "B major"
+                - option "B minor"
+                - option "B# major"
+                - option "B# minor"
+                - option "Bb major"
+                - option "Bb minor"
+                - option "B♯ major"
+                - option "B♯ minor"
+                - option "B♭ major"
+                - option "B♭ minor"
+                - option "C major"
+                - option "C minor"
+                - option "C# major"
+                - option "C# minor"
+                - option "Cb major"
+                - option "Cb minor"
+                - option "C♯ major"
+                - option "C♯ minor"
+                - option "C♭ major"
+                - option "C♭ minor"
+                - option "D major"
+                - option "D minor"
+                - option "D# major"
+                - option "D# minor"
+                - option "Db major"
+                - option "Db minor"
+                - option "D♯ major"
+                - option "D♯ minor"
+                - option "D♭ major"
+                - option "D♭ minor"
+                - option "E major"
+                - option "E minor"
+                - option "E# major"
+                - option "E# minor"
+                - option "Eb major"
+                - option "Eb minor"
+                - option "E♯ major"
+                - option "E♯ minor"
+                - option "E♭ major"
+                - option "E♭ minor"
+                - option "F major"
+                - option "F minor"
+                - option "F# major"
+                - option "F# minor"
+                - option "Fb major"
+                - option "Fb minor"
+                - option "F♯ major"
+                - option "F♯ minor"
+                - option "F♭ major"
+                - option "F♭ minor"
+                - option "G major"
+                - option "G minor"
+                - option "G# major"
+                - option "G# minor"
+                - option "Gb major"
+                - option "Gb minor"
+                - option "G♯ major"
+                - option "G♯ minor"
+                - option "G♭ major"
+                - option "G♭ minor"
+            - generic [ref=e241]:
+              - generic [ref=e242]: Time
+              - combobox "Time" [ref=e243]:
+                - option "Auto"
+                - option "2"
+                - option "3"
+                - option "4" [selected]
+                - option "6"
+          - generic [ref=e244]:
+            - generic [ref=e245]:
+              - strong [ref=e246]: lyrics
+              - text: missing
+            - generic [ref=e247]:
+              - strong [ref=e248]: tags
+              - text: missing
+            - generic [ref=e249]:
+              - strong [ref=e250]: model
+              - text: installed
+            - generic [ref=e251]:
+              - strong [ref=e252]: task
+              - text: compatible
+            - generic [ref=e253]:
+              - strong [ref=e254]: payload
+              - text: check pending
+        - group [ref=e255]:
+          - generic "Preview generation request lyrics missing · tags missing · checking backend" [ref=e256] [cursor=pointer]:
+            - generic [ref=e257]:
+              - strong [ref=e258]: Preview generation request
+              - generic [ref=e259]: lyrics missing · tags missing · checking backend
+        - group [ref=e260]:
+          - 'generic "ACE-Step settings ace-step-settings-parity-2026-04-26: complete coverage, default chart_master" [ref=e261] [cursor=pointer]':
+            - generic [ref=e262]:
+              - strong [ref=e263]: ACE-Step settings
+              - generic [ref=e264]: "ace-step-settings-parity-2026-04-26: complete coverage, default chart_master"
+        - group [ref=e265]:
+          - generic "Generation Seed -1, 64 steps, ode/heun" [ref=e266] [cursor=pointer]:
+            - generic [ref=e267]:
+              - strong [ref=e268]: Generation
+              - generic [ref=e269]: Seed -1, 64 steps, ode/heun
+          - option "ode" [selected]
+          - option "sde"
+          - option "euler"
+          - option "heun" [selected]
+        - group [ref=e270]:
+          - generic "Advanced ACE-Step lyric model ACE-Step optional LM acestep-5Hz-lm-4B" [ref=e271] [cursor=pointer]:
+            - generic [ref=e272]:
+              - strong [ref=e273]: Advanced ACE-Step lyric model
+              - generic [ref=e274]: ACE-Step optional LM acestep-5Hz-lm-4B
+          - option "Auto - ACE LM when needed"
+          - option "None - manual, fastest"
+          - option "0.6B LM - low VRAM prototype (not installed)"
+          - option "1.7B LM - best default planner"
+          - option "4B LM - strongest planning" [selected]
+          - option "mlx" [selected]
+          - option "pt"
+          - option "vllm"
+        - group [ref=e275]:
+          - 'generic "Output Output: wav32" [ref=e276] [cursor=pointer]':
+            - generic [ref=e277]:
+              - strong [ref=e278]: Output
+              - generic [ref=e279]: "Output: wav32"
+          - option "wav"
+          - option "flac"
+          - option "ogg"
+          - option "mp3"
+          - option "opus"
+          - option "aac"
+          - option "wav32" [selected]
+          - option "128k" [selected]
+          - option "192k"
+          - option "256k"
+          - option "320k"
+        - group [ref=e280]:
+          - generic "Post Processing Normalize on, fades 0s/0s" [ref=e281] [cursor=pointer]:
+            - generic [ref=e282]:
+              - strong [ref=e283]: Post Processing
+              - generic [ref=e284]: Normalize on, fades 0s/0s
+        - group [ref=e285]:
+          - generic "Runtime Device auto, offload off" [ref=e286] [cursor=pointer]:
+            - generic [ref=e287]:
+              - strong [ref=e288]: Runtime
+              - generic [ref=e289]: Device auto, offload off
+          - option "auto" [selected]
+          - option "cuda"
+          - option "mps"
+          - option "cpu"
+          - option "auto" [selected]
+          - option "bfloat16"
+          - option "float16"
+          - option "float32"
+          - option "auto" [selected]
+          - option "on"
+          - option "off"
+          - option "auto" [selected]
+          - option "cuda"
+          - option "mps"
+          - option "cpu"
+          - option "auto" [selected]
+          - option "bfloat16"
+          - option "float16"
+          - option "float32"
+        - group [ref=e290]:
+          - generic "Cover/Repaint Extras Cover noise 0, repaint balanced" [ref=e291] [cursor=pointer]:
+            - generic [ref=e292]:
+              - strong [ref=e293]: Cover/Repaint Extras
+              - generic [ref=e294]: Cover noise 0, repaint balanced
+          - option "auto" [selected]
+          - option "explicit"
+          - option "balanced" [selected]
+          - option "conservative"
+          - option "aggressive"
+        - generic [ref=e295]:
+          - generic [ref=e296] [cursor=pointer]:
+            - checkbox "All 7 models" [ref=e297]
+            - text: All 7 models
+          - button "Format caption" [ref=e298] [cursor=pointer]
+          - button "Generate" [ref=e299] [cursor=pointer]:
+            - text: Generate
+            - generic [ref=e300]: ⌘↵
+      - generic [ref=e301]:
+        - generic [ref=e302]:
+          - generic [ref=e303]:
+            - generic [ref=e304]: Source audio
+            - heading "Cover / Remix" [level=2] [ref=e305]
+            - paragraph [ref=e306]: Upload a song and describe the new style. The original structure stays — sound, vocal colour or genre changes. Use it for remixes and stylistic covers.
+          - generic [ref=e307]: Cover
+        - generic [ref=e308]:
+          - generic [ref=e309]:
+            - strong [ref=e310]: "1"
+            - text: Upload source
+          - generic [ref=e311]:
+            - strong [ref=e312]: "2"
+            - text: Set strength
+          - generic [ref=e313]:
+            - strong [ref=e314]: "3"
+            - text: Describe style
+          - generic [ref=e315]:
+            - strong [ref=e316]: "4"
+            - text: Generate
+        - generic [ref=e317]:
+          - heading "1 Source audio" [level=3] [ref=e318]:
+            - generic [ref=e319]: "1"
+            - text: Source audio
+          - generic [ref=e320]: Source audio
+          - button "Source audio" [ref=e321]
+          - generic [ref=e322]: No source selected.
+        - generic [ref=e323]:
+          - heading "2 Remix behavior" [level=3] [ref=e324]:
+            - generic [ref=e325]: "2"
+            - text: Remix behavior
+          - generic [ref=e326]: Source adherence (0–1)
+          - spinbutton "Source adherence (0–1)" [ref=e327]: "0.8"
+        - generic [ref=e328]:
+          - heading "3 Target style" [level=3] [ref=e329]:
+            - generic [ref=e330]: "3"
+            - text: Target style
+          - generic [ref=e331]: Target style
+          - textbox "Target style" [ref=e332]:
+            - /placeholder: jazz piano version, intimate vocals, brushed drums
+        - button "Generate cover" [ref=e333] [cursor=pointer]:
+          - text: Generate cover
+          - generic [ref=e334]: ⌘↵
+      - generic [ref=e335]:
+        - generic [ref=e336]:
+          - generic [ref=e337]:
+            - generic [ref=e338]: Local edit
+            - heading "Repaint" [level=2] [ref=e339]
+            - paragraph [ref=e340]: Replace a single time range while keeping the rest of the song intact. Use it to fix a weak verse, smooth a transition or rebuild an intro.
+          - generic [ref=e341]: Repaint
+        - generic [ref=e342]:
+          - generic [ref=e343]:
+            - strong [ref=e344]: "1"
+            - text: Upload source
+          - generic [ref=e345]:
+            - strong [ref=e346]: "2"
+            - text: Pick range
+          - generic [ref=e347]:
+            - strong [ref=e348]: "3"
+            - text: Describe replacement
+          - generic [ref=e349]:
+            - strong [ref=e350]: "4"
+            - text: Generate
+        - generic [ref=e351]:
+          - heading "1 Source audio" [level=3] [ref=e352]:
+            - generic [ref=e353]: "1"
+            - text: Source audio
+          - generic [ref=e354]: Source audio
+          - button "Source audio" [ref=e355]
+          - generic [ref=e356]: No source selected.
+        - generic [ref=e357]:
+          - heading "2 Time range" [level=3] [ref=e358]:
+            - generic [ref=e359]: "2"
+            - text: Time range
+          - generic [ref=e360]:
+            - generic [ref=e361]:
+              - generic [ref=e362]: Start (seconds)
+              - spinbutton "Start (seconds)" [ref=e363]: "0"
+            - generic [ref=e364]:
+              - generic [ref=e365]: End (seconds, -1 = end)
+              - spinbutton "End (seconds, -1 = end)" [ref=e366]: "-1"
+        - generic [ref=e367]:
+          - heading "3 Replacement" [level=3] [ref=e368]:
+            - generic [ref=e369]: "3"
+            - text: Replacement
+          - generic [ref=e370]: What should fill that range
+          - textbox "What should fill that range" [ref=e371]:
+            - /placeholder: smooth transition into a piano solo
+        - button "Generate replacement" [ref=e372] [cursor=pointer]:
+          - text: Generate replacement
+          - generic [ref=e373]: ⌘↵
+      - generic [ref=e374]:
+        - generic [ref=e375]:
+          - generic [ref=e376]:
+            - generic [ref=e377]: Stem isolation
+            - heading "Extract" [level=2] [ref=e378]
+            - paragraph [ref=e379]: Isolate one stem (vocals, drums, bass…) from a full mix using Base or XL Base. Use it to grab acapellas or instrumentals from a finished track.
+          - generic [ref=e380]: Base / XL Base only
+        - generic [ref=e381]:
+          - generic [ref=e382]:
+            - strong [ref=e383]: "1"
+            - text: Upload mix
+          - generic [ref=e384]:
+            - strong [ref=e385]: "2"
+            - text: Choose stem
+          - generic [ref=e386]:
+            - strong [ref=e387]: "3"
+            - text: Extract
+        - generic [ref=e388]:
+          - heading "1 Source mix" [level=3] [ref=e389]:
+            - generic [ref=e390]: "1"
+            - text: Source mix
+          - generic [ref=e391]: Source mix
+          - button "Source mix" [ref=e392]
+          - generic [ref=e393]: No source selected.
+        - generic [ref=e394]:
+          - heading "2 Stem" [level=3] [ref=e395]:
+            - generic [ref=e396]: "2"
+            - text: Stem
+          - generic [ref=e397]: Stem to isolate
+          - combobox "Stem to isolate" [ref=e398]:
+            - option "woodwinds" [selected]
+            - option "brass"
+            - option "fx"
+            - option "synth"
+            - option "strings"
+            - option "percussion"
+            - option "keyboard"
+            - option "guitar"
+            - option "bass"
+            - option "drums"
+            - option "backing_vocals"
+            - option "vocals"
+        - button "Extract stem" [ref=e399] [cursor=pointer]:
+          - text: Extract stem
+          - generic [ref=e400]: ⌘↵
+      - generic [ref=e401]:
+        - generic [ref=e402]:
+          - generic [ref=e403]:
+            - generic [ref=e404]: Layer builder
+            - heading "Lego" [level=2] [ref=e405]
+            - paragraph [ref=e406]: Add a fresh instrument or vocal layer on top of an existing backing track. Use it to layer hooks, basslines or harmonies onto a stem you already have.
+          - generic [ref=e407]: Base / XL Base only
+        - generic [ref=e408]:
+          - generic [ref=e409]:
+            - strong [ref=e410]: "1"
+            - text: Upload backing
+          - generic [ref=e411]:
+            - strong [ref=e412]: "2"
+            - text: Choose layer
+          - generic [ref=e413]:
+            - strong [ref=e414]: "3"
+            - text: Describe style
+          - generic [ref=e415]:
+            - strong [ref=e416]: "4"
+            - text: Add layer
+        - generic [ref=e417]:
+          - heading "1 Backing audio" [level=3] [ref=e418]:
+            - generic [ref=e419]: "1"
+            - text: Backing audio
+          - generic [ref=e420]: Backing audio
+          - button "Backing audio" [ref=e421]
+          - generic [ref=e422]: No source selected.
+        - generic [ref=e423]:
+          - heading "2 Layer direction" [level=3] [ref=e424]:
+            - generic [ref=e425]: "2"
+            - text: Layer direction
+          - generic [ref=e426]:
+            - generic [ref=e427]:
+              - generic [ref=e428]: Layer type
+              - combobox "Layer type" [ref=e429]:
+                - option "woodwinds" [selected]
+                - option "brass"
+                - option "fx"
+                - option "synth"
+                - option "strings"
+                - option "percussion"
+                - option "keyboard"
+                - option "guitar"
+                - option "bass"
+                - option "drums"
+                - option "backing_vocals"
+                - option "vocals"
+            - generic [ref=e430]:
+              - generic [ref=e431]: Layer style
+              - textbox "Layer style" [ref=e432]:
+                - /placeholder: tight funk bass, warm, pocket groove
+        - button "Add layer" [ref=e433] [cursor=pointer]:
+          - text: Add layer
+          - generic [ref=e434]: ⌘↵
+      - generic [ref=e435]:
+        - generic [ref=e436]:
+          - generic [ref=e437]:
+            - generic [ref=e438]: Arrangement
+            - heading "Complete" [level=2] [ref=e439]
+            - paragraph [ref=e440]: Upload a half-finished idea and let ACE-Step fill in the missing stems. Use it to turn a vocal sketch or chord loop into a full arrangement.
+          - generic [ref=e441]: Base / XL Base only
+        - generic [ref=e442]:
+          - generic [ref=e443]:
+            - strong [ref=e444]: "1"
+            - text: Upload partial
+          - generic [ref=e445]:
+            - strong [ref=e446]: "2"
+            - text: Select stems
+          - generic [ref=e447]:
+            - strong [ref=e448]: "3"
+            - text: Describe arrangement
+          - generic [ref=e449]:
+            - strong [ref=e450]: "4"
+            - text: Complete
+        - generic [ref=e451]:
+          - heading "1 Partial track" [level=3] [ref=e452]:
+            - generic [ref=e453]: "1"
+            - text: Partial track
+          - generic [ref=e454]: Partial track
+          - button "Partial track" [ref=e455]
+          - generic [ref=e456]: No source selected.
+        - generic [ref=e457]:
+          - heading "2 Stems to add" [level=3] [ref=e458]:
+            - generic [ref=e459]: "2"
+            - text: Stems to add
+          - generic [ref=e460]: Tracks the model should add
+          - generic [ref=e461]:
+            - generic [ref=e462] [cursor=pointer]:
+              - checkbox "woodwinds" [ref=e463]
+              - text: woodwinds
+            - generic [ref=e464] [cursor=pointer]:
+              - checkbox "brass" [ref=e465]
+              - text: brass
+            - generic [ref=e466] [cursor=pointer]:
+              - checkbox "fx" [ref=e467]
+              - text: fx
+            - generic [ref=e468] [cursor=pointer]:
+              - checkbox "synth" [ref=e469]
+              - text: synth
+            - generic [ref=e470] [cursor=pointer]:
+              - checkbox "strings" [ref=e471]
+              - text: strings
+            - generic [ref=e472] [cursor=pointer]:
+              - checkbox "percussion" [ref=e473]
+              - text: percussion
+            - generic [ref=e474] [cursor=pointer]:
+              - checkbox "keyboard" [ref=e475]
+              - text: keyboard
+            - generic [ref=e476] [cursor=pointer]:
+              - checkbox "guitar" [ref=e477]
+              - text: guitar
+            - generic [ref=e478] [cursor=pointer]:
+              - checkbox "bass" [ref=e479]
+              - text: bass
+            - generic [ref=e480] [cursor=pointer]:
+              - checkbox "drums" [ref=e481]
+              - text: drums
+            - generic [ref=e482] [cursor=pointer]:
+              - checkbox "backing_vocals" [ref=e483]
+              - text: backing_vocals
+            - generic [ref=e484] [cursor=pointer]:
+              - checkbox "vocals" [ref=e485]
+              - text: vocals
+        - generic [ref=e486]:
+          - heading "3 Arrangement style" [level=3] [ref=e487]:
+            - generic [ref=e488]: "3"
+            - text: Arrangement style
+          - generic [ref=e489]: Arrangement direction
+          - textbox "Arrangement direction" [ref=e490]:
+            - /placeholder: modern rock arrangement, wide chorus
+        - button "Complete arrangement" [ref=e491] [cursor=pointer]:
+          - text: Complete arrangement
+          - generic [ref=e492]: ⌘↵
+      - generic [ref=e493]:
+        - generic [ref=e494]:
+          - generic [ref=e495]:
+            - generic [ref=e496]: Production team
+            - heading "Album" [level=2] [ref=e497]
+            - paragraph [ref=e498]: Plan a full album with the Local AI Writer/Planner, edit every track, then render the whole record across the selected ACE-Step audio models. Use it for cohesive multi-track releases.
+          - generic [ref=e499]: 7-model studio
+        - img [ref=e501]
+        - generic [ref=e506]:
+          - strong [ref=e507]: Multi-track album production
+          - generic [ref=e508]: Concept → planned tracks → rendered audio across one or all 7 ACE-Step models. Plan once, edit any track, then generate.
+        - generic [ref=e509]:
+          - generic [ref=e510]:
+            - generic [ref=e511]: Concept
+            - textbox "Concept" [ref=e512]:
+              - /placeholder: A seven-track Dutch rap album about ambition, family, night shifts and winning quietly
+          - generic [ref=e513]:
+            - generic [ref=e514]:
+              - generic [ref=e515]: Genre prompt for agents
+              - textbox "Genre prompt for agents" [ref=e516]:
+                - /placeholder: cinematic West Coast rap, clear hook, polished modern mix
+            - generic [ref=e517]:
+              - generic [ref=e518]: Mood/vibe
+              - textbox "Mood/vibe" [ref=e519]:
+                - /placeholder: dark, tense, triumphant, cinematic
+            - generic [ref=e520]:
+              - generic [ref=e521]: Vocal type
+              - textbox "Vocal type" [ref=e522]:
+                - /placeholder: male rap lead, clear chorus response
+            - generic [ref=e523]:
+              - generic [ref=e524]: Audience/platform
+              - textbox "Audience/platform" [ref=e525]:
+                - /placeholder: streaming release, car speakers, club-ready low end
+          - generic [ref=e526]:
+            - generic [ref=e527]:
+              - generic [ref=e528]: Tracks
+              - spinbutton "Tracks" [ref=e529]: "5"
+            - generic [ref=e530]:
+              - generic [ref=e531]: Language
+              - combobox "Language" [ref=e532]:
+                - option "ar"
+                - option "az"
+                - option "bg"
+                - option "bn"
+                - option "ca"
+                - option "cs"
+                - option "da"
+                - option "de"
+                - option "el"
+                - option "en" [selected]
+                - option "es"
+                - option "fa"
+                - option "fi"
+                - option "fr"
+                - option "he"
+                - option "hi"
+                - option "hr"
+                - option "ht"
+                - option "hu"
+                - option "id"
+                - option "is"
+                - option "it"
+                - option "ja"
+                - option "ko"
+                - option "la"
+                - option "lt"
+                - option "ms"
+                - option "ne"
+                - option "nl"
+                - option "no"
+                - option "pa"
+                - option "pl"
+                - option "pt"
+                - option "ro"
+                - option "ru"
+                - option "sa"
+                - option "sk"
+                - option "sr"
+                - option "sv"
+                - option "sw"
+                - option "ta"
+                - option "te"
+                - option "th"
+                - option "tl"
+                - option "tr"
+                - option "uk"
+                - option "ur"
+                - option "vi"
+                - option "yue"
+                - option "zh"
+                - option "unknown"
+          - generic [ref=e533]:
+            - generic [ref=e534]: "Using Local AI Writer/Planner: Ollama selected model. Album agents use it for lyrics, tags, BPM, key, duration and captions."
+            - generic [ref=e535]:
+              - generic [ref=e536]: Planning Engine
+              - combobox "Planning Engine" [ref=e537]:
+                - option "AceJAM Direct (recommended)" [selected]
+                - option "CrewAI Micro Tasks (experimental)"
+              - generic [ref=e538]: CrewAI Micro wraps the same small tasks, delimiter parser and gates. ACE-Step still renders audio.
+            - generic [ref=e539]:
+              - generic [ref=e540]: Album model strategy
+              - combobox "Album model strategy" [ref=e541]:
+                - option "All 7 models"
+                - option "Turbo (fast, 8 steps)"
+                - option "Turbo Shift3 (dry timbre)"
+                - option "SFT (detail, 64 steps)"
+                - option "Base (flexible)"
+                - option "XL Turbo (best fast)"
+                - option "XL SFT (highest quality)" [selected]
+                - option "XL Base (all-task)"
+          - generic [ref=e542]:
+            - generic [ref=e543]:
+              - generic [ref=e544]: Quality target
+              - combobox "Quality target" [ref=e545]:
+                - option "Hit single standard" [selected]
+                - option "Cohesive album"
+                - option "Experimental"
+            - generic [ref=e546]:
+              - checkbox "Planner thinking" [ref=e547]
+              - text: Planner thinking
+            - generic [ref=e548]:
+              - checkbox "Print full agent I/O" [checked] [ref=e549]
+              - text: Print full agent I/O
+          - generic [ref=e550]:
+            - button "Plan & generate album" [ref=e551] [cursor=pointer]
+            - button "Refresh local LLMs" [ref=e552] [cursor=pointer]
+          - generic [ref=e553]:
+            - text: With
+            - strong [ref=e554]: All 7 models
+            - text: selected, this generates seven full albums (one per ACE-Step audio model). Missing models download automatically, then generation resumes.
+          - generic [ref=e555]:
+            - generic [ref=e556]:
+              - generic [ref=e557]:
+                - strong [ref=e558]: "5"
+                - text: tracks
+              - generic [ref=e559]:
+                - strong [ref=e560]: "7"
+                - text: model albums
+              - generic [ref=e561]:
+                - strong [ref=e562]: "35"
+                - text: renders
+              - generic [ref=e563]:
+                - strong [ref=e564]: "3"
+                - text: downloads needed
+            - generic [ref=e565]:
+              - generic [ref=e566]: 7 model albums · 35 planned render(s)
+              - generic [ref=e567]:
+                - generic "acestep-v15-turbo · Best default, fast" [ref=e568]:
+                  - strong [ref=e569]: Turbo
+                  - text: installed
+                - generic "acestep-v15-turbo-shift3 · Clear timbre, dry" [ref=e570]:
+                  - strong [ref=e571]: Turbo Shift3
+                  - text: download required
+                - generic "acestep-v15-sft · CFG detail tuning" [ref=e572]:
+                  - strong [ref=e573]: SFT
+                  - text: installed
+                - generic "acestep-v15-base · All tasks, fine-tuning" [ref=e574]:
+                  - strong [ref=e575]: Base
+                  - text: download required
+                - generic "acestep-v15-xl-turbo · Best 20GB+ daily driver" [ref=e576]:
+                  - strong [ref=e577]: XL Turbo
+                  - text: download required
+                - generic "acestep-v15-xl-sft · Highest detail, CFG" [ref=e578]:
+                  - strong [ref=e579]: XL SFT
+                  - text: installed
+                - generic "acestep-v15-xl-base · All tasks, XL quality" [ref=e580]:
+                  - strong [ref=e581]: XL Base
+                  - text: installed
+        - group [ref=e582]:
+          - generic "Preview album request Track requests will be checked before generation." [ref=e583] [cursor=pointer]:
+            - generic [ref=e584]:
+              - strong [ref=e585]: Preview album request
+              - generic [ref=e586]: Track requests will be checked before generation.
+        - group [ref=e587]:
+          - 'generic "Agent Runtime Local AI Writer/Planner: Ollama selected; planning acejam_agents; ACE-Step LM off for agent lyrics" [ref=e588] [cursor=pointer]':
+            - generic [ref=e589]:
+              - strong [ref=e590]: Agent Runtime
+              - generic [ref=e591]: "Local AI Writer/Planner: Ollama selected; planning acejam_agents; ACE-Step LM off for agent lyrics"
+        - group [ref=e592]:
+          - generic "Agent Tools 4 tag packs" [ref=e593] [cursor=pointer]:
+            - generic [ref=e594]:
+              - strong [ref=e595]: Agent Tools
+              - generic [ref=e596]: 4 tag packs
+        - group [ref=e597]:
+          - generic "Lyrics Craft dense lyrics, varied BPM, related keys" [ref=e598] [cursor=pointer]:
+            - generic [ref=e599]:
+              - strong [ref=e600]: Lyrics Craft
+              - generic [ref=e601]: dense lyrics, varied BPM, related keys
+          - option "Auto by duration" [selected]
+          - option "Short hook"
+          - option "Club build/drop"
+          - option "Cinematic arc"
+          - option "Dense" [selected]
+          - option "Balanced"
+          - option "Rap dense"
+          - option "Sparse"
+          - option "Varied" [selected]
+          - option "Rap pocket"
+          - option "Club"
+          - option "Slow"
+          - option "Related keys" [selected]
+          - option "Free"
+        - group [ref=e602]:
+          - generic "Generation 1 variant(s), wav32, acestep-v15-xl-sft" [ref=e603] [cursor=pointer]:
+            - generic [ref=e604]:
+              - strong [ref=e605]: Generation
+              - generic [ref=e606]: 1 variant(s), wav32, acestep-v15-xl-sft
+          - option "wav"
+          - option "flac"
+          - option "ogg"
+          - option "mp3"
+          - option "opus"
+          - option "aac"
+          - option "wav32" [selected]
+        - generic [ref=e607]:
+          - generic [ref=e608]:
+            - heading "Saved Album Tracks" [level=3] [ref=e609]
+            - button "Refresh" [ref=e610] [cursor=pointer]
+          - generic [ref=e611]: Saved album tracks appear here after generation.
+      - generic [ref=e613]:
+        - generic [ref=e614]:
+          - generic [ref=e615]:
+            - generic [ref=e616]: Personalisation
+            - heading "Trainer Studio" [level=2] [ref=e617]
+            - paragraph [ref=e618]: Train a small adapter on your own audio so AceJAM can mimic that artist or production style. Drop a folder, label it, preprocess, train, then load the adapter into any generation mode.
+          - generic [ref=e619]: Checking trainer
+        - generic [ref=e620]:
+          - generic [ref=e621]:
+            - strong [ref=e622]: "1"
+            - text: Scan dataset
+          - generic [ref=e623]:
+            - strong [ref=e624]: "2"
+            - text: Edit labels
+          - generic [ref=e625]:
+            - strong [ref=e626]: "3"
+            - text: Preprocess
+          - generic [ref=e627]:
+            - strong [ref=e628]: "4"
+            - text: Train
+          - generic [ref=e629]:
+            - strong [ref=e630]: "5"
+            - text: Load adapter
+        - button "Refresh" [ref=e632] [cursor=pointer]
+        - generic [ref=e633]:
+          - generic [ref=e634]:
+            - generic [ref=e635]: Adapter path
+            - textbox "Adapter path" [ref=e636]:
+              - /placeholder: /path/to/adapter/final
+          - generic [ref=e637]:
+            - generic [ref=e638]: Known adapters
+            - combobox "Known adapters" [ref=e639]
+        - generic [ref=e640]:
+          - button "Load" [ref=e641] [cursor=pointer]
+          - button "Unload" [ref=e642] [cursor=pointer]
+          - generic [ref=e643] [cursor=pointer]:
+            - checkbox "Use adapter" [checked] [ref=e644]
+            - text: Use adapter
+        - generic [ref=e645]:
+          - generic [ref=e646]:
+            - generic [ref=e647]: Training tag
+            - textbox "Training tag" [ref=e648]:
+              - /placeholder: e.g. youssef-style or moody-trap
+          - generic [ref=e649]:
+            - generic [ref=e650]: Language
+            - combobox "Language" [ref=e651]:
+              - option "ar"
+              - option "az"
+              - option "bg"
+              - option "bn"
+              - option "ca"
+              - option "cs"
+              - option "da"
+              - option "de"
+              - option "el"
+              - option "en" [selected]
+              - option "es"
+              - option "fa"
+              - option "fi"
+              - option "fr"
+              - option "he"
+              - option "hi"
+              - option "hr"
+              - option "ht"
+              - option "hu"
+              - option "id"
+              - option "is"
+              - option "it"
+              - option "ja"
+              - option "ko"
+              - option "la"
+              - option "lt"
+              - option "ms"
+              - option "ne"
+              - option "nl"
+              - option "no"
+              - option "pa"
+              - option "pl"
+              - option "pt"
+              - option "ro"
+              - option "ru"
+              - option "sa"
+              - option "sk"
+              - option "sr"
+              - option "sv"
+              - option "sw"
+              - option "ta"
+              - option "te"
+              - option "th"
+              - option "tl"
+              - option "tr"
+              - option "uk"
+              - option "ur"
+              - option "vi"
+              - option "yue"
+              - option "zh"
+              - option "unknown"
+          - generic [ref=e652]:
+            - generic [ref=e653]: Dataset folder
+            - button "Dataset folder" [ref=e654]
+        - generic [ref=e655]:
+          - button "Start one-click training" [ref=e656] [cursor=pointer]
+          - button "Scan imported folder" [ref=e657] [cursor=pointer]
+          - button "Save dataset JSON" [ref=e658] [cursor=pointer]
+        - group [ref=e659]:
+          - generic "Labeling Advanced Sidecars first, filename fallback, no language detection by default" [ref=e660] [cursor=pointer]:
+            - generic [ref=e661]:
+              - strong [ref=e662]: Labeling Advanced
+              - generic [ref=e663]: Sidecars first, filename fallback, no language detection by default
+          - option "Prepend" [selected]
+          - option "Append"
+          - option "Replace caption"
+          - option "Smart — online lyrics + audio analysis" [selected]
+          - option "Filename only — fast, basic"
+          - option "Official LM — heavy, most accurate"
+        - table [ref=e665]:
+          - rowgroup [ref=e666]:
+            - row "File Caption Lyrics BPM Key Lang" [ref=e667]:
+              - columnheader "File" [ref=e668]
+              - columnheader "Caption" [ref=e669]
+              - columnheader "Lyrics" [ref=e670]
+              - columnheader "BPM" [ref=e671]
+              - columnheader "Key" [ref=e672]
+              - columnheader "Lang" [ref=e673]
+          - rowgroup [ref=e674]:
+            - row "Scan a dataset folder." [ref=e675]:
+              - cell "Scan a dataset folder." [ref=e676]
+        - generic [ref=e677]:
+          - generic [ref=e678]:
+            - generic [ref=e679]: Dataset JSON
+            - textbox "Dataset JSON" [ref=e680]:
+              - /placeholder: Saved dataset JSON
+          - generic [ref=e681]:
+            - generic [ref=e682]: Tensor dataset
+            - textbox "Tensor dataset" [ref=e683]:
+              - /placeholder: Preprocessed tensor directory
+        - generic [ref=e684]:
+          - button "Preprocess" [ref=e685] [cursor=pointer]
+          - button "Estimate" [ref=e686] [cursor=pointer]
+          - button "Stop job" [ref=e687] [cursor=pointer]
+        - group [ref=e688]:
+          - generic "Training Parameters lora, 10 epochs, save every epoch modified" [ref=e689] [cursor=pointer]:
+            - generic [ref=e690]:
+              - strong [ref=e691]: Training Parameters
+              - generic [ref=e692]: lora, 10 epochs, save every epoch
+            - generic [ref=e694]: modified
+          - option "LoRA" [selected]
+          - option "LoKr"
+        - generic [ref=e695]: Trainer logs appear here.
+      - generic [ref=e696]:
+        - generic [ref=e697]:
+          - generic [ref=e698]:
+            - generic [ref=e699]: Music library
+            - heading "Library" [level=2] [ref=e700]
+            - paragraph [ref=e701]: Browse, search and play everything you've generated. Filter by model or album, select tracks and delete in bulk.
+          - generic [ref=e702]: Loading
+        - generic [ref=e703]:
+          - generic [ref=e704]:
+            - generic [ref=e705]: Search
+            - textbox "Search" [ref=e706]:
+              - /placeholder: artist, title, model, album, tags...
+          - generic [ref=e707]:
+            - generic [ref=e708]: Model
+            - combobox "Model" [ref=e709]:
+              - option "All models" [selected]
+          - generic [ref=e710]:
+            - generic [ref=e711]: Album
+            - combobox "Album" [ref=e712]:
+              - option "All albums" [selected]
+          - generic [ref=e713]:
+            - generic [ref=e714]: Type
+            - combobox "Type" [ref=e715]:
+              - option "All" [selected]
+              - option "Album tracks"
+              - option "Singles"
+          - generic [ref=e716]:
+            - generic [ref=e717]: Sort
+            - combobox "Sort" [ref=e718]:
+              - option "Newest first" [selected]
+              - option "Oldest first"
+              - option "Title A-Z"
+              - option "Model A-Z"
+              - 'option "Album → Track #"'
+          - generic [ref=e719]:
+            - generic [ref=e720]: View
+            - combobox "View" [ref=e721]:
+              - option "Song list" [selected]
+              - option "Album cards"
+        - generic [ref=e722]:
+          - generic [ref=e723] [cursor=pointer]:
+            - checkbox "Select all" [ref=e724]
+            - text: Select all
+          - button "Refresh" [ref=e725] [cursor=pointer]
+          - button "Delete all" [ref=e726] [cursor=pointer]
+      - generic [ref=e727]:
+        - generic [ref=e729]:
+          - generic [ref=e730]: Runtime
+          - heading "Settings" [level=2] [ref=e731]
+          - paragraph [ref=e732]: Server health, installed audio models, local LLM status, trainer readiness and official ACE-Step parity. Manage downloads and clean up generated output here.
+        - generic [ref=e733]:
+          - generic [ref=e734]:
+            - heading "Runtime" [level=3] [ref=e735]
+            - generic [ref=e736]: Official runner ready
+          - generic [ref=e737]: 4 ACE-Step audio model(s). Local AI Writer/Planner active; ACE-Step 4B LM is optional for official lyric/metadata controls. Official runner ready. ACE-Step parity 2026-04-26.
+          - generic [ref=e738]:
+            - generic [ref=e739]:
+              - generic [ref=e740]: Server
+              - strong [ref=e741]: ready
+              - generic [ref=e742]: UI 0.0.1
+            - generic [ref=e743]:
+              - generic [ref=e744]: ACE-Step audio models
+              - strong [ref=e745]: 4 installed
+              - generic [ref=e746]: downloads idle
+            - generic [ref=e747]:
+              - generic [ref=e748]: Local AI Writer
+              - strong [ref=e749]: active
+              - generic [ref=e750]: all writing/planning uses Ollama or LM Studio
+            - generic [ref=e751]:
+              - generic [ref=e752]: Trainer
+              - strong [ref=e753]: guarded
+              - generic [ref=e754]: install deps/vendor first
+            - generic [ref=e755]:
+              - generic [ref=e756]: Official runner
+              - strong [ref=e757]: ready
+              - generic [ref=e758]: vendor available
+            - generic [ref=e759]:
+              - generic [ref=e760]: Parity
+              - strong [ref=e761]: 2026-04-26
+              - generic [ref=e762]: unsupported items are shown as guarded
+          - generic [ref=e763]:
+            - generic [ref=e764]:
+              - heading "Local AI Models & Settings" [level=3] [ref=e765]
+              - generic [ref=e766]: Checking
+            - generic [ref=e767]: Loading local LLM models...
+            - generic [ref=e768]:
+              - generic [ref=e769]: "Model manager uses the same Local AI provider: Ollama."
+              - generic [ref=e770]:
+                - generic [ref=e771]: Model to install/download
+                - textbox "Model to install/download" [ref=e772]:
+                  - /placeholder: qwen3:4b or lmstudio-community/model
+              - generic [ref=e773]:
+                - generic [ref=e774]: Kind
+                - combobox "Kind" [ref=e775]:
+                  - option "Chat / writer" [selected]
+                  - option "Embedding"
+            - generic [ref=e776]:
+              - generic [ref=e777]:
+                - generic [ref=e778]: LM Studio context
+                - spinbutton "LM Studio context" [ref=e779]
+              - generic [ref=e780]:
+                - generic [ref=e781]: LM Studio quantization
+                - textbox "LM Studio quantization" [ref=e782]:
+                  - /placeholder: optional, e.g. Q4_K_M
+            - generic [ref=e783]:
+              - button "Refresh models" [ref=e784] [cursor=pointer]
+              - button "Install / download" [ref=e785] [cursor=pointer]
+              - button "Load" [ref=e786] [cursor=pointer]
+              - button "Unload" [ref=e787] [cursor=pointer]
+              - button "Test writer" [ref=e788] [cursor=pointer]
+              - button "Test embedding" [ref=e789] [cursor=pointer]
+            - generic [ref=e790]: Selectors use local Ollama or LM Studio models. LM Studio requires the local server running at localhost:1234.
+            - generic [ref=e791]: Local LLM status appears here.
+          - generic [ref=e792]:
+            - generic [ref=e793]:
+              - heading "ACE-Step LM" [level=3] [ref=e794]
+              - generic [ref=e795]: Hybrid
+            - generic [ref=e796]: "Local AI Writer/Planner stays primary. ACE-Step 4B LM is only for optional official lyric/metadata actions. Preferred LM: acestep-5Hz-lm-4B."
+            - generic [ref=e797]:
+              - generic [ref=e798]:
+                - strong [ref=e799]: Policy
+                - text: hybrid
+                - generic [ref=e800]: Local AI Writer primary, ACE LM only when explicitly needed
+              - generic [ref=e801]:
+                - strong [ref=e802]: Official LMs
+                - text: 2/3 installed
+                - generic [ref=e803]: "Recommended: acestep-5Hz-lm-4B"
+              - generic [ref=e804]:
+                - strong [ref=e805]: Abliterated local
+                - text: none found
+                - generic [ref=e806]: Waiting for local smoke pass
+              - generic [ref=e807]:
+                - strong [ref=e808]: Private upload
+                - text: token missing
+                - generic [ref=e809]: Requires PRIVATE_HF_UPLOAD confirm
+              - generic [ref=e810]:
+                - strong [ref=e811]: Cleanup
+                - text: locked
+                - generic [ref=e812]: Needs abliterated 4B smoke marker
+              - generic [ref=e813]:
+                - strong [ref=e814]: OBLITERATUS
+                - text: not installed
+                - generic [ref=e815]: AGPL-3.0
+            - generic [ref=e816]:
+              - generic [ref=e817]:
+                - generic [ref=e818]: Private HF repo
+                - textbox "Private HF repo" [ref=e819]:
+                  - /placeholder: username/acestep-5hz-lm-4b-abliterated-private
+              - generic [ref=e820]:
+                - generic [ref=e821]: Local abliterated LM folder
+                - textbox "Local abliterated LM folder" [ref=e822]:
+                  - /placeholder: app/model_cache/checkpoints/acestep-5Hz-lm-4B-abliterated
+            - generic [ref=e823]:
+              - generic [ref=e824] [cursor=pointer]:
+                - checkbox "License/provenance checked" [ref=e825]
+                - text: License/provenance checked
+              - button "Refresh ACE LM" [ref=e826] [cursor=pointer]
+              - button "Install 4B LM" [ref=e827] [cursor=pointer]
+              - button "Mark smoke passed" [ref=e828] [cursor=pointer]
+              - button "Preview cleanup" [ref=e829] [cursor=pointer]
+              - button "Private upload check" [ref=e830] [cursor=pointer]
+              - button "Delete ordinary LMs" [ref=e831] [cursor=pointer]
+            - generic [ref=e832]: Private upload and ordinary-LM cleanup stay locked until a local abliterated 4B LM has a passing smoke marker.
+            - generic [ref=e833]: "{ \"policy\": \"hybrid\", \"planner\": \"ollama\", \"ace_lm_usage\": [ \"sample_mode\", \"format_sample\", \"understand_music\", \"CoT/metas\", \"official LM controls\" ], \"preferred_model\": \"acestep-5Hz-lm-4B\", \"recommended_lm_model\": \"acestep-5Hz-lm-4B\", \"official_models\": [ { \"model\": \"acestep-5Hz-lm-0.6B\", \"installed\": false, \"downloadable\": true, \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-0.6B\" }, { \"model\": \"acestep-5Hz-lm-1.7B\", \"installed\": true, \"downloadable\": true, \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-1.7B\" }, { \"model\": \"acestep-5Hz-lm-4B\", \"installed\": true, \"downloadable\": true, \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-4B\" } ], \"abliterated_models\": [], \"selected_abliterated_model\": \"\", \"obliteratus\": { \"repo\": \"https://github.com/elder-plinius/OBLITERATUS\", \"installed\": false, \"license\": \"AGPL-3.0\", \"local_only_until_uploaded_private\": true }, \"upload\": { \"policy\": \"private_gated\", \"requires_confirm\": \"PRIVATE_HF_UPLOAD\", \"hf_token_present\": false }, \"cleanup_preview\": { \"safe_to_cleanup\": false, \"requires_confirm\": \"DELETE_ORIGINAL_ACE_LM_AFTER_SMOKE\", \"reason\": \"Cleanup is locked until an abliterated 4B ACE-Step LM has a passing local smoke marker.\", \"delete_candidates\": [ { \"model\": \"acestep-5Hz-lm-1.7B\", \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-1.7B\", \"size_bytes\": 3755412617, \"downloadable\": true }, { \"model\": \"acestep-5Hz-lm-4B\", \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-4B\", \"size_bytes\": 8426086750, \"downloadable\": true } ], \"keep_candidates\": [], \"total_delete_bytes\": 12181499367 }, \"workflow\": [ \"Install/download official ACE-Step 5Hz LM 4B\", \"Run OBLITERATUS locally outside git-tracked files\", \"Copy passing abliterated model into app/model_cache/checkpoints/acestep-5Hz-lm-4B-abliterated\", \"Run create_sample/format_sample/understand_music smoke tests\", \"Write acejam_smoke_passed.json\", \"Optionally private-upload with HF_TOKEN and PRIVATE_HF_UPLOAD\", \"Only then delete ordinary ACE-Step LM checkpoints if desired\" ] }"
+          - generic [ref=e834]:
+            - generic [ref=e835]:
+              - heading "Generated Output Cleanup" [level=3] [ref=e836]
+              - generic [ref=e837]: Checking
+            - generic [ref=e838]: Counts generated songs, results and albums only. Uploads and trainer data stay untouched.
+            - generic [ref=e839]:
+              - button "Refresh counts" [ref=e840] [cursor=pointer]
+              - button "Delete generated output" [ref=e841] [cursor=pointer]
+          - group [ref=e842]:
+            - generic "Full Runtime JSON Model lists, runner status, UI schema and toolkit metadata." [ref=e843] [cursor=pointer]:
+              - generic [ref=e844]:
+                - strong [ref=e845]: Full Runtime JSON
+                - generic [ref=e846]: Model lists, runner status, UI schema and toolkit metadata.
+          - group [ref=e847]:
+            - generic "Payload Schema Read-only generation payload/debug contract." [ref=e848] [cursor=pointer]:
+              - generic [ref=e849]:
+                - strong [ref=e850]: Payload Schema
+                - generic [ref=e851]: Read-only generation payload/debug contract.
+          - group [ref=e852]:
+            - generic "ACE-Step Parity Official models, endpoints, params, runtime and trainer coverage." [ref=e853] [cursor=pointer]:
+              - generic [ref=e854]:
+                - strong [ref=e855]: ACE-Step Parity
+                - generic [ref=e856]: Official models, endpoints, params, runtime and trainer coverage.
+    - complementary "Generation results" [ref=e857]:
+      - heading "Results" [level=2] [ref=e858]
+      - generic [ref=e860]:
+        - img [ref=e861]
+        - text: Your generations will appear here.
+        - text: Pick a mode and click Generate to start.

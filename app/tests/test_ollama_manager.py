@@ -151,6 +151,63 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(seen_payloads[0]["repeat_penalty"], 1.1)
         self.assertNotIn("num_ctx", seen_payloads[0])
 
+    def test_planner_llm_settings_clamp_and_map_to_ollama_options(self):
+        payload = {
+            "planner_creativity_preset": "wild",
+            "planner_temperature": 3.0,
+            "planner_top_p": -1,
+            "planner_top_k": 999,
+            "planner_repeat_penalty": 0.1,
+            "planner_seed": "42",
+            "planner_max_tokens": 99999,
+            "planner_context_length": 99999,
+            "planner_timeout": 99999,
+        }
+
+        settings = local_llm.planner_llm_settings_from_payload(payload)
+        options = local_llm.planner_llm_options_for_provider("ollama", payload)
+
+        self.assertEqual(settings["planner_temperature"], 2.0)
+        self.assertEqual(settings["planner_top_p"], 0.0)
+        self.assertEqual(settings["planner_top_k"], 200)
+        self.assertEqual(settings["planner_repeat_penalty"], 0.8)
+        self.assertEqual(settings["planner_seed"], 42)
+        self.assertEqual(settings["planner_max_tokens"], 8192)
+        self.assertEqual(settings["planner_context_length"], 32768)
+        self.assertEqual(settings["planner_timeout"], 1800.0)
+        self.assertEqual(options["temperature"], 2.0)
+        self.assertEqual(options["top_p"], 0.0)
+        self.assertEqual(options["top_k"], 200)
+        self.assertEqual(options["repeat_penalty"], 0.8)
+        self.assertEqual(options["seed"], 42)
+        self.assertEqual(options["num_ctx"], 32768)
+        self.assertEqual(options["num_predict"], 8192)
+
+    def test_planner_llm_settings_map_to_lmstudio_without_context_option(self):
+        options = local_llm.planner_llm_options_for_provider(
+            "lmstudio",
+            {
+                "planner_temperature": 0.7,
+                "planner_top_p": 0.94,
+                "planner_top_k": 64,
+                "planner_repeat_penalty": 1.2,
+                "planner_seed": "123",
+                "planner_max_tokens": 3072,
+                "planner_context_length": 16384,
+                "planner_timeout": 120,
+            },
+        )
+
+        self.assertEqual(options["temperature"], 0.7)
+        self.assertEqual(options["top_p"], 0.94)
+        self.assertEqual(options["top_k"], 64)
+        self.assertEqual(options["repeat_penalty"], 1.2)
+        self.assertEqual(options["seed"], 123)
+        self.assertEqual(options["max_tokens"], 3072)
+        self.assertEqual(options["timeout"], 120.0)
+        self.assertNotIn("num_ctx", options)
+        self.assertNotIn("num_predict", options)
+
     def test_api_local_llm_test_uses_lmstudio_chat(self):
         client = TestClient(acejam_app.app)
 

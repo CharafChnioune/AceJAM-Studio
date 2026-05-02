@@ -46,6 +46,8 @@ MASTER_RULES = [
     "Use compact section and performance tags inside lyrics, for example [Verse], [Chorus], [Build], [Drop], [Outro].",
     "No placeholders, no prompt leakage.",
     "Anchor every song in one emotional promise, one coherent image world, and a hook short enough to remember.",
+    "Lyric craft must be human and specific: concrete scenes, earned metaphors, natural cadence, no generic AI phrases such as neon dreams / fire inside / we rise.",
+    "Adapt craft to the genre: rap needs cadence and internal rhyme; sung music needs vowel-friendly emotional clarity; EDM/instrumental needs motif and energy movement rather than forced verses.",
     "Write in the requested language/script unless the user explicitly asks for romanization or code switching.",
     "Use full polished output without ACE-Step format_input unless the workflow is a rough draft, repair, or explicit formatting task.",
     "For source-audio workflows, mark duration and structure as source-locked advisory metadata unless the handler supports a runtime knob.",
@@ -683,16 +685,26 @@ def section_map_for(duration: Any, genre_hint: Any = "", instrumental: bool = Fa
                 ("Bridge", 124, 150),
                 ("Final Chorus", 150, dur),
             ]
+        elif dur <= 210:
+            sections = [
+                ("Intro", 0, 12),
+                ("Verse 1", 12, 56),
+                ("Chorus", 56, 82),
+                ("Verse 2", 82, 128),
+                ("Bridge", 128, 160),
+                ("Final Chorus", 160, max(176, dur - 12)),
+                ("Outro", max(176, dur - 12), dur),
+            ]
         else:
             sections = [
                 ("Intro", 0, 12),
                 ("Verse 1", 12, 58),
-                ("Chorus", 58, 88),
-                ("Verse 2", 88, 136),
-                ("Chorus", 136, 166),
-                ("Beat Switch", 166, max(184, dur - 58)),
-                ("Bridge", max(184, dur - 58), max(206, dur - 34)),
-                ("Final Chorus", max(206, dur - 34), max(224, dur - 12)),
+                ("Chorus", 58, 84),
+                ("Verse 2", 84, 130),
+                ("Second Chorus", 130, 154),
+                ("Verse 3 - Beat Switch", 154, max(188, dur - 52)),
+                ("Bridge", max(188, dur - 52), max(210, dur - 30)),
+                ("Final Chorus", max(210, dur - 30), max(226, dur - 12)),
                 ("Outro", max(224, dur - 12), dur),
             ]
         return [
@@ -842,6 +854,10 @@ def prompt_kit_system_block(mode: str = "custom") -> str:
         f"Add these AceJAM storage metadata fields when applicable: {metadata}.\n"
         f"Language presets available: {languages}.\n"
         f"Genre modules available: {genres}.\n"
+        "When filling Simple, Custom, Cover, Repaint, Lego, or Complete, also populate song_intent with "
+        "genre_family, subgenre, mood, energy, vocal_type, language, drum_groove, bass_low_end, "
+        "melodic_identity, texture_space, mix_master, custom_tags, and caption. "
+        "Caption must be a concrete sonic portrait built from those menu choices, not a vague genre sentence.\n"
         "For polished Simple, Custom, Song, Album, and News output, set use_format=false unless the user explicitly asks for raw format/rewrite. "
         "For rough Improve, Cover, Repaint, Lego, Complete, and source-audio workflows, keep source_audio_mode and runtime_profile clear, and mark unsupported runtime controls as advisory metadata. "
         "Never hardcode planner_lm_provider to ollama; use the selected local provider and planner_model.\n"

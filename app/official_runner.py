@@ -306,6 +306,28 @@ def _call_compat(method: Any, **kwargs: Any) -> Any:
     return method(**kwargs)
 
 
+def _lm_sampling(request: dict[str, Any], params_data: dict[str, Any]) -> dict[str, Any]:
+    sampling = dict(request.get("lm_sampling") or {})
+    return {
+        "temperature": float(sampling.get("temperature", params_data.get("lm_temperature", 0.85))),
+        "top_k": int(sampling.get("top_k", params_data.get("lm_top_k", 0)) or 0),
+        "top_p": float(sampling.get("top_p", params_data.get("lm_top_p", 0.9))),
+        "repetition_penalty": float(
+            sampling.get(
+                "repetition_penalty",
+                params_data.get("repetition_penalty", params_data.get("lm_repetition_penalty", 1.0)),
+            )
+            or 1.0
+        ),
+        "use_constrained_decoding": bool(
+            sampling.get("use_constrained_decoding", params_data.get("use_constrained_decoding", True))
+        ),
+        "constrained_decoding_debug": bool(
+            sampling.get("constrained_decoding_debug", params_data.get("constrained_decoding_debug", False))
+        ),
+    }
+
+
 def _apply_lora_request(dit_handler: Any, request: dict[str, Any]) -> dict[str, Any]:
     if not bool(request.get("use_lora")):
         return {"success": True, "active": False}
@@ -378,17 +400,13 @@ def _run(request_path: Path, response_path: Path) -> None:
     if action == "create_sample":
         llm_handler = _init_llm()
         params_data = dict(request.get("params") or {})
+        sampling = _lm_sampling(request, params_data)
         sample = create_sample(
             llm_handler=llm_handler,
             query=request.get("query") or params_data.get("sample_query") or params_data.get("caption") or "NO USER INPUT",
             instrumental=bool(params_data.get("instrumental")),
             vocal_language=params_data.get("vocal_language") or "unknown",
-            temperature=float(params_data.get("lm_temperature", 0.85)),
-            top_k=int(params_data.get("lm_top_k") or 0),
-            top_p=float(params_data.get("lm_top_p") or 0.9),
-            repetition_penalty=float(params_data.get("repetition_penalty") or 1.0),
-            use_constrained_decoding=bool(params_data.get("use_constrained_decoding", True)),
-            constrained_decoding_debug=bool(params_data.get("constrained_decoding_debug")),
+            **sampling,
         )
         response_path.write_text(json.dumps(_jsonable(sample.to_dict()), indent=2), encoding="utf-8")
         return
@@ -396,17 +414,13 @@ def _run(request_path: Path, response_path: Path) -> None:
     if action == "format_sample":
         llm_handler = _init_llm()
         params_data = dict(request.get("params") or {})
+        sampling = _lm_sampling(request, params_data)
         formatted = format_sample(
             llm_handler=llm_handler,
             caption=params_data.get("caption") or "",
             lyrics=params_data.get("lyrics") or "",
             user_metadata=params_data.get("user_metadata") or {},
-            temperature=float(params_data.get("lm_temperature", 0.85)),
-            top_k=int(params_data.get("lm_top_k") or 0),
-            top_p=float(params_data.get("lm_top_p") or 0.9),
-            repetition_penalty=float(params_data.get("repetition_penalty") or 1.0),
-            use_constrained_decoding=bool(params_data.get("use_constrained_decoding", True)),
-            constrained_decoding_debug=bool(params_data.get("constrained_decoding_debug")),
+            **sampling,
         )
         response_path.write_text(json.dumps(_jsonable(formatted.to_dict()), indent=2), encoding="utf-8")
         return
@@ -414,15 +428,11 @@ def _run(request_path: Path, response_path: Path) -> None:
     if action == "understand_music":
         llm_handler = _init_llm()
         params_data = dict(request.get("params") or {})
+        sampling = _lm_sampling(request, params_data)
         understood = understand_music(
             llm_handler=llm_handler,
             audio_codes=params_data.get("audio_codes") or "NO USER INPUT",
-            temperature=float(params_data.get("lm_temperature", 0.85)),
-            top_k=int(params_data.get("lm_top_k") or 0),
-            top_p=float(params_data.get("lm_top_p") or 0.9),
-            repetition_penalty=float(params_data.get("repetition_penalty") or 1.0),
-            use_constrained_decoding=bool(params_data.get("use_constrained_decoding", True)),
-            constrained_decoding_debug=bool(params_data.get("constrained_decoding_debug")),
+            **sampling,
         )
         response_path.write_text(json.dumps(_jsonable(understood.to_dict()), indent=2), encoding="utf-8")
         return
@@ -465,17 +475,13 @@ def _run(request_path: Path, response_path: Path) -> None:
     if params_data.pop("sample_mode", False) or str(params_data.pop("sample_query", "") or "").strip():
         if llm_handler is None:
             raise RuntimeError("sample_mode requires an initialized ACE-Step LM")
+        sampling = _lm_sampling(request, params_data)
         sample = create_sample(
             llm_handler=llm_handler,
             query=request["params"].get("sample_query") or params_data.get("caption") or "NO USER INPUT",
             instrumental=bool(params_data.get("instrumental")),
             vocal_language=params_data.get("vocal_language") or "unknown",
-            temperature=float(params_data.get("lm_temperature", 0.85)),
-            top_k=int(params_data.get("lm_top_k") or 0),
-            top_p=float(params_data.get("lm_top_p") or 0.9),
-            repetition_penalty=float(params_data.get("repetition_penalty") or 1.0),
-            use_constrained_decoding=bool(params_data.get("use_constrained_decoding", True)),
-            constrained_decoding_debug=bool(params_data.get("constrained_decoding_debug")),
+            **sampling,
         )
         if not sample.success:
             raise RuntimeError(sample.error or sample.status_message or "create_sample failed")
@@ -494,6 +500,7 @@ def _run(request_path: Path, response_path: Path) -> None:
             raise RuntimeError("use_format requires an initialized ACE-Step LM")
         original_caption = str(params_data.get("caption") or "")
         original_lyrics = str(params_data.get("lyrics") or "")
+        sampling = _lm_sampling(request, params_data)
         formatted = format_sample(
             llm_handler=llm_handler,
             caption=original_caption,
@@ -509,12 +516,7 @@ def _run(request_path: Path, response_path: Path) -> None:
                 }.items()
                 if value not in (None, "", "unknown")
             },
-            temperature=float(params_data.get("lm_temperature", 0.85)),
-            top_k=int(params_data.get("lm_top_k") or 0),
-            top_p=float(params_data.get("lm_top_p") or 0.9),
-            repetition_penalty=float(params_data.get("repetition_penalty") or 1.0),
-            use_constrained_decoding=bool(params_data.get("use_constrained_decoding", True)),
-            constrained_decoding_debug=bool(params_data.get("constrained_decoding_debug")),
+            **sampling,
         )
         if not formatted.success:
             raise RuntimeError(formatted.error or formatted.status_message or "format_sample failed")
@@ -576,6 +578,8 @@ def _run(request_path: Path, response_path: Path) -> None:
                 "time_costs": _jsonable((result_data.get("extra_outputs") or {}).get("time_costs", {})),
                 "lm_metadata": _jsonable((result_data.get("extra_outputs") or {}).get("lm_metadata")),
                 "lora_status": _jsonable(lora_status),
+                "official_api_fields": _jsonable(request.get("official_api_fields") or {}),
+                "guarded_api_fields": _jsonable(request.get("guarded_api_fields") or {}),
             },
             indent=2,
         ),

@@ -106,6 +106,17 @@ class OfficialRunnerTest(unittest.TestCase):
         self.assertIsNone(normalized["repainting_start"])
         self.assertIsNone(normalized["repainting_end"])
 
+    def test_lm_sampling_uses_request_repetition_penalty_without_generation_param_leak(self):
+        sampling = official_runner._lm_sampling(
+            {"lm_sampling": {"temperature": 0.7, "top_k": 40, "top_p": 0.91, "repetition_penalty": 1.17}},
+            {"lm_temperature": 0.2, "repetition_penalty": 1.0},
+        )
+
+        self.assertEqual(sampling["temperature"], 0.7)
+        self.assertEqual(sampling["top_k"], 40)
+        self.assertEqual(sampling["top_p"], 0.91)
+        self.assertEqual(sampling["repetition_penalty"], 1.17)
+
     def test_text_budget_enforcement_clips_caption_and_blocks_overlong_lyrics(self):
         params = {
             "caption": "bright pop, " * 80,

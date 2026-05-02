@@ -1,0 +1,465 @@
+- generic [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#workspace"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e8]: AceJAM Studio
+      - generic [ref=e9]: ACE-Step 1.5
+      - navigation "Main navigation" [ref=e10]:
+        - generic [ref=e11]: Create
+        - button "Simple" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Simple
+        - button "Custom" [active] [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Custom
+        - generic [ref=e20]: Edit
+        - button "Cover" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - text: Cover
+        - button "Repaint" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - text: Repaint
+        - button "Extract" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - text: Extract
+        - button "Lego" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - text: Lego
+        - button "Complete" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - text: Complete
+        - generic [ref=e39]: Produce
+        - button "Album" [ref=e40] [cursor=pointer]:
+          - img [ref=e41]
+          - text: Album
+        - button "Trainer" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+          - text: Trainer
+        - generic [ref=e48]: Manage
+        - button "Library" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Library
+        - button "Settings" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - text: Settings
+      - status [ref=e56]: ✓ Studio ready · 4 audio model(s)
+    - main [ref=e57]:
+      - generic [ref=e58]:
+        - generic [ref=e59]:
+          - generic [ref=e60]: ACE-Step Audio Model
+          - combobox "ACE-Step Audio Model" [ref=e61]:
+            - option "Auto (Turbo - best default, fast)"
+            - option "Turbo - best default, fast"
+            - option "Turbo Shift3 - clear timbre, dry (not installed)"
+            - option "SFT - CFG detail tuning"
+            - option "Base - all tasks, fine-tuning (not installed)"
+            - option "XL Turbo - best 20GB+ daily driver (not installed)"
+            - option "XL SFT - highest detail, CFG" [selected]
+            - option "XL Base - all tasks, XL quality"
+            - option "Turbo RL - official, unreleased (unreleased)"
+          - generic [ref=e62]: "XL SFT: Turbo for speed; SFT or XL SFT when maximum-detail settings matter."
+          - generic [ref=e63]:
+            - generic [ref=e927]:
+              - generic [ref=e928]: XL SFT
+              - generic [ref=e929]: Installed
+            - generic [ref=e930]: Turbo for speed; SFT or XL SFT when maximum-detail settings matter.
+            - group [ref=e931]:
+              - generic "Model details" [ref=e932] [cursor=pointer]:
+                - strong [ref=e934]: Model details
+        - generic [ref=e72]:
+          - generic [ref=e73]: Duration (s)
+          - spinbutton "Duration (s)" [ref=e74]: "60"
+        - generic [ref=e75]:
+          - generic [ref=e76]: Variants
+          - spinbutton "Variants" [ref=e77]: "3"
+        - generic [ref=e80] [cursor=pointer]:
+          - checkbox "Save to library" [checked] [ref=e81]
+          - text: Save to library
+      - generic [ref=e82]:
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: Adapter
+            - combobox "Adapter" [ref=e86]:
+              - option "No adapter" [selected]
+          - generic [ref=e87]:
+            - generic [ref=e88]: Adapter strength
+            - slider "Adapter strength" [ref=e89]: "1"
+          - generic [ref=e92] [cursor=pointer]:
+            - checkbox "Use adapter" [ref=e93]
+            - text: Use adapter
+        - generic [ref=e94]: PEFT LoRA adapters trained in Trainer can be applied to Simple, Custom, Cover, Repaint, Lego and Complete.
+      - group [ref=e95]:
+        - generic "Fill Custom Song Tell your local LLM the exact record you want. It fills title, tags, lyrics, BPM, key, time and quality settings." [ref=e935] [cursor=pointer]:
+          - generic [ref=e97]:
+            - strong [ref=e98]: Fill Custom Song
+            - generic [ref=e99]: Tell your local LLM the exact record you want. It fills title, tags, lyrics, BPM, key, time and quality settings.
+        - generic [ref=e100]:
+          - generic [ref=e101]:
+            - generic [ref=e102]:
+              - generic [ref=e103]: Prompt mode
+              - combobox "Prompt mode" [ref=e104]:
+                - option "Current mode" [selected]
+                - option "Simple"
+                - option "Custom"
+                - option "News to song"
+                - option "Improve lyrics"
+                - option "Cover / Remix"
+                - option "Repaint"
+                - option "Extract"
+                - option "Lego"
+                - option "Complete"
+                - option "Album"
+            - generic [ref=e105]: "Using Local AI Writer/Planner: Ollama charaf/qwen3.5-9b-claude-opus:latest."
+            - button "Fill all fields" [ref=e108] [cursor=pointer]
+          - generic [ref=e109]:
+            - generic [ref=e110]: Describe what you want
+            - textbox "Describe what you want" [ref=e111]:
+              - /placeholder: A cinematic afrohouse/pop song about ambition, family and victory, Dutch vocals...
+          - generic [ref=e112]: Uses Local AI Writer/Planner. Updates the current mode directly — every field stays editable.
+      - group [ref=e113]:
+        - generic "Local AI Writer/Planner Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192" [ref=e860] [cursor=pointer]:
+          - generic [ref=e115]:
+            - strong [ref=e116]: Local AI Writer/Planner
+            - generic [ref=e117]: Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - generic [ref=e121]: Local AI provider
+              - combobox "Local AI provider" [ref=e122]:
+                - option "Ollama" [selected]
+                - option "LM Studio"
+            - generic [ref=e123]:
+              - generic [ref=e124]: Writer / planner model
+              - combobox "Writer / planner model" [ref=e125]:
+                - option "charaf/qwen3.5-9b-claude-opus:latest" [selected]
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:instruct"
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:thinking"
+                - option "huihui_ai/Qwen3.6-abliterated:35b"
+                - option "qwen3.6:35b-a3b-coding-nvfp4"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:instruct"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:thinking"
+                - option "qwen3:0.6b"
+            - generic [ref=e126]:
+              - generic [ref=e127]: Preset
+              - combobox "Preset" [ref=e128]:
+                - option "Stable"
+                - option "Balanced" [selected]
+                - option "Creative"
+                - option "Wild"
+            - generic [ref=e129]:
+              - generic [ref=e130]: Temperature
+              - spinbutton "Temperature" [ref=e131]: "0.45"
+            - generic [ref=e132]:
+              - generic [ref=e133]: Top-p
+              - spinbutton "Top-p" [ref=e134]: "0.92"
+            - generic [ref=e135]:
+              - generic [ref=e136]: Top-k
+              - spinbutton "Top-k" [ref=e137]: "40"
+          - group [ref=e138]:
+            - generic "Advanced Repeat control, seed, output and context" [ref=e139] [cursor=pointer]:
+              - generic [ref=e140]:
+                - strong [ref=e141]: Advanced
+                - generic [ref=e142]: Repeat control, seed, output and context
+      - generic [ref=e192]:
+        - generic [ref=e193]:
+          - generic [ref=e194]:
+            - generic [ref=e195]: Full control
+            - heading "Custom" [level=2] [ref=e196]
+            - paragraph [ref=e197]: Edit lyrics, tags, BPM, key, duration and reference audio directly. Pro settings (sampler, ACE-Step LM, post-processing) stay tucked away — open them only when you need to.
+          - generic [ref=e198]: Text-to-music
+        - generic [ref=e199]:
+          - generic [ref=e200]:
+            - heading "Song" [level=3] [ref=e201]
+            - generic [ref=e202]: Needs lyrics/tags
+          - generic [ref=e203]:
+            - generic [ref=e204]:
+              - generic [ref=e205]: Title
+              - textbox "Title" [ref=e206]:
+                - /placeholder: e.g. Neon Dreams
+            - generic [ref=e207]:
+              - generic [ref=e208]: Artist
+              - textbox "Artist" [ref=e209]:
+                - /placeholder: Leave blank for auto stage name
+            - generic [ref=e210]:
+              - generic [ref=e211]: Vocal language
+              - combobox "Vocal language" [ref=e212]:
+                - option "ar"
+                - option "az"
+                - option "bg"
+                - option "bn"
+                - option "ca"
+                - option "cs"
+                - option "da"
+                - option "de"
+                - option "el"
+                - option "en" [selected]
+                - option "es"
+                - option "fa"
+                - option "fi"
+                - option "fr"
+                - option "he"
+                - option "hi"
+                - option "hr"
+                - option "ht"
+                - option "hu"
+                - option "id"
+                - option "is"
+                - option "it"
+                - option "ja"
+                - option "ko"
+                - option "la"
+                - option "lt"
+                - option "ms"
+                - option "ne"
+                - option "nl"
+                - option "no"
+                - option "pa"
+                - option "pl"
+                - option "pt"
+                - option "ro"
+                - option "ru"
+                - option "sa"
+                - option "sk"
+                - option "sr"
+                - option "sv"
+                - option "sw"
+                - option "ta"
+                - option "te"
+                - option "th"
+                - option "tl"
+                - option "tr"
+                - option "uk"
+                - option "ur"
+                - option "vi"
+                - option "yue"
+                - option "zh"
+                - option "unknown"
+            - generic [ref=e215] [cursor=pointer]:
+              - checkbox "Instrumental" [ref=e216]
+              - text: Instrumental
+          - generic [ref=e217]:
+            - generic [ref=e218]: Caption / tags
+            - textbox "Caption / tags" [ref=e219]:
+              - /placeholder: genre, instruments, mood, vocal character, production style
+          - generic [ref=e220]:
+            - generic [ref=e221]: Lyrics
+            - textbox "Lyrics" [ref=e222]:
+              - /placeholder: "[Verse]\n...\n\n[Chorus]\n..."
+          - generic [ref=e223]:
+            - button "Write lyrics with AI" [ref=e224] [cursor=pointer]
+            - generic [ref=e225]: Vocal songs need real lyrics. Tick Instrumental to skip them.
+          - generic [ref=e226]:
+            - generic [ref=e227]: Reference audio (optional)
+            - button "Reference audio (optional)" [ref=e228]
+            - generic [ref=e229]: No reference selected.
+        - generic [ref=e230]:
+          - generic [ref=e231]:
+            - heading "Music metadata" [level=3] [ref=e232]
+            - generic [ref=e233]: Leave blank to let the AI infer; fill in to override.
+          - generic [ref=e234]:
+            - generic [ref=e235]:
+              - generic [ref=e236]: BPM
+              - spinbutton "BPM" [ref=e237]: "95"
+            - generic [ref=e238]:
+              - generic [ref=e239]: Key
+              - combobox "Key" [ref=e240]:
+                - option "Auto"
+                - option "A major"
+                - option "A minor" [selected]
+                - option "A# major"
+                - option "A# minor"
+                - option "Ab major"
+                - option "Ab minor"
+                - option "A♯ major"
+                - option "A♯ minor"
+                - option "A♭ major"
+                - option "A♭ minor"
+                - option "B major"
+                - option "B minor"
+                - option "B# major"
+                - option "B# minor"
+                - option "Bb major"
+                - option "Bb minor"
+                - option "B♯ major"
+                - option "B♯ minor"
+                - option "B♭ major"
+                - option "B♭ minor"
+                - option "C major"
+                - option "C minor"
+                - option "C# major"
+                - option "C# minor"
+                - option "Cb major"
+                - option "Cb minor"
+                - option "C♯ major"
+                - option "C♯ minor"
+                - option "C♭ major"
+                - option "C♭ minor"
+                - option "D major"
+                - option "D minor"
+                - option "D# major"
+                - option "D# minor"
+                - option "Db major"
+                - option "Db minor"
+                - option "D♯ major"
+                - option "D♯ minor"
+                - option "D♭ major"
+                - option "D♭ minor"
+                - option "E major"
+                - option "E minor"
+                - option "E# major"
+                - option "E# minor"
+                - option "Eb major"
+                - option "Eb minor"
+                - option "E♯ major"
+                - option "E♯ minor"
+                - option "E♭ major"
+                - option "E♭ minor"
+                - option "F major"
+                - option "F minor"
+                - option "F# major"
+                - option "F# minor"
+                - option "Fb major"
+                - option "Fb minor"
+                - option "F♯ major"
+                - option "F♯ minor"
+                - option "F♭ major"
+                - option "F♭ minor"
+                - option "G major"
+                - option "G minor"
+                - option "G# major"
+                - option "G# minor"
+                - option "Gb major"
+                - option "Gb minor"
+                - option "G♯ major"
+                - option "G♯ minor"
+                - option "G♭ major"
+                - option "G♭ minor"
+            - generic [ref=e241]:
+              - generic [ref=e242]: Time
+              - combobox "Time" [ref=e243]:
+                - option "Auto"
+                - option "2"
+                - option "3"
+                - option "4" [selected]
+                - option "6"
+          - generic [ref=e244]:
+            - generic [ref=e936]:
+              - strong [ref=e937]: lyrics
+              - text: missing
+            - generic [ref=e938]:
+              - strong [ref=e939]: tags
+              - text: missing
+            - generic [ref=e940]:
+              - strong [ref=e941]: model
+              - text: installed
+            - generic [ref=e942]:
+              - strong [ref=e943]: task
+              - text: compatible
+            - generic [ref=e944]:
+              - strong [ref=e945]: payload
+              - text: needs review
+        - group [ref=e255]:
+          - generic "Preview generation request needs attention · lyrics · official runner" [ref=e946] [cursor=pointer]:
+            - generic [ref=e257]:
+              - strong [ref=e258]: Preview generation request
+              - generic [ref=e259]: needs attention · lyrics · official runner
+        - group [ref=e260]:
+          - 'generic "ACE-Step settings ace-step-settings-parity-2026-04-26: complete coverage, default chart_master" [ref=e261] [cursor=pointer]':
+            - generic [ref=e262]:
+              - strong [ref=e263]: ACE-Step settings
+              - generic [ref=e264]: "ace-step-settings-parity-2026-04-26: complete coverage, default chart_master"
+        - group [ref=e265]:
+          - generic "Generation Seed -1, 64 steps, ode/heun" [ref=e266] [cursor=pointer]:
+            - generic [ref=e267]:
+              - strong [ref=e268]: Generation
+              - generic [ref=e269]: Seed -1, 64 steps, ode/heun
+          - option "ode" [selected]
+          - option "sde"
+          - option "euler"
+          - option "heun" [selected]
+        - group [ref=e270]:
+          - generic "Advanced ACE-Step lyric model ACE-Step optional LM acestep-5Hz-lm-4B" [ref=e271] [cursor=pointer]:
+            - generic [ref=e272]:
+              - strong [ref=e273]: Advanced ACE-Step lyric model
+              - generic [ref=e274]: ACE-Step optional LM acestep-5Hz-lm-4B
+          - option "Auto - ACE LM when needed"
+          - option "None - manual, fastest"
+          - option "0.6B LM - low VRAM prototype (not installed)"
+          - option "1.7B LM - best default planner"
+          - option "4B LM - strongest planning" [selected]
+          - option "mlx" [selected]
+          - option "pt"
+          - option "vllm"
+        - group [ref=e275]:
+          - 'generic "Output Output: wav32" [ref=e276] [cursor=pointer]':
+            - generic [ref=e277]:
+              - strong [ref=e278]: Output
+              - generic [ref=e279]: "Output: wav32"
+          - option "wav"
+          - option "flac"
+          - option "ogg"
+          - option "mp3"
+          - option "opus"
+          - option "aac"
+          - option "wav32" [selected]
+          - option "128k" [selected]
+          - option "192k"
+          - option "256k"
+          - option "320k"
+        - group [ref=e280]:
+          - generic "Post Processing Normalize on, fades 0s/0s" [ref=e281] [cursor=pointer]:
+            - generic [ref=e282]:
+              - strong [ref=e283]: Post Processing
+              - generic [ref=e284]: Normalize on, fades 0s/0s
+        - group [ref=e285]:
+          - generic "Runtime Device auto, offload off" [ref=e286] [cursor=pointer]:
+            - generic [ref=e287]:
+              - strong [ref=e288]: Runtime
+              - generic [ref=e289]: Device auto, offload off
+          - option "auto" [selected]
+          - option "cuda"
+          - option "mps"
+          - option "cpu"
+          - option "auto" [selected]
+          - option "bfloat16"
+          - option "float16"
+          - option "float32"
+          - option "auto" [selected]
+          - option "on"
+          - option "off"
+          - option "auto" [selected]
+          - option "cuda"
+          - option "mps"
+          - option "cpu"
+          - option "auto" [selected]
+          - option "bfloat16"
+          - option "float16"
+          - option "float32"
+        - group [ref=e290]:
+          - generic "Cover/Repaint Extras Cover noise 0, repaint balanced" [ref=e291] [cursor=pointer]:
+            - generic [ref=e292]:
+              - strong [ref=e293]: Cover/Repaint Extras
+              - generic [ref=e294]: Cover noise 0, repaint balanced
+          - option "auto" [selected]
+          - option "explicit"
+          - option "balanced" [selected]
+          - option "conservative"
+          - option "aggressive"
+        - generic [ref=e295]:
+          - generic [ref=e296] [cursor=pointer]:
+            - checkbox "All 7 models" [ref=e297]
+            - text: All 7 models
+          - button "Format caption" [ref=e298] [cursor=pointer]
+          - button "Generate" [ref=e299] [cursor=pointer]:
+            - text: Generate
+            - generic [ref=e300]: ⌘↵
+    - complementary "Generation results" [ref=e843]:
+      - heading "Results" [level=2] [ref=e844]
+      - generic [ref=e846]:
+        - img [ref=e847]
+        - text: Your generations will appear here.
+        - text: Pick a mode and click Generate to start.
+  - tooltip "Full control over every parameter"

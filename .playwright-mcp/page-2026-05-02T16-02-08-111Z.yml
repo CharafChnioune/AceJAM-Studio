@@ -1,0 +1,397 @@
+- generic [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#workspace"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e8]: AceJAM Studio
+      - generic [ref=e9]: ACE-Step 1.5
+      - navigation "Main navigation" [ref=e10]:
+        - generic [ref=e11]: Create
+        - button "Simple" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Simple
+        - button "Custom" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Custom
+        - generic [ref=e20]: Edit
+        - button "Cover" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - text: Cover
+        - button "Repaint" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - text: Repaint
+        - button "Extract" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - text: Extract
+        - button "Lego" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - text: Lego
+        - button "Complete" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - text: Complete
+        - generic [ref=e39]: Produce
+        - button "Album" [active] [ref=e40] [cursor=pointer]:
+          - img [ref=e41]
+          - text: Album
+        - button "Trainer" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+          - text: Trainer
+        - generic [ref=e48]: Manage
+        - button "Library" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Library
+        - button "Settings" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - text: Settings
+      - status [ref=e56]: ✓ Studio ready · 4 audio model(s)
+    - main [ref=e57]:
+      - generic [ref=e82]:
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: Adapter
+            - combobox "Adapter" [ref=e86]:
+              - option "No adapter" [selected]
+          - generic [ref=e87]:
+            - generic [ref=e88]: Adapter strength
+            - slider "Adapter strength" [ref=e89]: "1"
+          - generic [ref=e92] [cursor=pointer]:
+            - checkbox "Use adapter" [ref=e93]
+            - text: Use adapter
+        - generic [ref=e94]: PEFT LoRA adapters trained in Trainer can be applied to Simple, Custom, Cover, Repaint, Lego and Complete.
+      - group [ref=e95]:
+        - generic "Production Team brief Describe the album. Local LLM plans tracks with agents; AceJAM renders every selected model album." [ref=e893] [cursor=pointer]:
+          - generic [ref=e97]:
+            - strong [ref=e98]: Production Team brief
+            - generic [ref=e99]: Describe the album. Local LLM plans tracks with agents; AceJAM renders every selected model album.
+        - generic [ref=e100]:
+          - generic [ref=e101]:
+            - generic [ref=e102]:
+              - generic [ref=e103]: Prompt mode
+              - combobox "Prompt mode" [ref=e104]:
+                - option "Current mode" [selected]
+                - option "Simple"
+                - option "Custom"
+                - option "News to song"
+                - option "Improve lyrics"
+                - option "Cover / Remix"
+                - option "Repaint"
+                - option "Extract"
+                - option "Lego"
+                - option "Complete"
+                - option "Album"
+            - generic [ref=e105]: "Using Local AI Writer/Planner: Ollama charaf/qwen3.5-9b-claude-opus:latest."
+            - button "Fill all fields" [ref=e108] [cursor=pointer]
+          - generic [ref=e109]:
+            - generic [ref=e110]: Describe what you want
+            - textbox "Describe what you want" [ref=e111]:
+              - /placeholder: A 12-track award-level album about pressure, loyalty, money and rebirth...
+          - generic [ref=e112]: Uses Local AI Writer/Planner. Updates the current mode directly — every field stays editable.
+      - group [ref=e113]:
+        - generic "Local AI Writer/Planner Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192" [ref=e873] [cursor=pointer]:
+          - generic [ref=e115]:
+            - strong [ref=e116]: Local AI Writer/Planner
+            - generic [ref=e117]: Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - generic [ref=e121]: Local AI provider
+              - combobox "Local AI provider" [ref=e122]:
+                - option "Ollama" [selected]
+                - option "LM Studio"
+            - generic [ref=e123]:
+              - generic [ref=e124]: Writer / planner model
+              - combobox "Writer / planner model" [ref=e125]:
+                - option "charaf/qwen3.5-9b-claude-opus:latest" [selected]
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:instruct"
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:thinking"
+                - option "huihui_ai/Qwen3.6-abliterated:35b"
+                - option "qwen3.6:35b-a3b-coding-nvfp4"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:instruct"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:thinking"
+                - option "qwen3:0.6b"
+            - generic [ref=e126]:
+              - generic [ref=e127]: Preset
+              - combobox "Preset" [ref=e128]:
+                - option "Stable"
+                - option "Balanced" [selected]
+                - option "Creative"
+                - option "Wild"
+            - generic [ref=e129]:
+              - generic [ref=e130]: Temperature
+              - spinbutton "Temperature" [ref=e131]: "0.45"
+            - generic [ref=e132]:
+              - generic [ref=e133]: Top-p
+              - spinbutton "Top-p" [ref=e134]: "0.92"
+            - generic [ref=e135]:
+              - generic [ref=e136]: Top-k
+              - spinbutton "Top-k" [ref=e137]: "40"
+          - group [ref=e138]:
+            - generic "Advanced Repeat control, seed, output and context" [ref=e139] [cursor=pointer]:
+              - generic [ref=e140]:
+                - strong [ref=e141]: Advanced
+                - generic [ref=e142]: Repeat control, seed, output and context
+      - generic [ref=e493]:
+        - generic [ref=e494]:
+          - generic [ref=e495]:
+            - generic [ref=e496]: Production team
+            - heading "Album" [level=2] [ref=e497]
+            - paragraph [ref=e498]: Plan a full album with the Local AI Writer/Planner, edit every track, then render the whole record across the selected ACE-Step audio models. Use it for cohesive multi-track releases.
+          - generic [ref=e499]: 7-model studio
+        - img [ref=e501]
+        - generic [ref=e506]:
+          - strong [ref=e507]: Multi-track album production
+          - generic [ref=e508]: Concept → planned tracks → rendered audio across one or all 7 ACE-Step models. Plan once, edit any track, then generate.
+        - generic [ref=e509]:
+          - generic [ref=e510]:
+            - generic [ref=e511]: Concept
+            - textbox "Concept" [ref=e512]:
+              - /placeholder: A seven-track Dutch rap album about ambition, family, night shifts and winning quietly
+          - generic [ref=e513]:
+            - generic [ref=e514]:
+              - generic [ref=e515]: Genre prompt for agents
+              - textbox "Genre prompt for agents" [ref=e516]:
+                - /placeholder: cinematic West Coast rap, clear hook, polished modern mix
+            - generic [ref=e517]:
+              - generic [ref=e518]: Mood/vibe
+              - textbox "Mood/vibe" [ref=e519]:
+                - /placeholder: dark, tense, triumphant, cinematic
+            - generic [ref=e520]:
+              - generic [ref=e521]: Vocal type
+              - textbox "Vocal type" [ref=e522]:
+                - /placeholder: male rap lead, clear chorus response
+            - generic [ref=e523]:
+              - generic [ref=e524]: Audience/platform
+              - textbox "Audience/platform" [ref=e525]:
+                - /placeholder: streaming release, car speakers, club-ready low end
+          - generic [ref=e526]:
+            - generic [ref=e527]:
+              - generic [ref=e528]: Tracks
+              - spinbutton "Tracks" [ref=e529]: "5"
+            - generic [ref=e530]:
+              - generic [ref=e531]: Language
+              - combobox "Language" [ref=e532]:
+                - option "ar"
+                - option "az"
+                - option "bg"
+                - option "bn"
+                - option "ca"
+                - option "cs"
+                - option "da"
+                - option "de"
+                - option "el"
+                - option "en" [selected]
+                - option "es"
+                - option "fa"
+                - option "fi"
+                - option "fr"
+                - option "he"
+                - option "hi"
+                - option "hr"
+                - option "ht"
+                - option "hu"
+                - option "id"
+                - option "is"
+                - option "it"
+                - option "ja"
+                - option "ko"
+                - option "la"
+                - option "lt"
+                - option "ms"
+                - option "ne"
+                - option "nl"
+                - option "no"
+                - option "pa"
+                - option "pl"
+                - option "pt"
+                - option "ro"
+                - option "ru"
+                - option "sa"
+                - option "sk"
+                - option "sr"
+                - option "sv"
+                - option "sw"
+                - option "ta"
+                - option "te"
+                - option "th"
+                - option "tl"
+                - option "tr"
+                - option "uk"
+                - option "ur"
+                - option "vi"
+                - option "yue"
+                - option "zh"
+                - option "unknown"
+          - generic [ref=e533]:
+            - generic [ref=e534]: "Using Local AI Writer/Planner: Ollama charaf/qwen3.5-9b-claude-opus:latest. Album agents use it for lyrics, tags, BPM, key, duration and captions."
+            - generic [ref=e535]:
+              - generic [ref=e536]: Planning Engine
+              - combobox "Planning Engine" [ref=e537]:
+                - option "AceJAM Direct (recommended)" [selected]
+                - option "CrewAI Micro Tasks (experimental)"
+              - generic [ref=e538]: CrewAI Micro wraps the same small tasks, delimiter parser and gates. ACE-Step still renders audio.
+            - generic [ref=e539]:
+              - generic [ref=e540]: Album model strategy
+              - combobox "Album model strategy" [ref=e541]:
+                - option "All 7 models"
+                - option "Turbo (fast, 8 steps)"
+                - option "Turbo Shift3 (dry timbre)"
+                - option "SFT (detail, 64 steps)"
+                - option "Base (flexible)"
+                - option "XL Turbo (best fast)"
+                - option "XL SFT (highest quality)" [selected]
+                - option "XL Base (all-task)"
+          - generic [ref=e542]:
+            - generic [ref=e543]:
+              - generic [ref=e544]: Quality target
+              - combobox "Quality target" [ref=e545]:
+                - option "Hit single standard" [selected]
+                - option "Cohesive album"
+                - option "Experimental"
+            - generic [ref=e546]:
+              - checkbox "Planner thinking" [ref=e547]
+              - text: Planner thinking
+            - generic [ref=e548]:
+              - checkbox "Print full agent I/O" [checked] [ref=e549]
+              - text: Print full agent I/O
+          - generic [ref=e550]:
+            - button "Plan & generate album" [ref=e551] [cursor=pointer]
+            - button "Refresh local LLMs" [ref=e552] [cursor=pointer]
+          - generic [ref=e553]:
+            - text: With
+            - strong [ref=e554]: All 7 models
+            - text: selected, this generates seven full albums (one per ACE-Step audio model). Missing models download automatically, then generation resumes.
+          - generic [ref=e555]:
+            - generic [ref=e556]:
+              - generic [ref=e557]:
+                - strong [ref=e558]: "5"
+                - text: tracks
+              - generic [ref=e559]:
+                - strong [ref=e560]: "7"
+                - text: model albums
+              - generic [ref=e561]:
+                - strong [ref=e562]: "35"
+                - text: renders
+              - generic [ref=e563]:
+                - strong [ref=e564]: "3"
+                - text: downloads needed
+            - generic [ref=e565]:
+              - generic [ref=e566]: 7 model albums · 35 planned render(s)
+              - generic [ref=e567]:
+                - generic "acestep-v15-turbo · Best default, fast" [ref=e568]:
+                  - strong [ref=e569]: Turbo
+                  - text: installed
+                - generic "acestep-v15-turbo-shift3 · Clear timbre, dry" [ref=e570]:
+                  - strong [ref=e571]: Turbo Shift3
+                  - text: download required
+                - generic "acestep-v15-sft · CFG detail tuning" [ref=e572]:
+                  - strong [ref=e573]: SFT
+                  - text: installed
+                - generic "acestep-v15-base · All tasks, fine-tuning" [ref=e574]:
+                  - strong [ref=e575]: Base
+                  - text: download required
+                - generic "acestep-v15-xl-turbo · Best 20GB+ daily driver" [ref=e576]:
+                  - strong [ref=e577]: XL Turbo
+                  - text: download required
+                - generic "acestep-v15-xl-sft · Highest detail, CFG" [ref=e578]:
+                  - strong [ref=e579]: XL SFT
+                  - text: installed
+                - generic "acestep-v15-xl-base · All tasks, XL quality" [ref=e580]:
+                  - strong [ref=e581]: XL Base
+                  - text: installed
+        - group [ref=e582]:
+          - generic "Preview album request Album payload will appear after planning." [ref=e894] [cursor=pointer]:
+            - generic [ref=e584]:
+              - strong [ref=e585]: Preview album request
+              - generic [ref=e586]: Album payload will appear after planning.
+        - group [ref=e587]:
+          - 'generic "Agent Runtime Local AI Writer/Planner: Ollama charaf/qwen3.5-9b-claude-opus:latest; planning acejam_agents; ACE-Step LM off for agent lyrics" [ref=e895] [cursor=pointer]':
+            - generic [ref=e589]:
+              - strong [ref=e590]: Agent Runtime
+              - generic [ref=e591]: "Local AI Writer/Planner: Ollama charaf/qwen3.5-9b-claude-opus:latest; planning acejam_agents; ACE-Step LM off for agent lyrics"
+        - group [ref=e592]:
+          - generic "Agent Tools 4 tag packs" [ref=e593] [cursor=pointer]:
+            - generic [ref=e594]:
+              - strong [ref=e595]: Agent Tools
+              - generic [ref=e596]: 4 tag packs
+        - group [ref=e597]:
+          - generic "Lyrics Craft dense lyrics, varied BPM, related keys" [ref=e598] [cursor=pointer]:
+            - generic [ref=e599]:
+              - strong [ref=e600]: Lyrics Craft
+              - generic [ref=e601]: dense lyrics, varied BPM, related keys
+          - option "Auto by duration" [selected]
+          - option "Short hook"
+          - option "Club build/drop"
+          - option "Cinematic arc"
+          - option "Dense" [selected]
+          - option "Balanced"
+          - option "Rap dense"
+          - option "Sparse"
+          - option "Varied" [selected]
+          - option "Rap pocket"
+          - option "Club"
+          - option "Slow"
+          - option "Related keys" [selected]
+          - option "Free"
+        - group [ref=e602]:
+          - generic "Generation 1 variant(s), wav32, acestep-v15-xl-sft" [ref=e603] [cursor=pointer]:
+            - generic [ref=e604]:
+              - strong [ref=e605]: Generation
+              - generic [ref=e606]: 1 variant(s), wav32, acestep-v15-xl-sft
+          - option "wav"
+          - option "flac"
+          - option "ogg"
+          - option "mp3"
+          - option "opus"
+          - option "aac"
+          - option "wav32" [selected]
+          - option "No album adapter" [selected]
+        - generic [ref=e607]:
+          - generic [ref=e608]:
+            - heading "Saved Album Tracks" [level=3] [ref=e609]
+            - button "Refresh" [ref=e610] [cursor=pointer]
+          - generic [ref=e611]: "Album family 812c1687ec20: 2 saved track(s) across 1 model album(s)."
+          - generic [ref=e896]:
+            - generic [ref=e897]:
+              - link "Download all model albums ZIP" [ref=e898] [cursor=pointer]:
+                - /url: /api/album-families/812c1687ec20/download
+              - link "Download selected album ZIP" [ref=e899] [cursor=pointer]:
+                - /url: /api/albums/812c1687ec20-xl-sft/download
+              - button "Delete album family" [ref=e900] [cursor=pointer]
+              - button "Delete selected album" [ref=e901] [cursor=pointer]
+            - generic [ref=e902]:
+              - checkbox [ref=e904]
+              - generic [ref=e905]:
+                - generic [ref=e906]: Concrete Signal - Concrete Canyons
+                - generic [ref=e907]: "text2music · turbo · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+                - generic [ref=e908]:
+                  - button "Play" [ref=e909] [cursor=pointer]:
+                    - img [ref=e910]
+                  - generic [ref=e913]: 4:00
+                  - button "Mute" [ref=e914] [cursor=pointer]:
+                    - img [ref=e915]
+                  - slider [ref=e918] [cursor=pointer]: "1"
+                - link "Download" [ref=e920] [cursor=pointer]:
+                  - /url: /media/songs/a56895e10024/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+            - generic [ref=e921]:
+              - checkbox [ref=e923]
+              - generic [ref=e924]:
+                - generic [ref=e925]: Concrete Signal - Concrete Canyons
+                - generic [ref=e926]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+                - generic [ref=e927]:
+                  - button "Play" [ref=e928] [cursor=pointer]:
+                    - img [ref=e929]
+                  - generic [ref=e932]: 4:00
+                  - button "Mute" [ref=e933] [cursor=pointer]:
+                    - img [ref=e934]
+                  - slider [ref=e937] [cursor=pointer]: "1"
+                - link "Download" [ref=e939] [cursor=pointer]:
+                  - /url: /media/songs/205d386bcf0d/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+    - complementary "Generation results" [ref=e857]:
+      - heading "Results" [level=2] [ref=e858]
+      - generic [ref=e860]:
+        - img [ref=e861]
+        - text: Your generations will appear here.
+        - text: Pick a mode and click Generate to start.
+  - tooltip "Multi-track album production"

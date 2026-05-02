@@ -48,10 +48,15 @@ from user_album_contract import (
 
 
 OFFICIAL_SOURCES = [
+    "https://github.com/ace-step/ACE-Step-1.5",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md",
-    "https://huggingface.co/ACE-Step/acestep-v15-xl-turbo",
+    "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/GRADIO_GUIDE.md",
+    "https://huggingface.co/spaces/ACE-Step/Ace-Step-v1.5/blob/main/docs/en/API.md",
+    "https://huggingface.co/ACE-Step/acestep-v15-xl-sft",
+    "https://huggingface.co/ACE-Step/acestep-v15-xl-base",
+    "https://arxiv.org/abs/2602.00744",
 ]
 
 ALBUM_FINAL_MODEL = "acestep-v15-xl-sft"
@@ -76,7 +81,9 @@ def _portfolio_item(model: str, slug: str, label: str, summary: str) -> dict[str
 
 ALBUM_MODEL_PORTFOLIO: list[dict[str, Any]] = [
     _portfolio_item("acestep-v15-turbo", "turbo", "Turbo", "Best default, fast"),
+    _portfolio_item("acestep-v15-turbo-shift1", "turbo-shift1", "Turbo Shift1", "Richer details, looser semantics"),
     _portfolio_item("acestep-v15-turbo-shift3", "turbo-shift3", "Turbo Shift3", "Clear timbre, dry"),
+    _portfolio_item("acestep-v15-turbo-continuous", "turbo-continuous", "Turbo Continuous", "Smooth continuous turbo"),
     _portfolio_item("acestep-v15-sft", "sft", "SFT", "CFG detail tuning"),
     _portfolio_item("acestep-v15-base", "base", "Base", "All tasks, fine-tuning"),
     _portfolio_item("acestep-v15-xl-turbo", "xl-turbo", "XL Turbo", "Best 20GB+ daily driver"),
@@ -87,8 +94,8 @@ ALBUM_MODEL_PORTFOLIO_MODELS = [item["model"] for item in ALBUM_MODEL_PORTFOLIO]
 
 MODEL_STRATEGIES: dict[str, dict[str, Any]] = {
     "all_models_album": {
-        "label": "All 7 model albums",
-        "summary": "Render one complete album for every official ACE-Step 1.5 model in AceJAM's album portfolio.",
+        "label": "All official render model albums",
+        "summary": "Render one complete album for every official render-usable ACE-Step 1.5 model in AceJAM's album portfolio.",
         "order": ALBUM_MODEL_PORTFOLIO_MODELS,
         "multi_album": True,
     },
@@ -194,7 +201,7 @@ LYRIC_META_TAGS: dict[str, list[str]] = {
 
 CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "ModelAdvisorTool", "summary": "Chooses only installed ACE-Step models for the album strategy."},
-    {"name": "ModelPortfolioTool", "summary": "Plans the full 7-model album render portfolio."},
+    {"name": "ModelPortfolioTool", "summary": "Plans the full official render-model album portfolio."},
     {"name": "PerModelSettingsTool", "summary": "Returns per-model steps, guidance, shift, speed, quality, and warnings."},
     {"name": "AlbumRenderMatrixTool", "summary": "Calculates track-by-model render counts and album grouping."},
     {"name": "FilenamePlannerTool", "summary": "Plans safe track/model filenames for downloads and album ZIPs."},
@@ -553,10 +560,16 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
         return ["Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Outro"]
     if dur <= 90:
         return ["Intro", "Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Verse 2", "Final Chorus"]
+    if rap and dur <= 150:
+        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Bridge", "Final Chorus", "Outro"]
     if dur <= 150:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
+    if rap and dur <= 240:
+        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Second Chorus", "Verse 3 - Beat Switch", "Bridge", "Final Chorus", "Outro"]
     if dur <= 240:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Break", "Bridge", "Final Chorus", "Outro"]
+    if rap and dur <= 360:
+        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Second Chorus", "Verse 3 - Beat Switch", "Bridge", "Final Chorus", "Outro"]
     if dur <= 360:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Breakdown", "Final Chorus", "Outro"]
     return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Instrumental Break", "Verse 4", "Final Chorus", "Outro"]
@@ -564,8 +577,10 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
 
 def lyric_length_plan(duration: float, density: str = "balanced", structure_preset: str = "auto", genre_hint: str = "") -> dict[str, Any]:
     dur = int(parse_duration_seconds(duration, 120))
-    preset = DENSITY_PRESETS.get(density, DENSITY_PRESETS["balanced"])
     rap = bool(re.search(r"\b(rap|hip.?hop|trap|drill|grime)\b", genre_hint or "", re.I))
+    if rap and str(density or "").strip().lower() not in {"sparse", "instrumental"}:
+        density = "rap_dense"
+    preset = DENSITY_PRESETS.get(density, DENSITY_PRESETS["balanced"])
     sparse_genre = bool(is_sparse_lyric_genre(genre_hint) and not rap)
     if sparse_genre:
         section_map = section_map_for(dur, genre_hint, instrumental=True)
@@ -583,6 +598,16 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         (300, 390, 500, 560),
         (600, 430, 560, 620),
     ]
+    if rap:
+        bands = [
+            (30, 60, 74, 90),
+            (60, 120, 150, 180),
+            (120, 240, 300, 360),
+            (180, 360, 420, 470),
+            (240, 430, 480, 520),
+            (300, 470, 520, 570),
+            (600, 500, 560, 620),
+        ]
     min_words, base_words, max_words = bands[-1][1:]
     for limit, low, base, high in bands:
         if dur <= limit:
@@ -600,10 +625,26 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
             if dur <= limit:
                 min_words, base_words, max_words = low, base, high
                 break
-    density_factor = {"sparse": 0.9, "balanced": 1.0, "dense": 1.1, "rap_dense": 1.16}.get(density, 1.0)
+    density_factor = {"sparse": 0.9, "balanced": 1.0, "dense": 1.1, "rap_dense": 1.08}.get(density, 1.0)
     target_words = max(min_words, min(max_words, int(base_words * density_factor)))
     target_lines = max(len(sections) * 3, int(target_words / (4.6 if rap else 5.4) * float(preset["line_factor"])))
     min_lines = max(len(sections) * 2, int(target_lines * 0.72))
+    if rap:
+        rap_line_bands = [
+            (60, 24, 34),
+            (120, 44, 58),
+            (180, 62, 76),
+            (240, 75, 92),
+            (300, 86, 104),
+            (600, 96, 120),
+        ]
+        rap_min_lines, rap_target_lines = rap_line_bands[-1][1:]
+        for limit, low, high in rap_line_bands:
+            if dur <= limit:
+                rap_min_lines, rap_target_lines = low, high
+                break
+        target_lines = max(len(sections) * 3, min(rap_target_lines, max(rap_min_lines, int(target_words / 5.6))))
+        min_lines = max(len(sections) * 2, rap_min_lines)
     if sparse_genre:
         target_lines = max(len(sections), min(len(sections) * 3, target_lines))
         min_lines = max(0 if min_words == 0 else len(sections), int(target_lines * 0.5))
@@ -1163,6 +1204,10 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
         "tag_coverage": payload_gate.get("tag_coverage"),
         "caption_integrity": payload_gate.get("caption_integrity"),
         "lyric_duration_fit": payload_gate.get("lyric_duration_fit"),
+        "lyrical_craft_contract": payload_gate.get("lyrical_craft_contract"),
+        "lyric_craft_gate": payload_gate.get("lyric_craft_gate"),
+        "lyric_craft_score": payload_gate.get("lyric_craft_score"),
+        "lyric_craft_issues": payload_gate.get("lyric_craft_issues"),
         "runtime_planner": runtime_plan,
         "length_plan": plan,
         "lyric_stats": stats,
@@ -1182,7 +1227,14 @@ def quality_report(track: dict[str, Any], options: dict[str, Any]) -> dict[str, 
             instrumental=parse_bool(track.get("instrumental"), False),
         ),
         "troubleshooting_hints": troubleshooting_hints,
-        "hit_gate_passed": bool(length_ok and char_ok and section_coverage >= 0.72 and not cliches and len(stats["repeated_lines"]) <= 2),
+        "hit_gate_passed": bool(
+            length_ok
+            and char_ok
+            and section_coverage >= 0.72
+            and not cliches
+            and len(stats["repeated_lines"]) <= 2
+            and ((payload_gate.get("lyric_craft_gate") or {}).get("status") in {None, "pass"})
+        ),
     }
 
 
@@ -1215,7 +1267,7 @@ def production_team_report(track: dict[str, Any], options: dict[str, Any], model
             "model": ALBUM_FINAL_MODEL if str(options.get("song_model_strategy") or "") == "xl_sft_final" else "per-model portfolio",
             "portfolio": album_model_portfolio(options.get("installed_models")),
             "locked": str(options.get("song_model_strategy") or "") in {"xl_sft_final", "all_models_album"},
-            "reason": "Album renders use the selected policy: XL SFT legacy final or the full 7-model portfolio.",
+            "reason": "Album renders use the selected policy: XL SFT legacy final or the full official render-model portfolio.",
         },
         "executive_producer": {
             "album_role": track.get("description") or "",
@@ -1696,7 +1748,7 @@ def make_crewai_tools(context: dict[str, Any]) -> list[Any]:
 
     @tool("ModelPortfolioTool")
     def model_portfolio_tool(query: str = "") -> str:
-        """Return the full 7-model album portfolio and install state."""
+        """Return the full official render-model album portfolio and install state."""
         return json.dumps(
             {
                 "strategy": "all_models_album",

@@ -1,0 +1,242 @@
+- generic [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#workspace"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e8]: AceJAM Studio
+      - generic [ref=e9]: ACE-Step 1.5
+      - navigation "Main navigation" [ref=e10]:
+        - generic [ref=e11]: Create
+        - button "Simple" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Simple
+        - button "Custom" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Custom
+        - generic [ref=e20]: Edit
+        - button "Cover" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - text: Cover
+        - button "Repaint" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - text: Repaint
+        - button "Extract" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - text: Extract
+        - button "Lego" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - text: Lego
+        - button "Complete" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - text: Complete
+        - generic [ref=e39]: Produce
+        - button "Album" [ref=e40] [cursor=pointer]:
+          - img [ref=e41]
+          - text: Album
+        - button "Trainer" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+          - text: Trainer
+        - generic [ref=e48]: Manage
+        - button "Library" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Library
+        - button "Settings" [active] [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - text: Settings
+      - status [ref=e56]: ✓ Studio ready · 4 audio model(s)
+    - main [ref=e57]:
+      - group [ref=e113]:
+        - generic "Local AI Writer/Planner Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192" [ref=e860] [cursor=pointer]:
+          - generic [ref=e115]:
+            - strong [ref=e116]: Local AI Writer/Planner
+            - generic [ref=e117]: Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - generic [ref=e121]: Local AI provider
+              - combobox "Local AI provider" [ref=e122]:
+                - option "Ollama" [selected]
+                - option "LM Studio"
+            - generic [ref=e123]:
+              - generic [ref=e124]: Writer / planner model
+              - combobox "Writer / planner model" [ref=e125]:
+                - option "charaf/qwen3.5-9b-claude-opus:latest" [selected]
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:thinking"
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:instruct"
+                - option "huihui_ai/Qwen3.6-abliterated:35b"
+                - option "qwen3.6:35b-a3b-coding-nvfp4"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:instruct"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:thinking"
+                - option "qwen3:0.6b"
+            - generic [ref=e126]:
+              - generic [ref=e127]: Preset
+              - combobox "Preset" [ref=e128]:
+                - option "Stable"
+                - option "Balanced" [selected]
+                - option "Creative"
+                - option "Wild"
+            - generic [ref=e129]:
+              - generic [ref=e130]: Temperature
+              - spinbutton "Temperature" [ref=e131]: "0.45"
+            - generic [ref=e132]:
+              - generic [ref=e133]: Top-p
+              - spinbutton "Top-p" [ref=e134]: "0.92"
+            - generic [ref=e135]:
+              - generic [ref=e136]: Top-k
+              - spinbutton "Top-k" [ref=e137]: "40"
+          - group [ref=e138]:
+            - generic "Advanced Repeat control, seed, output and context" [ref=e139] [cursor=pointer]:
+              - generic [ref=e140]:
+                - strong [ref=e141]: Advanced
+                - generic [ref=e142]: Repeat control, seed, output and context
+      - generic [ref=e713]:
+        - generic [ref=e715]:
+          - generic [ref=e716]: Runtime
+          - heading "Settings" [level=2] [ref=e717]
+          - paragraph [ref=e718]: Server health, installed audio models, local LLM status, trainer readiness and official ACE-Step parity. Manage downloads and clean up generated output here.
+        - generic [ref=e719]:
+          - generic [ref=e720]:
+            - heading "Runtime" [level=3] [ref=e721]
+            - generic [ref=e722]: Official runner ready
+          - generic [ref=e723]: 4 ACE-Step audio model(s). Local AI Writer/Planner active; ACE-Step 4B LM is optional for official lyric/metadata controls. Official runner ready. ACE-Step parity 2026-04-26.
+          - generic [ref=e724]:
+            - generic [ref=e1892]:
+              - generic [ref=e1893]: Server
+              - strong [ref=e1894]: ready
+              - generic [ref=e1895]: UI 0.0.1
+            - generic [ref=e1896]:
+              - generic [ref=e1897]: ACE-Step audio models
+              - strong [ref=e1898]: 4 installed
+              - generic [ref=e1899]: downloads idle
+            - generic [ref=e1900]:
+              - generic [ref=e1901]: Local AI Writer
+              - strong [ref=e1902]: active
+              - generic [ref=e1903]: all writing/planning uses Ollama or LM Studio
+            - generic [ref=e1904]:
+              - generic [ref=e1905]: Trainer
+              - strong [ref=e1906]: ready
+              - generic [ref=e1907]: LoRA/LoKr available
+            - generic [ref=e1908]:
+              - generic [ref=e1909]: Official runner
+              - strong [ref=e1910]: ready
+              - generic [ref=e1911]: vendor available
+            - generic [ref=e1912]:
+              - generic [ref=e1913]: Parity
+              - strong [ref=e1914]: 2026-04-26
+              - generic [ref=e1915]: unsupported items are shown as guarded
+          - generic [ref=e749]:
+            - generic [ref=e750]:
+              - heading "Local AI Models & Settings" [level=3] [ref=e751]
+              - generic [ref=e752]: Ollama ready
+            - generic [ref=e753]: "8 writer chat model(s), 3 memory embedding option(s). Host: http://localhost:11434."
+            - generic [ref=e754]:
+              - generic [ref=e755]: "Model manager uses the same Local AI provider: Ollama."
+              - generic [ref=e756]:
+                - generic [ref=e757]: Model to install/download
+                - textbox "Model to install/download" [ref=e758]:
+                  - /placeholder: qwen3:4b or lmstudio-community/model
+              - generic [ref=e759]:
+                - generic [ref=e760]: Kind
+                - combobox "Kind" [ref=e761]:
+                  - option "Chat / writer" [selected]
+                  - option "Embedding"
+            - generic [ref=e762]:
+              - generic [ref=e763]:
+                - generic [ref=e764]: LM Studio context
+                - spinbutton "LM Studio context" [ref=e765]
+              - generic [ref=e766]:
+                - generic [ref=e767]: LM Studio quantization
+                - textbox "LM Studio quantization" [ref=e768]:
+                  - /placeholder: optional, e.g. Q4_K_M
+            - generic [ref=e769]:
+              - button "Refresh models" [ref=e770] [cursor=pointer]
+              - button "Install / download" [ref=e771] [cursor=pointer]
+              - button "Load" [ref=e772] [cursor=pointer]
+              - button "Unload" [ref=e773] [cursor=pointer]
+              - button "Test writer" [ref=e774] [cursor=pointer]
+              - button "Test embedding" [ref=e775] [cursor=pointer]
+            - generic [ref=e776]: Selectors use local Ollama or LM Studio models. LM Studio requires the local server running at localhost:1234.
+            - generic [ref=e777]: "Local AI source: Ollama Host: http://localhost:11434 Writer chat choices: charaf/qwen3.5-9b-claude-opus:latest, charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:thinking, charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:instruct, huihui_ai/Qwen3.6-abliterated:35b, qwen3.6:35b-a3b-coding-nvfp4, charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:instruct, charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:thinking, qwen3:0.6b Memory embedding options: qwen3-embedding:8b, nomic-embed-text-v2-moe:latest, nomic-embed-text:latest Running: none - charaf/qwen3.5-9b-claude-opus:latest - charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:thinking (Q4_K_M) - charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:instruct (Q4_K_M) - huihui_ai/Qwen3.6-abliterated:35b (Q4_K_M) - qwen3.6:35b-a3b-coding-nvfp4 (nvfp4) - qwen3-embedding:8b (Q4_K_M) - nomic-embed-text-v2-moe:latest (F16) - nomic-embed-text:latest (F16) - charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:instruct - charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:thinking - qwen3:0.6b (Q4_K_M)"
+          - generic [ref=e778]:
+            - generic [ref=e779]:
+              - heading "ACE-Step LM" [level=3] [ref=e780]
+              - generic [ref=e781]: Hybrid
+            - generic [ref=e782]: "Local AI Writer/Planner stays primary. ACE-Step 4B LM is only for optional official lyric/metadata actions. Preferred LM: acestep-5Hz-lm-4B."
+            - generic [ref=e783]:
+              - generic [ref=e1916]:
+                - strong [ref=e1917]: Policy
+                - text: hybrid
+                - generic [ref=e1918]: Local AI Writer primary, ACE LM only when explicitly needed
+              - generic [ref=e1919]:
+                - strong [ref=e1920]: Official LMs
+                - text: 2/3 installed
+                - generic [ref=e1921]: "Recommended: acestep-5Hz-lm-4B"
+              - generic [ref=e1922]:
+                - strong [ref=e1923]: Abliterated local
+                - text: none found
+                - generic [ref=e1924]: Waiting for local smoke pass
+              - generic [ref=e1925]:
+                - strong [ref=e1926]: Private upload
+                - text: token missing
+                - generic [ref=e1927]: Requires PRIVATE_HF_UPLOAD confirm
+              - generic [ref=e1928]:
+                - strong [ref=e1929]: Cleanup
+                - text: locked
+                - generic [ref=e1930]: Needs abliterated 4B smoke marker
+              - generic [ref=e1931]:
+                - strong [ref=e1932]: OBLITERATUS
+                - text: not installed
+                - generic [ref=e1933]: AGPL-3.0
+            - generic [ref=e802]:
+              - generic [ref=e803]:
+                - generic [ref=e804]: Private HF repo
+                - textbox "Private HF repo" [ref=e805]:
+                  - /placeholder: username/acestep-5hz-lm-4b-abliterated-private
+              - generic [ref=e806]:
+                - generic [ref=e807]: Local abliterated LM folder
+                - textbox "Local abliterated LM folder" [ref=e808]:
+                  - /placeholder: app/model_cache/checkpoints/acestep-5Hz-lm-4B-abliterated
+            - generic [ref=e809]:
+              - generic [ref=e810] [cursor=pointer]:
+                - checkbox "License/provenance checked" [ref=e811]
+                - text: License/provenance checked
+              - button "Refresh ACE LM" [ref=e812] [cursor=pointer]
+              - button "Install 4B LM" [ref=e813] [cursor=pointer]
+              - button "Mark smoke passed" [ref=e814] [cursor=pointer]
+              - button "Preview cleanup" [ref=e815] [cursor=pointer]
+              - button "Private upload check" [ref=e816] [cursor=pointer]
+              - button "Delete ordinary LMs" [ref=e817] [cursor=pointer]
+            - generic [ref=e818]: Private upload and ordinary-LM cleanup stay locked until a local abliterated 4B LM has a passing smoke marker.
+            - generic [ref=e819]: "{ \"policy\": \"hybrid\", \"planner\": \"ollama\", \"ace_lm_usage\": [ \"sample_mode\", \"format_sample\", \"understand_music\", \"CoT/metas\", \"official LM controls\" ], \"preferred_model\": \"acestep-5Hz-lm-4B\", \"recommended_lm_model\": \"acestep-5Hz-lm-4B\", \"official_models\": [ { \"model\": \"acestep-5Hz-lm-0.6B\", \"installed\": false, \"downloadable\": true, \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-0.6B\" }, { \"model\": \"acestep-5Hz-lm-1.7B\", \"installed\": true, \"downloadable\": true, \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-1.7B\" }, { \"model\": \"acestep-5Hz-lm-4B\", \"installed\": true, \"downloadable\": true, \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-4B\" } ], \"abliterated_models\": [], \"selected_abliterated_model\": \"\", \"obliteratus\": { \"repo\": \"https://github.com/elder-plinius/OBLITERATUS\", \"installed\": false, \"license\": \"AGPL-3.0\", \"local_only_until_uploaded_private\": true }, \"upload\": { \"policy\": \"private_gated\", \"requires_confirm\": \"PRIVATE_HF_UPLOAD\", \"hf_token_present\": false }, \"cleanup_preview\": { \"safe_to_cleanup\": false, \"requires_confirm\": \"DELETE_ORIGINAL_ACE_LM_AFTER_SMOKE\", \"reason\": \"Cleanup is locked until an abliterated 4B ACE-Step LM has a passing local smoke marker.\", \"delete_candidates\": [ { \"model\": \"acestep-5Hz-lm-1.7B\", \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-1.7B\", \"size_bytes\": 3755412617, \"downloadable\": true }, { \"model\": \"acestep-5Hz-lm-4B\", \"path\": \"/Users/charafchnioune/Desktop/code/pinokio/api/acejam.pinokio.git/app/model_cache/checkpoints/acestep-5Hz-lm-4B\", \"size_bytes\": 8426086750, \"downloadable\": true } ], \"keep_candidates\": [], \"total_delete_bytes\": 12181499367 }, \"workflow\": [ \"Install/download official ACE-Step 5Hz LM 4B\", \"Run OBLITERATUS locally outside git-tracked files\", \"Copy passing abliterated model into app/model_cache/checkpoints/acestep-5Hz-lm-4B-abliterated\", \"Run create_sample/format_sample/understand_music smoke tests\", \"Write acejam_smoke_passed.json\", \"Optionally private-upload with HF_TOKEN and PRIVATE_HF_UPLOAD\", \"Only then delete ordinary ACE-Step LM checkpoints if desired\" ] }"
+          - generic [ref=e820]:
+            - generic [ref=e821]:
+              - heading "Generated Output Cleanup" [level=3] [ref=e822]
+              - generic [ref=e823]: 110 item(s)
+            - generic [ref=e824]: "Generated only: 39 song(s), 49 result folder(s), 22 album folder(s), 139 audio file(s). Uploads and LoRA/training data stay untouched."
+            - generic [ref=e825]:
+              - button "Refresh counts" [ref=e826] [cursor=pointer]
+              - button "Delete generated output" [ref=e827] [cursor=pointer]
+          - group [ref=e828]:
+            - generic "Full Runtime JSON Model lists, runner status, UI schema and toolkit metadata." [ref=e829] [cursor=pointer]:
+              - generic [ref=e830]:
+                - strong [ref=e831]: Full Runtime JSON
+                - generic [ref=e832]: Model lists, runner status, UI schema and toolkit metadata.
+          - group [ref=e833]:
+            - generic "Payload Schema Read-only generation payload/debug contract." [ref=e834] [cursor=pointer]:
+              - generic [ref=e835]:
+                - strong [ref=e836]: Payload Schema
+                - generic [ref=e837]: Read-only generation payload/debug contract.
+          - group [ref=e838]:
+            - generic "ACE-Step Parity Official models, endpoints, params, runtime and trainer coverage." [ref=e839] [cursor=pointer]:
+              - generic [ref=e840]:
+                - strong [ref=e841]: ACE-Step Parity
+                - generic [ref=e842]: Official models, endpoints, params, runtime and trainer coverage.
+    - complementary "Generation results" [ref=e843]:
+      - heading "Results" [level=2] [ref=e844]
+      - generic [ref=e846]:
+        - img [ref=e847]
+        - text: Your generations will appear here.
+        - text: Pick a mode and click Generate to start.
+  - tooltip "Runtime and model configuration"

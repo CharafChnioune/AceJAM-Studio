@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import gc
 import hashlib
+import importlib
 import ast
 import json
 import os
@@ -65,6 +66,7 @@ OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
 APP_UI_VERSION = "0.0.1"
 PAYLOAD_CONTRACT_VERSION = "2026-04-26"
+ACE_STEP_VENDOR_SYNC_CONFIRM = "SYNC_ACE_STEP_VENDOR_PATCH_PRESERVING"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
 DEFAULT_ALBUM_EMBEDDING_MODEL = "nomic-embed-text:latest"
@@ -76,6 +78,11 @@ ALBUM_EMBEDDING_FALLBACK_MODELS = [
 ALBUM_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
+ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=True)
+ACEJAM_BOOT_DOWNLOAD_BEST_QUALITY_MODELS = _env_flag("ACEJAM_BOOT_DOWNLOAD_BEST_QUALITY_MODELS", default=True)
+ACEJAM_BOOT_DOWNLOAD_ALL_OFFICIAL_MODELS = _env_flag("ACEJAM_BOOT_DOWNLOAD_ALL_OFFICIAL_MODELS", default=False)
+ACEJAM_BOOT_DOWNLOAD_ENABLED = _env_flag("ACEJAM_BOOT_DOWNLOAD_ENABLED", default=True)
+ACEJAM_BOOT_DOWNLOAD_DELAY_SECONDS = max(0, _env_int("ACEJAM_BOOT_DOWNLOAD_DELAY_SECONDS", 1))
 _IS_APPLE_SILICON = sys.platform == "darwin" and platform.machine() == "arm64"
 ACE_LM_BACKEND_DEFAULT = "mlx" if _IS_APPLE_SILICON else "pt"
 ACE_LM_PRIVATE_UPLOAD_CONFIRM = "PRIVATE_HF_UPLOAD"
@@ -88,6 +95,34 @@ ACEJAM_PRINT_ACE_PAYLOAD = _env_flag(
 )
 ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS = max(0, _env_int("ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS", 0))
 ACEJAM_REDACT_OFFICIAL_LOG_TEXT = _env_flag("ACEJAM_REDACT_OFFICIAL_LOG_TEXT", default=False)
+
+_ALBUM_QUALITY_REQUIRED_EXPORTS = (
+    "build_lyrical_craft_contract",
+    "build_producer_grade_sonic_contract",
+    "lyric_craft_gate",
+    "lyric_density_gate",
+    "producer_grade_readiness",
+    "sonic_dna_coverage",
+)
+
+
+def _ensure_album_agent_modules_current() -> None:
+    """Reload stale album gate modules left in memory by a live dev server."""
+    importlib.invalidate_caches()
+    gate_module = sys.modules.get("album_quality_gate")
+    if gate_module is not None:
+        missing = [name for name in _ALBUM_QUALITY_REQUIRED_EXPORTS if not hasattr(gate_module, name)]
+        if missing:
+            gate_module = importlib.reload(gate_module)
+            still_missing = [name for name in _ALBUM_QUALITY_REQUIRED_EXPORTS if not hasattr(gate_module, name)]
+            if still_missing:
+                raise ImportError(
+                    "album_quality_gate is missing required export(s): "
+                    + ", ".join(still_missing)
+                )
+    crew_module = sys.modules.get("album_crew")
+    if crew_module is not None and not hasattr(crew_module, "plan_album"):
+        importlib.reload(crew_module)
 ACEJAM_VOCAL_INTELLIGIBILITY_GATE = _env_flag("ACEJAM_VOCAL_INTELLIGIBILITY_GATE", default=True)
 ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS = max(1, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS", 8))
 ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE = _env_flag("ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE", default=True)
@@ -152,6 +187,8 @@ from local_llm import (
     lmstudio_model_catalog,
     lmstudio_unload_model,
     normalize_provider,
+    planner_llm_options_for_provider,
+    planner_llm_settings_from_payload,
     provider_label,
     test_model as local_llm_test_model,
 )
@@ -226,7 +263,10 @@ from studio_core import (
     DEFAULT_QUALITY_PROFILE,
     KNOWN_ACE_STEP_MODELS,
     MAX_BATCH_SIZE,
+    OFFICIAL_ACE_STEP_MODEL_REGISTRY,
     OFFICIAL_ACE_STEP_MANIFEST,
+    OFFICIAL_CORE_MODEL_ID,
+    OFFICIAL_MAIN_MODEL_COMPONENTS,
     OFFICIAL_UNRELEASED_MODELS,
     ace_step_settings_compliance,
     ace_step_settings_registry,
@@ -250,7 +290,12 @@ from studio_core import (
     normalize_track_names,
     needs_vocal_lyrics,
     official_fields_used,
+    official_boot_model_ids,
+    official_downloadable_model_ids,
+    official_helper_model_ids,
     official_manifest,
+    official_model_registry,
+    official_model_repo_id,
     ordered_models,
     parse_bool,
     parse_timesteps,
@@ -502,6 +547,7 @@ def _apply_studio_lm_policy(payload: dict[str, Any]) -> dict[str, Any]:
         use_format = get_param(cleaned, "use_format", None)
         if use_format not in [None, ""]:
             cleaned["use_format"] = use_format
+    cleaned.update(planner_llm_settings_from_payload(cleaned))
     requested = _requested_ace_lm_model(cleaned)
     if requested == "none" and _explicit_ace_lm_controls(cleaned):
         requested = ACE_LM_PREFERRED_MODEL
@@ -640,6 +686,7 @@ PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
     "improve": {"label": "Improve Lyrics", "file": "promptverbeter.md", "description": "Improve lyrics and optionally create AceJAM fields."},
     "trainer": {"label": "Trainer / LoRA", "file": "prompttrainer.md", "description": "Dataset labels and training metadata."},
 }
+PROMPT_ASSISTANT_DISABLED_MODES = {"trainer"}
 
 PROMPT_ASSISTANT_ALIASES = {
     "lora": "trainer",
@@ -862,6 +909,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     normalized["ace_lm_model"] = _requested_ace_lm_model(normalized)
     normalized["planner_lm_provider"] = planner_provider
     normalized["planner_model"] = planner_model
+    normalized.update(planner_llm_settings_from_payload({**normalized, **body}, default_max_tokens=2048, default_timeout=600.0))
     if planner_provider == "ollama":
         normalized["planner_ollama_model"] = planner_model
     else:
@@ -984,6 +1032,35 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["caption"] = tags_text
     if not tags_text and caption:
         normalized["tags"] = caption
+    song_intent = normalized.get("song_intent") if isinstance(normalized.get("song_intent"), dict) else {}
+    if song_intent:
+        intent_caption = str(song_intent.get("caption") or "").strip()
+        if intent_caption:
+            normalized["caption"] = intent_caption
+        else:
+            song_intent["caption"] = str(normalized.get("caption") or "").strip()
+    else:
+        custom_tags = normalized.get("custom_tags")
+        if isinstance(custom_tags, str):
+            custom_tag_list = [item.strip() for item in re.split(r"[,;|]", custom_tags) if item.strip()]
+        elif isinstance(custom_tags, list):
+            custom_tag_list = [str(item).strip() for item in custom_tags if str(item).strip()]
+        else:
+            custom_tag_list = []
+        normalized["song_intent"] = {
+            "genre_family": str(normalized.get("genre_family") or "").strip(),
+            "subgenre": str(normalized.get("subgenre") or "").strip(),
+            "mood": str(normalized.get("mood") or "").strip(),
+            "energy": str(normalized.get("energy") or "").strip(),
+            "vocal_type": str(normalized.get("vocal_type") or normalized.get("vocal_delivery") or "").strip(),
+            "drum_groove": str(normalized.get("drum_groove") or normalized.get("drums") or "").strip(),
+            "bass_low_end": str(normalized.get("bass_low_end") or normalized.get("bass") or "").strip(),
+            "melodic_identity": str(normalized.get("melodic_identity") or normalized.get("melodic_element") or "").strip(),
+            "texture_space": str(normalized.get("texture_space") or normalized.get("texture") or "").strip(),
+            "mix_master": str(normalized.get("mix_master") or normalized.get("mix") or "").strip(),
+            "custom_tags": custom_tag_list,
+            "caption": str(normalized.get("caption") or tags_text or "").strip(),
+        }
     normalized.setdefault(
         "negative_tags",
         "muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style",
@@ -1028,6 +1105,7 @@ def _run_prompt_assistant_local(
     planner_provider: str,
     planner_model: str,
     current_payload: dict[str, Any],
+    planner_llm_settings: dict[str, Any] | None = None,
 ) -> str:
     provider = normalize_provider(planner_provider)
     model = str(planner_model or "").strip()
@@ -1057,7 +1135,12 @@ def _run_prompt_assistant_local(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            options={"temperature": 0.55, "top_p": 0.92, "top_k": 40},
+            options=planner_llm_options_for_provider(
+                provider,
+                planner_llm_settings or current_payload or {},
+                default_max_tokens=2048,
+                default_timeout=600.0,
+            ),
         )
     except Exception as exc:
         if provider == "ollama" and _ollama_error_is_missing_model(exc):
@@ -1092,7 +1175,7 @@ def _checkpoint_dir_ready(path: Path) -> bool:
         except Exception:
             return False
     return any(
-        child.is_file() and child.stat().st_size > 0 and child.suffix in {".safetensors", ".bin", ".pt"}
+        child.is_file() and child.stat().st_size > 0 and child.suffix in {".safetensors", ".bin", ".pt", ".ckpt"}
         for child in path.iterdir()
     )
 
@@ -1178,10 +1261,9 @@ def _song_model_for_quality_profile(requested: str | None, quality_profile: str 
         return _normalize_song_model(value)
     installed = _installed_acestep_models()
     if normalize_task_type(task_type) in {"extract", "lego", "complete"}:
-        for candidate in ["acestep-v15-xl-base", "acestep-v15-base"]:
-            if candidate in installed:
-                return candidate
         return "acestep-v15-xl-base"
+    if profile == "chart_master":
+        return "acestep-v15-xl-sft"
     if profile in {"chart_master", "balanced_pro"}:
         return recommended_song_model(installed)
     if profile == "preview_fast":
@@ -2035,8 +2117,36 @@ class OllamaPullStarted(RuntimeError):
 
 
 def _downloadable_model_names() -> set[str]:
-    return (set(KNOWN_ACE_STEP_MODELS) - set(OFFICIAL_UNRELEASED_MODELS)) | {
-        name for name in ACE_STEP_LM_MODELS if name not in {"auto", "none"}
+    return set(official_downloadable_model_ids())
+
+
+def _official_model_runtime_status(model_name: str) -> dict[str, Any]:
+    item = OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(str(model_name or "")) or {}
+    job = _model_download_job(model_name)
+    installed = _is_model_installed(model_name)
+    downloadable = bool(item.get("downloadable")) and model_name not in OFFICIAL_UNRELEASED_MODELS
+    if model_name in OFFICIAL_UNRELEASED_MODELS:
+        status = "unreleased"
+        error = f"{model_name} is listed for parity only; the official registry does not expose downloadable weights yet."
+    elif installed:
+        status = "installed"
+        error = ""
+    elif bool(job and job.get("state") in {"queued", "running"}):
+        status = "downloading"
+        error = ""
+    elif downloadable:
+        status = "download_required"
+        error = ""
+    else:
+        status = "not_applicable"
+        error = "Helper/catalog entry is not download-enabled."
+    return {
+        "installed": installed,
+        "downloadable": downloadable,
+        "downloading": bool(job and job.get("state") in {"queued", "running"}),
+        "download_job": _jsonable(job),
+        "status": status,
+        "error": error,
     }
 
 
@@ -2249,10 +2359,15 @@ def _is_model_installed(model_name: str, ignore_active_job: bool = False) -> boo
     if not ignore_active_job and _download_job_active(model_name):
         return False
     checkpoint_path = MODEL_CACHE_DIR / "checkpoints" / model_name
+    if model_name == OFFICIAL_CORE_MODEL_ID:
+        checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
+        return all(_checkpoint_dir_ready(checkpoint_dir / component) for component in OFFICIAL_MAIN_MODEL_COMPONENTS)
     if model_name.startswith("acestep-v15-"):
         return _song_model_runtime_ready(model_name)
     if model_name.startswith("acestep-5Hz-lm-"):
         return model_name in {"auto", "none"} or _checkpoint_dir_ready(checkpoint_path)
+    if model_name in OFFICIAL_ACE_STEP_MODEL_REGISTRY:
+        return _checkpoint_dir_ready(checkpoint_path)
     return False
 
 
@@ -2289,6 +2404,22 @@ def _set_model_download_job(model_name: str, **updates: Any) -> dict[str, Any]:
         return dict(job)
 
 
+def _download_official_model_to_cache(model_name: str, checkpoint_dir: Path) -> None:
+    repo_id = official_model_repo_id(model_name)
+    if not repo_id:
+        raise RuntimeError(f"{model_name} has no official download repository.")
+    from huggingface_hub import snapshot_download
+
+    if repo_id == "ACE-Step/Ace-Step1.5":
+        _set_model_download_job(model_name, message=f"Downloading official main bundle {repo_id}...")
+        snapshot_download(repo_id=repo_id, local_dir=str(checkpoint_dir), local_dir_use_symlinks=False)
+        return
+    target_dir = checkpoint_dir / model_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    _set_model_download_job(model_name, message=f"Downloading {repo_id}...")
+    snapshot_download(repo_id=repo_id, local_dir=str(target_dir), local_dir_use_symlinks=False)
+
+
 def _download_model_worker(model_name: str) -> None:
     with _model_download_runner_lock:
         _set_model_download_job(
@@ -2302,15 +2433,19 @@ def _download_model_worker(model_name: str) -> None:
         try:
             checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            handler._ensure_model_downloaded(model_name, str(checkpoint_dir))
+            if model_name in OFFICIAL_ACE_STEP_MODEL_REGISTRY:
+                _download_official_model_to_cache(model_name, checkpoint_dir)
+            else:
+                handler._ensure_model_downloaded(model_name, str(checkpoint_dir))
             if model_name.startswith("acestep-v15-"):
                 if not _checkpoint_dir_ready(checkpoint_dir / "acestep-v15-turbo"):
                     _set_model_download_job(model_name, message="Downloading shared ACE-Step components...")
-                    handler._ensure_model_downloaded("acestep-v15-turbo", str(checkpoint_dir))
+                    _download_official_model_to_cache("acestep-v15-turbo", checkpoint_dir)
                 for component in ACE_STEP_SHARED_RUNTIME_COMPONENTS:
                     if not _checkpoint_dir_ready(checkpoint_dir / component):
                         _set_model_download_job(model_name, message=f"Downloading shared ACE-Step component {component}...")
-                        handler._ensure_model_downloaded(component, str(checkpoint_dir))
+                        _download_official_model_to_cache(OFFICIAL_CORE_MODEL_ID, checkpoint_dir)
+                        break
             if not _is_model_installed(model_name, ignore_active_job=True):
                 reasons = "; ".join(_song_model_runtime_missing_reasons(model_name)) if model_name.startswith("acestep-v15-") else ""
                 suffix = f" Missing: {reasons}." if reasons else ""
@@ -2361,6 +2496,51 @@ def _start_model_download(model_name: str) -> dict[str, Any]:
     return job
 
 
+def _boot_download_model_names() -> list[str]:
+    if ACEJAM_BOOT_DOWNLOAD_ALL_OFFICIAL_MODELS:
+        candidates = official_downloadable_model_ids()
+    else:
+        candidates = official_boot_model_ids(
+            include_helpers=ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS,
+            include_best_quality=ACEJAM_BOOT_DOWNLOAD_BEST_QUALITY_MODELS,
+        )
+    downloadable = _downloadable_model_names()
+    names: list[str] = []
+    for model_name in candidates:
+        if model_name not in downloadable or model_name in OFFICIAL_UNRELEASED_MODELS:
+            continue
+        if model_name not in names:
+            names.append(model_name)
+    return names
+
+
+def _queue_boot_model_downloads() -> dict[str, Any]:
+    names = _boot_download_model_names()
+    queued: list[str] = []
+    skipped: list[str] = []
+    failed: dict[str, str] = {}
+    if not ACEJAM_BOOT_DOWNLOAD_ENABLED:
+        return {"enabled": False, "models": names, "queued": queued, "skipped": names, "failed": failed}
+    if os.environ.get("ACEJAM_SKIP_MODEL_INIT_FOR_TESTS", "").strip() == "1":
+        return {"enabled": False, "reason": "tests", "models": names, "queued": queued, "skipped": names, "failed": failed}
+    for model_name in names:
+        try:
+            if _is_model_installed(model_name):
+                skipped.append(model_name)
+                continue
+            _start_model_download(model_name)
+            queued.append(model_name)
+        except Exception as exc:
+            failed[model_name] = str(exc)
+    if queued:
+        print(f"[startup] Queued official ACE-Step boot downloads: {', '.join(queued)}", flush=True)
+    if skipped:
+        print(f"[startup] Official ACE-Step boot downloads already installed: {', '.join(skipped)}", flush=True)
+    if failed:
+        print(f"[startup] Official ACE-Step boot download queue failures: {failed}", flush=True)
+    return {"enabled": True, "models": names, "queued": queued, "skipped": skipped, "failed": failed}
+
+
 def _start_model_download_or_raise(model_name: str, context: str = "generation") -> None:
     job = _start_model_download(model_name)
     raise ModelDownloadStarted(
@@ -2369,6 +2549,50 @@ def _start_model_download_or_raise(model_name: str, context: str = "generation")
         f"{model_name} is not installed yet. AceJAM started the download for {context}. "
         "Wait until the model is installed, then press Generate again.",
     )
+
+
+_boot_model_download_status: dict[str, Any] = {
+    "enabled": ACEJAM_BOOT_DOWNLOAD_ENABLED,
+    "models": _boot_download_model_names(),
+    "queued": [],
+    "skipped": [],
+    "failed": {},
+    "scheduled": False,
+}
+
+
+def _run_boot_model_download_queue() -> None:
+    global _boot_model_download_status
+    _boot_model_download_status = _queue_boot_model_downloads()
+
+
+def _schedule_boot_model_downloads() -> None:
+    global _boot_model_download_status
+    if not ACEJAM_BOOT_DOWNLOAD_ENABLED:
+        _boot_model_download_status = _queue_boot_model_downloads()
+        return
+    if os.environ.get("ACEJAM_SKIP_MODEL_INIT_FOR_TESTS", "").strip() == "1":
+        _boot_model_download_status = _queue_boot_model_downloads()
+        return
+    if ACEJAM_BOOT_DOWNLOAD_DELAY_SECONDS <= 0:
+        _run_boot_model_download_queue()
+        return
+    _boot_model_download_status = {
+        **_boot_model_download_status,
+        "scheduled": True,
+        "delay_seconds": ACEJAM_BOOT_DOWNLOAD_DELAY_SECONDS,
+    }
+    timer = threading.Timer(float(ACEJAM_BOOT_DOWNLOAD_DELAY_SECONDS), _run_boot_model_download_queue)
+    timer.daemon = True
+    timer.start()
+    print(
+        "[startup] Scheduled official ACE-Step boot downloads: "
+        + ", ".join(_boot_model_download_status.get("models") or []),
+        flush=True,
+    )
+
+
+_schedule_boot_model_downloads()
 
 
 def _download_started_payload(model_name: str, job: dict[str, Any], logs: list[str] | None = None, **extra: Any) -> dict[str, Any]:
@@ -3119,6 +3343,18 @@ def _validate_direct_album_agent_payload(payload: dict[str, Any]) -> dict[str, A
     }
 
 
+def _normalize_album_agent_engine_value(value: Any) -> str:
+    text = re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
+    if text in {"crewai", "crew_ai", "crewai_micro", "micro_crewai", "crewai_micro_tasks", "legacy_crewai"}:
+        return "crewai_micro"
+    return "acejam_agents"
+
+
+def _album_agent_engine_label_value(value: Any) -> str:
+    engine = _normalize_album_agent_engine_value(value)
+    return "CrewAI Micro Tasks" if engine == "crewai_micro" else "AceJAM Direct"
+
+
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
     strategy = str(payload.get("song_model_strategy") or "all_models_album")
     quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
@@ -3143,6 +3379,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
             str(payload.get("language") or payload.get("target_language") or "en"),
             payload,
         )
+    planner_settings = planner_llm_settings_from_payload(payload)
     return {
         "requested_song_model": requested_song_model or "auto",
         "song_model_strategy": strategy,
@@ -3150,7 +3387,8 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "prompt_kit_version": str(payload.get("prompt_kit_version") or PROMPT_KIT_VERSION),
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
-        "agent_engine": str(payload.get("agent_engine") or "acejam_agents"),
+        **planner_settings,
+        "agent_engine": _normalize_album_agent_engine_value(payload.get("agent_engine")),
         "user_prompt": str(payload.get("user_prompt") or payload.get("prompt") or payload.get("concept") or ""),
         "raw_user_prompt": str(payload.get("raw_user_prompt") or payload.get("user_prompt") or payload.get("prompt") or payload.get("concept") or ""),
         "album_agent_genre_prompt": str(payload.get("album_agent_genre_prompt") or payload.get("genre_prompt") or payload.get("custom_tags") or ""),
@@ -3160,7 +3398,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "planner_thinking": parse_bool(payload.get("planner_thinking"), False),
         "print_agent_io": parse_bool(payload.get("print_agent_io"), True),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
-        "embedding_lm_provider": normalize_provider(payload.get("embedding_lm_provider") or payload.get("embedding_provider") or payload.get("planner_lm_provider") or "ollama"),
+        "embedding_lm_provider": normalize_provider(payload.get("embedding_lm_provider") or payload.get("embedding_provider") or "ollama"),
         "ace_lm_model": _requested_ace_lm_model(payload),
         "album_model_portfolio": album_model_portfolio(installed_models),
         "quality_target": str(payload.get("quality_target") or "hit"),
@@ -3553,6 +3791,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     requested_batch_size = payload.get("batch_size")
     default_batch_size = 3 if quality_profile == "chart_master" and task_type == "text2music" and not is_album_track else 1
     batch_size = clamp_int(requested_batch_size, default_batch_size, 1, MAX_BATCH_SIZE)
+    planner_settings = planner_llm_settings_from_payload(payload)
     duration = clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX)
     model_defaults = quality_profile_model_settings(song_model, quality_profile)
     is_turbo = "turbo" in song_model
@@ -3579,10 +3818,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if use_official and requested_format == "ogg":
         raise ValueError("OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
     vocal_language = _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown"))
-    track_names = normalize_track_names(payload.get("track_names") or payload.get("track_name"))
+    track_names = normalize_track_names(payload.get("track_names") or payload.get("track_classes") or payload.get("track_name"))
     instruction = str(payload.get("instruction") or "").strip() or build_task_instruction(task_type, track_names)
 
-    if task_type in {"cover", "repaint", "extract", "lego", "complete"}:
+    if task_type in {"cover", "cover-nofsq", "repaint", "extract", "lego", "complete"}:
         has_source = bool(payload.get("src_audio_id") or payload.get("src_result_id") or payload.get("audio_code_string"))
         if not has_source:
             raise ValueError(f"{task_type} requires source audio, a source result, or audio codes")
@@ -3644,6 +3883,15 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         audio_code_string = ""
         payload_warnings.append("audio_code_hints_cleared_for_text2music_direct_render")
     reference_audio = _resolve_audio_reference(payload, "reference_audio_id", "reference_result_id")
+    dcw_mode = str(payload.get("dcw_mode") or "double").strip().lower()
+    if dcw_mode not in {"low", "high", "double", "pix"}:
+        dcw_mode = "double"
+    dcw_wavelet = str(payload.get("dcw_wavelet") or "haar").strip() or "haar"
+    retake_seed = str(payload.get("retake_seed") or "").strip()
+    flow_edit_n_min = clamp_float(payload.get("flow_edit_n_min"), 0.0, 0.0, 1.0)
+    flow_edit_n_max = clamp_float(payload.get("flow_edit_n_max"), 1.0, 0.0, 1.0)
+    if flow_edit_n_max < flow_edit_n_min:
+        flow_edit_n_min, flow_edit_n_max = flow_edit_n_max, flow_edit_n_min
     parsed = {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "quality_profile": quality_profile,
@@ -3653,6 +3901,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lyrics": lyrics_text,
         "caption_source": str(payload.get("caption_source") or "caption"),
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
+        "song_intent": payload.get("song_intent") if isinstance(payload.get("song_intent"), dict) else {},
+        "source_task_intent": str(payload.get("source_task_intent") or "").strip(),
         "tag_list": list(payload.get("tag_list") or []),
         "payload_warnings": payload_warnings,
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
@@ -3676,9 +3926,11 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
         "song_model": song_model,
         "ace_lm_model": requested_lm_model,
+        "lm_model_path": requested_lm_model,
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
+        **planner_settings,
         "reference_audio": reference_audio,
         "src_audio": src_audio,
         "audio_code_string": audio_code_string,
@@ -3694,6 +3946,19 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
         "velocity_norm_threshold": clamp_float(payload.get("velocity_norm_threshold"), 0.0, 0.0, 20.0),
         "velocity_ema_factor": clamp_float(payload.get("velocity_ema_factor"), 0.0, 0.0, 1.0),
+        "dcw_enabled": parse_bool(payload.get("dcw_enabled"), True),
+        "dcw_mode": dcw_mode,
+        "dcw_scaler": clamp_float(payload.get("dcw_scaler"), 0.05, 0.0, 0.2),
+        "dcw_high_scaler": clamp_float(payload.get("dcw_high_scaler"), 0.02, 0.0, 0.2),
+        "dcw_wavelet": dcw_wavelet,
+        "retake_seed": retake_seed,
+        "retake_variance": clamp_float(payload.get("retake_variance"), 0.0, 0.0, 1.0),
+        "flow_edit_morph": parse_bool(payload.get("flow_edit_morph"), False),
+        "flow_edit_source_caption": str(payload.get("flow_edit_source_caption") or "").strip(),
+        "flow_edit_source_lyrics": str(payload.get("flow_edit_source_lyrics") or "").strip(),
+        "flow_edit_n_min": flow_edit_n_min,
+        "flow_edit_n_max": flow_edit_n_max,
+        "flow_edit_n_avg": clamp_int(payload.get("flow_edit_n_avg"), 1, 1, 16),
         "use_adg": parse_bool(payload.get("use_adg"), bool(model_defaults.get("use_adg", False))),
         "cfg_interval_start": clamp_float(payload.get("cfg_interval_start"), 0.0, 0.0, 1.0),
         "cfg_interval_end": clamp_float(payload.get("cfg_interval_end"), 1.0, 0.0, 1.0),
@@ -3742,6 +4007,11 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sample_mode": sample_mode,
         "sample_query": sample_query,
         "use_format": False if direct_lyrics_render else (True if vocal_clarity_recovery and supplied_vocal_lyrics else parse_bool(get_param(payload, "use_format"), True if vocal_clarity_recovery else lm_quality_defaults)),
+        "analysis_only": parse_bool(payload.get("analysis_only"), False),
+        "full_analysis_only": parse_bool(payload.get("full_analysis_only"), False),
+        "extract_codes_only": parse_bool(payload.get("extract_codes_only"), False),
+        "use_tiled_decode": parse_bool(payload.get("use_tiled_decode"), True),
+        "is_format_caption": parse_bool(payload.get("is_format_caption"), False),
         "lm_temperature": clamp_float(payload.get("lm_temperature"), 0.7 if vocal_clarity_recovery else (DOCS_BEST_LM_DEFAULTS["lm_temperature"] if lm_quality_defaults else 0.85), 0.0, 2.0),
         "lm_cfg_scale": clamp_float(payload.get("lm_cfg_scale"), DOCS_BEST_LM_DEFAULTS["lm_cfg_scale"] if lm_quality_defaults else 2.0, 0.0, 10.0),
         "lm_repetition_penalty": clamp_float(payload.get("lm_repetition_penalty") or payload.get("repetition_penalty"), 1.0, 0.1, 4.0),
@@ -3758,6 +4028,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "use_constrained_decoding": parse_bool(payload.get("use_constrained_decoding"), True),
         "constrained_decoding_debug": parse_bool(payload.get("constrained_decoding_debug"), False),
         "chunk_mask_mode": "explicit" if str(payload.get("chunk_mask_mode")).lower() == "explicit" else "auto",
+        "track_name": track_names[0] if track_names else "",
+        "track_classes": track_names,
         "repaint_latent_crossfade_frames": clamp_int(payload.get("repaint_latent_crossfade_frames"), 10, 0, 250),
         "repaint_wav_crossfade_sec": clamp_float(payload.get("repaint_wav_crossfade_sec"), 0.0, 0.0, 20.0),
         "repaint_mode": str(payload.get("repaint_mode") or "balanced").strip().lower()
@@ -4008,7 +4280,7 @@ def _lm_validation_status(payload: dict[str, Any], requires_lm: bool) -> dict[st
 
 
 def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_model: str, official_used: list[str]) -> dict[str, Any]:
-    track_names = normalize_track_names(payload.get("track_names") or payload.get("track_name"))
+    track_names = normalize_track_names(payload.get("track_names") or payload.get("track_classes") or payload.get("track_name"))
     quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_used)
@@ -4033,6 +4305,13 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
     if task_type == "text2music" and preview_audio_code_string.strip() and not parse_bool(payload.get("allow_text2music_audio_codes"), False):
         preview_audio_code_string = ""
         preview_warnings.append("audio_code_hints_cleared_for_text2music_direct_render")
+    dcw_mode = str(payload.get("dcw_mode") or "double").strip().lower()
+    if dcw_mode not in {"low", "high", "double", "pix"}:
+        dcw_mode = "double"
+    flow_edit_n_min = clamp_float(payload.get("flow_edit_n_min"), 0.0, 0.0, 1.0)
+    flow_edit_n_max = clamp_float(payload.get("flow_edit_n_max"), 1.0, 0.0, 1.0)
+    if flow_edit_n_max < flow_edit_n_min:
+        flow_edit_n_min, flow_edit_n_max = flow_edit_n_max, flow_edit_n_min
     return {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "quality_profile": quality_profile,
@@ -4044,6 +4323,8 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "lyrics": str(payload.get("lyrics") or ""),
         "caption_source": str(payload.get("caption_source") or "caption"),
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
+        "song_intent": payload.get("song_intent") if isinstance(payload.get("song_intent"), dict) else {},
+        "source_task_intent": str(payload.get("source_task_intent") or "").strip(),
         "tag_list": list(payload.get("tag_list") or []),
         "payload_warnings": preview_warnings,
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
@@ -4058,12 +4339,19 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
         "song_model": song_model,
         "ace_lm_model": _requested_ace_lm_model(payload),
+        "lm_model_path": _requested_ace_lm_model(payload),
         "planner_lm_provider": normalize_provider(payload.get("planner_lm_provider") or payload.get("planner_provider") or "ollama"),
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or "").strip(),
         "audio_code_string": preview_audio_code_string,
         "track_names": track_names,
         "track_name": track_names[0] if track_names else "",
+        "track_classes": track_names,
+        "analysis_only": parse_bool(payload.get("analysis_only"), False),
+        "full_analysis_only": parse_bool(payload.get("full_analysis_only"), False),
+        "extract_codes_only": parse_bool(payload.get("extract_codes_only"), False),
+        "use_tiled_decode": parse_bool(payload.get("use_tiled_decode"), True),
+        "is_format_caption": parse_bool(payload.get("is_format_caption"), False),
         "reference_audio_id": str(payload.get("reference_audio_id") or ""),
         "reference_result_id": str(payload.get("reference_result_id") or ""),
         "src_audio_id": "" if task_type == "text2music" else str(payload.get("src_audio_id") or ""),
@@ -4073,6 +4361,19 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
         "infer_method": "sde" if str(payload.get("infer_method") or model_defaults["infer_method"]).lower() == "sde" else "ode",
         "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
+        "dcw_enabled": parse_bool(payload.get("dcw_enabled"), True),
+        "dcw_mode": dcw_mode,
+        "dcw_scaler": clamp_float(payload.get("dcw_scaler"), 0.05, 0.0, 0.2),
+        "dcw_high_scaler": clamp_float(payload.get("dcw_high_scaler"), 0.02, 0.0, 0.2),
+        "dcw_wavelet": str(payload.get("dcw_wavelet") or "haar").strip() or "haar",
+        "retake_seed": str(payload.get("retake_seed") or "").strip(),
+        "retake_variance": clamp_float(payload.get("retake_variance"), 0.0, 0.0, 1.0),
+        "flow_edit_morph": parse_bool(payload.get("flow_edit_morph"), False),
+        "flow_edit_source_caption": str(payload.get("flow_edit_source_caption") or "").strip(),
+        "flow_edit_source_lyrics": str(payload.get("flow_edit_source_lyrics") or "").strip(),
+        "flow_edit_n_min": flow_edit_n_min,
+        "flow_edit_n_max": flow_edit_n_max,
+        "flow_edit_n_avg": clamp_int(payload.get("flow_edit_n_avg"), 1, 1, 16),
         "audio_format": normalize_audio_format(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav"), allow_official=use_official)
         if not (use_official and requested_format == "ogg")
         else requested_format,
@@ -4155,14 +4456,14 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         upload_key="reference_audio_id",
         result_key="reference_result_id",
     )
-    if task_type in {"cover", "repaint", "extract", "lego", "complete"} and not source_status["present"]:
+    if task_type in {"cover", "cover-nofsq", "repaint", "extract", "lego", "complete"} and not source_status["present"]:
         _set_field_error(field_errors, "source", f"{task_type} requires source audio, a source result, or audio codes.")
     if source_status["present"] and not source_status["ok"]:
         _set_field_error(field_errors, "source", source_status.get("error") or "Source audio could not be resolved.")
     if reference_status["present"] and not reference_status["ok"]:
         _set_field_error(field_errors, "reference", reference_status.get("error") or "Reference audio could not be resolved.")
 
-    track_names = normalize_track_names(normalized_text.get("track_names") or normalized_text.get("track_name"))
+    track_names = normalize_track_names(normalized_text.get("track_names") or normalized_text.get("track_classes") or normalized_text.get("track_name"))
     if task_type in {"extract", "lego"} and not track_names:
         _set_field_error(field_errors, "track_name", f"{task_type} requires a track/stem name.")
     if task_type == "complete" and not track_names:
@@ -4315,6 +4616,22 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "Auto score and Auto LRC need AceJAM's in-process tensor cache. "
             "Disable official-only controls or turn off Auto score/LRC for this run."
         )
+    official_api_fields = {
+        "analysis_only": bool(params.get("analysis_only")),
+        "full_analysis_only": bool(params.get("full_analysis_only")),
+        "extract_codes_only": bool(params.get("extract_codes_only")),
+        "use_tiled_decode": bool(params.get("use_tiled_decode")),
+        "lm_model_path": lm_model or params.get("lm_model_path") or params.get("ace_lm_model") or "none",
+        "is_format_caption": bool(params.get("is_format_caption")),
+        "track_name": params.get("track_name") or "",
+        "track_classes": list(params.get("track_classes") or []),
+        "lm_repetition_penalty": params.get("lm_repetition_penalty", 1.0),
+    }
+    guarded_api_fields = {
+        key: value
+        for key, value in official_api_fields.items()
+        if key in {"analysis_only", "full_analysis_only", "extract_codes_only", "use_tiled_decode", "is_format_caption"}
+    }
 
     request = {
         "base_dir": str(BASE_DIR),
@@ -4325,6 +4642,16 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "song_model": params["song_model"],
         "lm_model": lm_model,
+        "official_api_fields": _jsonable(official_api_fields),
+        "guarded_api_fields": _jsonable(guarded_api_fields),
+        "lm_sampling": {
+            "temperature": params.get("lm_temperature", 0.85),
+            "top_k": params.get("lm_top_k", 0),
+            "top_p": params.get("lm_top_p", 0.9),
+            "repetition_penalty": params.get("lm_repetition_penalty", 1.0),
+            "use_constrained_decoding": params.get("use_constrained_decoding", True),
+            "constrained_decoding_debug": params.get("constrained_decoding_debug", False),
+        },
         "requires_lm": needs_lm,
         "use_lora": params.get("use_lora", False),
         "lora_adapter_path": params.get("lora_adapter_path", ""),
@@ -4372,6 +4699,11 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "sampler_mode": params["sampler_mode"],
             "velocity_norm_threshold": params["velocity_norm_threshold"],
             "velocity_ema_factor": params["velocity_ema_factor"],
+            "dcw_enabled": params["dcw_enabled"],
+            "dcw_mode": params["dcw_mode"],
+            "dcw_scaler": params["dcw_scaler"],
+            "dcw_high_scaler": params["dcw_high_scaler"],
+            "dcw_wavelet": params["dcw_wavelet"],
             "timesteps": params["timesteps"],
             "repainting_start": params["repainting_start"],
             "repainting_end": params["repainting_end"],
@@ -4380,6 +4712,14 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "repaint_wav_crossfade_sec": params["repaint_wav_crossfade_sec"],
             "repaint_mode": params["repaint_mode"],
             "repaint_strength": params["repaint_strength"],
+            "retake_seed": params["retake_seed"] or None,
+            "retake_variance": params["retake_variance"],
+            "flow_edit_morph": params["flow_edit_morph"],
+            "flow_edit_source_caption": params["flow_edit_source_caption"],
+            "flow_edit_source_lyrics": params["flow_edit_source_lyrics"],
+            "flow_edit_n_min": params["flow_edit_n_min"],
+            "flow_edit_n_max": params["flow_edit_n_max"],
+            "flow_edit_n_avg": params["flow_edit_n_avg"],
             "audio_cover_strength": params["audio_cover_strength"],
             "cover_noise_strength": params["cover_noise_strength"],
             "thinking": params["thinking"],
@@ -4458,7 +4798,9 @@ def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
         "task_type",
         "song_model",
         "ace_lm_model",
+        "lm_model_path",
         "lm_backend",
+        "lm_repetition_penalty",
         "duration",
         "bpm",
         "key_scale",
@@ -4469,6 +4811,24 @@ def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
         "shift",
         "infer_method",
         "sampler_mode",
+        "analysis_only",
+        "full_analysis_only",
+        "extract_codes_only",
+        "use_tiled_decode",
+        "is_format_caption",
+        "track_name",
+        "track_classes",
+        "dcw_enabled",
+        "dcw_mode",
+        "dcw_scaler",
+        "dcw_high_scaler",
+        "dcw_wavelet",
+        "retake_seed",
+        "retake_variance",
+        "flow_edit_morph",
+        "flow_edit_n_min",
+        "flow_edit_n_max",
+        "flow_edit_n_avg",
         "use_adg",
         "timesteps",
         "audio_format",
@@ -6197,13 +6557,13 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
     raw_payload = dict(raw_payload or {})
     task_type = normalize_task_type(raw_payload.get("task_type") or "text2music")
     if task_type != "text2music":
-        raise ValueError("Render all 7 models is only available for Simple/Custom text2music.")
+        raise ValueError("Render all official models is only available for Simple/Custom text2music.")
     installed = _installed_acestep_models()
     portfolio = album_model_portfolio(installed)
     missing = [str(item["model"]) for item in portfolio if not item.get("installed")]
     family_id = raw_payload.get("portfolio_family_id") or f"songfam-{uuid.uuid4().hex[:10]}"
     logs = [
-        "Render all 7 models requested.",
+        "Render all official ACE-Step render models requested.",
         f"Portfolio family: {family_id}",
         f"Models: {', '.join(ALBUM_MODEL_PORTFOLIO_MODELS)}",
     ]
@@ -6218,7 +6578,7 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
         )
         payload["message"] = (
             f"AceJAM started downloading {len(missing)} missing model(s). "
-            "The 7-model song render will resume after install."
+            "The official model portfolio song render will resume after install."
         )
         return payload
 
@@ -6291,7 +6651,7 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
         "portfolio_models": portfolio,
         "model_results": model_results,
         "audios": audios,
-        "active_song_model": "all 7 models",
+        "active_song_model": "all official render models",
         "runner": "portfolio",
         "params": validation.get("normalized_payload") or validation_payload,
         "payload_warnings": validation.get("payload_warnings") or [],
@@ -6311,6 +6671,7 @@ def compose(
     ollama_model: str = "",
     planner_lm_provider: str = "ollama",
     planner_model: str = "",
+    planner_llm_settings: dict[str, Any] | None = None,
 ) -> str:
     """Compose song spec (title, tags, lyrics, etc.) without generating music."""
     provider = normalize_provider(planner_lm_provider)
@@ -6326,6 +6687,7 @@ def compose(
             ollama_model=ollama_model or None,
             planner_lm_provider=provider,
             planner_model=selected_model or None,
+            planner_llm_settings=planner_llm_settings,
         )
         return json.dumps(composed)
     except OllamaPullStarted:
@@ -6607,6 +6969,11 @@ def config() -> str:
             "model_labels": {name: model_profiles[name]["label"] for name in available_models},
             "model_profiles": model_profiles,
             "lm_model_profiles": lm_profiles,
+            "official_model_registry": {
+                name: {**meta, **_official_model_runtime_status(name)}
+                for name, meta in official_model_registry().items()
+            },
+            "official_boot_downloads": _jsonable(_boot_model_download_status),
             "model_capabilities": _model_capabilities(),
             "model_downloads": {name: _model_download_job(name) for name in sorted(_downloadable_model_names())},
             "official_runner": _official_runner_status(),
@@ -6646,7 +7013,7 @@ def generate_album(
     planner_lm_provider: str = "ollama",
     embedding_lm_provider: str = "ollama",
 ) -> str:
-    """Plan album with AceJAM Agents/tools, then generate through the advanced engine."""
+    """Plan album with the selected local planning engine, then generate through the audio engine."""
     logs: list[str] = []
     try:
         request_payload = json.loads(request_json or "{}")
@@ -6687,13 +7054,15 @@ def generate_album(
             album_payload_gate_version=ALBUM_PAYLOAD_GATE_VERSION,
         )
         planner_lm_provider = normalize_provider(request_payload.get("planner_lm_provider") or planner_lm_provider or "ollama")
-        embedding_lm_provider = normalize_provider(request_payload.get("embedding_lm_provider") or request_payload.get("embedding_provider") or embedding_lm_provider or planner_lm_provider)
+        embedding_lm_provider = normalize_provider(request_payload.get("embedding_lm_provider") or request_payload.get("embedding_provider") or embedding_lm_provider or "ollama")
         if not ollama_model:
             ollama_model = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_lm_provider == "ollama" else ""
         if not embedding_model:
             embedding_model = DEFAULT_ALBUM_EMBEDDING_MODEL
         track_duration = parse_duration_seconds(request_payload.get("track_duration") or request_payload.get("duration") or track_duration, track_duration)
         album_options = _album_options_from_payload(request_payload, song_model=song_model)
+        planning_engine = str(album_options.get("agent_engine") or "acejam_agents")
+        planning_engine_label = _album_agent_engine_label_value(planning_engine)
         album_options["album_debug_dir"] = str(album_debug.root)
         album_options["llm_debug_log_file"] = str(album_debug.path("04_agent_responses.jsonl"))
         album_debug.write_json(
@@ -6736,10 +7105,18 @@ def generate_album(
                 )
             )
 
+        _ensure_album_agent_modules_current()
         from album_crew import plan_album as _plan_album
 
-        logs.append("Phase 1: Planning album with AceJAM Agents and deterministic gates...")
-        _album_job_log(album_job_id, "Phase 1: Planning album with AceJAM Agents and deterministic gates.", status="Planning album", progress=3)
+        logs.append(f"Phase 1: Planning album with {planning_engine_label} and deterministic gates...")
+        _album_job_log(
+            album_job_id,
+            f"Phase 1: Planning album with {planning_engine_label} and deterministic gates.",
+            status="Planning album",
+            progress=3,
+            planning_engine=planning_engine,
+            crewai_used=planning_engine == "crewai_micro",
+        )
         result = _plan_album(
             concept=concept,
             num_tracks=num_tracks,
@@ -6792,7 +7169,15 @@ def generate_album(
                 album_payload_gate_version=ALBUM_PAYLOAD_GATE_VERSION,
             )
 
-        if not result.get("success", True) or not tracks or "error" in tracks[0]:
+        planning_failed_tracks = [
+            track for track in tracks
+            if track.get("skip_render") or str(track.get("planning_status") or "").lower() == "failed"
+        ]
+        renderable_tracks = [
+            track for track in tracks
+            if not (track.get("skip_render") or str(track.get("planning_status") or "").lower() == "failed")
+        ]
+        if not result.get("success", True) or not tracks or not renderable_tracks:
             logs.append("ERROR: Album planning failed")
             return json.dumps({
                 "tracks": tracks,
@@ -6802,14 +7187,21 @@ def generate_album(
                 "album_debug_dir": str(album_debug.root),
                 "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
             })
+        if planning_failed_tracks:
+            logs.append(
+                "Phase 1 partial: "
+                f"{len(renderable_tracks)}/{len(tracks)} tracks planned; "
+                f"failed tracks: {', '.join(str(item.get('track_number') or '?') for item in planning_failed_tracks)}."
+            )
 
         logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
         logs.append(
-            f"Planner LM: {provider_label(planner_lm_provider)} ({ollama_model}); ACE-Step LM "
-            f"{ace_lm_model if ace_lm_model != 'none' else 'off unless official LM controls are enabled'}."
+            f"Local AI Writer/Planner: {provider_label(planner_lm_provider)} ({ollama_model}) for lyrics, tags, BPM, key and captions; "
+            f"ACE-Step optional lyric/metadata LM "
+            f"{ace_lm_model if ace_lm_model != 'none' else 'off for supplied agent lyrics'}."
         )
         logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
-        agent_direct_payloads = str(result.get("planning_engine") or "") == "acejam_agents"
+        agent_direct_payloads = str(result.get("planning_engine") or "") in {"acejam_agents", "crewai_micro"}
         album_global_caption = "" if agent_direct_payloads else build_album_global_sonic_caption(
             concept,
             tracks,
@@ -6901,6 +7293,36 @@ def generate_album(
                     "strategy": strategy,
                     "reason": "This model-specific album render uses the fixed portfolio model without fallback.",
                 }
+                if track.get("skip_render") or str(track.get("planning_status") or "").lower() == "failed":
+                    track["generated"] = False
+                    track["album_id"] = album_id
+                    track["album_family_id"] = album_family_id
+                    track["error"] = str(track.get("planning_error") or track.get("error") or "Track planning failed")
+                    track["payload_gate_status"] = track.get("payload_gate_status") or "planning_failed"
+                    track["payload_gate_passed"] = False
+                    album_debug.append_jsonl(
+                        "07_generation_results.jsonl",
+                        {
+                            "status": "skipped_planning_failed",
+                            "album_id": album_id,
+                            "album_model": track_model,
+                            "track_number": track.get("track_number", i + 1),
+                            "title": track_title,
+                            "error": track["error"],
+                            "debug_paths": track.get("debug_paths") or {},
+                        },
+                    )
+                    base_track["model_results"].append(_jsonable(track))
+                    album_tracks.append(track)
+                    logs.append(f"  SKIPPED planning-failed track {i + 1}/{len(tracks)}: {track_title} -> {track['error']}")
+                    _album_job_log(
+                        album_job_id,
+                        f"SKIPPED planning-failed track {i + 1}/{len(tracks)}: {track_title}",
+                        current_model_album=track_model,
+                        current_track=f"{i + 1}/{len(tracks)} {track_title}",
+                        errors=[track["error"]],
+                    )
+                    continue
                 raw_model_settings = track.get("model_render_settings") or track.get("per_model_settings") or {}
                 model_render_settings = {}
                 if isinstance(raw_model_settings, dict):
@@ -7343,6 +7765,16 @@ def generate_album(
 
                 album_tracks.append(track)
 
+            album_failed_tracks = [
+                {
+                    "track_number": item.get("track_number"),
+                    "title": item.get("title"),
+                    "planning_status": item.get("planning_status"),
+                    "error": item.get("error") or item.get("planning_error") or "",
+                }
+                for item in album_tracks
+                if not item.get("generated")
+            ]
             album_success = album_success_count == len(tracks)
             album_status = "completed" if album_success else "incomplete"
             album_manifest = _write_album_manifest(
@@ -7356,6 +7788,8 @@ def generate_album(
                     "album_status": album_status,
                     "track_count": len(tracks),
                     "generated_count": album_success_count,
+                    "failed_count": len(album_failed_tracks),
+                    "failed_tracks": album_failed_tracks,
                     "tracks": album_tracks,
                     "audios": album_audios,
                     "toolkit_report": result.get("toolkit_report", {}),
@@ -7376,6 +7810,8 @@ def generate_album(
                     "album_status": album_status,
                     "track_count": len(tracks),
                     "generated_count": album_success_count,
+                    "failed_count": len(album_failed_tracks),
+                    "failed_tracks": album_failed_tracks,
                     "audios": album_audios,
                     "tracks": album_tracks,
                     "download_url": f"/api/albums/{album_id}/download",
@@ -7388,6 +7824,16 @@ def generate_album(
         expected_count = len(tracks) * len(album_models)
         album_success = generated_count == expected_count
         album_status = "completed" if album_success else "incomplete"
+        failed_tracks_by_number: dict[str, dict[str, Any]] = {}
+        for album in model_albums:
+            for item in album.get("failed_tracks") or []:
+                key = str(item.get("track_number") or item.get("title") or len(failed_tracks_by_number) + 1)
+                failed_tracks_by_number.setdefault(key, dict(item))
+        failed_tracks = list(failed_tracks_by_number.values())
+        failed_summary = ", ".join(
+            f"{item.get('track_number')} {item.get('title')}: {item.get('error') or item.get('planning_status') or 'failed'}"
+            for item in failed_tracks[:8]
+        )
         family_manifest = _write_album_manifest(
             album_family_id,
             {
@@ -7399,6 +7845,9 @@ def generate_album(
                 "model_count": len(album_models),
                 "expected_renders": expected_count,
                 "generated_count": generated_count,
+                "failed_count": len(failed_tracks),
+                "failed_tracks": failed_tracks,
+                "planning_failed_count": int(result.get("planning_failed_count") or 0),
                 "model_albums": model_albums,
                 "album_model_portfolio": album_models,
                 "toolkit_report": result.get("toolkit_report", {}),
@@ -7411,9 +7860,14 @@ def generate_album(
         )
         logs.append("---")
         logs.append(f"Album family {album_status}: {generated_count}/{expected_count} track/model renders generated.")
+        if failed_summary:
+            logs.append(f"Failed tracks: {failed_summary}.")
         _album_job_log(
             album_job_id,
-            f"Album family {album_status}: {generated_count}/{expected_count} track/model renders generated.",
+            (
+                f"Album family {album_status}: {generated_count}/{expected_count} track/model renders generated."
+                + (f" Failed tracks: {failed_summary}." if failed_summary else "")
+            ),
             generated_count=generated_count,
             expected_count=expected_count,
             album_family_id=album_family_id,
@@ -7433,6 +7887,10 @@ def generate_album(
             "album_status": album_status,
             "expected_renders": expected_count,
             "generated_count": generated_count,
+            "failed_count": len(failed_tracks),
+            "failed_tracks": failed_tracks,
+            "planning_failed_count": int(result.get("planning_failed_count") or 0),
+            "planning_failures": result.get("planning_failures") or [],
             "final_song_model": "all_models_album" if strategy == "all_models_album" else (album_models[0]["model"] if album_models else ALBUM_FINAL_MODEL),
             "family_download_url": f"/api/album-families/{album_family_id}/download",
             "manifest": family_manifest,
@@ -7455,7 +7913,10 @@ def generate_album(
             "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
             "logs": logs,
             "success": album_success,
-            "error": "" if album_success else f"Album incomplete: {generated_count}/{expected_count} track/model renders generated.",
+            "error": "" if album_success else (
+                f"Album incomplete: {generated_count}/{expected_count} track/model renders generated."
+                + (f" Failed tracks: {failed_summary}." if failed_summary else "")
+            ),
         })
     except ModelDownloadStarted as exc:
         print(f"[generate_album DOWNLOAD] {exc.message}")
@@ -7721,14 +8182,197 @@ def _schema_parity(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _git_stdout(args: list[str], *, cwd: Path, timeout: float = 5.0) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def _git_run(args: list[str], *, cwd: Path, timeout: float = 30.0) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as exc:
+        return {"returncode": 1, "stdout": "", "stderr": str(exc), "args": args}
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+        "args": args,
+    }
+
+
+def _official_source_status() -> dict[str, Any]:
+    vendor_dir = OFFICIAL_ACE_STEP_DIR
+    local_commit = _git_stdout(["rev-parse", "HEAD"], cwd=vendor_dir)
+    local_branch = _git_stdout(["branch", "--show-current"], cwd=vendor_dir)
+    porcelain = _git_stdout(["status", "--porcelain"], cwd=vendor_dir)
+    dirty_files = [line.strip() for line in porcelain.splitlines() if line.strip()]
+    dirty = bool(dirty_files)
+    remote_url = _git_stdout(["config", "--get", "remote.origin.url"], cwd=vendor_dir)
+    remote_main_head = ""
+    if remote_url:
+        remote_line = _git_stdout(["ls-remote", remote_url, "refs/heads/main"], cwd=vendor_dir, timeout=8.0)
+        remote_main_head = remote_line.split()[0] if remote_line else ""
+    behind_main = bool(local_commit and remote_main_head and local_commit != remote_main_head)
+    return {
+        "vendor_dir": str(vendor_dir),
+        "local_commit": local_commit,
+        "local_branch": local_branch,
+        "dirty": dirty,
+        "dirty_files": dirty_files,
+        "remote_url": remote_url,
+        "remote_main_head": remote_main_head,
+        "behind_main": behind_main,
+        "status": "behind" if behind_main else ("current" if remote_main_head else "unknown"),
+        "sync_confirm": ACE_STEP_VENDOR_SYNC_CONFIRM,
+        "sync_mode": "patch-preserving manual endpoint",
+        "update_note": "Status only by default. Vendor sync requires explicit confirm and preserves dirty diffs before touching source.",
+    }
+
+
+def _official_vendor_sync(body: dict[str, Any]) -> dict[str, Any]:
+    confirm = str((body or {}).get("confirm") or "")
+    apply_update = parse_bool((body or {}).get("apply"), False)
+    if confirm != ACE_STEP_VENDOR_SYNC_CONFIRM:
+        raise HTTPException(status_code=400, detail=f"confirm must be {ACE_STEP_VENDOR_SYNC_CONFIRM}")
+    vendor_dir = OFFICIAL_ACE_STEP_DIR
+    if not (vendor_dir / ".git").exists():
+        raise HTTPException(status_code=400, detail="Vendored ACE-Step folder is not a git checkout")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    sync_dir = DATA_DIR / "debug" / "vendor_sync" / stamp
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    status_before = _official_source_status()
+    patch_text = _git_stdout(["diff", "--binary"], cwd=vendor_dir, timeout=30.0)
+    staged_patch_text = _git_stdout(["diff", "--cached", "--binary"], cwd=vendor_dir, timeout=30.0)
+    (sync_dir / "status-before.json").write_text(json.dumps(_jsonable(status_before), indent=2), encoding="utf-8")
+    (sync_dir / "vendor-working-tree.patch").write_text(patch_text, encoding="utf-8")
+    (sync_dir / "vendor-staged.patch").write_text(staged_patch_text, encoding="utf-8")
+
+    steps: list[dict[str, Any]] = []
+    fetch = _git_run(["fetch", "origin", "main"], cwd=vendor_dir, timeout=120.0)
+    steps.append(fetch)
+    if fetch["returncode"] != 0:
+        return {
+            "success": False,
+            "applied": False,
+            "patch_dir": str(sync_dir),
+            "status_before": status_before,
+            "steps": _jsonable(steps),
+            "error": "git fetch origin main failed; local vendor source was not changed.",
+        }
+    if not apply_update:
+        return {
+            "success": True,
+            "applied": False,
+            "patch_dir": str(sync_dir),
+            "status_before": status_before,
+            "status_after": _official_source_status(),
+            "steps": _jsonable(steps),
+            "next_step": "Re-run with apply=true and the same confirm token to fast-forward vendor source and reapply local dirty changes.",
+        }
+
+    stash_created = False
+    if status_before.get("dirty"):
+        stash = _git_run(["stash", "push", "--include-untracked", "-m", f"AceJAM vendor sync preserve {stamp}"], cwd=vendor_dir, timeout=120.0)
+        steps.append(stash)
+        if stash["returncode"] != 0:
+            return {
+                "success": False,
+                "applied": False,
+                "patch_dir": str(sync_dir),
+                "status_before": status_before,
+                "steps": _jsonable(steps),
+                "error": "Could not stash dirty vendor changes; vendor source was not updated.",
+            }
+        stash_created = "No local changes" not in f"{stash.get('stdout','')} {stash.get('stderr','')}"
+
+    merge = _git_run(["merge", "--ff-only", "origin/main"], cwd=vendor_dir, timeout=180.0)
+    steps.append(merge)
+    if merge["returncode"] != 0:
+        if stash_created:
+            steps.append(_git_run(["stash", "pop"], cwd=vendor_dir, timeout=120.0))
+        return {
+            "success": False,
+            "applied": False,
+            "patch_dir": str(sync_dir),
+            "status_before": status_before,
+            "status_after": _official_source_status(),
+            "steps": _jsonable(steps),
+            "error": "Fast-forward to official main failed; any stashed changes were restored if possible.",
+        }
+
+    if stash_created:
+        pop = _git_run(["stash", "pop"], cwd=vendor_dir, timeout=120.0)
+        steps.append(pop)
+        if pop["returncode"] != 0:
+            (sync_dir / "conflict-status.json").write_text(
+                json.dumps(_jsonable(_official_source_status()), indent=2),
+                encoding="utf-8",
+            )
+            return {
+                "success": False,
+                "applied": True,
+                "patch_dir": str(sync_dir),
+                "status_before": status_before,
+                "status_after": _official_source_status(),
+                "steps": _jsonable(steps),
+                "error": "Official main was applied, but local dirty vendor changes conflicted during reapply. Resolve conflicts manually; saved patches are in patch_dir.",
+            }
+
+    status_after = _official_source_status()
+    (sync_dir / "status-after.json").write_text(json.dumps(_jsonable(status_after), indent=2), encoding="utf-8")
+    return {
+        "success": True,
+        "applied": True,
+        "patch_dir": str(sync_dir),
+        "status_before": status_before,
+        "status_after": status_after,
+        "steps": _jsonable(steps),
+    }
+
+
 def _official_parity_payload(request: Request | None = None) -> dict[str, Any]:
     manifest = official_manifest()
     installed_models = _installed_acestep_models()
     installed_lms = _installed_lm_models()
     recommended_actions: list[str] = []
+    model_registry = manifest.get("model_registry") if isinstance(manifest.get("model_registry"), dict) else {}
+    for name, meta in model_registry.items():
+        meta.update(_official_model_runtime_status(name))
+        if meta.get("render_usable"):
+            meta["tasks"] = supported_tasks_for_model(name)
     for name, meta in manifest.get("dit_models", {}).items():
         meta.update(_model_runtime_status(name))
         meta["tasks"] = supported_tasks_for_model(name)
+    if isinstance(manifest.get("core_bundle"), dict):
+        manifest["core_bundle"].update(_official_model_runtime_status(OFFICIAL_CORE_MODEL_ID))
+        manifest["core_bundle"]["component_status"] = {
+            component: _checkpoint_status_reason(MODEL_CACHE_DIR / "checkpoints" / component)
+            for component in OFFICIAL_MAIN_MODEL_COMPONENTS
+        }
+    for group in ["helper_models", "lora_models", "legacy_models"]:
+        for name, meta in (manifest.get(group) or {}).items():
+            if isinstance(meta, dict):
+                meta.update(_official_model_runtime_status(name))
     for name, meta in manifest.get("lm_models", {}).items():
         job = _model_download_job(name)
         installed = name in installed_lms
@@ -7742,10 +8386,24 @@ def _official_parity_payload(request: Request | None = None) -> dict[str, Any]:
             }
         )
     schema_parity = _schema_parity(manifest)
+    source_status = _official_source_status()
     if schema_parity["generation_params"]["unsupported_by_vendor"]:
         recommended_actions.append("AceJAM will drop unsupported GenerationParams fields before calling the official runner.")
+    if source_status.get("behind_main"):
+        recommended_actions.append("Vendored ACE-Step source is behind official main; review/update manually before replacing local changes.")
+    if source_status.get("dirty"):
+        recommended_actions.append("Vendored ACE-Step has dirty local changes; vendor sync will save patches before any update.")
     if DOCS_BEST_DEFAULT_LM_MODEL not in installed_lms:
         recommended_actions.append(f"Install {DOCS_BEST_DEFAULT_LM_MODEL}; it is the Docs-best default for official LM controls.")
+    missing_boot_models = [
+        model_name
+        for model_name in _boot_download_model_names()
+        if not _is_model_installed(model_name)
+    ]
+    if missing_boot_models:
+        recommended_actions.append(
+            "Boot quality bundle is still downloading or missing: " + ", ".join(missing_boot_models) + "."
+        )
     manifest["runtime"] = {
         "app_version": APP_UI_VERSION,
         "ui_hash": _app_ui_hash(),
@@ -7756,12 +8414,15 @@ def _official_parity_payload(request: Request | None = None) -> dict[str, Any]:
         "installed_lm_models": sorted(installed_lms),
         "backend": _runtime_backend_label(),
         "official_runner": _official_runner_status(),
+        "boot_downloads": _jsonable(_boot_model_download_status),
+        "source_status": source_status,
         "trainer": training_manager.status(),
         "stats": _job_stats(),
         "server_url": str(request.base_url).rstrip("/") if request is not None else "",
         "api_key_enabled": bool(os.environ.get("ACESTEP_API_KEY", "").strip()),
     }
     manifest["quality_policy"] = docs_best_quality_policy()
+    manifest["source_status"] = source_status
     manifest["settings_registry"] = studio_ui_schema().get("ace_step_settings_registry", {})
     manifest["schema_parity"] = schema_parity
     manifest["lm_task_policy"] = docs_best_quality_policy()["lm_task_policy"]
@@ -8006,14 +8667,16 @@ def _album_job_log(job_id: str, line: str, **updates: Any) -> None:
 
 def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
     planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else ""))
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
+    planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
+    planning_engine_label = _album_agent_engine_label_value(planning_engine)
     started = datetime.now(timezone.utc).isoformat()
     _set_album_job(
         job_id,
         state="running",
-        status="Running AceJAM album agents",
+        status=f"Running {planning_engine_label} album planner",
         progress=1,
         started_at=started,
         finished_at=None,
@@ -8022,15 +8685,16 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         planner_provider=planner_provider,
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
-        planning_engine="acejam_agents",
+        planning_engine=planning_engine,
         custom_agents_used=True,
-        crewai_used=False,
+        crewai_used=planning_engine == "crewai_micro",
         memory_enabled=False,
         logs=[
             f"Album job {job_id} started.",
-            "Engine: AceJAM Agents",
-            f"Planner: {provider_label(planner_provider)} ({planner_model})",
-            f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
+            f"Planning Engine: {planning_engine_label} ({planning_engine})",
+            f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})",
+            f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled.",
+            "ACE-Step Audio Models render final music after local text/settings planning.",
             "Agent memory: pending embedding preflight; deterministic debug logs are job-scoped.",
         ],
     )
@@ -8118,7 +8782,7 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
     language = str(body.get("language") or "en")
     song_model = str(body.get("song_model") or "auto")
     planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
     planner_model = _resolve_local_llm_model_selection(
         planner_provider,
         str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
@@ -8134,6 +8798,7 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
     options = _album_options_from_payload({**body, "ollama_model": planner_model, "planner_model": planner_model}, song_model=song_model)
     if not concept and isinstance(options.get("user_album_contract"), dict):
         concept = str(options["user_album_contract"].get("concept") or "")
+    _ensure_album_agent_modules_current()
     from album_crew import plan_album as _plan_album
 
     result = _plan_album(
@@ -8160,11 +8825,12 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
 
 def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+    embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
     toolbelt_only = False
-    requested_engine = "AceJAM Agents"
+    requested_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
+    requested_engine_label = _album_agent_engine_label_value(requested_engine)
     crewai_output_log_file = str(body.get("crewai_output_log_file") or "")
     user_album_contract = extract_user_album_contract(
         _album_contract_source_from_payload(body, body),
@@ -8174,11 +8840,11 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     )
     start_logs = [
         f"Album plan job {job_id} started.",
-        f"Planning engine requested: {requested_engine}.",
-        "Engine: AceJAM Agents",
+        f"Planning engine requested: {requested_engine_label} ({requested_engine}).",
+        f"Planning Engine: {requested_engine_label} ({requested_engine})",
         f"Prompt Kit: {PROMPT_KIT_VERSION}.",
-        f"Planner: {provider_label(planner_provider)} ({planner_model})",
-        f"Embedding: {provider_label(embedding_provider)} ({embedding_model})",
+        f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})",
+        f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled.",
         "Agent memory: pending embedding preflight; prompts/responses go to the job debug folder.",
     ]
     if user_album_contract.get("applied"):
@@ -8188,7 +8854,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             f"blocked_unsafe={int(user_album_contract.get('blocked_unsafe_count') or 0)}"
         )
     if crewai_output_log_file:
-        start_logs.append(f"Legacy CrewAI output log file requested but AceJAM Agents do not write CrewAI logs: {crewai_output_log_file}")
+        start_logs.append(f"Legacy CrewAI output log file requested; selected planner writes standard AceJAM debug JSONL: {crewai_output_log_file}")
     _set_album_job(
         job_id,
         state="running",
@@ -8201,9 +8867,9 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
         crewai_output_log_file=crewai_output_log_file,
-        planning_engine="acejam_agents",
+        planning_engine=requested_engine,
         custom_agents_used=True,
-        crewai_used=False,
+        crewai_used=requested_engine == "crewai_micro",
         prompt_kit_version=PROMPT_KIT_VERSION,
         input_contract=contract_prompt_context(user_album_contract),
         input_contract_applied=bool(user_album_contract.get("applied")),
@@ -8310,6 +8976,15 @@ async def api_runtime_progress():
 @app.get("/api/ace-step/parity")
 async def api_ace_step_parity(request: Request):
     return JSONResponse(_official_parity_payload(request))
+
+
+@app.post("/api/ace-step/vendor-sync")
+async def api_ace_step_vendor_sync(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse(_official_vendor_sync(body if isinstance(body, dict) else {}))
 
 
 @app.get("/api/ace-lm/status")
@@ -8497,7 +9172,7 @@ async def api_create_album_plan_job(request: Request):
     try:
         body = await request.json()
         planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
             str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
@@ -8511,8 +9186,11 @@ async def api_create_album_plan_job(request: Request):
             "album embeddings",
         )
         job_id = uuid.uuid4().hex[:12]
+        planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
+        planning_engine_label = _album_agent_engine_label_value(planning_engine)
         request_body = {
             **body,
+            "agent_engine": planning_engine,
             "planner_lm_provider": planner_provider,
             "embedding_lm_provider": embedding_provider,
             "planner_model": planner_model,
@@ -8530,12 +9208,12 @@ async def api_create_album_plan_job(request: Request):
             planner_provider=planner_provider,
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
-            planning_engine="acejam_agents",
+            planning_engine=planning_engine,
             custom_agents_used=True,
-            crewai_used=False,
+            crewai_used=planning_engine == "crewai_micro",
             memory_enabled=False,
             expected_count=int(body.get("num_tracks") or 5),
-            logs=[f"Queued album plan job {job_id}."],
+            logs=[f"Queued album plan job {job_id}.", f"Planning Engine: {planning_engine_label} ({planning_engine})"],
         )
         threading.Thread(target=_album_plan_job_worker, args=(job_id, request_body), daemon=True).start()
         return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})
@@ -8613,7 +9291,8 @@ async def api_local_llm_test(request: Request):
         kind = str(body.get("kind") or "chat").strip().lower()
         if provider == "ollama":
             _ensure_ollama_model_or_start_pull(model, context=f"{kind} test", kind="embedding" if kind == "embedding" else "chat")
-        return JSONResponse(local_llm_test_model(provider, model, kind))
+        planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=16, default_timeout=60.0)
+        return JSONResponse(local_llm_test_model(provider, model, kind, planner_settings))
     except OllamaPullStarted as exc:
         return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "local LLM test"))
     except Exception as exc:
@@ -8765,6 +9444,8 @@ async def api_ollama_test(request: Request):
 async def api_prompt_assistant_prompts():
     prompts = []
     for mode, info in PROMPT_ASSISTANT_MODES.items():
+        if mode in PROMPT_ASSISTANT_DISABLED_MODES:
+            continue
         path = BASE_DIR.parent / info["file"]
         prompts.append(
             {
@@ -8784,14 +9465,32 @@ async def api_prompt_assistant_run(request: Request):
     try:
         body = await request.json()
         mode = _prompt_assistant_mode(str(body.get("mode") or "custom"))
+        if mode == "trainer":
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "Trainer uses the official ACE-Step dataset/LoRA workflow; Ollama/LM Studio AI Fill is disabled for Trainer.",
+                    "raw_text": "",
+                    "warnings": [],
+                },
+                status_code=400,
+            )
         user_prompt = str(body.get("user_prompt") or body.get("prompt") or "").strip()
         if not user_prompt:
             return JSONResponse({"success": False, "error": "Prompt is empty.", "raw_text": ""}, status_code=400)
         current_payload = body.get("current_payload") if isinstance(body.get("current_payload"), dict) else {}
         planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
+        planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0)
         system_prompt = _prompt_assistant_system_prompt(mode)
-        raw_text = _run_prompt_assistant_local(system_prompt, user_prompt, planner_provider, planner_model, current_payload)
+        raw_text = _run_prompt_assistant_local(
+            system_prompt,
+            user_prompt,
+            planner_provider,
+            planner_model,
+            current_payload,
+            planner_settings,
+        )
         parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
         payload, warnings = _normalize_prompt_assistant_payload(mode, parsed_payload, body)
         validation = None
@@ -8854,6 +9553,7 @@ async def api_compose(request: Request):
         body = await request.json()
         provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
+        planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0)
         raw = compose(
             description=str(body.get("description") or ""),
             audio_duration=float(body.get("audio_duration") or body.get("duration") or 60.0),
@@ -8862,6 +9562,7 @@ async def api_compose(request: Request):
             ollama_model=str(body.get("ollama_model") or ""),
             planner_lm_provider=provider,
             planner_model=planner_model,
+            planner_llm_settings=planner_settings,
         )
         return JSONResponse(json.loads(raw))
     except OllamaPullStarted as exc:
@@ -8885,6 +9586,7 @@ async def api_create_sample(request: Request):
             ollama_model=str(body.get("ollama_model") or ""),
             planner_lm_provider=str(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama"),
             planner_model=str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+            planner_llm_settings=planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0),
         )
         data = json.loads(raw)
         data["artist_name"] = normalize_artist_name(
@@ -8915,6 +9617,7 @@ async def api_format_sample(request: Request):
             ollama_model=str(body.get("ollama_model") or ""),
             planner_lm_provider=str(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama"),
             planner_model=str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+            planner_llm_settings=planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0),
         )
         data = json.loads(raw)
         data["artist_name"] = normalize_artist_name(
@@ -9856,7 +10559,7 @@ async def api_generate_album(request: Request):
     try:
         body = await request.json()
         planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
             str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
@@ -9869,8 +10572,10 @@ async def api_generate_album(request: Request):
             "embedding",
             "album embeddings",
         )
+        planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
         request_body = {
             **body,
+            "agent_engine": planning_engine,
             "planner_lm_provider": planner_provider,
             "embedding_lm_provider": embedding_provider,
             "planner_model": planner_model,
@@ -9902,7 +10607,7 @@ async def api_create_album_job(request: Request):
     try:
         body = await request.json()
         planner_provider = normalize_provider(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama")
-        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or planner_provider)
+        embedding_provider = normalize_provider(body.get("embedding_lm_provider") or body.get("embedding_provider") or "ollama")
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
             str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
@@ -9916,8 +10621,11 @@ async def api_create_album_job(request: Request):
             "album job embeddings",
         )
         job_id = uuid.uuid4().hex[:12]
+        planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
+        planning_engine_label = _album_agent_engine_label_value(planning_engine)
         request_body = {
             **body,
+            "agent_engine": planning_engine,
             "planner_lm_provider": planner_provider,
             "embedding_lm_provider": embedding_provider,
             "planner_model": planner_model,
@@ -9934,11 +10642,11 @@ async def api_create_album_job(request: Request):
             planner_provider=planner_provider,
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
-            planning_engine="acejam_agents",
+            planning_engine=planning_engine,
             custom_agents_used=True,
-            crewai_used=False,
+            crewai_used=planning_engine == "crewai_micro",
             memory_enabled=False,
-            logs=[f"Queued album job {job_id}."],
+            logs=[f"Queued album job {job_id}.", f"Planning Engine: {planning_engine_label} ({planning_engine})"],
         )
         threading.Thread(target=_album_job_worker, args=(job_id, request_body), daemon=True).start()
         return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})

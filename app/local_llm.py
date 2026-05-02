@@ -12,6 +12,43 @@ from typing import Any
 
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 LMSTUDIO_DEFAULT_HOST = "http://localhost:1234"
+PLANNER_LLM_DEFAULTS: dict[str, Any] = {
+    "planner_creativity_preset": "balanced",
+    "planner_temperature": 0.45,
+    "planner_top_p": 0.92,
+    "planner_top_k": 40,
+    "planner_repeat_penalty": 1.1,
+    "planner_seed": "",
+    "planner_max_tokens": 2048,
+    "planner_context_length": 8192,
+    "planner_timeout": 600.0,
+}
+PLANNER_LLM_PRESETS: dict[str, dict[str, Any]] = {
+    "stable": {
+        "planner_temperature": 0.2,
+        "planner_top_p": 0.85,
+        "planner_top_k": 20,
+        "planner_repeat_penalty": 1.15,
+    },
+    "balanced": {
+        "planner_temperature": 0.45,
+        "planner_top_p": 0.92,
+        "planner_top_k": 40,
+        "planner_repeat_penalty": 1.1,
+    },
+    "creative": {
+        "planner_temperature": 0.8,
+        "planner_top_p": 0.95,
+        "planner_top_k": 70,
+        "planner_repeat_penalty": 1.05,
+    },
+    "wild": {
+        "planner_temperature": 1.1,
+        "planner_top_p": 0.98,
+        "planner_top_k": 100,
+        "planner_repeat_penalty": 1.0,
+    },
+}
 ACEJAM_PRINT_LLM_IO = os.environ.get(
     "ACEJAM_PRINT_LLM_IO",
     os.environ.get("ACEJAM_PRINT_AGENT_IO", "1"),
@@ -65,6 +102,160 @@ def normalize_provider(provider: Any) -> str:
 
 def provider_label(provider: Any) -> str:
     return "LM Studio" if normalize_provider(provider) == "lmstudio" else "Ollama"
+
+
+def _payload_first(payload: dict[str, Any] | None, *names: str) -> Any:
+    source = payload if isinstance(payload, dict) else {}
+    for name in names:
+        if name in source and source.get(name) not in [None, ""]:
+            return source.get(name)
+    return None
+
+
+def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+    return max(float(minimum), min(float(maximum), number))
+
+
+def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        number = int(default)
+    return max(int(minimum), min(int(maximum), number))
+
+
+def planner_llm_settings_from_payload(
+    payload: dict[str, Any] | None,
+    *,
+    default_max_tokens: int | None = None,
+    default_timeout: float | None = None,
+) -> dict[str, Any]:
+    """Normalize Ollama/LM Studio planner controls, separate from ACE-Step LM controls."""
+    source = payload if isinstance(payload, dict) else {}
+    preset = str(
+        _payload_first(source, "planner_creativity_preset", "local_llm_creativity_preset")
+        or os.environ.get("ACEJAM_PLANNER_CREATIVITY_PRESET")
+        or PLANNER_LLM_DEFAULTS["planner_creativity_preset"]
+    ).strip().lower()
+    if preset not in PLANNER_LLM_PRESETS:
+        preset = "balanced"
+    base = {**PLANNER_LLM_DEFAULTS, **PLANNER_LLM_PRESETS[preset]}
+    if default_max_tokens is not None:
+        base["planner_max_tokens"] = int(default_max_tokens)
+    if default_timeout is not None:
+        base["planner_timeout"] = float(default_timeout)
+
+    temperature = _clamp_float(
+        _payload_first(source, "planner_temperature", "local_llm_temperature")
+        or os.environ.get("ACEJAM_PLANNER_TEMPERATURE")
+        or base["planner_temperature"],
+        float(base["planner_temperature"]),
+        0.0,
+        2.0,
+    )
+    top_p = _clamp_float(
+        _payload_first(source, "planner_top_p", "local_llm_top_p")
+        or os.environ.get("ACEJAM_PLANNER_TOP_P")
+        or base["planner_top_p"],
+        float(base["planner_top_p"]),
+        0.0,
+        1.0,
+    )
+    top_k = _clamp_int(
+        _payload_first(source, "planner_top_k", "local_llm_top_k")
+        or os.environ.get("ACEJAM_PLANNER_TOP_K")
+        or base["planner_top_k"],
+        int(base["planner_top_k"]),
+        0,
+        200,
+    )
+    repeat_penalty = _clamp_float(
+        _payload_first(source, "planner_repeat_penalty", "local_llm_repeat_penalty")
+        or os.environ.get("ACEJAM_PLANNER_REPEAT_PENALTY")
+        or base["planner_repeat_penalty"],
+        float(base["planner_repeat_penalty"]),
+        0.8,
+        2.0,
+    )
+    max_tokens = _clamp_int(
+        _payload_first(source, "planner_max_tokens", "local_llm_max_tokens")
+        or os.environ.get("ACEJAM_PLANNER_MAX_TOKENS")
+        or base["planner_max_tokens"],
+        int(base["planner_max_tokens"]),
+        128,
+        8192,
+    )
+    context_length = _clamp_int(
+        _payload_first(source, "planner_context_length", "local_llm_context_length", "planner_num_ctx")
+        or os.environ.get("ACEJAM_PLANNER_CONTEXT_LENGTH")
+        or base["planner_context_length"],
+        int(base["planner_context_length"]),
+        2048,
+        32768,
+    )
+    timeout = _clamp_float(
+        _payload_first(source, "planner_timeout", "local_llm_timeout")
+        or os.environ.get("ACEJAM_PLANNER_TIMEOUT")
+        or base["planner_timeout"],
+        float(base["planner_timeout"]),
+        30.0,
+        1800.0,
+    )
+    seed_raw = str(
+        _payload_first(source, "planner_seed", "local_llm_seed")
+        or os.environ.get("ACEJAM_PLANNER_SEED")
+        or ""
+    ).strip()
+    planner_seed: str | int = ""
+    if seed_raw and seed_raw.lower() != "random" and seed_raw != "-1":
+        try:
+            planner_seed = max(0, min(2**31 - 1, int(float(seed_raw))))
+        except (TypeError, ValueError):
+            planner_seed = ""
+    return {
+        "planner_creativity_preset": preset,
+        "planner_temperature": temperature,
+        "planner_top_p": top_p,
+        "planner_top_k": top_k,
+        "planner_repeat_penalty": repeat_penalty,
+        "planner_seed": planner_seed,
+        "planner_max_tokens": max_tokens,
+        "planner_context_length": context_length,
+        "planner_timeout": timeout,
+    }
+
+
+def planner_llm_options_for_provider(
+    provider: Any,
+    payload: dict[str, Any] | None,
+    *,
+    default_max_tokens: int | None = None,
+    default_timeout: float | None = None,
+) -> dict[str, Any]:
+    settings = planner_llm_settings_from_payload(
+        payload,
+        default_max_tokens=default_max_tokens,
+        default_timeout=default_timeout,
+    )
+    options: dict[str, Any] = {
+        "temperature": settings["planner_temperature"],
+        "top_p": settings["planner_top_p"],
+        "top_k": settings["planner_top_k"],
+        "repeat_penalty": settings["planner_repeat_penalty"],
+        "timeout": settings["planner_timeout"],
+    }
+    if settings["planner_seed"] != "":
+        options["seed"] = settings["planner_seed"]
+    if normalize_provider(provider) == "ollama":
+        options["num_ctx"] = settings["planner_context_length"]
+        options["num_predict"] = settings["planner_max_tokens"]
+    else:
+        options["max_tokens"] = settings["planner_max_tokens"]
+    return options
 
 
 def ollama_host() -> str:
@@ -459,6 +650,7 @@ def ollama_chat(model_name: str, messages: list[dict[str, str]], *, options: dic
 
 
 def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
+    request_timeout = float((options or {}).get("timeout") or 600)
     payload: dict[str, Any] = {
         "model": model_name,
         "messages": messages,
@@ -468,7 +660,7 @@ def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: d
     if json_format:
         payload.setdefault("response_format", {"type": "json_object"})
     _print_llm_io("lmstudio_chat_request_json", {"url": f"{lmstudio_api_base_url()}/chat/completions", "payload": payload})
-    data = _http_json("POST", f"{lmstudio_api_base_url()}/chat/completions", payload, timeout=600)
+    data = _http_json("POST", f"{lmstudio_api_base_url()}/chat/completions", payload, timeout=request_timeout)
     _print_llm_io("lmstudio_chat_response_json", data)
     choices = data.get("choices") if isinstance(data, dict) else None
     if isinstance(choices, list) and choices:
@@ -520,7 +712,7 @@ def embed(provider: Any, model_name: str, text: str) -> list[float]:
     return []
 
 
-def test_model(provider: Any, model_name: str, kind: str = "chat") -> dict[str, Any]:
+def test_model(provider: Any, model_name: str, kind: str = "chat", options: dict[str, Any] | None = None) -> dict[str, Any]:
     provider_name = normalize_provider(provider)
     model = resolve_model(provider_name, model_name, "embedding" if kind == "embedding" else "chat")
     started = time.perf_counter()
@@ -534,11 +726,13 @@ def test_model(provider: Any, model_name: str, kind: str = "chat") -> dict[str, 
             "dimensions": len(vector),
             "elapsed": round(time.perf_counter() - started, 3),
         }
+    chat_options = planner_llm_options_for_provider(provider_name, options or {}, default_max_tokens=16)
+    chat_options["temperature"] = (options or {}).get("temperature", chat_options.get("temperature", 0.0))
     text = chat_completion(
         provider_name,
         model,
         [{"role": "user", "content": "Reply with just: OK"}],
-        options={"temperature": 0.0, "max_tokens": 16},
+        options=chat_options,
     )
     return {
         "success": True,

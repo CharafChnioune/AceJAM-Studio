@@ -61,8 +61,10 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("[Final Drop]", techno_tags)
         self.assertTrue(is_sparse_lyric_genre("ambient techno score"))
         rap_sections = section_map_for(240, "rap")
-        self.assertIn("[Verse 1]", [item["tag"] for item in rap_sections])
-        self.assertIn("[Chorus]", [item["tag"] for item in rap_sections])
+        rap_tags = [item["tag"] for item in rap_sections]
+        self.assertIn("[Verse 1]", rap_tags)
+        self.assertIn("[Chorus]", rap_tags)
+        self.assertIn("[Verse 3 - Beat Switch]", rap_tags)
 
     def test_metadata_defaults_and_system_block(self):
         meta = kit_metadata_defaults("text2music", "ko", "k-pop bright synths", 220)
@@ -73,6 +75,8 @@ class PromptKitTest(unittest.TestCase):
         block = prompt_kit_system_block("custom")
         self.assertIn(PROMPT_KIT_VERSION, block)
         self.assertIn("Never hardcode planner_lm_provider to ollama", block)
+        self.assertIn("song_intent", block)
+        self.assertIn("concrete sonic portrait", block)
 
 
 if __name__ == "__main__":

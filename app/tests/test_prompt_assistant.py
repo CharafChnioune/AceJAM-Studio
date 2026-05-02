@@ -37,6 +37,21 @@ ACEJAM_PAYLOAD_JSON
 	  "artist_name": "Neon Harbor",
 	  "title": "Neon Win",
   "caption": "melodic rap, 808 bass, piano, male rap vocal, crisp modern mix",
+  "song_intent": {
+    "genre_family": "rap",
+    "subgenre": "melodic rap",
+    "mood": "triumphant",
+    "energy": "medium-high",
+    "vocal_type": "male rap lead",
+    "language": "en",
+    "drum_groove": "crisp trap drums",
+    "bass_low_end": "808 bass",
+    "melodic_identity": "bright piano motif",
+    "texture_space": "wide neon ambience",
+    "mix_master": "crisp modern mix",
+    "custom_tags": ["anthemic hook"],
+    "caption": "melodic rap, crisp trap drums, 808 bass, bright piano motif, male rap lead, wide neon ambience, crisp modern mix"
+  },
   "negative_tags": "muddy mix, weak hook",
   "lyrics": "[Verse]\\nWe put the light on the dashboard\\n\\n[Chorus]\\nNeon win, we came too far",
   "duration": 60,
@@ -80,6 +95,73 @@ ACEJAM_PAYLOAD_JSON
         self.assertFalse(data["payload"]["auto_lrc"])
         self.assertEqual(data["payload"]["artist_name"], "Neon Harbor")
         self.assertEqual(data["payload"]["title"], "Neon Win")
+        self.assertEqual(data["payload"]["song_intent"]["genre_family"], "rap")
+        self.assertEqual(data["payload"]["song_intent"]["caption"], data["payload"]["caption"])
+        self.assertIn("anthemic hook", data["payload"]["song_intent"]["custom_tags"])
+
+    def test_prompt_assistant_passes_planner_settings_to_local_llm(self):
+        raw = """
+ACEJAM_PASTE_BLOCKS
+Title: Neon Win
+
+ACEJAM_PAYLOAD_JSON
+{
+  "task_type": "text2music",
+  "title": "Neon Win",
+  "artist_name": "Neon Harbor",
+  "caption": "rap drums, 808 bass, piano, male rap vocal, polished mix",
+  "lyrics": "[Verse]\\nConcrete numbers on the kitchen wall\\n[Chorus]\\nNeon win",
+  "duration": 60
+}
+"""
+        client = TestClient(acejam_app.app)
+        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw) as runner:
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={
+                    "mode": "custom",
+                    "user_prompt": "make a rap song",
+                    "planner_lm_provider": "lmstudio",
+                    "planner_model": "local-qwen",
+                    "planner_creativity_preset": "creative",
+                    "planner_temperature": 0.77,
+                    "planner_top_p": 0.96,
+                    "planner_top_k": 88,
+                    "planner_repeat_penalty": 1.05,
+                    "planner_seed": "1234",
+                    "planner_max_tokens": 3072,
+                    "planner_context_length": 16384,
+                    "planner_timeout": 90,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        settings = runner.call_args.args[5]
+        self.assertEqual(settings["planner_creativity_preset"], "creative")
+        self.assertEqual(settings["planner_temperature"], 0.77)
+        self.assertEqual(settings["planner_top_p"], 0.96)
+        self.assertEqual(settings["planner_top_k"], 88)
+        self.assertEqual(settings["planner_repeat_penalty"], 1.05)
+        self.assertEqual(settings["planner_seed"], 1234)
+        self.assertEqual(settings["planner_max_tokens"], 3072)
+        self.assertEqual(settings["planner_context_length"], 16384)
+        self.assertEqual(settings["planner_timeout"], 90.0)
+        self.assertEqual(response.json()["payload"]["planner_temperature"], 0.77)
+
+    def test_prompt_assistant_blocks_trainer_mode_and_hides_prompt_listing(self):
+        client = TestClient(acejam_app.app)
+        prompts = client.get("/api/prompt-assistant/prompts")
+        self.assertEqual(prompts.status_code, 200)
+        self.assertNotIn("trainer", {item["mode"] for item in prompts.json()["prompts"]})
+
+        response = client.post(
+            "/api/prompt-assistant/run",
+            json={"mode": "trainer", "user_prompt": "label my dataset", "planner_model": "local-qwen"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()["success"])
+        self.assertIn("disabled for Trainer", response.json()["error"])
 
     def test_prompt_assistant_run_parses_album_payload(self):
         raw = """

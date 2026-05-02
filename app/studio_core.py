@@ -23,7 +23,9 @@ from acestep.constants import (
 
 KNOWN_ACE_STEP_MODELS = [
     "acestep-v15-turbo",
+    "acestep-v15-turbo-shift1",
     "acestep-v15-turbo-shift3",
+    "acestep-v15-turbo-continuous",
     "acestep-v15-sft",
     "acestep-v15-base",
     "acestep-v15-xl-turbo",
@@ -41,10 +43,18 @@ ACE_STEP_LM_MODELS = [
 ]
 
 ACE_STEP_MODEL_SOURCES = [
+    "https://github.com/ace-step/ACE-Step-1.5",
     "https://huggingface.co/ACE-Step/Ace-Step1.5",
     "https://huggingface.co/ACE-Step/acestep-v15-sft",
+    "https://huggingface.co/ACE-Step/acestep-v15-turbo-shift1",
+    "https://huggingface.co/ACE-Step/acestep-v15-turbo-continuous",
     "https://huggingface.co/ACE-Step/acestep-v15-xl-turbo",
     "https://huggingface.co/ACE-Step/acestep-v15-xl-sft",
+    "https://huggingface.co/ACE-Step/acestep-v15-xl-base",
+    "https://huggingface.co/ACE-Step/acestep-captioner",
+    "https://huggingface.co/ACE-Step/acestep-transcriber",
+    "https://huggingface.co/ACE-Step/ace-step-v1.5-1d-vae-stable-audio-format",
+    "https://huggingface.co/ACE-Step/acestep-v15-xl-turbo-diffusers",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md",
     "https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md",
@@ -53,9 +63,290 @@ ACE_STEP_MODEL_SOURCES = [
     "https://arxiv.org/abs/2602.00744",
 ]
 
-STANDARD_TASKS = ["text2music", "cover", "repaint"]
-ALL_TASKS = ["text2music", "cover", "repaint", "extract", "lego", "complete"]
+STANDARD_TASKS = ["text2music", "cover", "cover-nofsq", "repaint"]
+ALL_TASKS = ["text2music", "cover", "cover-nofsq", "repaint", "extract", "lego", "complete"]
 OFFICIAL_UNRELEASED_MODELS = {"acestep-v15-turbo-rl"}
+OFFICIAL_CORE_MODEL_ID = "main"
+OFFICIAL_MAIN_MODEL_REPO = "ACE-Step/Ace-Step1.5"
+OFFICIAL_MAIN_MODEL_COMPONENTS = [
+    "acestep-v15-turbo",
+    "vae",
+    "Qwen3-Embedding-0.6B",
+    "acestep-5Hz-lm-1.7B",
+]
+OFFICIAL_HELPER_MODEL_IDS = [
+    "acestep-captioner",
+    "acestep-transcriber",
+    "ace-step-v1.5-1d-vae-stable-audio-format",
+    "acestep-v15-xl-turbo-diffusers",
+]
+OFFICIAL_BOOT_QUALITY_MODEL_IDS = [
+    OFFICIAL_CORE_MODEL_ID,
+    "acestep-v15-xl-sft",
+    "acestep-v15-xl-base",
+    "acestep-5Hz-lm-4B",
+]
+OFFICIAL_LORA_MODEL_IDS = [
+    "ACE-Step-v1-chinese-rap-LoRA",
+    "ACE-Step-v1.5-chinese-new-year-LoRA",
+]
+OFFICIAL_LEGACY_MODEL_IDS = ["ACE-Step-v1-3.5B"]
+OFFICIAL_ACE_STEP_MODEL_REGISTRY: dict[str, dict[str, Any]] = {
+    OFFICIAL_CORE_MODEL_ID: {
+        "id": OFFICIAL_CORE_MODEL_ID,
+        "repo_id": OFFICIAL_MAIN_MODEL_REPO,
+        "role": "core_bundle",
+        "tasks": [],
+        "quality": "required",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "components": OFFICIAL_MAIN_MODEL_COMPONENTS,
+        "source": "official_main_bundle",
+    },
+    "acestep-v15-turbo": {
+        "id": "acestep-v15-turbo",
+        "repo_id": OFFICIAL_MAIN_MODEL_REPO,
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "main_bundle",
+    },
+    "acestep-v15-turbo-shift1": {
+        "id": "acestep-v15-turbo-shift1",
+        "repo_id": "ACE-Step/acestep-v15-turbo-shift1",
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-turbo-shift3": {
+        "id": "acestep-v15-turbo-shift3",
+        "repo_id": "ACE-Step/acestep-v15-turbo-shift3",
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-turbo-continuous": {
+        "id": "acestep-v15-turbo-continuous",
+        "repo_id": "ACE-Step/acestep-v15-turbo-continuous",
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-sft": {
+        "id": "acestep-v15-sft",
+        "repo_id": "ACE-Step/acestep-v15-sft",
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "High",
+        "steps": 50,
+        "cfg": True,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-base": {
+        "id": "acestep-v15-base",
+        "repo_id": "ACE-Step/acestep-v15-base",
+        "role": "render_dit",
+        "tasks": ALL_TASKS,
+        "quality": "Medium",
+        "steps": 50,
+        "cfg": True,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-xl-turbo": {
+        "id": "acestep-v15-xl-turbo",
+        "repo_id": "ACE-Step/acestep-v15-xl-turbo",
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-xl-sft": {
+        "id": "acestep-v15-xl-sft",
+        "repo_id": "ACE-Step/acestep-v15-xl-sft",
+        "role": "render_dit",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 50,
+        "cfg": True,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-xl-base": {
+        "id": "acestep-v15-xl-base",
+        "repo_id": "ACE-Step/acestep-v15-xl-base",
+        "role": "render_dit",
+        "tasks": ALL_TASKS,
+        "quality": "High",
+        "steps": 50,
+        "cfg": True,
+        "downloadable": True,
+        "render_usable": True,
+        "source": "official_submodel",
+    },
+    "acestep-v15-turbo-rl": {
+        "id": "acestep-v15-turbo-rl",
+        "repo_id": "",
+        "role": "unreleased",
+        "tasks": STANDARD_TASKS,
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": False,
+        "render_usable": False,
+        "source": "official_unreleased",
+        "status": "unreleased",
+    },
+    "acestep-5Hz-lm-0.6B": {
+        "id": "acestep-5Hz-lm-0.6B",
+        "repo_id": "ACE-Step/acestep-5Hz-lm-0.6B",
+        "role": "ace_lm",
+        "tasks": ["metadata", "caption_rewrite", "audio_understanding", "semantic_codes"],
+        "quality": "Medium",
+        "steps": None,
+        "cfg": "LM CFG",
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_submodel",
+    },
+    "acestep-5Hz-lm-1.7B": {
+        "id": "acestep-5Hz-lm-1.7B",
+        "repo_id": OFFICIAL_MAIN_MODEL_REPO,
+        "role": "ace_lm",
+        "tasks": ["metadata", "caption_rewrite", "audio_understanding", "semantic_codes"],
+        "quality": "Medium",
+        "steps": None,
+        "cfg": "LM CFG",
+        "downloadable": True,
+        "render_usable": False,
+        "source": "main_bundle",
+    },
+    "acestep-5Hz-lm-4B": {
+        "id": "acestep-5Hz-lm-4B",
+        "repo_id": "ACE-Step/acestep-5Hz-lm-4B",
+        "role": "ace_lm",
+        "tasks": ["metadata", "caption_rewrite", "audio_understanding", "semantic_codes"],
+        "quality": "Strong",
+        "steps": None,
+        "cfg": "LM CFG",
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_submodel",
+    },
+    "acestep-captioner": {
+        "id": "acestep-captioner",
+        "repo_id": "ACE-Step/acestep-captioner",
+        "role": "helper",
+        "tasks": ["audio_captioning"],
+        "quality": "helper",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_helper",
+    },
+    "acestep-transcriber": {
+        "id": "acestep-transcriber",
+        "repo_id": "ACE-Step/acestep-transcriber",
+        "role": "helper",
+        "tasks": ["transcription"],
+        "quality": "helper",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_helper",
+    },
+    "ace-step-v1.5-1d-vae-stable-audio-format": {
+        "id": "ace-step-v1.5-1d-vae-stable-audio-format",
+        "repo_id": "ACE-Step/ace-step-v1.5-1d-vae-stable-audio-format",
+        "role": "helper",
+        "tasks": ["vae_experiment"],
+        "quality": "helper",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_helper",
+    },
+    "acestep-v15-xl-turbo-diffusers": {
+        "id": "acestep-v15-xl-turbo-diffusers",
+        "repo_id": "ACE-Step/acestep-v15-xl-turbo-diffusers",
+        "role": "diffusers_export",
+        "tasks": ["diffusers_pipeline"],
+        "quality": "Very High",
+        "steps": 8,
+        "cfg": False,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_diffusers_export",
+    },
+    "ACE-Step-v1-3.5B": {
+        "id": "ACE-Step-v1-3.5B",
+        "repo_id": "ACE-Step/ACE-Step-v1-3.5B",
+        "role": "legacy",
+        "tasks": ["legacy_v1"],
+        "quality": "legacy",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_legacy",
+    },
+    "ACE-Step-v1-chinese-rap-LoRA": {
+        "id": "ACE-Step-v1-chinese-rap-LoRA",
+        "repo_id": "ACE-Step/ACE-Step-v1-chinese-rap-LoRA",
+        "role": "lora",
+        "tasks": ["adapter"],
+        "quality": "adapter",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_lora",
+    },
+    "ACE-Step-v1.5-chinese-new-year-LoRA": {
+        "id": "ACE-Step-v1.5-chinese-new-year-LoRA",
+        "repo_id": "ACE-Step/ACE-Step-v1.5-chinese-new-year-LoRA",
+        "role": "lora",
+        "tasks": ["adapter"],
+        "quality": "adapter",
+        "steps": None,
+        "cfg": None,
+        "downloadable": True,
+        "render_usable": False,
+        "source": "official_lora",
+    },
+}
 DEFAULT_BPM = 95
 DEFAULT_KEY_SCALE = "A minor"
 KEYSCALE_AUTO_VALUE = "auto"
@@ -100,6 +391,11 @@ OFFICIAL_GENERATION_PARAMS = [
     "sampler_mode",
     "velocity_norm_threshold",
     "velocity_ema_factor",
+    "dcw_enabled",
+    "dcw_mode",
+    "dcw_scaler",
+    "dcw_high_scaler",
+    "dcw_wavelet",
     "timesteps",
     "repainting_start",
     "repainting_end",
@@ -108,6 +404,14 @@ OFFICIAL_GENERATION_PARAMS = [
     "repaint_wav_crossfade_sec",
     "repaint_mode",
     "repaint_strength",
+    "retake_seed",
+    "retake_variance",
+    "flow_edit_morph",
+    "flow_edit_source_caption",
+    "flow_edit_source_lyrics",
+    "flow_edit_n_min",
+    "flow_edit_n_max",
+    "flow_edit_n_avg",
     "audio_cover_strength",
     "cover_noise_strength",
     "thinking",
@@ -194,7 +498,9 @@ CHART_MASTER_STANDARD_STEPS = 64
 DOCS_BEST_STANDARD_STEPS = CHART_MASTER_STANDARD_STEPS
 DOCS_BEST_MODEL_STEPS = {
     "acestep-v15-turbo": 8,
+    "acestep-v15-turbo-shift1": 8,
     "acestep-v15-turbo-shift3": 8,
+    "acestep-v15-turbo-continuous": 8,
     "acestep-v15-turbo-rl": 8,
     "acestep-v15-sft": CHART_MASTER_STANDARD_STEPS,
     "acestep-v15-base": CHART_MASTER_STANDARD_STEPS,
@@ -232,7 +538,7 @@ ACE_STEP_LYRICS_SOFT_TARGET_MAX = 3600
 ACE_STEP_LYRICS_WARNING_CHAR_LIMIT = 3800
 ACE_STEP_LYRICS_SAFE_HEADROOM = 200
 ACE_STEP_DIT_LYRICS_TOKEN_LIMIT = 2048
-DOCS_BEST_SOURCE_TASK_LM_SKIPS = {"cover", "repaint", "extract"}
+DOCS_BEST_SOURCE_TASK_LM_SKIPS = {"cover", "cover-nofsq", "repaint", "extract"}
 DOCS_BEST_LM_TASKS = {"text2music", "lego", "complete"}
 DOCS_BEST_LM_DEFAULTS: dict[str, Any] = {
     "ace_lm_model": DOCS_BEST_DEFAULT_LM_MODEL,
@@ -538,7 +844,27 @@ OFFICIAL_ACE_STEP_MANIFEST: dict[str, Any] = {
             "diversity": "Medium",
             "fine_tunability": "Medium",
         },
+        "acestep-v15-turbo-shift1": {
+            "status": "supported",
+            "cfg": False,
+            "steps": 8,
+            "reference_audio": True,
+            "tasks": STANDARD_TASKS,
+            "quality": "Very High",
+            "diversity": "Medium",
+            "fine_tunability": "Medium",
+        },
         "acestep-v15-turbo-shift3": {
+            "status": "supported",
+            "cfg": False,
+            "steps": 8,
+            "reference_audio": True,
+            "tasks": STANDARD_TASKS,
+            "quality": "Very High",
+            "diversity": "Medium",
+            "fine_tunability": "Medium",
+        },
+        "acestep-v15-turbo-continuous": {
             "status": "supported",
             "cfg": False,
             "steps": 8,
@@ -594,6 +920,25 @@ OFFICIAL_ACE_STEP_MANIFEST: dict[str, Any] = {
         "acestep-5Hz-lm-1.7B": {"status": "supported", "audio_understanding": "Medium", "composition": "Medium", "copy_melody": "Medium"},
         "acestep-5Hz-lm-4B": {"status": "supported", "audio_understanding": "Strong", "composition": "Strong", "copy_melody": "Strong"},
     },
+    "model_registry": copy.deepcopy(OFFICIAL_ACE_STEP_MODEL_REGISTRY),
+    "core_bundle": {
+        "id": OFFICIAL_CORE_MODEL_ID,
+        "repo_id": OFFICIAL_MAIN_MODEL_REPO,
+        "components": OFFICIAL_MAIN_MODEL_COMPONENTS,
+        "status": "supported",
+    },
+    "helper_models": {
+        name: copy.deepcopy(OFFICIAL_ACE_STEP_MODEL_REGISTRY[name])
+        for name in OFFICIAL_HELPER_MODEL_IDS
+    },
+    "lora_models": {
+        name: copy.deepcopy(OFFICIAL_ACE_STEP_MODEL_REGISTRY[name])
+        for name in OFFICIAL_LORA_MODEL_IDS
+    },
+    "legacy_models": {
+        name: copy.deepcopy(OFFICIAL_ACE_STEP_MODEL_REGISTRY[name])
+        for name in OFFICIAL_LEGACY_MODEL_IDS
+    },
     "generation_params": {name: {"status": "supported"} for name in OFFICIAL_GENERATION_PARAMS},
     "generation_config": {name: {"status": "supported"} for name in OFFICIAL_GENERATION_CONFIG_FIELDS},
     "settings_registry": {"status": "supported", "version": ACE_STEP_SETTINGS_POLICY_VERSION},
@@ -620,6 +965,22 @@ MODEL_PROFILES: dict[str, dict[str, Any]] = {
         "notes": "Official docs recommend starting with default turbo as the balanced, thoroughly tested choice.",
         "source_urls": ACE_STEP_MODEL_SOURCES,
     },
+    "acestep-v15-turbo-shift1": {
+        "label": "Turbo Shift1",
+        "dropdown_label": "Turbo Shift1 - richer details, looser semantics",
+        "summary": "Official turbo variant distilled on shift=1: richer detail texture with weaker semantic lock.",
+        "best_for": ["Detail variants", "Creative texture", "Fast experiments"],
+        "quality": "Very high",
+        "speed": "Fastest",
+        "vram": "<4GB class",
+        "steps": "8",
+        "cfg": "No",
+        "tasks": STANDARD_TASKS,
+        "recommended_for": ["custom", "cover", "repaint"],
+        "warnings": ["Less semantically locked than default Turbo.", "Use Base or XL Base for extract, lego, and complete."],
+        "notes": "Official tutorial describes shift1 as detail-rich but weaker in semantic adherence.",
+        "source_urls": ACE_STEP_MODEL_SOURCES,
+    },
     "acestep-v15-turbo-shift3": {
         "label": "Turbo Shift3",
         "dropdown_label": "Turbo Shift3 - clear timbre, dry",
@@ -634,6 +995,22 @@ MODEL_PROFILES: dict[str, dict[str, Any]] = {
         "recommended_for": ["custom", "cover", "repaint"],
         "warnings": ["Less balanced than default Turbo.", "Use Base or XL Base for extract, lego, and complete."],
         "notes": "Official tutorial describes shift3 as clearer/richer in timbre, but potentially dry with minimal orchestration.",
+        "source_urls": ACE_STEP_MODEL_SOURCES,
+    },
+    "acestep-v15-turbo-continuous": {
+        "label": "Turbo Continuous",
+        "dropdown_label": "Turbo Continuous - experimental shift 1-5",
+        "summary": "Official experimental turbo variant with continuous shift control from 1 to 5.",
+        "best_for": ["Advanced shift tuning", "Fast experiments", "A/B testing"],
+        "quality": "Very high",
+        "speed": "Fastest",
+        "vram": "<4GB class",
+        "steps": "8",
+        "cfg": "No",
+        "tasks": STANDARD_TASKS,
+        "recommended_for": ["custom", "cover", "repaint"],
+        "warnings": ["Official tutorial calls it experimental and less thoroughly tested.", "Use Base or XL Base for extract, lego, and complete."],
+        "notes": "Continuous turbo exposes the widest shift-tuning range but should not replace default Turbo as the safe default.",
         "source_urls": ACE_STEP_MODEL_SOURCES,
     },
     "acestep-v15-sft": {
@@ -853,10 +1230,16 @@ FAST_HANDLER_FIELDS = {
 
 OFFICIAL_ONLY_FIELDS = {
     "allow_lm_batch",
+    "analysis_only",
     "chunk_mask_mode",
     "compile_model",
     "constrained_decoding_debug",
     "cover_noise_strength",
+    "dcw_enabled",
+    "dcw_high_scaler",
+    "dcw_mode",
+    "dcw_scaler",
+    "dcw_wavelet",
     "device",
     "dtype",
     "enable_normalization",
@@ -882,10 +1265,23 @@ OFFICIAL_ONLY_FIELDS = {
     "repaint_mode",
     "repaint_strength",
     "repaint_wav_crossfade_sec",
+    "retake_seed",
+    "retake_variance",
     "sample_mode",
     "sample_query",
     "sampler_mode",
+    "flow_edit_morph",
+    "flow_edit_source_caption",
+    "flow_edit_source_lyrics",
+    "flow_edit_n_min",
+    "flow_edit_n_max",
+    "flow_edit_n_avg",
+    "full_analysis_only",
+    "extract_codes_only",
+    "is_format_caption",
     "thinking",
+    "track_name",
+    "track_classes",
     "use_flash_attention",
     "use_constrained_decoding",
     "use_cot_caption",
@@ -894,16 +1290,23 @@ OFFICIAL_ONLY_FIELDS = {
     "use_cot_metas",
     "use_format",
     "use_random_seed",
+    "use_tiled_decode",
     "velocity_ema_factor",
     "velocity_norm_threshold",
 }
 
 OFFICIAL_FIELD_DEFAULTS: dict[str, Any] = {
     "allow_lm_batch": False,
+    "analysis_only": False,
     "chunk_mask_mode": "auto",
     "compile_model": False,
     "constrained_decoding_debug": False,
     "cover_noise_strength": 0.0,
+    "dcw_enabled": True,
+    "dcw_mode": "double",
+    "dcw_scaler": 0.05,
+    "dcw_high_scaler": 0.02,
+    "dcw_wavelet": "haar",
     "device": "auto",
     "dtype": "auto",
     "enable_normalization": True,
@@ -930,10 +1333,23 @@ OFFICIAL_FIELD_DEFAULTS: dict[str, Any] = {
     "repaint_mode": "balanced",
     "repaint_strength": 0.5,
     "repaint_wav_crossfade_sec": 0.0,
+    "retake_seed": "",
+    "retake_variance": 0.0,
     "sample_mode": False,
     "sample_query": "",
     "sampler_mode": "heun",
+    "flow_edit_morph": False,
+    "flow_edit_source_caption": "",
+    "flow_edit_source_lyrics": "",
+    "flow_edit_n_min": 0.0,
+    "flow_edit_n_max": 1.0,
+    "flow_edit_n_avg": 1,
+    "full_analysis_only": False,
+    "extract_codes_only": False,
+    "is_format_caption": False,
     "thinking": False,
+    "track_name": "",
+    "track_classes": [],
     "offload_dit_to_cpu": False,
     "offload_to_cpu": False,
     "use_flash_attention": "auto",
@@ -944,6 +1360,7 @@ OFFICIAL_FIELD_DEFAULTS: dict[str, Any] = {
     "use_cot_metas": DOCS_BEST_LM_DEFAULTS["use_cot_metas"],
     "use_format": False,
     "use_random_seed": True,
+    "use_tiled_decode": True,
     "velocity_ema_factor": 0.0,
     "velocity_norm_threshold": 0.0,
 }
@@ -980,6 +1397,11 @@ ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
     "sampler_mode": "euler",
     "velocity_norm_threshold": 0.0,
     "velocity_ema_factor": 0.0,
+    "dcw_enabled": True,
+    "dcw_mode": "double",
+    "dcw_scaler": 0.05,
+    "dcw_high_scaler": 0.02,
+    "dcw_wavelet": "haar",
     "timesteps": None,
     "repainting_start": 0.0,
     "repainting_end": -1.0,
@@ -988,6 +1410,14 @@ ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
     "repaint_wav_crossfade_sec": 0.0,
     "repaint_mode": "balanced",
     "repaint_strength": 0.5,
+    "retake_seed": None,
+    "retake_variance": 0.0,
+    "flow_edit_morph": False,
+    "flow_edit_source_caption": "",
+    "flow_edit_source_lyrics": "",
+    "flow_edit_n_min": 0.0,
+    "flow_edit_n_max": 1.0,
+    "flow_edit_n_avg": 1,
     "audio_cover_strength": 1.0,
     "cover_noise_strength": 0.0,
     "thinking": True,
@@ -1022,8 +1452,16 @@ ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
 ACEJAM_EXTENSION_DEFAULTS: dict[str, Any] = {
     "quality_profile": DEFAULT_QUALITY_PROFILE,
     "ace_lm_model": DOCS_BEST_DEFAULT_LM_MODEL,
+    "lm_model_path": DOCS_BEST_DEFAULT_LM_MODEL,
     "lm_backend": DOCS_BEST_DEFAULT_LM_BACKEND,
     "lm_repetition_penalty": 1.0,
+    "analysis_only": False,
+    "full_analysis_only": False,
+    "extract_codes_only": False,
+    "use_tiled_decode": True,
+    "is_format_caption": False,
+    "track_name": "",
+    "track_classes": [],
     "sample_mode": False,
     "sample_query": "",
     "use_format": False,
@@ -1048,6 +1486,13 @@ ACE_STEP_SETTING_SECTIONS: dict[str, list[str]] = {
         "cfg_interval_end",
         "velocity_norm_threshold",
         "velocity_ema_factor",
+        "dcw_enabled",
+        "dcw_mode",
+        "dcw_scaler",
+        "dcw_high_scaler",
+        "dcw_wavelet",
+        "retake_seed",
+        "retake_variance",
         "latent_shift",
         "latent_rescale",
     ],
@@ -1064,9 +1509,16 @@ ACE_STEP_SETTING_SECTIONS: dict[str, list[str]] = {
         "repaint_strength",
         "repaint_latent_crossfade_frames",
         "repaint_wav_crossfade_sec",
+        "flow_edit_morph",
+        "flow_edit_source_caption",
+        "flow_edit_source_lyrics",
+        "flow_edit_n_min",
+        "flow_edit_n_max",
+        "flow_edit_n_avg",
     ],
     "lm_cot": [
         "ace_lm_model",
+        "lm_model_path",
         "lm_backend",
         "thinking",
         "use_format",
@@ -1090,6 +1542,15 @@ ACE_STEP_SETTING_SECTIONS: dict[str, list[str]] = {
         "cot_vocal_language",
         "cot_caption",
         "cot_lyrics",
+    ],
+    "api_service": [
+        "analysis_only",
+        "full_analysis_only",
+        "extract_codes_only",
+        "use_tiled_decode",
+        "is_format_caption",
+        "track_name",
+        "track_classes",
     ],
     "output": [
         "batch_size",
@@ -1132,13 +1593,14 @@ ACE_STEP_READ_ONLY_LM_OUTPUT_FIELDS = {
 ACE_STEP_TASK_REQUIRED_FIELDS: dict[str, list[str]] = {
     "text2music": ["caption_or_lyrics"],
     "cover": ["src_audio", "caption"],
+    "cover-nofsq": ["src_audio", "caption"],
     "repaint": ["src_audio", "caption", "repainting_start", "repainting_end"],
     "extract": ["src_audio", "instruction"],
     "lego": ["src_audio", "instruction", "track_name"],
     "complete": ["src_audio", "instruction", "caption", "track_names"],
 }
 
-ACE_STEP_SOURCE_LOCKED_DURATION_TASKS = {"cover", "repaint", "lego", "extract", "complete"}
+ACE_STEP_SOURCE_LOCKED_DURATION_TASKS = {"cover", "cover-nofsq", "repaint", "lego", "extract", "complete"}
 
 
 def _field_section(field: str) -> str:
@@ -1166,6 +1628,8 @@ def _field_options(field: str) -> list[Any]:
         "audio_format": sorted(OFFICIAL_AUDIO_FORMATS),
         "infer_method": ["ode", "sde"],
         "sampler_mode": ["euler", "heun"],
+        "dcw_mode": ["low", "high", "double", "pix"],
+        "dcw_wavelet": ["haar", "db4", "sym8", "coif1", "bior2.2"],
         "chunk_mask_mode": ["auto", "explicit"],
         "repaint_mode": ["balanced", "conservative", "aggressive"],
         "vocal_language": ["unknown", "en", "zh", "ja", "ko", "es", "fr", "de", "it", "pt", "nl", "ar", "ru"],
@@ -1173,7 +1637,10 @@ def _field_options(field: str) -> list[Any]:
         "key_scale": [KEYSCALE_AUTO_VALUE, *VALID_KEY_SCALES],
         "lm_backend": ["mlx", "pt", "vllm"],
         "ace_lm_model": ACE_STEP_LM_MODELS,
+        "lm_model_path": ACE_STEP_LM_MODELS,
         "quality_profile": QUALITY_PROFILES,
+        "track_name": TRACK_NAMES,
+        "track_classes": TRACK_NAMES,
     }
     return list(options.get(field, []))
 
@@ -1190,6 +1657,12 @@ def _field_range(field: str) -> list[float] | None:
         "audio_cover_strength": [0.0, 1.0],
         "cover_noise_strength": [0.0, 1.0],
         "repaint_strength": [0.0, 1.0],
+        "dcw_scaler": [0.0, 0.2],
+        "dcw_high_scaler": [0.0, 0.2],
+        "retake_variance": [0.0, 1.0],
+        "flow_edit_n_min": [0.0, 1.0],
+        "flow_edit_n_max": [0.0, 1.0],
+        "flow_edit_n_avg": [1, 16],
         "normalization_db": [-24.0, 0.0],
         "fade_in_duration": [0.0, 20.0],
         "fade_out_duration": [0.0, 20.0],
@@ -1220,6 +1693,17 @@ def _field_note(field: str) -> str:
         "audio_cover_strength": "Higher values keep more source structure; lower values transform more freely.",
         "cover_noise_strength": "Vendor code: 0 is no cover/pure noise, 1 is closest to source. Keep 0 unless intentionally experimenting.",
         "repaint_strength": "Vendor code: in balanced mode, 0.0 is aggressive and 1.0 is conservative.",
+        "dcw_enabled": "Vendor 1.5 DCW wavelet-domain correction defaults on; changing it requires the official runner.",
+        "dcw_mode": "Vendor-supported DCW modes: low, high, double, pix. Double is the tuned default.",
+        "retake_variance": "Retake variation control. 0 is a no-op; values above 0 use retake_seed when supplied.",
+        "flow_edit_morph": "Flow-edit overlay for cover/cover-nofsq: source caption/lyrics describe the original, target caption/lyrics describe the destination.",
+        "analysis_only": "Official /release_task analysis branch: return LM metadata without rendering audio.",
+        "full_analysis_only": "Official /release_task deep analysis branch: encode source audio and return metadata/codes without rendering.",
+        "extract_codes_only": "Official /release_task helper: convert source audio to 5Hz semantic codes without rendering.",
+        "use_tiled_decode": "Official API/server decode control. Guarded unless the active runner exposes tiled decode.",
+        "is_format_caption": "Official Gradio/API state: caption has already been formatted by the 5Hz LM.",
+        "track_name": "Official extract/lego stem selector. Values come from ACE-Step TRACK_NAMES.",
+        "track_classes": "Official complete-task stem list. Values come from ACE-Step TRACK_NAMES.",
         "thinking": "Official LM thinking is ignored for cover, repaint and extract.",
         "use_cot_lyrics": "Reserved/future in ACE-Step docs; AceJAM keeps it off by default.",
         "cot_caption": "Read-only value generated by the ACE-Step LM when COT is active.",
@@ -1624,17 +2108,24 @@ def runtime_planner_report(payload: dict[str, Any], *, task_type: str | None = N
 
 PARAM_ALIASES: dict[str, list[str]] = {
     "ace_lm_model": ["ace_lm_model", "lm_model", "lm_model_path", "lmModel"],
+    "analysis_only": ["analysis_only", "analysisOnly"],
     "audio_code_string": ["audio_code_string", "audioCodeString", "audio_codes"],
     "audio_cover_strength": ["audio_cover_strength", "audioCoverStrength", "cover_strength", "coverStrength"],
     "audio_format": ["audio_format", "audioFormat", "format"],
     "caption": ["caption", "prompt", "tags"],
     "duration": ["duration", "audio_duration", "audioDuration", "target_duration", "targetDuration"],
+    "extract_codes_only": ["extract_codes_only", "extractCodesOnly"],
+    "full_analysis_only": ["full_analysis_only", "fullAnalysisOnly"],
+    "is_format_caption": ["is_format_caption", "isFormatCaption"],
     "key_scale": ["key_scale", "keyscale", "keyScale", "key"],
     "sample_query": ["sample_query", "sampleQuery"],
     "song_model": ["song_model", "model", "model_name", "modelName", "dit_model", "ditModel"],
     "src_audio_path": ["src_audio_path", "src_audio", "source_audio_path", "source_audio"],
     "time_signature": ["time_signature", "timesignature", "timeSignature"],
+    "track_classes": ["track_classes", "trackClasses", "instruments"],
+    "track_name": ["track_name", "trackName"],
     "reference_audio_path": ["reference_audio_path", "reference_audio", "reference"],
+    "use_tiled_decode": ["use_tiled_decode", "useTiledDecode"],
     "use_format": ["use_format", "useFormat"],
     "vocal_language": ["vocal_language", "vocalLanguage", "language"],
 }
@@ -2077,11 +2568,72 @@ def lm_model_profiles_for_models(models: list[str], installed_models: set[str] |
     return {name: lm_model_profile(name, name in installed) for name in models}
 
 
+def official_model_registry() -> dict[str, dict[str, Any]]:
+    """Return the official ACE-Step model catalog grouped by role in metadata."""
+    registry = copy.deepcopy(OFFICIAL_ACE_STEP_MODEL_REGISTRY)
+    for name, item in registry.items():
+        item.setdefault("id", name)
+        item.setdefault("downloadable", False)
+        item.setdefault("render_usable", False)
+        item.setdefault("source_urls", ACE_STEP_MODEL_SOURCES)
+    return registry
+
+
+def official_model_repo_id(model_name: str) -> str:
+    item = OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(str(model_name or ""))
+    return str((item or {}).get("repo_id") or "")
+
+
+def official_downloadable_model_ids(*, include_helpers: bool = True) -> list[str]:
+    ids = []
+    for name, item in OFFICIAL_ACE_STEP_MODEL_REGISTRY.items():
+        if not item.get("downloadable"):
+            continue
+        role = str(item.get("role") or "")
+        if not include_helpers and role not in {"core_bundle", "render_dit", "ace_lm"}:
+            continue
+        ids.append(name)
+    return ids
+
+
+def official_helper_model_ids() -> list[str]:
+    """Return official non-render helpers that can improve analysis/metadata workflows."""
+    return [
+        name
+        for name in OFFICIAL_HELPER_MODEL_IDS
+        if OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(name, {}).get("downloadable")
+    ]
+
+
+def official_boot_model_ids(*, include_helpers: bool = True, include_best_quality: bool = True) -> list[str]:
+    """Return the default boot download bundle for quality-first local runs."""
+    ids: list[str] = []
+
+    def add(model_name: str) -> None:
+        if model_name and model_name not in ids:
+            ids.append(model_name)
+
+    if include_best_quality:
+        for model_name in OFFICIAL_BOOT_QUALITY_MODEL_IDS:
+            add(model_name)
+    if include_helpers:
+        for model_name in official_helper_model_ids():
+            add(model_name)
+    downloadable = set(official_downloadable_model_ids())
+    return [model_name for model_name in ids if model_name in downloadable]
+
+
+def official_render_model_ids() -> list[str]:
+    return [name for name in KNOWN_ACE_STEP_MODELS if OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(name, {}).get("render_usable")]
+
+
 def official_manifest() -> dict[str, Any]:
     """Return a copy of the official ACE-Step parity manifest."""
     manifest = copy.deepcopy(OFFICIAL_ACE_STEP_MANIFEST)
     manifest["quality_profiles"] = copy.deepcopy(quality_profiles_payload())
     manifest["default_quality_profile"] = DEFAULT_QUALITY_PROFILE
+    manifest["model_registry"] = official_model_registry()
+    manifest["boot_quality_models"] = official_boot_model_ids()
     manifest["helper_functions"] = copy.deepcopy(OFFICIAL_HELPER_FUNCTIONS)
     manifest["result_fields"] = copy.deepcopy(OFFICIAL_RESULT_FIELDS)
     manifest["settings_coverage"] = AceStepSettingsRegistry.coverage()
@@ -2098,6 +2650,13 @@ def official_manifest() -> dict[str, Any]:
             "user_metadata",
             "param_obj",
             "lm_repetition_penalty",
+            "analysis_only",
+            "full_analysis_only",
+            "extract_codes_only",
+            "use_tiled_decode",
+            "is_format_caption",
+            "track_name",
+            "track_classes",
             "device",
             "dtype",
             "use_flash_attention",
@@ -2138,10 +2697,15 @@ def recommended_lm_model(installed_models: set[str] | list[str] | None = None) -
 def supported_tasks_for_model(model_name: str) -> list[str]:
     lowered = (model_name or "").lower()
     if lowered.endswith("-base") or "-base" in lowered:
-        return list(TASK_TYPES_BASE)
-    if "turbo" in lowered or lowered.endswith("-sft") or "-sft" in lowered:
-        return list(TASK_TYPES_TURBO)
-    return list(TASK_TYPES_TURBO)
+        tasks = list(TASK_TYPES_BASE)
+    elif "turbo" in lowered or lowered.endswith("-sft") or "-sft" in lowered:
+        tasks = list(TASK_TYPES_TURBO)
+    else:
+        tasks = list(TASK_TYPES_TURBO)
+    if "cover" in tasks and "cover-nofsq" not in tasks:
+        cover_index = tasks.index("cover")
+        tasks.insert(cover_index + 1, "cover-nofsq")
+    return tasks
 
 
 def ensure_task_supported(model_name: str, task_type: str) -> None:
@@ -2309,6 +2873,9 @@ def studio_ui_schema() -> dict[str, Any]:
         "sources": ACE_STEP_MODEL_SOURCES,
         "payload_contract_version": "2026-04-26",
         "official_manifest_version": OFFICIAL_ACE_STEP_MANIFEST["manifest_version"],
+        "official_model_registry": official_model_registry(),
+        "official_render_models": official_render_model_ids(),
+        "official_downloadable_models": official_downloadable_model_ids(),
         "settings_policy_version": settings_registry["version"],
         "default_quality_profile": settings_registry["default_quality_profile"],
         "quality_profiles": settings_registry["profiles"],
@@ -2319,6 +2886,8 @@ def studio_ui_schema() -> dict[str, Any]:
         "default_bpm": DEFAULT_BPM,
         "default_key_scale": DEFAULT_KEY_SCALE,
         "valid_keyscales": VALID_KEY_SCALES,
+        "task_required_fields": copy.deepcopy(ACE_STEP_TASK_REQUIRED_FIELDS),
+        "task_policy": settings_registry["task_policy"],
         "audio_formats": sorted(OFFICIAL_AUDIO_FORMATS),
         "fast_audio_formats": sorted(SUPPORTED_AUDIO_FORMATS),
         "ace_step_text_budget": {
@@ -2351,8 +2920,16 @@ def studio_ui_schema() -> dict[str, Any]:
                 "use_adg",
                 "cfg_interval_start",
                 "cfg_interval_end",
+                "dcw_enabled",
+                "dcw_mode",
+                "dcw_scaler",
+                "dcw_high_scaler",
+                "dcw_wavelet",
+                "retake_seed",
+                "retake_variance",
             ],
             "ace_step_lm": [],
+            "api_service": ["analysis_only", "full_analysis_only", "extract_codes_only", "use_tiled_decode", "is_format_caption", "track_name", "track_classes"],
             "ollama_planner": ["ollama_model", "planner_ollama_model", "planner_lm_provider"],
             "output": ["audio_format", "mp3_bitrate", "mp3_sample_rate", "auto_score", "auto_lrc", "return_audio_codes", "save_to_library"],
             "post_processing": ["enable_normalization", "normalization_db", "fade_in_duration", "fade_out_duration", "latent_shift", "latent_rescale"],
@@ -2364,6 +2941,12 @@ def studio_ui_schema() -> dict[str, Any]:
                 "repaint_wav_crossfade_sec",
                 "repaint_mode",
                 "repaint_strength",
+                "flow_edit_morph",
+                "flow_edit_source_caption",
+                "flow_edit_source_lyrics",
+                "flow_edit_n_min",
+                "flow_edit_n_max",
+                "flow_edit_n_avg",
             ],
             "runtime": [
                 "device",
@@ -2387,6 +2970,12 @@ def studio_ui_schema() -> dict[str, Any]:
             "audio_cover_strength": [0.0, 1.0],
             "cover_noise_strength": [0.0, 1.0],
             "repaint_strength": [0.0, 1.0],
+            "dcw_scaler": [0.0, 0.2],
+            "dcw_high_scaler": [0.0, 0.2],
+            "retake_variance": [0.0, 1.0],
+            "flow_edit_n_min": [0.0, 1.0],
+            "flow_edit_n_max": [0.0, 1.0],
+            "flow_edit_n_avg": [1, 16],
             "normalization_db": [-24.0, 0.0],
             "fade_in_duration": [0.0, 20.0],
             "fade_out_duration": [0.0, 20.0],
@@ -2398,6 +2987,8 @@ def studio_ui_schema() -> dict[str, Any]:
         "options": {
             "key_scale": [KEYSCALE_AUTO_VALUE, *VALID_KEY_SCALES],
             "time_signature": [2, 3, 4, 6],
+            "track_name": TRACK_NAMES,
+            "track_classes": TRACK_NAMES,
         },
         "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
         "docs_recommended": settings_registry["profiles"]["docs_recommended"],

@@ -221,11 +221,18 @@ class AceStepHandler:
         # Separate model repositories
         "acestep-v15-base": "ACE-Step/acestep-v15-base",
         "acestep-v15-sft": "ACE-Step/acestep-v15-sft",
+        "acestep-v15-turbo-shift1": "ACE-Step/acestep-v15-turbo-shift1",
         "acestep-v15-turbo-shift3": "ACE-Step/acestep-v15-turbo-shift3",
+        "acestep-v15-turbo-continuous": "ACE-Step/acestep-v15-turbo-continuous",
         # XL (4B) DiT models
         "acestep-v15-xl-turbo": "ACE-Step/acestep-v15-xl-turbo",
         "acestep-v15-xl-base": "ACE-Step/acestep-v15-xl-base",
         "acestep-v15-xl-sft": "ACE-Step/acestep-v15-xl-sft",
+        # Official helper checkpoints. These are not render DiT choices.
+        "acestep-captioner": "ACE-Step/acestep-captioner",
+        "acestep-transcriber": "ACE-Step/acestep-transcriber",
+        "ace-step-v1.5-1d-vae-stable-audio-format": "ACE-Step/ace-step-v1.5-1d-vae-stable-audio-format",
+        "acestep-v15-xl-turbo-diffusers": "ACE-Step/acestep-v15-xl-turbo-diffusers",
     }
     
     # Default fallback repository for unknown models
@@ -252,7 +259,7 @@ class AceStepHandler:
             except Exception:
                 return False
         for filename in os.listdir(model_path):
-            if filename.endswith((".safetensors", ".bin", ".pt")):
+            if filename.endswith((".safetensors", ".bin", ".pt", ".ckpt")):
                 file_path = os.path.join(model_path, filename)
                 if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
                     return True

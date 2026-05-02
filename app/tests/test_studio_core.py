@@ -10,6 +10,7 @@ from studio_core import (
     LM_MODEL_PROFILES,
     MODEL_PROFILES,
     OFFICIAL_ACE_STEP_MANIFEST,
+    OFFICIAL_CORE_MODEL_ID,
     OFFICIAL_UNRELEASED_MODELS,
     PRO_QUALITY_AUDIT_VERSION,
     ace_step_settings_compliance,
@@ -29,7 +30,12 @@ from studio_core import (
     normalize_key_scale,
     normalize_task_type,
     official_fields_used,
+    official_boot_model_ids,
+    official_downloadable_model_ids,
+    official_helper_model_ids,
     official_manifest,
+    official_model_registry,
+    official_render_model_ids,
     normalize_track_names,
     parse_timesteps,
     recommended_lm_model,
@@ -49,6 +55,8 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(normalize_task_type("remix"), "cover")
 
     def test_model_capabilities(self):
+        self.assertIn("cover-nofsq", supported_tasks_for_model("acestep-v15-turbo"))
+        ensure_task_supported("acestep-v15-xl-turbo", "cover-nofsq")
         self.assertIn("complete", supported_tasks_for_model("acestep-v15-base"))
         self.assertNotIn("complete", supported_tasks_for_model("acestep-v15-turbo"))
         with self.assertRaises(ValueError):
@@ -72,12 +80,19 @@ class StudioCoreTest(unittest.TestCase):
         self.assertIn("unreleased", manifest["status_values"])
         self.assertIn("not_applicable", manifest["status_values"])
         self.assertIn("acestep-v15-turbo-rl", manifest["dit_models"])
+        self.assertIn("acestep-v15-turbo-shift1", manifest["dit_models"])
+        self.assertIn("acestep-v15-turbo-continuous", manifest["dit_models"])
         self.assertEqual(manifest["dit_models"]["acestep-v15-turbo-rl"]["status"], "unreleased")
         self.assertIn("acestep-v15-turbo-rl", OFFICIAL_UNRELEASED_MODELS)
+        self.assertIn("model_registry", manifest)
+        self.assertIn(OFFICIAL_CORE_MODEL_ID, manifest["model_registry"])
+        self.assertEqual(manifest["model_registry"][OFFICIAL_CORE_MODEL_ID]["repo_id"], "ACE-Step/Ace-Step1.5")
+        self.assertIn("acestep-captioner", manifest["helper_models"])
+        self.assertIn("acestep-transcriber", manifest["helper_models"])
         for endpoint in ["/release_task", "/query_result", "/v1/init", "/v1/stats", "/v1/audio", "/v1/training/start_lokr"]:
             self.assertIn(endpoint, manifest["api_endpoints"])
             self.assertIn(manifest["api_endpoints"][endpoint]["status"], {"supported", "guarded"})
-        for field in ["instruction", "reference_audio", "src_audio", "thinking", "lm_cfg_scale", "timesteps"]:
+        for field in ["instruction", "reference_audio", "src_audio", "thinking", "lm_cfg_scale", "timesteps", "dcw_enabled", "retake_variance", "flow_edit_morph"]:
             self.assertIn(field, manifest["generation_params"])
         for field in ["batch_size", "allow_lm_batch", "use_random_seed", "audio_format"]:
             self.assertIn(field, manifest["generation_config"])
@@ -85,8 +100,47 @@ class StudioCoreTest(unittest.TestCase):
             self.assertTrue(any(alias in values for values in manifest["payload_aliases"].values()))
         self.assertIn("user_metadata", manifest["acejam_extension_params"]["fields"])
         self.assertIn("lm_repetition_penalty", manifest["acejam_extension_params"]["fields"])
+        for field in ["analysis_only", "full_analysis_only", "extract_codes_only", "use_tiled_decode", "track_name", "track_classes"]:
+            self.assertIn(field, manifest["acejam_extension_params"]["fields"])
         self.assertIn("ACESTEP_OFFLOAD_TO_CPU", manifest["runtime_controls"])
         self.assertIn("lokr_train", manifest["training_features"])
+
+    def test_official_model_registry_separates_render_helpers_and_unreleased(self):
+        registry = official_model_registry()
+
+        self.assertIn("acestep-v15-turbo-shift1", registry)
+        self.assertIn("acestep-v15-turbo-continuous", registry)
+        self.assertTrue(registry["acestep-v15-xl-sft"]["render_usable"])
+        self.assertFalse(registry["acestep-captioner"]["render_usable"])
+        self.assertEqual(registry["acestep-captioner"]["role"], "helper")
+        self.assertEqual(registry["acestep-v15-turbo-rl"]["role"], "unreleased")
+        self.assertFalse(registry["acestep-v15-turbo-rl"]["downloadable"])
+
+        render_ids = official_render_model_ids()
+        self.assertIn("acestep-v15-turbo-shift1", render_ids)
+        self.assertIn("acestep-v15-turbo-continuous", render_ids)
+        self.assertNotIn("acestep-captioner", render_ids)
+        self.assertNotIn("acestep-v15-turbo-rl", render_ids)
+
+        downloadable = official_downloadable_model_ids()
+        self.assertIn(OFFICIAL_CORE_MODEL_ID, downloadable)
+        self.assertIn("acestep-captioner", downloadable)
+        self.assertIn("acestep-transcriber", downloadable)
+        self.assertNotIn("acestep-v15-turbo-rl", downloadable)
+
+        boot_models = official_boot_model_ids()
+        self.assertIn(OFFICIAL_CORE_MODEL_ID, boot_models)
+        self.assertIn("acestep-v15-xl-sft", boot_models)
+        self.assertIn("acestep-v15-xl-base", boot_models)
+        self.assertIn("acestep-5Hz-lm-4B", boot_models)
+        self.assertEqual(official_helper_model_ids(), [
+            "acestep-captioner",
+            "acestep-transcriber",
+            "ace-step-v1.5-1d-vae-stable-audio-format",
+            "acestep-v15-xl-turbo-diffusers",
+        ])
+        for helper in official_helper_model_ids():
+            self.assertIn(helper, boot_models)
 
     def test_model_profile_fallback_and_installed_flags(self):
         profile = model_profile("acestep-v15-custom-base", installed=True)
@@ -226,12 +280,32 @@ class StudioCoreTest(unittest.TestCase):
 
     def test_official_field_detection(self):
         self.assertEqual(official_fields_used({"audio_format": "wav", "thinking": False}), [])
+        self.assertEqual(
+            official_fields_used(
+                {
+                    "dcw_enabled": True,
+                    "dcw_mode": "double",
+                    "dcw_scaler": 0.05,
+                    "dcw_high_scaler": 0.02,
+                    "dcw_wavelet": "haar",
+                    "retake_variance": 0.0,
+                    "flow_edit_morph": False,
+                    "flow_edit_n_min": 0.0,
+                    "flow_edit_n_max": 1.0,
+                    "flow_edit_n_avg": 1,
+                }
+            ),
+            [],
+        )
         self.assertNotIn("sample_query", official_fields_used({"description": "metadata only"}))
         self.assertIn("thinking", official_fields_used({"thinking": True}))
         self.assertIn("audio_format", official_fields_used({"audio_format": "mp3"}))
         self.assertIn("lm_temperature", official_fields_used({"lm_temperature": 1.1}))
         self.assertIn("lm_repetition_penalty", official_fields_used({"lm_repetition_penalty": 1.2}))
         self.assertIn("offload_to_cpu", official_fields_used({"offload_to_cpu": True}))
+        self.assertIn("dcw_enabled", official_fields_used({"dcw_enabled": False}))
+        self.assertIn("retake_variance", official_fields_used({"retake_variance": 0.2}))
+        self.assertIn("flow_edit_morph", official_fields_used({"flow_edit_morph": True}))
 
     def test_ui_schema_includes_custom_controls(self):
         schema = studio_ui_schema()
@@ -242,8 +316,18 @@ class StudioCoreTest(unittest.TestCase):
         self.assertIn("ollama_model", schema["custom_sections"]["ollama_planner"])
         self.assertIn("mp3", schema["audio_formats"])
         self.assertIn("thinking", schema["official_only_fields"])
+        for field in ["dcw_enabled", "retake_variance", "flow_edit_morph", "flow_edit_n_avg"]:
+            self.assertIn(field, schema["official_only_fields"])
         self.assertEqual(schema["official_parity_endpoint"], "/api/ace-step/parity")
         self.assertIn("runtime", schema["custom_sections"])
+        self.assertIn("api_service", schema["custom_sections"])
+        self.assertIn("analysis_only", schema["custom_sections"]["api_service"])
+        self.assertIn("track_classes", schema["custom_sections"]["api_service"])
+        self.assertIn("dcw_enabled", schema["custom_sections"]["generation"])
+        self.assertIn("flow_edit_morph", schema["custom_sections"]["repaint_cover"])
+        self.assertIn("cover-nofsq", schema["task_required_fields"])
+        self.assertEqual(schema["task_required_fields"]["cover-nofsq"], ["src_audio", "caption"])
+        self.assertEqual(schema["ranges"]["flow_edit_n_avg"], [1, 16])
         self.assertEqual(schema["quality_policy"]["turbo_models"]["inference_steps"], 8)
         self.assertEqual(schema["quality_policy"]["sft_base_models"]["inference_steps"], 64)
         self.assertEqual(schema["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
@@ -258,6 +342,9 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(schema["payload_contract_version"], "2026-04-26")
         self.assertEqual(schema["settings_policy_version"], "ace-step-settings-parity-2026-04-26")
         self.assertIn("ace_step_settings_registry", schema)
+        self.assertIn("official_model_registry", schema)
+        self.assertIn("acestep-v15-turbo-continuous", schema["official_render_models"])
+        self.assertIn("acestep-captioner", schema["official_downloadable_models"])
 
     def test_ace_step_settings_registry_covers_official_fields(self):
         registry = ace_step_settings_registry()
@@ -280,6 +367,12 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(registry["profiles"]["docs_recommended"]["lm"]["lm_top_p"], 0.9)
         self.assertEqual(registry["settings"]["use_cot_lyrics"]["status"], "reserved")
         self.assertEqual(registry["settings"]["cot_caption"]["status"], "read_only_lm_output")
+        self.assertEqual(registry["settings"]["dcw_enabled"]["status"], "official_only")
+        self.assertEqual(registry["settings"]["flow_edit_morph"]["status"], "official_only")
+        self.assertEqual(registry["settings"]["analysis_only"]["status"], "official_only")
+        self.assertEqual(registry["settings"]["use_tiled_decode"]["status"], "official_only")
+        self.assertEqual(registry["settings"]["retake_variance"]["range"], [0.0, 1.0])
+        self.assertIn("cover-nofsq", registry["task_policy"]["required_fields"])
         self.assertEqual(registry["pro_quality"]["version"], PRO_QUALITY_AUDIT_VERSION)
         self.assertIn("complete", registry["task_policy"]["source_locked_duration"])
 
@@ -356,7 +449,9 @@ class StudioCoreTest(unittest.TestCase):
     def test_docs_best_model_settings(self):
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["inference_steps"], 8)
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo")["guidance_scale"], 7.0)
+        self.assertEqual(docs_best_model_settings("acestep-v15-turbo-shift1")["inference_steps"], 8)
         self.assertEqual(docs_best_model_settings("acestep-v15-turbo-shift3")["inference_steps"], 8)
+        self.assertEqual(docs_best_model_settings("acestep-v15-turbo-continuous")["inference_steps"], 8)
         self.assertEqual(docs_best_model_settings("acestep-v15-sft")["inference_steps"], 64)
         self.assertEqual(docs_best_model_settings("acestep-v15-base")["inference_steps"], 64)
         self.assertEqual(docs_best_model_settings("acestep-v15-xl-turbo")["inference_steps"], 8)

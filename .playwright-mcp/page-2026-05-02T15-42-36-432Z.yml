@@ -1,0 +1,838 @@
+- generic [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#workspace"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e8]: AceJAM Studio
+      - generic [ref=e9]: ACE-Step 1.5
+      - navigation "Main navigation" [ref=e10]:
+        - generic [ref=e11]: Create
+        - button "Simple" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Simple
+        - button "Custom" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Custom
+        - generic [ref=e20]: Edit
+        - button "Cover" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - text: Cover
+        - button "Repaint" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - text: Repaint
+        - button "Extract" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - text: Extract
+        - button "Lego" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - text: Lego
+        - button "Complete" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - text: Complete
+        - generic [ref=e39]: Produce
+        - button "Album" [ref=e40] [cursor=pointer]:
+          - img [ref=e41]
+          - text: Album
+        - button "Trainer" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+          - text: Trainer
+        - generic [ref=e48]: Manage
+        - button "Library" [active] [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Library
+        - button "Settings" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - text: Settings
+      - status [ref=e56]: ✓ Studio ready · 4 audio model(s)
+    - main [ref=e57]:
+      - generic [ref=e682]:
+        - generic [ref=e683]:
+          - generic [ref=e684]:
+            - generic [ref=e685]: Music library
+            - heading "Library" [level=2] [ref=e686]
+            - paragraph [ref=e687]: Browse, search and play everything you've generated. Filter by model or album, select tracks and delete in bulk.
+          - generic [ref=e688]: 39 saved
+        - generic [ref=e689]:
+          - generic [ref=e690]:
+            - generic [ref=e691]: Search
+            - textbox "Search" [ref=e692]:
+              - /placeholder: artist, title, model, album, tags...
+          - generic [ref=e693]:
+            - generic [ref=e694]: Model
+            - combobox "Model" [ref=e695]:
+              - option "All models" [selected]
+              - option "sft"
+              - option "turbo"
+              - option "xl-sft"
+          - generic [ref=e696]:
+            - generic [ref=e697]: Album
+            - combobox "Album" [ref=e698]:
+              - option "All albums" [selected]
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+              - 'option "Album: You Buried the Wrong Man Track 1: Concrete"'
+          - generic [ref=e699]:
+            - generic [ref=e700]: Type
+            - combobox "Type" [ref=e701]:
+              - option "All" [selected]
+              - option "Album tracks"
+              - option "Singles"
+          - generic [ref=e702]:
+            - generic [ref=e703]: Sort
+            - combobox "Sort" [ref=e704]:
+              - option "Newest first" [selected]
+              - option "Oldest first"
+              - option "Title A-Z"
+              - option "Model A-Z"
+              - 'option "Album → Track #"'
+          - generic [ref=e705]:
+            - generic [ref=e706]: View
+            - combobox "View" [ref=e707]:
+              - option "Song list" [selected]
+              - option "Album cards"
+        - generic [ref=e708]:
+          - generic [ref=e709] [cursor=pointer]:
+            - checkbox "Select all" [ref=e710]
+            - text: Select all
+          - button "Refresh" [ref=e711] [cursor=pointer]
+          - button "Delete all" [ref=e712] [cursor=pointer]
+        - generic [ref=e1013]:
+          - generic [ref=e1014]:
+            - checkbox [ref=e1016]
+            - generic [ref=e1017]:
+              - generic [ref=e1018]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1019]: "text2music · turbo · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+              - generic [ref=e1020]:
+                - button "Play" [ref=e1021] [cursor=pointer]:
+                  - img [ref=e1022]
+                - generic [ref=e1025]: 4:00
+                - button "Mute" [ref=e1026] [cursor=pointer]:
+                  - img [ref=e1027]
+                - slider [ref=e1030] [cursor=pointer]: "1"
+              - generic [ref=e1031]:
+                - link "Download" [ref=e1032] [cursor=pointer]:
+                  - /url: /media/songs/a56895e10024/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1033] [cursor=pointer]
+                - button "Delete album" [ref=e1034] [cursor=pointer]
+                - group [ref=e1035]:
+                  - generic "Meta" [ref=e1036] [cursor=pointer]
+          - generic [ref=e1037]:
+            - checkbox [ref=e1039]
+            - generic [ref=e1040]:
+              - generic [ref=e1041]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1042]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+              - generic [ref=e1043]:
+                - button "Play" [ref=e1044] [cursor=pointer]:
+                  - img [ref=e1045]
+                - generic [ref=e1048]: 4:00
+                - button "Mute" [ref=e1049] [cursor=pointer]:
+                  - img [ref=e1050]
+                - slider [ref=e1053] [cursor=pointer]: "1"
+              - generic [ref=e1054]:
+                - link "Download" [ref=e1055] [cursor=pointer]:
+                  - /url: /media/songs/205d386bcf0d/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1056] [cursor=pointer]
+                - button "Delete album" [ref=e1057] [cursor=pointer]
+                - group [ref=e1058]:
+                  - generic "Meta" [ref=e1059] [cursor=pointer]
+          - generic [ref=e1060]:
+            - checkbox [ref=e1062]
+            - generic [ref=e1063]:
+              - generic [ref=e1064]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1065]: "text2music · turbo · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+              - generic [ref=e1066]:
+                - button "Play" [ref=e1067] [cursor=pointer]:
+                  - img [ref=e1068]
+                - generic [ref=e1071]: 4:00
+                - button "Mute" [ref=e1072] [cursor=pointer]:
+                  - img [ref=e1073]
+                - slider [ref=e1076] [cursor=pointer]: "1"
+              - generic [ref=e1077]:
+                - link "Download" [ref=e1078] [cursor=pointer]:
+                  - /url: /media/songs/5af75b06a028/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1079] [cursor=pointer]
+                - button "Delete album" [ref=e1080] [cursor=pointer]
+                - group [ref=e1081]:
+                  - generic "Meta" [ref=e1082] [cursor=pointer]
+          - generic [ref=e1083]:
+            - checkbox [ref=e1085]
+            - generic [ref=e1086]:
+              - generic [ref=e1087]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1088]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+              - generic [ref=e1089]:
+                - button "Play" [ref=e1090] [cursor=pointer]:
+                  - img [ref=e1091]
+                - generic [ref=e1094]: 4:00
+                - button "Mute" [ref=e1095] [cursor=pointer]:
+                  - img [ref=e1096]
+                - slider [ref=e1099] [cursor=pointer]: "1"
+              - generic [ref=e1100]:
+                - link "Download" [ref=e1101] [cursor=pointer]:
+                  - /url: /media/songs/0547e366498b/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1102] [cursor=pointer]
+                - button "Delete album" [ref=e1103] [cursor=pointer]
+                - group [ref=e1104]:
+                  - generic "Meta" [ref=e1105] [cursor=pointer]
+          - generic [ref=e1106]:
+            - checkbox [ref=e1108]
+            - generic [ref=e1109]:
+              - generic [ref=e1110]: Albus - Albus City Lights
+              - generic [ref=e1111]: text2music · turbo · 30s · 2026-05-02
+              - generic [ref=e1112]:
+                - button "Play" [ref=e1113] [cursor=pointer]:
+                  - img [ref=e1114]
+                - generic [ref=e1117]: 0:30
+                - button "Mute" [ref=e1118] [cursor=pointer]:
+                  - img [ref=e1119]
+                - slider [ref=e1122] [cursor=pointer]: "1"
+              - generic [ref=e1123]:
+                - link "Download" [ref=e1124] [cursor=pointer]:
+                  - /url: /media/songs/1cb15e620112/Albus--Albus-City-Lights--turbo--v1.wav
+                - button "Delete" [ref=e1125] [cursor=pointer]
+                - group [ref=e1126]:
+                  - generic "Meta" [ref=e1127] [cursor=pointer]
+          - generic [ref=e1128]:
+            - checkbox [ref=e1130]
+            - generic [ref=e1131]:
+              - generic [ref=e1132]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1133]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-02"
+              - generic [ref=e1134]:
+                - button "Play" [ref=e1135] [cursor=pointer]:
+                  - img [ref=e1136]
+                - generic [ref=e1139]: 4:00
+                - button "Mute" [ref=e1140] [cursor=pointer]:
+                  - img [ref=e1141]
+                - slider [ref=e1144] [cursor=pointer]: "1"
+              - generic [ref=e1145]:
+                - link "Download" [ref=e1146] [cursor=pointer]:
+                  - /url: /media/songs/c7105269acff/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1147] [cursor=pointer]
+                - button "Delete album" [ref=e1148] [cursor=pointer]
+                - group [ref=e1149]:
+                  - generic "Meta" [ref=e1150] [cursor=pointer]
+          - generic [ref=e1151]:
+            - checkbox [ref=e1153]
+            - generic [ref=e1154]:
+              - generic [ref=e1155]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1156]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1157]:
+                - button "Play" [ref=e1158] [cursor=pointer]:
+                  - img [ref=e1159]
+                - generic [ref=e1162]: 4:00
+                - button "Mute" [ref=e1163] [cursor=pointer]:
+                  - img [ref=e1164]
+                - slider [ref=e1167] [cursor=pointer]: "1"
+              - generic [ref=e1168]:
+                - link "Download" [ref=e1169] [cursor=pointer]:
+                  - /url: /media/songs/db49a6ca1dee/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1170] [cursor=pointer]
+                - button "Delete album" [ref=e1171] [cursor=pointer]
+                - group [ref=e1172]:
+                  - generic "Meta" [ref=e1173] [cursor=pointer]
+          - generic [ref=e1174]:
+            - checkbox [ref=e1176]
+            - generic [ref=e1177]:
+              - generic [ref=e1178]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1179]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1180]:
+                - button "Play" [ref=e1181] [cursor=pointer]:
+                  - img [ref=e1182]
+                - generic [ref=e1185]: 4:00
+                - button "Mute" [ref=e1186] [cursor=pointer]:
+                  - img [ref=e1187]
+                - slider [ref=e1190] [cursor=pointer]: "1"
+              - generic [ref=e1191]:
+                - link "Download" [ref=e1192] [cursor=pointer]:
+                  - /url: /media/songs/b385c0e81bf0/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1193] [cursor=pointer]
+                - button "Delete album" [ref=e1194] [cursor=pointer]
+                - group [ref=e1195]:
+                  - generic "Meta" [ref=e1196] [cursor=pointer]
+          - generic [ref=e1197]:
+            - checkbox [ref=e1199]
+            - generic [ref=e1200]:
+              - generic [ref=e1201]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1202]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1203]:
+                - button "Play" [ref=e1204] [cursor=pointer]:
+                  - img [ref=e1205]
+                - generic [ref=e1208]: 4:00
+                - button "Mute" [ref=e1209] [cursor=pointer]:
+                  - img [ref=e1210]
+                - slider [ref=e1213] [cursor=pointer]: "1"
+              - generic [ref=e1214]:
+                - link "Download" [ref=e1215] [cursor=pointer]:
+                  - /url: /media/songs/9a4ed70b82ba/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1216] [cursor=pointer]
+                - button "Delete album" [ref=e1217] [cursor=pointer]
+                - group [ref=e1218]:
+                  - generic "Meta" [ref=e1219] [cursor=pointer]
+          - generic [ref=e1220]:
+            - checkbox [ref=e1222]
+            - generic [ref=e1223]:
+              - generic [ref=e1224]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1225]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1226]:
+                - button "Play" [ref=e1227] [cursor=pointer]:
+                  - img [ref=e1228]
+                - generic [ref=e1231]: 4:00
+                - button "Mute" [ref=e1232] [cursor=pointer]:
+                  - img [ref=e1233]
+                - slider [ref=e1236] [cursor=pointer]: "1"
+              - generic [ref=e1237]:
+                - link "Download" [ref=e1238] [cursor=pointer]:
+                  - /url: /media/songs/e22f6ca17b63/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1239] [cursor=pointer]
+                - button "Delete album" [ref=e1240] [cursor=pointer]
+                - group [ref=e1241]:
+                  - generic "Meta" [ref=e1242] [cursor=pointer]
+          - generic [ref=e1243]:
+            - checkbox [ref=e1245]
+            - generic [ref=e1246]:
+              - generic [ref=e1247]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1248]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1249]:
+                - button "Play" [ref=e1250] [cursor=pointer]:
+                  - img [ref=e1251]
+                - generic [ref=e1254]: 4:00
+                - button "Mute" [ref=e1255] [cursor=pointer]:
+                  - img [ref=e1256]
+                - slider [ref=e1259] [cursor=pointer]: "1"
+              - generic [ref=e1260]:
+                - link "Download" [ref=e1261] [cursor=pointer]:
+                  - /url: /media/songs/7fc1d33c2d17/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1262] [cursor=pointer]
+                - button "Delete album" [ref=e1263] [cursor=pointer]
+                - group [ref=e1264]:
+                  - generic "Meta" [ref=e1265] [cursor=pointer]
+          - generic [ref=e1266]:
+            - checkbox [ref=e1268]
+            - generic [ref=e1269]:
+              - generic [ref=e1270]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1271]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1272]:
+                - button "Play" [ref=e1273] [cursor=pointer]:
+                  - img [ref=e1274]
+                - generic [ref=e1277]: 4:00
+                - button "Mute" [ref=e1278] [cursor=pointer]:
+                  - img [ref=e1279]
+                - slider [ref=e1282] [cursor=pointer]: "1"
+              - generic [ref=e1283]:
+                - link "Download" [ref=e1284] [cursor=pointer]:
+                  - /url: /media/songs/bd5b3ea62015/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1285] [cursor=pointer]
+                - button "Delete album" [ref=e1286] [cursor=pointer]
+                - group [ref=e1287]:
+                  - generic "Meta" [ref=e1288] [cursor=pointer]
+          - generic [ref=e1289]:
+            - checkbox [ref=e1291]
+            - generic [ref=e1292]:
+              - generic [ref=e1293]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1294]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1295]:
+                - button "Play" [ref=e1296] [cursor=pointer]:
+                  - img [ref=e1297]
+                - generic [ref=e1300]: 4:00
+                - button "Mute" [ref=e1301] [cursor=pointer]:
+                  - img [ref=e1302]
+                - slider [ref=e1305] [cursor=pointer]: "1"
+              - generic [ref=e1306]:
+                - link "Download" [ref=e1307] [cursor=pointer]:
+                  - /url: /media/songs/f29b546ecf28/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1308] [cursor=pointer]
+                - button "Delete album" [ref=e1309] [cursor=pointer]
+                - group [ref=e1310]:
+                  - generic "Meta" [ref=e1311] [cursor=pointer]
+          - generic [ref=e1312]:
+            - checkbox [ref=e1314]
+            - generic [ref=e1315]:
+              - generic [ref=e1316]: Albus - Albus Strict Gate Dutch 30
+              - generic [ref=e1317]: text2music · turbo · 30s · 2026-05-01
+              - generic [ref=e1318]:
+                - button "Play" [ref=e1319] [cursor=pointer]:
+                  - img [ref=e1320]
+                - generic [ref=e1323]: 0:30
+                - button "Mute" [ref=e1324] [cursor=pointer]:
+                  - img [ref=e1325]
+                - slider [ref=e1328] [cursor=pointer]: "1"
+              - generic [ref=e1329]:
+                - link "Download" [ref=e1330] [cursor=pointer]:
+                  - /url: /media/songs/44498af61fae/Albus--Albus-Strict-Gate-Dutch-30--turbo--v1.wav
+                - button "Delete" [ref=e1331] [cursor=pointer]
+                - group [ref=e1332]:
+                  - generic "Meta" [ref=e1333] [cursor=pointer]
+          - generic [ref=e1334]:
+            - checkbox [ref=e1336]
+            - generic [ref=e1337]:
+              - generic [ref=e1338]: Acejam - Untitled 3
+              - generic [ref=e1339]: text2music · xl-sft · 60s · 2026-05-01
+              - generic [ref=e1340]:
+                - button "Play" [ref=e1341] [cursor=pointer]:
+                  - img [ref=e1342]
+                - generic [ref=e1345]: 1:00
+                - button "Mute" [ref=e1346] [cursor=pointer]:
+                  - img [ref=e1347]
+                - slider [ref=e1350] [cursor=pointer]: "1"
+              - generic [ref=e1351]:
+                - link "Download" [ref=e1352] [cursor=pointer]:
+                  - /url: /media/songs/8e48af3bb3a7/Acejam--Untitled--xl-sft--v3.wav
+                - button "Delete" [ref=e1353] [cursor=pointer]
+                - group [ref=e1354]:
+                  - generic "Meta" [ref=e1355] [cursor=pointer]
+          - generic [ref=e1356]:
+            - checkbox [ref=e1358]
+            - generic [ref=e1359]:
+              - generic [ref=e1360]: Acejam - Untitled 2
+              - generic [ref=e1361]: text2music · xl-sft · 60s · 2026-05-01
+              - generic [ref=e1362]:
+                - button "Play" [ref=e1363] [cursor=pointer]:
+                  - img [ref=e1364]
+                - generic [ref=e1367]: 1:00
+                - button "Mute" [ref=e1368] [cursor=pointer]:
+                  - img [ref=e1369]
+                - slider [ref=e1372] [cursor=pointer]: "1"
+              - generic [ref=e1373]:
+                - link "Download" [ref=e1374] [cursor=pointer]:
+                  - /url: /media/songs/5db1d525153d/Acejam--Untitled--xl-sft--v2.wav
+                - button "Delete" [ref=e1375] [cursor=pointer]
+                - group [ref=e1376]:
+                  - generic "Meta" [ref=e1377] [cursor=pointer]
+          - generic [ref=e1378]:
+            - checkbox [ref=e1380]
+            - generic [ref=e1381]:
+              - generic [ref=e1382]: Acejam - Untitled 1
+              - generic [ref=e1383]: text2music · xl-sft · 60s · 2026-05-01
+              - generic [ref=e1384]:
+                - button "Play" [ref=e1385] [cursor=pointer]:
+                  - img [ref=e1386]
+                - generic [ref=e1389]: 1:00
+                - button "Mute" [ref=e1390] [cursor=pointer]:
+                  - img [ref=e1391]
+                - slider [ref=e1394] [cursor=pointer]: "1"
+              - generic [ref=e1395]:
+                - link "Download" [ref=e1396] [cursor=pointer]:
+                  - /url: /media/songs/c675f71677cd/Acejam--Untitled--xl-sft--v1.wav
+                - button "Delete" [ref=e1397] [cursor=pointer]
+                - group [ref=e1398]:
+                  - generic "Meta" [ref=e1399] [cursor=pointer]
+          - generic [ref=e1400]:
+            - checkbox [ref=e1402]
+            - generic [ref=e1403]:
+              - generic [ref=e1404]: Acejam - Albus Official Sample Test
+              - generic [ref=e1405]: text2music · sft · 60s · 2026-05-01
+              - generic [ref=e1406]:
+                - button "Play" [ref=e1407] [cursor=pointer]:
+                  - img [ref=e1408]
+                - generic [ref=e1411]: 1:00
+                - button "Mute" [ref=e1412] [cursor=pointer]:
+                  - img [ref=e1413]
+                - slider [ref=e1416] [cursor=pointer]: "1"
+              - generic [ref=e1417]:
+                - link "Download" [ref=e1418] [cursor=pointer]:
+                  - /url: /media/songs/30a860df4984/Acejam--Albus-Official-Sample-Test--sft--v1.wav
+                - button "Delete" [ref=e1419] [cursor=pointer]
+                - group [ref=e1420]:
+                  - generic "Meta" [ref=e1421] [cursor=pointer]
+          - generic [ref=e1422]:
+            - checkbox [ref=e1424]
+            - generic [ref=e1425]:
+              - generic [ref=e1426]: Acejam - Albus Protected LM Codes Test
+              - generic [ref=e1427]: text2music · sft · 60s · 2026-05-01
+              - generic [ref=e1428]:
+                - button "Play" [ref=e1429] [cursor=pointer]:
+                  - img [ref=e1430]
+                - generic [ref=e1433]: 1:00
+                - button "Mute" [ref=e1434] [cursor=pointer]:
+                  - img [ref=e1435]
+                - slider [ref=e1438] [cursor=pointer]: "1"
+              - generic [ref=e1439]:
+                - link "Download" [ref=e1440] [cursor=pointer]:
+                  - /url: /media/songs/38c18bb9e5f4/Acejam--Albus-Protected-LM-Codes-Test--sft--v1.wav
+                - button "Delete" [ref=e1441] [cursor=pointer]
+                - group [ref=e1442]:
+                  - generic "Meta" [ref=e1443] [cursor=pointer]
+          - generic [ref=e1444]:
+            - checkbox [ref=e1446]
+            - generic [ref=e1447]:
+              - generic [ref=e1448]: Acejam - Albus Signal Rock Test
+              - generic [ref=e1449]: text2music · sft · 60s · 2026-05-01
+              - generic [ref=e1450]:
+                - button "Play" [ref=e1451] [cursor=pointer]:
+                  - img [ref=e1452]
+                - generic [ref=e1455]: 1:00
+                - button "Mute" [ref=e1456] [cursor=pointer]:
+                  - img [ref=e1457]
+                - slider [ref=e1460] [cursor=pointer]: "1"
+              - generic [ref=e1461]:
+                - link "Download" [ref=e1462] [cursor=pointer]:
+                  - /url: /media/songs/5ec01af40a48/Acejam--Albus-Signal-Rock-Test--sft--v1.wav
+                - button "Delete" [ref=e1463] [cursor=pointer]
+                - group [ref=e1464]:
+                  - generic "Meta" [ref=e1465] [cursor=pointer]
+          - generic [ref=e1466]:
+            - checkbox [ref=e1468]
+            - generic [ref=e1469]:
+              - generic [ref=e1470]: Acejam - Albus Sanity Vocal Test
+              - generic [ref=e1471]: text2music · sft · 30s · 2026-05-01
+              - generic [ref=e1472]:
+                - button "Play" [ref=e1473] [cursor=pointer]:
+                  - img [ref=e1474]
+                - generic [ref=e1477]: 0:30
+                - button "Mute" [ref=e1478] [cursor=pointer]:
+                  - img [ref=e1479]
+                - slider [ref=e1482] [cursor=pointer]: "1"
+              - generic [ref=e1483]:
+                - link "Download" [ref=e1484] [cursor=pointer]:
+                  - /url: /media/songs/f5a14e063364/Acejam--Albus-Sanity-Vocal-Test--sft--v1.wav
+                - button "Delete" [ref=e1485] [cursor=pointer]
+                - group [ref=e1486]:
+                  - generic "Meta" [ref=e1487] [cursor=pointer]
+          - generic [ref=e1488]:
+            - checkbox [ref=e1490]
+            - generic [ref=e1491]:
+              - generic [ref=e1492]: Acejam - Albus XL Direct Vocal Test
+              - generic [ref=e1493]: text2music · xl-sft · 60s · 2026-05-01
+              - generic [ref=e1494]:
+                - button "Play" [ref=e1495] [cursor=pointer]:
+                  - img [ref=e1496]
+                - generic [ref=e1499]: 1:00
+                - button "Mute" [ref=e1500] [cursor=pointer]:
+                  - img [ref=e1501]
+                - slider [ref=e1504] [cursor=pointer]: "1"
+              - generic [ref=e1505]:
+                - link "Download" [ref=e1506] [cursor=pointer]:
+                  - /url: /media/songs/bef76167c7db/Acejam--Albus-XL-Direct-Vocal-Test--xl-sft--v1.wav
+                - button "Delete" [ref=e1507] [cursor=pointer]
+                - group [ref=e1508]:
+                  - generic "Meta" [ref=e1509] [cursor=pointer]
+          - generic [ref=e1510]:
+            - checkbox [ref=e1512]
+            - generic [ref=e1513]:
+              - generic [ref=e1514]: Acejam - Albus Direct Vocal Test 3
+              - generic [ref=e1515]: text2music · turbo · 60s · 2026-05-01
+              - generic [ref=e1516]:
+                - button "Play" [ref=e1517] [cursor=pointer]:
+                  - img [ref=e1518]
+                - generic [ref=e1521]: 1:00
+                - button "Mute" [ref=e1522] [cursor=pointer]:
+                  - img [ref=e1523]
+                - slider [ref=e1526] [cursor=pointer]: "1"
+              - generic [ref=e1527]:
+                - link "Download" [ref=e1528] [cursor=pointer]:
+                  - /url: /media/songs/83d350d66064/Acejam--Albus-Direct-Vocal-Test--turbo--v3.wav
+                - button "Delete" [ref=e1529] [cursor=pointer]
+                - group [ref=e1530]:
+                  - generic "Meta" [ref=e1531] [cursor=pointer]
+          - generic [ref=e1532]:
+            - checkbox [ref=e1534]
+            - generic [ref=e1535]:
+              - generic [ref=e1536]: Acejam - Albus Direct Vocal Test 2
+              - generic [ref=e1537]: text2music · turbo · 60s · 2026-05-01
+              - generic [ref=e1538]:
+                - button "Play" [ref=e1539] [cursor=pointer]:
+                  - img [ref=e1540]
+                - generic [ref=e1543]: 1:00
+                - button "Mute" [ref=e1544] [cursor=pointer]:
+                  - img [ref=e1545]
+                - slider [ref=e1548] [cursor=pointer]: "1"
+              - generic [ref=e1549]:
+                - link "Download" [ref=e1550] [cursor=pointer]:
+                  - /url: /media/songs/e9d86824f1db/Acejam--Albus-Direct-Vocal-Test--turbo--v2.wav
+                - button "Delete" [ref=e1551] [cursor=pointer]
+                - group [ref=e1552]:
+                  - generic "Meta" [ref=e1553] [cursor=pointer]
+          - generic [ref=e1554]:
+            - checkbox [ref=e1556]
+            - generic [ref=e1557]:
+              - generic [ref=e1558]: Acejam - Albus Direct Vocal Test 1
+              - generic [ref=e1559]: text2music · turbo · 60s · 2026-05-01
+              - generic [ref=e1560]:
+                - button "Play" [ref=e1561] [cursor=pointer]:
+                  - img [ref=e1562]
+                - generic [ref=e1565]: 1:00
+                - button "Mute" [ref=e1566] [cursor=pointer]:
+                  - img [ref=e1567]
+                - slider [ref=e1570] [cursor=pointer]: "1"
+              - generic [ref=e1571]:
+                - link "Download" [ref=e1572] [cursor=pointer]:
+                  - /url: /media/songs/8248cdd5834d/Acejam--Albus-Direct-Vocal-Test--turbo--v1.wav
+                - button "Delete" [ref=e1573] [cursor=pointer]
+                - group [ref=e1574]:
+                  - generic "Meta" [ref=e1575] [cursor=pointer]
+          - generic [ref=e1576]:
+            - checkbox [ref=e1578]
+            - generic [ref=e1579]:
+              - generic [ref=e1580]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1581]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1582]:
+                - button "Play" [ref=e1583] [cursor=pointer]:
+                  - img [ref=e1584]
+                - generic [ref=e1587]: 4:00
+                - button "Mute" [ref=e1588] [cursor=pointer]:
+                  - img [ref=e1589]
+                - slider [ref=e1592] [cursor=pointer]: "1"
+              - generic [ref=e1593]:
+                - link "Download" [ref=e1594] [cursor=pointer]:
+                  - /url: /media/songs/bffb05f1568c/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1595] [cursor=pointer]
+                - button "Delete album" [ref=e1596] [cursor=pointer]
+                - group [ref=e1597]:
+                  - generic "Meta" [ref=e1598] [cursor=pointer]
+          - generic [ref=e1599]:
+            - checkbox [ref=e1601]
+            - generic [ref=e1602]:
+              - generic [ref=e1603]: Albus - Albus 2
+              - generic [ref=e1604]: text2music · turbo · 150s · 2026-05-01
+              - generic [ref=e1605]:
+                - button "Play" [ref=e1606] [cursor=pointer]:
+                  - img [ref=e1607]
+                - generic [ref=e1610]: 2:30
+                - button "Mute" [ref=e1611] [cursor=pointer]:
+                  - img [ref=e1612]
+                - slider [ref=e1615] [cursor=pointer]: "1"
+              - generic [ref=e1616]:
+                - link "Download" [ref=e1617] [cursor=pointer]:
+                  - /url: /media/songs/2a91cd679e83/Albus--Albus--turbo--v2.wav
+                - button "Delete" [ref=e1618] [cursor=pointer]
+                - group [ref=e1619]:
+                  - generic "Meta" [ref=e1620] [cursor=pointer]
+          - generic [ref=e1621]:
+            - checkbox [ref=e1623]
+            - generic [ref=e1624]:
+              - generic [ref=e1625]: Albus - Albus 1
+              - generic [ref=e1626]: text2music · turbo · 150s · 2026-05-01
+              - generic [ref=e1627]:
+                - button "Play" [ref=e1628] [cursor=pointer]:
+                  - img [ref=e1629]
+                - generic [ref=e1632]: 2:30
+                - button "Mute" [ref=e1633] [cursor=pointer]:
+                  - img [ref=e1634]
+                - slider [ref=e1637] [cursor=pointer]: "1"
+              - generic [ref=e1638]:
+                - link "Download" [ref=e1639] [cursor=pointer]:
+                  - /url: /media/songs/97deef796b3d/Albus--Albus--turbo--v1.wav
+                - button "Delete" [ref=e1640] [cursor=pointer]
+                - group [ref=e1641]:
+                  - generic "Meta" [ref=e1642] [cursor=pointer]
+          - generic [ref=e1643]:
+            - checkbox [ref=e1645]
+            - generic [ref=e1646]:
+              - generic [ref=e1647]: Albus - Albus 2
+              - generic [ref=e1648]: text2music · turbo · 150s · 2026-05-01
+              - generic [ref=e1649]:
+                - button "Play" [ref=e1650] [cursor=pointer]:
+                  - img [ref=e1651]
+                - generic [ref=e1654]: 2:30
+                - button "Mute" [ref=e1655] [cursor=pointer]:
+                  - img [ref=e1656]
+                - slider [ref=e1659] [cursor=pointer]: "1"
+              - generic [ref=e1660]:
+                - link "Download" [ref=e1661] [cursor=pointer]:
+                  - /url: /media/songs/443b3c3b4b38/Albus--Albus--turbo--v2.wav
+                - button "Delete" [ref=e1662] [cursor=pointer]
+                - group [ref=e1663]:
+                  - generic "Meta" [ref=e1664] [cursor=pointer]
+          - generic [ref=e1665]:
+            - checkbox [ref=e1667]
+            - generic [ref=e1668]:
+              - generic [ref=e1669]: Albus - Albus 1
+              - generic [ref=e1670]: text2music · turbo · 150s · 2026-05-01
+              - generic [ref=e1671]:
+                - button "Play" [ref=e1672] [cursor=pointer]:
+                  - img [ref=e1673]
+                - generic [ref=e1676]: 2:30
+                - button "Mute" [ref=e1677] [cursor=pointer]:
+                  - img [ref=e1678]
+                - slider [ref=e1681] [cursor=pointer]: "1"
+              - generic [ref=e1682]:
+                - link "Download" [ref=e1683] [cursor=pointer]:
+                  - /url: /media/songs/add05985d88f/Albus--Albus--turbo--v1.wav
+                - button "Delete" [ref=e1684] [cursor=pointer]
+                - group [ref=e1685]:
+                  - generic "Meta" [ref=e1686] [cursor=pointer]
+          - generic [ref=e1687]:
+            - checkbox [ref=e1689]
+            - generic [ref=e1690]:
+              - generic [ref=e1691]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1692]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1693]:
+                - button "Play" [ref=e1694] [cursor=pointer]:
+                  - img [ref=e1695]
+                - generic [ref=e1698]: 4:00
+                - button "Mute" [ref=e1699] [cursor=pointer]:
+                  - img [ref=e1700]
+                - slider [ref=e1703] [cursor=pointer]: "1"
+              - generic [ref=e1704]:
+                - link "Download" [ref=e1705] [cursor=pointer]:
+                  - /url: /media/songs/eaa974a0501a/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1706] [cursor=pointer]
+                - button "Delete album" [ref=e1707] [cursor=pointer]
+                - group [ref=e1708]:
+                  - generic "Meta" [ref=e1709] [cursor=pointer]
+          - generic [ref=e1710]:
+            - checkbox [ref=e1712]
+            - generic [ref=e1713]:
+              - generic [ref=e1714]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1715]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1716]:
+                - button "Play" [ref=e1717] [cursor=pointer]:
+                  - img [ref=e1718]
+                - generic [ref=e1721]: 4:00
+                - button "Mute" [ref=e1722] [cursor=pointer]:
+                  - img [ref=e1723]
+                - slider [ref=e1726] [cursor=pointer]: "1"
+              - generic [ref=e1727]:
+                - link "Download" [ref=e1728] [cursor=pointer]:
+                  - /url: /media/songs/e77ee5b91ce2/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1729] [cursor=pointer]
+                - button "Delete album" [ref=e1730] [cursor=pointer]
+                - group [ref=e1731]:
+                  - generic "Meta" [ref=e1732] [cursor=pointer]
+          - generic [ref=e1733]:
+            - checkbox [ref=e1735]
+            - generic [ref=e1736]:
+              - generic [ref=e1737]: Concrete Signal - Concrete Canyons Clarity Mix 2
+              - generic [ref=e1738]: text2music · turbo · 150s · 2026-05-01
+              - generic [ref=e1739]:
+                - button "Play" [ref=e1740] [cursor=pointer]:
+                  - img [ref=e1741]
+                - generic [ref=e1744]: 2:30
+                - button "Mute" [ref=e1745] [cursor=pointer]:
+                  - img [ref=e1746]
+                - slider [ref=e1749] [cursor=pointer]: "1"
+              - generic [ref=e1750]:
+                - link "Download" [ref=e1751] [cursor=pointer]:
+                  - /url: /media/songs/8a7f34ba34df/Concrete-Signal--Concrete-Canyons-Clarity-Mix--turbo--v2.wav
+                - button "Delete" [ref=e1752] [cursor=pointer]
+                - group [ref=e1753]:
+                  - generic "Meta" [ref=e1754] [cursor=pointer]
+          - generic [ref=e1755]:
+            - checkbox [ref=e1757]
+            - generic [ref=e1758]:
+              - generic [ref=e1759]: Concrete Signal - Concrete Canyons Clarity Mix 1
+              - generic [ref=e1760]: text2music · turbo · 150s · 2026-05-01
+              - generic [ref=e1761]:
+                - button "Play" [ref=e1762] [cursor=pointer]:
+                  - img [ref=e1763]
+                - generic [ref=e1766]: 2:30
+                - button "Mute" [ref=e1767] [cursor=pointer]:
+                  - img [ref=e1768]
+                - slider [ref=e1771] [cursor=pointer]: "1"
+              - generic [ref=e1772]:
+                - link "Download" [ref=e1773] [cursor=pointer]:
+                  - /url: /media/songs/b03124ebc301/Concrete-Signal--Concrete-Canyons-Clarity-Mix--turbo--v1.wav
+                - button "Delete" [ref=e1774] [cursor=pointer]
+                - group [ref=e1775]:
+                  - generic "Meta" [ref=e1776] [cursor=pointer]
+          - generic [ref=e1777]:
+            - checkbox [ref=e1779]
+            - generic [ref=e1780]:
+              - generic [ref=e1781]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1782]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1783]:
+                - button "Play" [ref=e1784] [cursor=pointer]:
+                  - img [ref=e1785]
+                - generic [ref=e1788]: 4:00
+                - button "Mute" [ref=e1789] [cursor=pointer]:
+                  - img [ref=e1790]
+                - slider [ref=e1793] [cursor=pointer]: "1"
+              - generic [ref=e1794]:
+                - link "Download" [ref=e1795] [cursor=pointer]:
+                  - /url: /media/songs/5d32ece5c46b/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1796] [cursor=pointer]
+                - button "Delete album" [ref=e1797] [cursor=pointer]
+                - group [ref=e1798]:
+                  - generic "Meta" [ref=e1799] [cursor=pointer]
+          - generic [ref=e1800]:
+            - checkbox [ref=e1802]
+            - generic [ref=e1803]:
+              - generic [ref=e1804]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1805]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1806]:
+                - button "Play" [ref=e1807] [cursor=pointer]:
+                  - img [ref=e1808]
+                - generic [ref=e1811]: 4:00
+                - button "Mute" [ref=e1812] [cursor=pointer]:
+                  - img [ref=e1813]
+                - slider [ref=e1816] [cursor=pointer]: "1"
+              - generic [ref=e1817]:
+                - link "Download" [ref=e1818] [cursor=pointer]:
+                  - /url: /media/songs/670d1adfe9c9/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1819] [cursor=pointer]
+                - button "Delete album" [ref=e1820] [cursor=pointer]
+                - group [ref=e1821]:
+                  - generic "Meta" [ref=e1822] [cursor=pointer]
+          - generic [ref=e1823]:
+            - checkbox [ref=e1825]
+            - generic [ref=e1826]:
+              - generic [ref=e1827]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1828]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1829]:
+                - button "Play" [ref=e1830] [cursor=pointer]:
+                  - img [ref=e1831]
+                - generic [ref=e1834]: 4:00
+                - button "Mute" [ref=e1835] [cursor=pointer]:
+                  - img [ref=e1836]
+                - slider [ref=e1839] [cursor=pointer]: "1"
+              - generic [ref=e1840]:
+                - link "Download" [ref=e1841] [cursor=pointer]:
+                  - /url: /media/songs/210537f9e26c/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1842] [cursor=pointer]
+                - button "Delete album" [ref=e1843] [cursor=pointer]
+                - group [ref=e1844]:
+                  - generic "Meta" [ref=e1845] [cursor=pointer]
+          - generic [ref=e1846]:
+            - checkbox [ref=e1848]
+            - generic [ref=e1849]:
+              - generic [ref=e1850]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1851]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1852]:
+                - button "Play" [ref=e1853] [cursor=pointer]:
+                  - img [ref=e1854]
+                - generic [ref=e1857]: 4:00
+                - button "Mute" [ref=e1858] [cursor=pointer]:
+                  - img [ref=e1859]
+                - slider [ref=e1862] [cursor=pointer]: "1"
+              - generic [ref=e1863]:
+                - link "Download" [ref=e1864] [cursor=pointer]:
+                  - /url: /media/songs/998d4e7f9aaa/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1865] [cursor=pointer]
+                - button "Delete album" [ref=e1866] [cursor=pointer]
+                - group [ref=e1867]:
+                  - generic "Meta" [ref=e1868] [cursor=pointer]
+          - generic [ref=e1869]:
+            - checkbox [ref=e1871]
+            - generic [ref=e1872]:
+              - generic [ref=e1873]: Concrete Signal - Concrete Canyons
+              - generic [ref=e1874]: "text2music · xl-sft · album Album: You Buried the Wrong Ma · #1 · 240s · 2026-05-01"
+              - generic [ref=e1875]:
+                - button "Play" [ref=e1876] [cursor=pointer]:
+                  - img [ref=e1877]
+                - generic [ref=e1880]: 4:00
+                - button "Mute" [ref=e1881] [cursor=pointer]:
+                  - img [ref=e1882]
+                - slider [ref=e1885] [cursor=pointer]: "1"
+              - generic [ref=e1886]:
+                - link "Download" [ref=e1887] [cursor=pointer]:
+                  - /url: /media/songs/98213273c5e9/01-Concrete-Signal--Concrete-Canyons--xl-sft--v1.wav
+                - button "Delete" [ref=e1888] [cursor=pointer]
+                - button "Delete album" [ref=e1889] [cursor=pointer]
+                - group [ref=e1890]:
+                  - generic "Meta" [ref=e1891] [cursor=pointer]
+    - complementary "Generation results" [ref=e843]:
+      - heading "Results" [level=2] [ref=e844]
+      - generic [ref=e846]:
+        - img [ref=e847]
+        - text: Your generations will appear here.
+        - text: Pick a mode and click Generate to start.
+  - tooltip "Browse saved generations"

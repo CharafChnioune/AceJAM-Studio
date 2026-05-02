@@ -1,5 +1,6 @@
 import json
 import re
+import contextlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,6 +166,54 @@ Lyrics:
             "line_count": len([line for line in lines if line and not line.startswith("[")]),
         }
 
+    def test_album_agent_llm_options_use_planner_settings_for_ollama(self):
+        options = album_crew_module._agent_llm_options(
+            "ollama",
+            "Track Lyrics Agent Part 1",
+            {
+                "planner_temperature": 0.82,
+                "planner_top_p": 0.97,
+                "planner_top_k": 77,
+                "planner_repeat_penalty": 1.03,
+                "planner_seed": "314",
+                "planner_max_tokens": 4096,
+                "planner_context_length": 16384,
+                "planner_timeout": 180,
+            },
+        )
+
+        self.assertEqual(options["temperature"], 0.82)
+        self.assertEqual(options["top_p"], 0.97)
+        self.assertEqual(options["top_k"], 77)
+        self.assertEqual(options["repeat_penalty"], 1.03)
+        self.assertEqual(options["seed"], 314)
+        self.assertEqual(options["num_predict"], 4096)
+        self.assertEqual(options["num_ctx"], 16384)
+        self.assertEqual(options["timeout"], 180.0)
+
+    def test_album_agent_llm_options_use_lmstudio_chat_supported_settings(self):
+        options = album_crew_module._agent_llm_options(
+            "lmstudio",
+            "Track Caption Agent",
+            {
+                "planner_temperature": 0.68,
+                "planner_top_p": 0.91,
+                "planner_top_k": 44,
+                "planner_repeat_penalty": 1.12,
+                "planner_max_tokens": 2048,
+                "planner_context_length": 32768,
+                "planner_timeout": 120,
+            },
+        )
+
+        self.assertEqual(options["temperature"], 0.68)
+        self.assertEqual(options["top_p"], 0.91)
+        self.assertEqual(options["top_k"], 44)
+        self.assertEqual(options["repeat_penalty"], 1.12)
+        self.assertEqual(options["max_tokens"], 2048)
+        self.assertEqual(options["timeout"], 120.0)
+        self.assertNotIn("num_ctx", options)
+
     def _micro_settings_payload(self, agent_name: str, user_prompt: str = ""):
         def json_after(label: str):
             marker = f"{label}:\n"
@@ -185,11 +234,11 @@ Lyrics:
         is_house = title == "Rooftop Letters" or "melodic house" in style.lower()
         is_strict_rap = "STRICT_RAP_LOCK" in user_prompt
         tags = (
-            "modern house, steady groove, synth, handclap drums, clear vocal chops, bright atmosphere, dynamic drop arrangement, polished studio mix"
+            "modern house, handclap drums, warm bassline, synth motif, clear vocal chops, dynamic drop arrangement, airy club texture, polished studio mix"
             if is_house
-            else "West Coast hip-hop, boom-bap drums, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix"
+            else "West Coast hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook response, gritty street texture, punchy polished rap mix"
             if is_strict_rap
-            else "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix"
+            else "modern pop, bright drums, deep bass, piano motif, clear lead vocal, emotional hook lift, warm analog texture, polished studio mix"
         )
         if agent_name in {"Track BPM Agent", "BPM Agent"}:
             return {"bpm": 88 if title == "Lantern Keys" else (104 if is_house else 92)}
@@ -206,13 +255,14 @@ Lyrics:
                 "tag_list": tags.split(", "),
                 "tags": tags,
                 "caption_dimensions_covered": [
-                    "genre_style",
-                    "rhythm_groove",
-                    "instrumentation",
-                    "vocal_style",
-                    "mood_atmosphere",
-                    "arrangement_energy",
-                    "mix_production",
+                    "primary_genre",
+                    "drum_groove",
+                    "low_end_bass",
+                    "melodic_identity",
+                    "vocal_delivery",
+                    "arrangement_movement",
+                    "texture_space",
+                    "mix_master",
                 ],
             }
         if agent_name in {"Track Caption Agent", "Caption Agent"}:
@@ -300,7 +350,7 @@ Lyrics:
                 "track_number": 1,
                 "title": title,
                 "description": "neighbors reopen stalls and trade stories instead of rumors.",
-                "caption": caption_payload.get("caption") or "modern pop, steady groove, bass, bright drums, clear lead vocal, emotional atmosphere, dynamic hook arrangement, polished studio mix",
+                "caption": caption_payload.get("caption") or "modern pop, bright drums, deep bass, piano motif, clear lead vocal, emotional hook lift, warm analog texture, polished studio mix",
                 "tags": tags_payload.get("tags") or "",
                 "tag_list": tags_payload.get("tag_list") or [],
                 "lyrics_lines": lyrics_lines,
@@ -320,6 +370,20 @@ Lyrics:
                 logs.append(f"AceJAM Agent call: {agent_name} attempt 1 via patched test.")
             return self._director_agent_payload(agent_name, user_prompt)
 
+        class _AgentPatch:
+            def __enter__(self_inner):
+                self_inner.stack = contextlib.ExitStack()
+                self_inner.stack.enter_context(
+                    patch.object(album_crew_module, "_agent_json_call", side_effect=side_effect or default_side_effect)
+                )
+                self_inner.stack.enter_context(
+                    patch.object(album_crew_module, "_crewai_micro_block_call", side_effect=side_effect or default_side_effect)
+                )
+                return self_inner
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return self_inner.stack.__exit__(exc_type, exc, tb)
+
         return (
             patch.object(album_crew_module, "preflight_album_agent_llm", return_value={
                 "ok": True,
@@ -327,7 +391,7 @@ Lyrics:
                 "warnings": [],
                 "errors": [],
             }),
-            patch.object(album_crew_module, "_agent_json_call", side_effect=side_effect or default_side_effect),
+            _AgentPatch(),
         )
 
     def test_album_prompt_library_is_compact_and_does_not_inject_full_md(self):
@@ -349,19 +413,152 @@ Lyrics:
         self.assertNotIn("Prompt kit excerpt source", rules)
         self.assertNotIn("FULL_TAG_LIBRARY", rules)
 
-    def test_agent_json_instruction_demands_exact_shape(self):
+    def test_album_agent_engine_normalizes_legacy_to_crewai_micro(self):
+        self.assertEqual(album_crew_module.normalize_album_agent_engine(None), "acejam_agents")
+        self.assertEqual(album_crew_module.normalize_album_agent_engine("acejam_direct"), "acejam_agents")
+        self.assertEqual(album_crew_module.normalize_album_agent_engine("legacy_crewai"), "crewai_micro")
+        self.assertEqual(album_crew_module.album_agent_engine_label("crewai_micro"), "CrewAI Micro Tasks")
+
+    def test_crewai_micro_llm_kwargs_use_planner_settings(self):
+        ollama = album_crew_module._crewai_micro_llm_kwargs(
+            "qwen-local",
+            "ollama",
+            "Track Lyrics Agent Part 1",
+            {
+                "planner_temperature": 0.9,
+                "planner_top_p": 0.88,
+                "planner_top_k": 61,
+                "planner_repeat_penalty": 1.17,
+                "planner_seed": "42",
+                "planner_max_tokens": 2048,
+                "planner_context_length": 12288,
+                "planner_timeout": 240,
+            },
+        )
+        self.assertEqual(ollama["provider"], "ollama")
+        self.assertEqual(ollama["temperature"], 0.9)
+        self.assertEqual(ollama["top_p"], 0.88)
+        self.assertEqual(ollama["seed"], 42)
+        self.assertEqual(ollama["max_tokens"], 2048)
+        options = ollama["additional_params"]["extra_body"]["options"]
+        self.assertEqual(options["top_k"], 61)
+        self.assertEqual(options["repeat_penalty"], 1.17)
+        self.assertEqual(options["num_ctx"], 12288)
+        self.assertEqual(options["num_predict"], 2048)
+
+        lmstudio = album_crew_module._crewai_micro_llm_kwargs(
+            "qwen-local",
+            "lmstudio",
+            "Caption Agent",
+            {
+                "planner_temperature": 0.7,
+                "planner_top_p": 0.91,
+                "planner_top_k": 44,
+                "planner_repeat_penalty": 1.08,
+                "planner_max_tokens": 1024,
+                "planner_context_length": 32768,
+                "planner_timeout": 120,
+            },
+        )
+        self.assertEqual(lmstudio["provider"], "openai")
+        self.assertEqual(lmstudio["max_tokens"], 1024)
+        self.assertNotIn("num_ctx", lmstudio)
+        self.assertEqual(lmstudio["additional_params"]["top_k"], 44)
+        self.assertEqual(lmstudio["additional_params"]["repeat_penalty"], 1.08)
+
+    def test_crewai_micro_guardrail_parses_delimiter_blocks_and_rejects_json(self):
+        guardrail = album_crew_module._crewai_micro_block_guardrail("caption_agent_payload")
+        ok, _ = guardrail(SimpleNamespace(raw="******caption******\nclear rap vocal, hard drums\n******/caption******"))
+        self.assertTrue(ok)
+
+        ok, message = guardrail(SimpleNamespace(raw='{"caption":"clear rap vocal"}'))
+        self.assertFalse(ok)
+        self.assertIn("json_response_not_allowed", str(message))
+
+    def test_crewai_micro_engine_routes_through_micro_call(self):
+        direct_calls = []
+        micro_calls = []
+
+        def fake_direct(*, agent_name, **_kwargs):
+            direct_calls.append(agent_name)
+            raise AssertionError("direct runtime should not be used")
+
+        def fake_micro(*, agent_name, user_prompt="", logs=None, **_kwargs):
+            micro_calls.append(agent_name)
+            if isinstance(logs, list):
+                logs.append(f"CrewAI Micro Agent call: {agent_name} attempt 1 via patched test.")
+            return self._director_agent_payload(agent_name, user_prompt)
+
+        with patch.object(album_crew_module, "preflight_album_agent_llm", return_value={
+            "ok": True,
+            "chat_ok": True,
+            "warnings": [],
+            "errors": [],
+        }), patch.object(album_crew_module, "_agent_json_call", side_effect=fake_direct), patch.object(album_crew_module, "_crewai_micro_block_call", side_effect=fake_micro):
+            result = plan_album(
+                "one track pop EP",
+                num_tracks=1,
+                track_duration=45,
+                options={
+                    "installed_models": ["acestep-v15-turbo"],
+                    "song_model_strategy": "best_installed",
+                    "agent_engine": "crewai_micro",
+                },
+                planner_provider="ollama",
+                embedding_provider="ollama",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["planning_engine"], "crewai_micro")
+        self.assertTrue(result["crewai_used"])
+        self.assertFalse(direct_calls)
+        self.assertIn("Album Intake Agent", micro_calls)
+
+    def test_agent_block_instruction_demands_exact_shape(self):
         instruction = album_crew_module._agent_json_instruction("caption_agent_payload")
 
-        self.assertIn("EXACT_RESPONSE_CONTRACT", instruction)
-        self.assertIn("Use exactly these top-level keys", instruction)
-        self.assertIn("Any deviation means the album renderer rejects your answer", instruction)
-        self.assertIn("ANSWER EXACTLY LIKE THIS JSON SHAPE", instruction)
-        self.assertIn('"caption":""', instruction)
+        self.assertIn("DELIMITER_RESPONSE_CONTRACT", instruction)
+        self.assertIn("required blocks", instruction)
+        self.assertIn("******caption******", instruction)
+        self.assertIn("******/caption******", instruction)
+        self.assertIn("Do not output JSON", instruction)
 
-    def test_agent_json_call_retries_on_extra_keys_for_known_schema(self):
+    def test_agent_block_parser_preserves_multiline_lyrics(self):
+        raw = (
+            "******part_index******\n1\n******/part_index******\n"
+            "******sections******\n[Intro]\n[Verse 1]\n[Chorus]\n******/sections******\n"
+            "******lyrics_lines******\n[Intro]\nWarm piano enters\n[Verse 1]\n******not_a_real_delimiter****** inside a lyric\n[Chorus]\nLanterns call us home\n******/lyrics_lines******"
+        )
+
+        payload = album_crew_module._parse_agent_block_payload(raw, "lyrics_part_1_payload")
+
+        self.assertEqual(payload["part_index"], 1)
+        self.assertEqual(payload["sections"], ["[Intro]", "[Verse 1]", "[Chorus]"])
+        self.assertIn("******not_a_real_delimiter****** inside a lyric", payload["lyrics_lines"])
+        self.assertEqual(payload["lyrics_lines"][0], "[Intro]")
+
+    def test_agent_block_parser_fails_json_only_response(self):
+        with self.assertRaisesRegex(ValueError, "json_response_not_allowed"):
+            album_crew_module._parse_agent_block_payload('{"caption":"bright drums"}', "caption_agent_payload")
+
+    def test_agent_block_parser_reports_missing_and_extra_blocks(self):
+        with self.assertRaisesRegex(ValueError, "missing_block:one_sentence_concept,style_guardrails,track_roles"):
+            album_crew_module._parse_agent_block_payload(
+                "******album_title******\nMarket Lights\n******/album_title******",
+                "album_intake_payload",
+            )
+
+        with self.assertRaisesRegex(ValueError, "extra_block:bpm"):
+            album_crew_module._parse_agent_block_payload(
+                "******caption******\nbright drums\n******/caption******\n"
+                "******bpm******\n95\n******/bpm******",
+                "caption_agent_payload",
+            )
+
+    def test_agent_block_call_retries_on_extra_blocks_for_known_schema(self):
         responses = iter([
-            '{"caption":"bright drums","bpm":95}',
-            '{"caption":"bright drums"}',
+            "******caption******\nbright drums\n******/caption******\n******bpm******\n95\n******/bpm******",
+            "******caption******\nbright drums\n******/caption******",
         ])
         prompts = []
 
@@ -383,7 +580,7 @@ Lyrics:
 
         self.assertEqual(payload, {"caption": "bright drums"})
         self.assertEqual(len(prompts), 2)
-        self.assertIn("Required exact top-level keys", prompts[1])
+        self.assertIn("EXPECTED_BLOCK_SHAPE", prompts[1])
 
     def test_director_micro_call_order_sets_sonic_and_metadata_before_lyrics(self):
         calls = []
@@ -536,7 +733,7 @@ Lyrics:
                 part_one_calls += 1
                 if part_one_calls <= 2:
                     raise album_crew_module.AceJamAgentError(
-                        "Track Lyrics Agent Part 1 failed to produce valid JSON after 2 attempt(s)"
+                        "Track Lyrics Agent Part 1 failed to produce valid delimiter blocks after 2 attempt(s)"
                     )
             return self._director_agent_payload(agent_name, user_prompt)
 
@@ -553,7 +750,7 @@ Lyrics:
 
         self.assertTrue(result["success"])
         self.assertEqual(part_one_calls, 3)
-        self.assertTrue(any("Agent JSON validation retry: Track Lyrics Agent Part 1" in line for line in result["logs"]))
+        self.assertTrue(any("Agent block validation retry: Track Lyrics Agent Part 1" in line for line in result["logs"]))
 
     def test_director_lyrics_part_falls_back_when_planner_refuses_json(self):
         def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
@@ -561,7 +758,7 @@ Lyrics:
                 logs.append(f"AceJAM Agent call: {agent_name} attempt 1 via patched test.")
             if agent_name == "Track Lyrics Agent Part 1":
                 raise album_crew_module.AceJamAgentError(
-                    "Track Lyrics Agent Part 1 failed to produce valid JSON after 2 attempt(s): refusal text"
+                    "Track Lyrics Agent Part 1 failed to produce valid delimiter blocks after 2 attempt(s): refusal text"
                 )
             return self._director_agent_payload(agent_name, user_prompt)
 
@@ -658,7 +855,7 @@ Lyrics:
             if agent_name == "Caption Agent":
                 caption_calls += 1
                 raise album_crew_module.AceJamAgentError(
-                    "Caption Agent failed to produce valid JSON after 2 attempt(s): BrokenPipeError"
+                    "Caption Agent failed to produce valid delimiter blocks after 2 attempt(s): BrokenPipeError"
                 )
             return self._director_agent_payload(agent_name, user_prompt)
 
@@ -690,7 +887,7 @@ Lyrics:
             if agent_name == "Performance Agent":
                 performance_calls += 1
                 raise album_crew_module.AceJamAgentError(
-                    "Performance Agent failed to produce valid JSON after 2 attempt(s): BrokenPipeError"
+                    "Performance Agent failed to produce valid delimiter blocks after 2 attempt(s): BrokenPipeError"
                 )
             return self._director_agent_payload(agent_name, user_prompt)
 
@@ -716,7 +913,7 @@ Lyrics:
         gate_calls = 0
         lyrics_calls = 0
 
-        def fake_gate(track, section_tags):
+        def fake_gate(track, section_tags, *args, **kwargs):
             nonlocal gate_calls
             gate_calls += 1
             if gate_calls == 1:
@@ -729,7 +926,7 @@ Lyrics:
                     "lyrics_chars": len(str(track.get("lyrics") or "")),
                     "section_tags": section_tags,
                 }
-            return original_gate(track, section_tags)
+            return original_gate(track, section_tags, *args, **kwargs)
 
         def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
             nonlocal lyrics_calls
@@ -754,6 +951,100 @@ Lyrics:
         self.assertGreaterEqual(gate_calls, 2)
         self.assertGreater(lyrics_calls, len(album_crew_module._director_section_groups(["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Bridge]", "[Final Chorus]", "[Outro]"])))
         self.assertTrue(any("Final gate repair retry: track 1 attempt 1/8: duplicate_section_tags:[Verse 1]" in line for line in result["logs"]))
+
+    def test_final_gate_arrangement_leakage_uses_deterministic_sanitizer(self):
+        original_gate = album_crew_module._director_minimal_validate
+        gate_calls = 0
+        lyrics_calls = 0
+        blocked_line = "The orchestra swells like a stage direction"
+
+        def fake_gate(track, section_tags, *args, **kwargs):
+            nonlocal gate_calls
+            gate_calls += 1
+            if gate_calls == 1:
+                return {
+                    "version": album_crew_module.ACEJAM_ALBUM_DIRECTOR_VERSION,
+                    "gate_passed": False,
+                    "status": "fail",
+                    "issues": ["non_rap_arrangement_lyric_leakage"],
+                    "caption_chars": len(str(track.get("caption") or "")),
+                    "lyrics_chars": len(str(track.get("lyrics") or "")),
+                    "genre_adherence": {
+                        "stats": {
+                            "arrangement_lyric_scan": [
+                                {"line": blocked_line, "status": "blocked", "match": "orchestra swells"}
+                            ]
+                        }
+                    },
+                    "section_tags": section_tags,
+                }
+            return original_gate(track, section_tags, *args, **kwargs)
+
+        def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
+            nonlocal lyrics_calls
+            if isinstance(logs, list):
+                logs.append(f"AceJAM Agent call: {agent_name} attempt 1 via patched test.")
+            if agent_name.startswith("Track Lyrics Agent Part"):
+                lyrics_calls += 1
+                payload = self._valid_lyrics_part_payload(user_prompt, lines_per_section=3)
+                for idx, line in enumerate(payload["lyrics_lines"]):
+                    if not str(line).startswith("["):
+                        payload["lyrics_lines"][idx] = blocked_line
+                        break
+                return payload
+            return self._director_agent_payload(agent_name, user_prompt)
+
+        preflight_patch, agent_patch = self._patch_director_agents(fake_agent_json_call)
+        with preflight_patch, agent_patch, patch.object(album_crew_module, "_director_minimal_validate", side_effect=fake_gate):
+            result = plan_album(
+                self.SAFE_CONTRACT_PROMPT,
+                num_tracks=1,
+                track_duration=45,
+                language="en",
+                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                use_crewai=True,
+            )
+
+        expected_initial_parts = len(album_crew_module._director_section_groups(["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Bridge]", "[Final Chorus]", "[Outro]"]))
+        self.assertTrue(result["success"])
+        self.assertEqual(lyrics_calls, expected_initial_parts)
+        self.assertNotIn(blocked_line, result["tracks"][0]["lyrics"])
+        self.assertTrue(any("Final gate deterministic lyric sanitizer" in line for line in result["logs"]))
+
+    def test_track_planning_failure_does_not_block_following_tracks(self):
+        def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
+            if isinstance(logs, list):
+                logs.append(f"AceJAM Agent call: {agent_name} attempt 1 via patched test.")
+            if agent_name == "Hook Agent" and "track 1 of 2" in user_prompt:
+                return {
+                    "hook_title": "Bad Hook",
+                    "hook_lines": ["[Chorus]", "Still tagged"],
+                    "hook_promise": "Still tagged.",
+                }
+            return self._director_agent_payload(agent_name, user_prompt)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            preflight_patch, agent_patch = self._patch_director_agents(fake_agent_json_call)
+            with preflight_patch, agent_patch, patch.object(album_crew_module, "ACEJAM_AGENT_GATE_REPAIR_RETRIES", 1):
+                result = plan_album(
+                    self.SAFE_CONTRACT_PROMPT,
+                    num_tracks=2,
+                    track_duration=45,
+                    language="en",
+                    options={
+                        "installed_models": ["acestep-v15-turbo"],
+                        "song_model_strategy": "best_installed",
+                        "album_debug_dir": tmp_dir,
+                    },
+                    use_crewai=True,
+                )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["planning_status"], "partial")
+        self.assertEqual(result["planning_failed_count"], 1)
+        self.assertEqual(result["tracks"][0]["planning_status"], "failed")
+        self.assertEqual(result["tracks"][1]["planning_status"], "completed")
+        self.assertTrue(any("Track planning failed but album continues" in line for line in result["logs"]))
 
     def test_semantic_retry_hard_failure_logs_debug_jsonl(self):
         def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
@@ -1047,10 +1338,12 @@ kill all the rivals
         self.assertTrue(final_ready["ok"])
         self.assertEqual(final_ready["model"], ALBUM_FINAL_MODEL)
 
-    def test_all_models_album_portfolio_has_seven_models(self):
+    def test_all_models_album_portfolio_has_official_render_models(self):
         portfolio = album_model_portfolio({"acestep-v15-turbo"})
         self.assertEqual([item["model"] for item in portfolio], ALBUM_MODEL_PORTFOLIO_MODELS)
-        self.assertEqual(len(portfolio), 7)
+        self.assertEqual(len(portfolio), 9)
+        self.assertIn("acestep-v15-turbo-shift1", ALBUM_MODEL_PORTFOLIO_MODELS)
+        self.assertIn("acestep-v15-turbo-continuous", ALBUM_MODEL_PORTFOLIO_MODELS)
         self.assertTrue(portfolio[0]["installed"])
         self.assertTrue(portfolio[1]["download_required"])
 
@@ -1079,10 +1372,20 @@ kill all the rivals
         self.assertLess(long["target_words"], ten_minutes["target_words"])
         self.assertGreaterEqual(short["min_words"], 45)
         self.assertGreaterEqual(long["min_words"], 340)
-        self.assertIn("Break", " ".join(long["sections"]))
+        self.assertIn("Verse 3 - Beat Switch", long["sections"])
         self.assertLessEqual(long["safe_lyrics_char_target"], 3600)
         self.assertLessEqual(ten_minutes["max_lyrics_chars"], 4096)
         self.assertGreaterEqual(short["min_lines"], len(short["sections"]))
+
+    def test_rap_prompt_auto_selects_rap_dense_hit_targets(self):
+        plan = lyric_length_plan(240, "balanced", genre_hint="West Coast rap, clear hook")
+
+        self.assertEqual(plan["density"], "rap_dense")
+        self.assertGreaterEqual(plan["min_words"], 430)
+        self.assertGreaterEqual(plan["target_words"], 480)
+        self.assertGreaterEqual(plan["min_lines"], 75)
+        self.assertIn("Verse 3 - Beat Switch", plan["sections"])
+        self.assertLessEqual(plan["safe_lyrics_char_target"], 3600)
 
     def test_trim_lyrics_to_limit_never_slices_mid_line_or_adds_outro(self):
         lyrics = "\n".join([
@@ -1545,7 +1848,7 @@ The Narrative: friends read old letters on a roof as the lights come back.
             "chat_ok": True,
             "warnings": [],
             "errors": [],
-        }), patch.object(album_crew_module, "_agent_json_call", side_effect=album_crew_module.AceJamAgentError("empty response")):
+        }), patch.object(album_crew_module, "_agent_json_call", side_effect=album_crew_module.AceJamAgentError("empty response")), patch.object(album_crew_module, "_crewai_micro_block_call", side_effect=album_crew_module.AceJamAgentError("empty response")):
             result = plan_album(
                 "safe city recovery album",
                 num_tracks=1,
@@ -1581,26 +1884,26 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertIn("[Chorus]", parsed["lyrics"])
         self.assertIn("calling us home", parsed["lyrics"])
 
-    def test_agent_json_call_uses_plain_ollama_transport_by_default(self):
+    def test_agent_block_call_uses_plain_ollama_transport_by_default(self):
         calls = []
 
         def fake_call_agent_llm(**kwargs):
             calls.append(kwargs.get("json_format"))
-            return '{"ok": true}'
+            return "******caption******\nbright drums\n******/caption******"
 
         with patch.object(album_crew_module, "_call_agent_llm", side_effect=fake_call_agent_llm):
             payload = album_crew_module._agent_json_call(
-                agent_name="Album Bible Agent",
+                agent_name="Caption Agent",
                 provider="ollama",
                 model_name="qwen-local",
-                user_prompt="Return {\"ok\": true}",
+                user_prompt="Return caption blocks",
                 logs=[],
                 debug_options={},
-                schema_name="unit",
+                schema_name="caption_agent_payload",
                 max_retries=0,
             )
 
-        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(payload, {"caption": "bright drums"})
         self.assertEqual(calls, [False])
 
     def test_agent_payload_lyrics_lines_are_joined(self):
@@ -1912,11 +2215,11 @@ The Narrative: friends read old letters on a roof as the lights come back.
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",
-            )
+        )
 
         self.assertTrue(result["success"])
-        self.assertEqual(result["planning_engine"], "acejam_agents")
-        self.assertFalse(result["crewai_used"])
+        self.assertEqual(result["planning_engine"], "crewai_micro")
+        self.assertTrue(result["crewai_used"])
         self.assertEqual(len(result["tracks"]), 1)
         self.assertTrue(any("AceJAM Agent call: Album Intake Agent" in line for line in result["logs"]))
 
@@ -1983,13 +2286,13 @@ Lyrics:
             )
 
         self.assertTrue(result["success"])
-        self.assertEqual(result["planning_engine"], "acejam_agents")
+        self.assertEqual(result["planning_engine"], "crewai_micro")
         self.assertEqual(result["tracks"][0]["title"], "Lantern Keys")
         self.assertEqual(result["tracks"][0]["producer_credit"], "Ada North")
         self.assertEqual(result["tracks"][0]["bpm"], 88)
         self.assertIn("Turn the lantern keys", result["tracks"][0]["lyrics"])
         self.assertTrue(result["input_contract_applied"])
-        self.assertFalse(result["crewai_used"])
+        self.assertTrue(result["crewai_used"])
 
     def test_crewai_blueprint_duration_is_clamped_to_requested_track_duration(self):
         class FakeCrew:
@@ -2085,12 +2388,12 @@ Lyrics:
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",
-            )
+        )
 
         self.assertTrue(result["success"])
-        self.assertEqual(result["planning_engine"], "acejam_agents")
+        self.assertEqual(result["planning_engine"], "crewai_micro")
         self.assertFalse(result["toolbelt_fallback"])
-        self.assertFalse(result["crewai_used"])
+        self.assertTrue(result["crewai_used"])
         self.assertIn("[Verse 1]", result["tracks"][0]["lyrics"])
 
     def test_crewai_verbose_default_enabled(self):
@@ -2177,7 +2480,7 @@ Lyrics:
             {
                 "title": "Schema Repair",
                 "description": "upbeat city-pop repair song",
-                "tags": "pop, steady groove, piano, clear lead vocal, uplifting mood, dynamic hook arrangement, polished studio mix",
+                "tags": "modern pop, bright drums, deep bass, piano motif, clear lead vocal, emotional hook lift, warm analog texture, polished studio mix",
                 "lyrics": (
                     "[Intro]\nLights are coming back\n"
                     "[Verse]\nNeighbors gather by the bakery door\nFresh warm bread gives everybody more\n"
@@ -2716,13 +3019,14 @@ Lyrics:
         )
 
         self.assertEqual(set(CAPTION_DIMENSIONS), {
-            "genre_style",
-            "rhythm_groove",
-            "instrumentation",
-            "vocal_style",
-            "mood_atmosphere",
-            "arrangement_energy",
-            "mix_production",
+            "primary_genre",
+            "drum_groove",
+            "low_end_bass",
+            "melodic_identity",
+            "vocal_delivery",
+            "arrangement_movement",
+            "texture_space",
+            "mix_master",
         })
         self.assertIn("FULL_TAG_LIBRARY", rendered)
         self.assertIn("SELF_CHECK", rendered)
@@ -2757,7 +3061,7 @@ Lyrics:
             blueprint={
                 "track_number": 1,
                 "title": "Signal Room",
-                "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+                "tags": "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook arrangement, gritty street texture, punchy polished rap mix",
                 "duration": 240,
             },
             options={"track_duration": 240, "lyric_density": "dense", "structure_preset": "auto", "language": "en"},
@@ -2766,7 +3070,7 @@ Lyrics:
         output = SimpleNamespace(raw=json.dumps({
             "track_number": 1,
             "title": "Signal Room",
-            "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+            "tags": "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook arrangement, gritty street texture, punchy polished rap mix",
             "lyrics": "[Verse]\nWe start\n[Chorus]\nSignal room",
             "duration": 240,
             "language": "en",
@@ -2795,7 +3099,7 @@ Lyrics:
             blueprint={
                 "track_number": 1,
                 "title": "Concrete Signal",
-                "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+                "tags": "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook arrangement, gritty street texture, punchy polished rap mix",
                 "duration": 240,
             },
             options={"track_duration": 240, "lyric_density": "dense", "structure_preset": "auto", "language": "en"},
@@ -2804,7 +3108,7 @@ Lyrics:
         output = SimpleNamespace(raw=json.dumps({
             "track_number": 1,
             "title": "Concrete Signal",
-            "tags": "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, dynamic hook arrangement, polished studio mix",
+            "tags": "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook arrangement, gritty street texture, punchy polished rap mix",
             "lyrics": "\n".join(lines),
             "duration": 240,
             "language": "en",
@@ -2814,10 +3118,10 @@ Lyrics:
         repaired = json.loads(repaired_json)
 
         self.assertTrue(ok)
-        effective_min = repaired["lyric_duration_fit"]["plan"]["effective_min_lines"]
-        self.assertLess(effective_min, lyric_plan["min_lines"])
+        effective_min = repaired["lyric_duration_fit"]["plan"].get("effective_min_lines") or repaired["lyric_duration_fit"]["plan"]["min_lines"]
+        self.assertGreaterEqual(effective_min, 75)
         self.assertGreaterEqual(repaired["lyrics_line_count"], effective_min)
-        self.assertGreaterEqual(len(repaired["caption_dimensions_covered"]), 7)
+        self.assertGreaterEqual(len(repaired["caption_dimensions_covered"]), 8)
 
     def test_empty_crewai_payload_is_explicit_failure_marker(self):
         payload = json.loads(_empty_response_fallback_text("qwen-local").split("Final Answer: ", 1)[1])
@@ -2830,7 +3134,7 @@ Lyrics:
             "chat_ok": True,
             "warnings": [],
             "errors": [],
-        }), patch.object(album_crew_module, "_agent_json_call", side_effect=album_crew_module.AceJamAgentError("empty response")):
+        }), patch.object(album_crew_module, "_agent_json_call", side_effect=album_crew_module.AceJamAgentError("empty response")), patch.object(album_crew_module, "_crewai_micro_block_call", side_effect=album_crew_module.AceJamAgentError("empty response")):
             result = plan_album(
                 "safe city recovery album",
                 num_tracks=1,
@@ -2844,11 +3148,11 @@ Lyrics:
             )
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["planning_engine"], "acejam_agents")
-        self.assertFalse(result["crewai_used"])
+        self.assertEqual(result["planning_engine"], "crewai_micro")
+        self.assertTrue(result["crewai_used"])
         self.assertFalse(result["toolbelt_fallback"])
         self.assertEqual(result["tracks"], [])
-        self.assertTrue(any("AceJAM Director planning failed loudly" in line for line in result["logs"]))
+        self.assertTrue(any("CrewAI Micro Tasks planning failed loudly" in line for line in result["logs"]))
 
     def test_album_crew_ollama_embedding_config(self):
         config = _ollama_embedder_config("nomic-embed-text")

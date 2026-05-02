@@ -8,7 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from local_llm import chat_completion, model_catalog, normalize_provider, provider_label
+from local_llm import (
+    chat_completion,
+    model_catalog,
+    normalize_provider,
+    planner_llm_options_for_provider,
+    planner_llm_settings_from_payload,
+    provider_label,
+)
 from songwriting_toolkit import derive_artist_name, normalize_artist_name
 
 
@@ -23,6 +30,32 @@ SONG_SCHEMA = {
             "minItems": 4,
             "maxItems": 6,
         },
+        "song_intent": {
+            "type": "object",
+            "properties": {
+                "genre_family": {"type": "string"},
+                "subgenre": {"type": "string"},
+                "mood": {"type": "string"},
+                "energy": {"type": "string"},
+                "vocal_type": {"type": "string"},
+                "drum_groove": {"type": "string"},
+                "bass_low_end": {"type": "string"},
+                "melodic_identity": {"type": "string"},
+                "texture_space": {"type": "string"},
+                "mix_master": {"type": "string"},
+                "custom_tags": {"type": "array", "items": {"type": "string"}},
+                "caption": {"type": "string"},
+            },
+        },
+        "caption": {"type": "string"},
+        "quality_profile": {"type": "string"},
+        "song_model": {"type": "string"},
+        "audio_format": {"type": "string"},
+        "inference_steps": {"type": "integer"},
+        "guidance_scale": {"type": "number"},
+        "shift": {"type": "number"},
+        "infer_method": {"type": "string"},
+        "sampler_mode": {"type": "string"},
         "bpm": {"type": "integer"},
         "key_scale": {"type": "string"},
         "time_signature": {"type": "integer"},
@@ -45,6 +78,15 @@ Tags are the MOST important factor for music quality. Follow this layered format
 5. Production style (e.g. "high-fidelity", "lo-fi", "warm analog", "crisp modern mix")
 - Use 4 to 6 focused, complementary tags. Never mix contradictory styles (e.g. "ambient" + "hardcore metal"). For genre fusion, use primary + influence format: "jazz, electronic elements".
 - Include tempo descriptor in tags when relevant (e.g. "slow tempo", "driving rhythm", "groovy").
+
+## Song Intent Builder fields
+Also return `song_intent`, the structured UI menu contract AceJAM shows to the user:
+- genre_family: one of pop, rap, rnb, rock, edm, latin, country, cinematic, jazz, instrumental, custom
+- subgenre, mood, energy, vocal_type, drum_groove, bass_low_end, melodic_identity, texture_space, mix_master
+- custom_tags: concise extra descriptors
+- caption: one concrete ACE-Step sonic portrait combining genre, drums/groove, bass, melodic identity, vocal delivery, arrangement movement, texture/space and mix/master.
+The top-level `caption` must match song_intent.caption and be editable by the user.
+Default quality: quality_profile "chart_master", song_model "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8, shift 3, infer_method "ode", sampler_mode "heun", audio_format "wav32".
 
 Available instruments for tags (pick 2-3 that fit the genre):
 Keys: piano, Rhodes, organ, electric piano, grand piano, clavinet, celesta
@@ -449,6 +491,7 @@ class LocalComposer:
         ollama_model: str | None = None,
         planner_lm_provider: str = "ollama",
         planner_model: str | None = None,
+        planner_llm_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         provider = normalize_provider(planner_lm_provider or self.planner_lm_provider)
         model = planner_model or (ollama_model if provider == "ollama" else "") or self.planner_model or self.ollama_model
@@ -465,8 +508,16 @@ class LocalComposer:
             except Exception as exc:
                 raise RuntimeError(f"Cannot connect to {provider_label(provider)}: {exc}") from exc
 
+        planner_settings = planner_llm_settings_from_payload(
+            planner_llm_settings or {},
+            default_max_tokens=2048,
+            default_timeout=600.0,
+        )
         compose_started_at = time.perf_counter()
-        print(f"[composer] starting provider={provider} model={model} duration={audio_duration} instrumental={instrumental}")
+        print(
+            f"[composer] starting provider={provider} model={model} duration={audio_duration} "
+            f"instrumental={instrumental} planner_settings={planner_settings}"
+        )
 
         user_prompt = (
             f"Description: {description.strip()}\n"
@@ -490,11 +541,12 @@ class LocalComposer:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                options={
-                    "temperature": 0.6,
-                    "top_p": 0.95,
-                    "top_k": 20,
-                },
+                options=planner_llm_options_for_provider(
+                    provider,
+                    planner_settings,
+                    default_max_tokens=2048,
+                    default_timeout=600.0,
+                ),
                 json_format=True,
             )
             content = content or "{}"
@@ -509,6 +561,24 @@ class LocalComposer:
 
         title = str(payload.get("title") or _guess_title(description)).strip()[:60] or "Untitled"
         tags = _normalize_tags(payload.get("tags"), description)
+        intent_payload = payload.get("song_intent") if isinstance(payload.get("song_intent"), dict) else {}
+        caption = str(payload.get("caption") or intent_payload.get("caption") or ", ".join(tags)).strip()
+        if not intent_payload:
+            intent_payload = {
+                "genre_family": "rap" if any("rap" in tag or "hip" in tag for tag in tags) else ("instrumental" if instrumental else "pop"),
+                "subgenre": tags[0] if tags else "modern pop",
+                "mood": next((tag for tag in tags if tag in {"dark", "uplifting", "melancholic", "energetic", "smooth"}), ""),
+                "energy": "mid-tempo, controlled energy",
+                "vocal_type": "instrumental, no lead vocal" if instrumental else next((tag for tag in tags if "vocal" in tag), "clear lead vocal"),
+                "drum_groove": next((tag for tag in tags if any(token in tag for token in ("drum", "hi-hat", "kick", "snare"))), "crisp pocket drums"),
+                "bass_low_end": next((tag for tag in tags if "bass" in tag or "808" in tag or "sub" in tag), "controlled low-end"),
+                "melodic_identity": next((tag for tag in tags if any(token in tag for token in ("piano", "guitar", "synth", "sample", "strings", "keys"))), "clear melodic motif"),
+                "texture_space": "wide stereo space",
+                "mix_master": next((tag for tag in tags if "mix" in tag or "fidelity" in tag), "polished modern mix"),
+                "custom_tags": [],
+                "caption": caption,
+            }
+        intent_payload.setdefault("caption", caption)
         artist_name = normalize_artist_name(
             payload.get("artist_name") or payload.get("artist"),
             derive_artist_name(title, description, ", ".join(tags)),
@@ -558,11 +628,21 @@ class LocalComposer:
             "artist_name": artist_name,
             "title": title,
             "tags": ", ".join(tags),
+            "caption": caption,
+            "song_intent": intent_payload,
             "bpm": bpm_value,
             "key_scale": key_scale,
             "time_signature": str(time_sig_value),
             "language": language,
             "lyrics": lyrics,
+            "quality_profile": str(payload.get("quality_profile") or "chart_master"),
+            "song_model": str(payload.get("song_model") or "acestep-v15-xl-sft"),
+            "audio_format": str(payload.get("audio_format") or "wav32"),
+            "inference_steps": int(payload.get("inference_steps") or 64),
+            "guidance_scale": float(payload.get("guidance_scale") or 8.0),
+            "shift": float(payload.get("shift") or 3.0),
+            "infer_method": str(payload.get("infer_method") or "ode"),
+            "sampler_mode": str(payload.get("sampler_mode") or "heun"),
             "composer_model": model,
             "composer_provider": provider,
         }

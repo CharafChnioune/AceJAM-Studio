@@ -7,14 +7,22 @@ from pathlib import Path
 from typing import Iterable
 
 from acestep.handler import AceStepHandler
-from studio_core import ACE_STEP_LM_MODELS, KNOWN_ACE_STEP_MODELS, OFFICIAL_UNRELEASED_MODELS
+from studio_core import (
+    ACE_STEP_LM_MODELS,
+    KNOWN_ACE_STEP_MODELS,
+    OFFICIAL_CORE_MODEL_ID,
+    OFFICIAL_MAIN_MODEL_COMPONENTS,
+    OFFICIAL_MAIN_MODEL_REPO,
+    OFFICIAL_UNRELEASED_MODELS,
+    official_boot_model_ids,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_CACHE_DIR = BASE_DIR / "model_cache"
 CHECKPOINT_DIR = MODEL_CACHE_DIR / "checkpoints"
 SHARED_RUNTIME_COMPONENTS = ("vae", "Qwen3-Embedding-0.6B")
-WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pt"}
+WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pt", ".ckpt"}
 
 
 def checkpoint_dir_ready(path: Path) -> bool:
@@ -53,6 +61,8 @@ def default_download_models() -> list[str]:
         if model_name and model_name not in names:
             names.append(model_name)
 
+    for model_name in official_boot_model_ids():
+        add(model_name)
     add("acestep-v15-turbo")
     for component in SHARED_RUNTIME_COMPONENTS:
         add(component)
@@ -80,6 +90,36 @@ def download_models(models: Iterable[str], check_only: bool = False) -> list[str
     requested = list(models)
     failures: list[str] = []
     for model_name in requested:
+        if model_name == OFFICIAL_CORE_MODEL_ID:
+            missing_components = [
+                component
+                for component in OFFICIAL_MAIN_MODEL_COMPONENTS
+                if not checkpoint_dir_ready(CHECKPOINT_DIR / component)
+            ]
+            if not missing_components:
+                print(f"[models] ready: {model_name}", flush=True)
+                continue
+            if check_only:
+                failures.extend(missing_reason(component) for component in missing_components)
+                continue
+            print(f"[models] downloading: {model_name} ({OFFICIAL_MAIN_MODEL_REPO})", flush=True)
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=OFFICIAL_MAIN_MODEL_REPO,
+                local_dir=str(CHECKPOINT_DIR),
+                local_dir_use_symlinks=False,
+            )
+            missing_components = [
+                component
+                for component in OFFICIAL_MAIN_MODEL_COMPONENTS
+                if not checkpoint_dir_ready(CHECKPOINT_DIR / component)
+            ]
+            if missing_components:
+                failures.extend(missing_reason(component) for component in missing_components)
+                continue
+            print(f"[models] installed: {model_name}", flush=True)
+            continue
         path = CHECKPOINT_DIR / model_name
         if checkpoint_dir_ready(path):
             print(f"[models] ready: {model_name}", flush=True)

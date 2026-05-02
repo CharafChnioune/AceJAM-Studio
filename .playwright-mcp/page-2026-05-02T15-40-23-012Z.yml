@@ -1,0 +1,248 @@
+- generic [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#workspace"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e8]: AceJAM Studio
+      - generic [ref=e9]: ACE-Step 1.5
+      - navigation "Main navigation" [ref=e10]:
+        - generic [ref=e11]: Create
+        - button "Simple" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Simple
+        - button "Custom" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Custom
+        - generic [ref=e20]: Edit
+        - button "Cover" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - text: Cover
+        - button "Repaint" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - text: Repaint
+        - button "Extract" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - text: Extract
+        - button "Lego" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - text: Lego
+        - button "Complete" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - text: Complete
+        - generic [ref=e39]: Produce
+        - button "Album" [ref=e40] [cursor=pointer]:
+          - img [ref=e41]
+          - text: Album
+        - button "Trainer" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+          - text: Trainer
+        - generic [ref=e48]: Manage
+        - button "Library" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Library
+        - button "Settings" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - text: Settings
+      - status [ref=e56]: ✓ Studio ready.
+    - main [ref=e57]:
+      - generic [ref=e58]:
+        - generic [ref=e59]:
+          - generic [ref=e60]: ACE-Step Audio Model
+          - combobox "ACE-Step Audio Model" [ref=e61]:
+            - option "Auto (Turbo - best default, fast)"
+            - option "Turbo - best default, fast"
+            - option "Turbo Shift3 - clear timbre, dry (not installed)"
+            - option "SFT - CFG detail tuning"
+            - option "Base - all tasks, fine-tuning (not installed)"
+            - option "XL Turbo - best 20GB+ daily driver (not installed)"
+            - option "XL SFT - highest detail, CFG" [selected]
+            - option "XL Base - all tasks, XL quality"
+            - option "Turbo RL - official, unreleased (unreleased)"
+          - generic [ref=e62]: "XL SFT: Turbo is recommended for fast prompt-to-song; XL Turbo is the quality daily driver on 20GB+ GPUs."
+          - generic [ref=e63]:
+            - generic [ref=e64]:
+              - generic [ref=e65]: XL SFT
+              - generic [ref=e66]: Installed
+            - generic [ref=e67]: Turbo is recommended for fast prompt-to-song; XL Turbo is the quality daily driver on 20GB+ GPUs.
+            - group [ref=e68]:
+              - generic "Model details" [ref=e69] [cursor=pointer]:
+                - strong [ref=e71]: Model details
+        - generic [ref=e72]:
+          - generic [ref=e73]: Duration (s)
+          - spinbutton "Duration (s)" [ref=e74]: "60"
+        - generic [ref=e75]:
+          - generic [ref=e76]: Variants
+          - spinbutton "Variants" [ref=e77]: "3"
+        - generic [ref=e80] [cursor=pointer]:
+          - checkbox "Save to library" [checked] [ref=e81]
+          - text: Save to library
+      - generic [ref=e82]:
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: Adapter
+            - combobox "Adapter" [ref=e86]:
+              - option "No adapter" [selected]
+          - generic [ref=e87]:
+            - generic [ref=e88]: Adapter strength
+            - slider "Adapter strength" [ref=e89]: "1"
+          - generic [ref=e92] [cursor=pointer]:
+            - checkbox "Use adapter" [ref=e93]
+            - text: Use adapter
+        - generic [ref=e94]: PEFT LoRA adapters trained in Trainer can be applied to Simple, Custom, Cover, Repaint, Lego and Complete.
+      - group [ref=e95]:
+        - generic "Start Here Describe a song idea. Your local LLM fills a clean draft, then you can generate or move into Custom." [ref=e96] [cursor=pointer]:
+          - generic [ref=e97]:
+            - strong [ref=e98]: Start Here
+            - generic [ref=e99]: Describe a song idea. Your local LLM fills a clean draft, then you can generate or move into Custom.
+        - generic [ref=e100]:
+          - generic [ref=e101]:
+            - generic [ref=e102]:
+              - generic [ref=e103]: Prompt mode
+              - combobox "Prompt mode" [ref=e104]:
+                - option "Current mode" [selected]
+                - option "Simple"
+                - option "Custom"
+                - option "News to song"
+                - option "Improve lyrics"
+                - option "Cover / Remix"
+                - option "Repaint"
+                - option "Extract"
+                - option "Lego"
+                - option "Complete"
+                - option "Album"
+            - generic [ref=e105]: "Using Local AI Writer/Planner: Ollama charaf/qwen3.5-9b-claude-opus:latest."
+            - button "Fill all fields" [ref=e108] [cursor=pointer]
+          - generic [ref=e109]:
+            - generic [ref=e110]: Describe what you want
+            - textbox "Describe what you want" [ref=e111]:
+              - /placeholder: Make a funny Dutch rap about the chaos of Monday morning...
+          - generic [ref=e112]: Uses Local AI Writer/Planner. Updates the current mode directly — every field stays editable.
+      - group [ref=e113]:
+        - generic "Local AI Writer/Planner Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192" [ref=e114] [cursor=pointer]:
+          - generic [ref=e115]:
+            - strong [ref=e116]: Local AI Writer/Planner
+            - generic [ref=e117]: Ollama charaf/qwen3.5-9b-claude-opus:latest · balanced · temp 0.45, top-p 0.92, top-k 40, max 2048, ctx 8192
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - generic [ref=e121]: Local AI provider
+              - combobox "Local AI provider" [ref=e122]:
+                - option "Ollama" [selected]
+                - option "LM Studio"
+            - generic [ref=e123]:
+              - generic [ref=e124]: Writer / planner model
+              - combobox "Writer / planner model" [ref=e125]:
+                - option "charaf/qwen3.5-9b-claude-opus:latest" [selected]
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:thinking"
+                - option "charaf/Huihui-Qwen3.6-35B-A3B-abliterated-mlx:instruct"
+                - option "huihui_ai/Qwen3.6-abliterated:35b"
+                - option "qwen3.6:35b-a3b-coding-nvfp4"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:instruct"
+                - option "charaf/Huihui-Qwen3.6-27B-abliterated-mlx-nvfp4:thinking"
+                - option "qwen3:0.6b"
+            - generic [ref=e126]:
+              - generic [ref=e127]: Preset
+              - combobox "Preset" [ref=e128]:
+                - option "Stable"
+                - option "Balanced" [selected]
+                - option "Creative"
+                - option "Wild"
+            - generic [ref=e129]:
+              - generic [ref=e130]: Temperature
+              - spinbutton "Temperature" [ref=e131]: "0.45"
+            - generic [ref=e132]:
+              - generic [ref=e133]: Top-p
+              - spinbutton "Top-p" [ref=e134]: "0.92"
+            - generic [ref=e135]:
+              - generic [ref=e136]: Top-k
+              - spinbutton "Top-k" [ref=e137]: "40"
+          - group [ref=e138]:
+            - generic "Advanced Repeat control, seed, output and context" [ref=e139] [cursor=pointer]:
+              - generic [ref=e140]:
+                - strong [ref=e141]: Advanced
+                - generic [ref=e142]: Repeat control, seed, output and context
+      - generic [ref=e143]:
+        - generic [ref=e144]:
+          - generic [ref=e145]:
+            - generic [ref=e146]: Prompt to song
+            - heading "Simple" [level=2] [ref=e147]
+            - paragraph [ref=e148]: Type one idea, let the local LLM fill in the rest, then click Generate. The fastest path from concept to audio — perfect for first-time use.
+          - generic [ref=e149]: Beginner friendly
+        - generic [ref=e150]:
+          - generic [ref=e151]: Song idea
+          - textbox "Song idea" [ref=e152]:
+            - /placeholder: A Dutch melodic rap song about late-night Rotterdam, warm keys, 808 bass, emotional hook
+        - generic [ref=e153]:
+          - generic [ref=e156] [cursor=pointer]:
+            - checkbox "Instrumental" [ref=e157]
+            - text: Instrumental
+          - generic [ref=e158]:
+            - generic [ref=e159]: Quality preset
+            - combobox "Quality preset" [ref=e160]:
+              - option "Chart Master — final quality" [selected]
+              - option "Balanced Pro — 50-step quality"
+              - option "Preview Fast — Turbo draft"
+              - option "Official Raw — ACE-Step defaults"
+          - generic [ref=e163] [cursor=pointer]:
+            - checkbox "All 7 models" [ref=e164]
+            - text: All 7 models
+        - generic [ref=e165]: "Final-quality render: ~50 inference steps on the highest model variant. Best fidelity, slowest."
+        - generic [ref=e166]:
+          - generic [ref=e167]:
+            - strong [ref=e168]: lyrics
+            - text: missing
+          - generic [ref=e169]:
+            - strong [ref=e170]: tags
+            - text: missing
+          - generic [ref=e171]:
+            - strong [ref=e172]: model
+            - text: installed
+          - generic [ref=e173]:
+            - strong [ref=e174]: task
+            - text: compatible
+          - generic [ref=e175]:
+            - strong [ref=e176]: payload
+            - text: check pending
+        - generic [ref=e177]: Songwriting and planning use the Local AI Writer/Planner selected above. ACE-Step only renders the audio.
+        - generic [ref=e178]:
+          - generic [ref=e179]:
+            - generic [ref=e180]: 4B LM
+            - generic [ref=e181]: Installed
+          - generic [ref=e182]: Strongest official ACE-Step planner for complex composition and audio understanding on large GPUs.
+          - group [ref=e183]:
+            - generic "LM details Complex planning, Audio understanding, Copy melody" [ref=e184] [cursor=pointer]:
+              - generic [ref=e185]:
+                - strong [ref=e186]: LM details
+                - generic [ref=e187]: Complex planning, Audio understanding, Copy melody
+        - generic [ref=e188]:
+          - button "Fill from idea" [ref=e189] [cursor=pointer]
+          - button "Generate" [ref=e190] [cursor=pointer]:
+            - text: Generate
+            - generic [ref=e191]: ⌘↵
+    - complementary "Generation results" [ref=e192]:
+      - heading "Results" [level=2] [ref=e193]
+      - generic [ref=e195]:
+        - img [ref=e196]
+        - text: Your generations will appear here.
+        - text: Pick a mode and click Generate to start.
+  - generic [ref=e201]:
+    - heading "Welcome to AceJAM Studio" [level=3] [ref=e202]
+    - paragraph [ref=e203]: "An AI music studio that runs entirely on your machine. Three steps to your first song:"
+    - generic [ref=e204]:
+      - generic [ref=e205]:
+        - generic [ref=e206]: "1"
+        - strong [ref=e207]: Pick a mode
+        - generic [ref=e208]: Start with Simple — fastest path to a finished track.
+      - generic [ref=e209]:
+        - generic [ref=e210]: "2"
+        - strong [ref=e211]: Describe your song
+        - generic [ref=e212]: One line is enough. The local LLM fills lyrics, tags, BPM and key.
+      - generic [ref=e213]:
+        - generic [ref=e214]: "3"
+        - strong [ref=e215]: Click Generate
+        - generic [ref=e216]: ACE-Step renders the audio. Edit any field before or after.
+    - generic [ref=e217]:
+      - button "Skip" [ref=e218] [cursor=pointer]
+      - button "Show me Simple mode" [active] [ref=e219] [cursor=pointer]

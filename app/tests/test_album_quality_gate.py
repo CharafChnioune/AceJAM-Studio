@@ -7,8 +7,13 @@ from album_quality_gate import (
     ALBUM_PAYLOAD_GATE_VERSION,
     AlbumRunDebugLogger,
     build_album_global_sonic_caption,
+    build_lyrical_craft_contract,
+    build_producer_grade_sonic_contract,
     evaluate_album_payload_quality,
     evaluate_genre_adherence,
+    lyric_craft_gate,
+    lyric_density_gate,
+    producer_grade_readiness,
     tag_dimension_coverage,
 )
 from songwriting_toolkit import lyric_length_plan
@@ -114,9 +119,9 @@ class AlbumQualityGateTest(unittest.TestCase):
         issue_ids = {issue["id"] for issue in report["issues"]}
 
         self.assertFalse(report["gate_passed"])
-        self.assertIn("genre_intent_missing_rap_vocal", issue_ids)
         self.assertIn("genre_intent_missing_rap_groove", issue_ids)
         self.assertIn("rap_not_dominant", issue_ids)
+        self.assertIn("orchestral_overdominant", issue_ids)
         self.assertEqual(report["genre_intent_contract"]["family"], "rap")
 
     def test_rap_lyrics_reject_arrangement_stage_directions(self):
@@ -149,6 +154,39 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertFalse(adherence["gate_passed"])
         self.assertIn("non_rap_arrangement_lyric_leakage", issue_ids)
 
+    def test_rap_lyrics_allow_normal_drums_hit_hard_bar(self):
+        lyrics = (
+            "[Intro]\n"
+            "City lights are leaning while the corner keeps score\n"
+            "[Verse 1]\n"
+            "Cold suits whisper while the drums hit hard\n"
+            + "Every block remembers what the suits ignore\n" * 16
+            + "[Hook]\n"
+            "We keep the truth alive when the pressure gets raw\n"
+            "[Verse 2]\n"
+            "Low-end shadows move when the bassline drops\n"
+            + "Every signature cracks when the truth hits floor\n" * 14
+            + "[Final Hook]\n"
+            "We keep the truth alive when the pressure gets raw\n"
+            "[Outro]\n"
+            "Concrete talks clear when the night gets low\n"
+        )
+        payload = {
+            "caption": "West Coast hip-hop, boom-bap drums, 808 bass, male rap vocal, gritty mood, dynamic hook, polished studio mix",
+            "tag_list": ["West Coast hip-hop", "boom-bap drums", "808 bass", "male rap vocal", "gritty mood", "dynamic hook", "polished studio mix"],
+            "style": "West Coast rap",
+            "lyrics": lyrics,
+            "duration": 120,
+        }
+
+        adherence = evaluate_genre_adherence(payload)
+        issue_ids = {issue["id"] for issue in adherence["issues"]}
+        scan = adherence["stats"]["arrangement_lyric_scan"]
+
+        self.assertTrue(adherence["gate_passed"])
+        self.assertNotIn("non_rap_arrangement_lyric_leakage", issue_ids)
+        self.assertTrue(any(item["status"] == "allowed_rap_bar" and "drums hit hard" in item["line"] for item in scan))
+
     def test_global_caption_is_compact_album_sonic_dna_not_track_list(self):
         tracks = [{
             "tags": "hip-hop, boom-bap, dusty piano, male rap vocal, gritty mood, anthemic hook, punchy studio mix",
@@ -168,20 +206,168 @@ class AlbumQualityGateTest(unittest.TestCase):
 
     def test_tag_dimension_coverage_requires_all_album_payload_dimensions(self):
         caption = (
-            "pop, steady groove, piano, clear lead vocal, uplifting mood, "
-            "dynamic hook arrangement, polished studio mix"
+            "modern pop, bright drums, deep bass, piano motif, clear lead vocal, "
+            "emotional hook lift, warm analog texture, polished studio mix"
         )
         coverage = tag_dimension_coverage(caption)
 
         self.assertEqual(coverage["status"], "pass")
         self.assertEqual(coverage["missing"], [])
-        self.assertEqual(len(coverage["dimensions"]), 7)
+        self.assertEqual(len(coverage["dimensions"]), 8)
+
+    def test_producer_grade_caption_without_beat_dna_fails(self):
+        payload = {
+            "caption": "polished modern mix",
+            "tag_list": ["polished modern mix"],
+            "lyrics": "[Instrumental]",
+            "instrumental": True,
+            "duration": 60,
+        }
+
+        readiness = producer_grade_readiness(payload)
+        report = evaluate_album_payload_quality(payload, repair=False)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertFalse(readiness["gate_passed"])
+        self.assertIn("drum_groove", readiness["sonic_dna_coverage"]["missing"])
+        self.assertIn("low_end_bass", readiness["sonic_dna_coverage"]["missing"])
+        self.assertIn("melodic_identity", readiness["sonic_dna_coverage"]["missing"])
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("producer_grade_sonic_dna_unrepaired", issue_ids)
+
+    def test_generic_ai_lyrics_fail_craft_gate(self):
+        lyrics = (
+            "[Verse]\n"
+            "Neon dreams keep a fire inside\n"
+            "We rise through the storm and touch the sky\n"
+            "[Chorus]\n"
+            "We rise, we rise, nothing can stop us\n"
+        )
+
+        gate = lyric_craft_gate(lyrics, {"title": "Concrete Canyons", "style": "pop vocal"}, duration=120)
+        report = evaluate_album_payload_quality({
+            "caption": (
+                "pop, steady drums, deep bass, piano motif, clear lead vocal, "
+                "emotional hook lift, warm analog texture, polished studio mix"
+            ),
+            "lyrics": lyrics,
+            "duration": 60,
+            "language": "en",
+        }, repair=False)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertFalse(gate["gate_passed"])
+        self.assertIn("lyric_craft_generic_ai_phrase", gate["issue_ids"])
+        self.assertIn("lyric_craft_generic_ai_phrase", issue_ids)
+        self.assertIn("lyric_craft_gate_failed", issue_ids)
+
+    def test_mixed_metaphor_drift_fails_unless_surreal_requested(self):
+        lyrics = (
+            "[Verse]\n"
+            "Storm in the engine, fire in the tide\n"
+            "Stars load the rifle where the altar wires hide\n"
+            "[Chorus]\n"
+            "The ledger keeps my name where the black rain rides\n"
+        )
+
+        normal = lyric_craft_gate(lyrics, {"title": "Ledger Rain", "style": "cinematic pop"}, duration=120)
+        surreal = lyric_craft_gate(
+            lyrics,
+            {"title": "Ledger Rain", "style": "surreal abstract cinematic pop"},
+            options={"concept": "surreal abstract dream logic"},
+            duration=120,
+        )
+
+        self.assertFalse(normal["gate_passed"])
+        self.assertIn("lyric_craft_mixed_metaphor", normal["issue_ids"])
+        self.assertNotIn("lyric_craft_mixed_metaphor", surreal["issue_ids"])
+
+    def test_overlong_unsingable_lines_fail_breathability(self):
+        long_line = "I keep explaining every feeling with a paragraph that never leaves the singer room to breathe tonight"
+        lyrics = "\n".join(["[Verse]", long_line, long_line, long_line, "[Chorus]", long_line, long_line])
+
+        gate = lyric_craft_gate(lyrics, {"title": "No Air", "style": "R&B vocal"}, duration=120)
+
+        self.assertFalse(gate["gate_passed"])
+        self.assertIn("lyric_craft_line_breathability", gate["issue_ids"])
+
+    def test_weak_hook_without_promise_triggers_craft_repair_signal(self):
+        lyrics = (
+            "[Verse]\n"
+            "Concrete windows count the rain on the floor\n"
+            "My coat keeps receipts from the life before\n"
+            "[Chorus]\n"
+            "We rise\n"
+        )
+
+        gate = lyric_craft_gate(lyrics, {"title": "Receipt Rain", "style": "pop vocal"}, duration=120)
+
+        self.assertFalse(gate["gate_passed"])
+        self.assertIn("lyric_craft_hook_weak", gate["issue_ids"])
+
+    def test_rap_cadence_and_pop_hook_can_both_pass_craft_gate(self):
+        rap = "\n".join([
+            "[Intro]",
+            "Corner glass rattles when the low drums roll",
+            "[Verse 1]",
+            "Cold suit smiles but the block stays cold",
+            "Gold tooth truth with the rent past due",
+            "Old roof leaks where the skyline grew",
+            "Phone light flickers on a name I knew",
+            "Stone-faced ledger says the debt came through",
+            "[Hook]",
+            "Concrete remembers what they sold",
+            "Concrete remembers what they sold",
+        ])
+        pop = "\n".join([
+            "[Verse]",
+            "Your blue coat hangs by the kitchen door",
+            "Rain writes circles on the grocery floor",
+            "[Chorus]",
+            "Come home before the lights go out",
+            "Come home, I know what this is about",
+            "[Final Chorus]",
+            "Come home before the lights go out",
+        ])
+
+        rap_gate = lyric_craft_gate(rap, {"title": "Concrete Remembers", "style": "West Coast rap"}, duration=90)
+        pop_gate = lyric_craft_gate(pop, {"title": "Come Home", "style": "R&B pop vocal"}, duration=90)
+
+        self.assertTrue(rap_gate["gate_passed"], rap_gate)
+        self.assertTrue(pop_gate["gate_passed"], pop_gate)
+
+    def test_sparse_instrumental_contract_does_not_force_literary_verses(self):
+        contract = build_lyrical_craft_contract({"style": "instrumental techno with evolving synth motif"})
+        gate = lyric_craft_gate("[Instrumental]", {"style": "instrumental techno"}, duration=180, instrumental=True)
+
+        self.assertEqual(contract["family"], "sparse_or_instrumental")
+        self.assertTrue(gate["gate_passed"])
+
+    def test_long_rap_density_gate_blocks_underfilled_verses(self):
+        plan = lyric_length_plan(240, "dense", genre_hint="West Coast rap")
+        lines = []
+        for section in plan["sections"]:
+            lines.append(f"[{section}]")
+            count = 2 if "Verse" in section else 6
+            for idx in range(count):
+                lines.append(f"Concrete pressure answers the block {section} {idx}")
+
+        gate = lyric_density_gate(
+            "\n".join(lines),
+            plan,
+            duration=240,
+            genre_hint="West Coast rap",
+        )
+        issue_ids = {issue["id"] for issue in gate["issues"]}
+
+        self.assertFalse(gate["gate_passed"])
+        self.assertIn("rap_verses_underfilled", issue_ids)
 
     def test_long_vocal_track_with_short_nonsense_lyrics_fails_loudly(self):
         payload = {
             "caption": (
-                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
-                "dynamic hook arrangement, polished studio mix"
+                "modern pop, bright drums, deep bass, piano motif, clear lead vocal, "
+                "emotional hook lift, warm analog texture, polished studio mix"
             ),
             "lyrics": "[Verse]\nMorning finds the you on the floor\n[Chorus]\nThe you is here",
             "duration": 240,
@@ -240,12 +426,12 @@ class AlbumQualityGateTest(unittest.TestCase):
     def test_global_caption_dedupes_against_track_caption(self):
         payload = {
             "caption": (
-                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
-                "dynamic hook arrangement, polished studio mix"
+                "modern pop, bright drums, deep bass, piano motif, clear lead vocal, "
+                "emotional hook lift, warm analog texture, polished studio mix"
             ),
             "global_caption": (
-                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
-                "dynamic hook arrangement, polished studio mix"
+                "modern pop, bright drums, deep bass, piano motif, clear lead vocal, "
+                "emotional hook lift, warm analog texture, polished studio mix"
             ),
             "lyrics": "[Instrumental]",
             "instrumental": True,
@@ -262,8 +448,8 @@ class AlbumQualityGateTest(unittest.TestCase):
         sections = ["Intro", "Verse", "Chorus", "Verse 2", "Final Chorus"]
         payload = {
             "caption": (
-                "pop, steady groove, piano, clear lead vocal, uplifting mood, "
-                "dynamic hook arrangement, polished studio mix"
+                "modern pop, bright drums, deep bass, piano motif, clear lead vocal, "
+                "emotional hook lift, warm analog texture, polished studio mix"
             ),
             "lyrics": _lyrics_for_sections(sections, lines_per_section=4),
             "duration": 60,
@@ -284,7 +470,7 @@ class AlbumQualityGateTest(unittest.TestCase):
         lyric_lines = 0
         for section in plan["sections"]:
             lines.append(f"[{section}]")
-            section_lines = 8 if lyric_lines < 40 else 7
+            section_lines = 12 if "Verse" in section else 8
             for idx in range(section_lines):
                 lines.append(f"Blocks bend while sirens answer back hard {lyric_lines:02d}")
                 lyric_lines += 1
@@ -294,8 +480,8 @@ class AlbumQualityGateTest(unittest.TestCase):
                 break
         payload = {
             "caption": (
-                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
-                "dynamic hook arrangement, polished studio mix"
+                "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, "
+                "dynamic hook arrangement, gritty street texture, punchy polished studio mix"
             ),
             "lyrics": "\n".join(lines),
             "duration": 240,
@@ -308,8 +494,8 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertTrue(report["gate_passed"])
         self.assertNotIn("lyrics_reflowed_to_min_lines", " ".join(report["repair_actions"]))
-        effective_min = report["lyric_duration_fit"]["plan"]["effective_min_lines"]
-        self.assertLess(effective_min, plan["min_lines"])
+        effective_min = report["lyric_duration_fit"]["plan"].get("effective_min_lines") or report["lyric_duration_fit"]["plan"]["min_lines"]
+        self.assertGreaterEqual(effective_min, 75)
         self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["line_count"], effective_min)
         self.assertLessEqual(report["lyric_duration_fit"]["stats"]["char_count"], 4096)
 
@@ -340,10 +526,10 @@ class AlbumQualityGateTest(unittest.TestCase):
 
         self.assertEqual(report["status"], "auto_repair")
         self.assertTrue(report["gate_passed"])
-        self.assertIn("lyrics_extended_to_min_words", " ".join(report["repair_actions"]))
+        self.assertIn("lyric_density_sections_extended", " ".join(report["repair_actions"]))
         self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["word_count"], plan["min_words"])
-        effective_min = report["lyric_duration_fit"]["plan"]["effective_min_lines"]
-        self.assertLess(effective_min, plan["min_lines"])
+        effective_min = report["lyric_duration_fit"]["plan"].get("effective_min_lines") or report["lyric_duration_fit"]["plan"]["min_lines"]
+        self.assertGreaterEqual(effective_min, 75)
         self.assertGreaterEqual(report["lyric_duration_fit"]["stats"]["line_count"], effective_min)
         self.assertLessEqual(report["lyric_duration_fit"]["stats"]["char_count"], 4096)
 
@@ -401,11 +587,11 @@ class AlbumQualityGateTest(unittest.TestCase):
         report = evaluate_album_payload_quality(payload, repair=True)
         repaired_lyrics = report["repaired_payload"]["lyrics"]
 
-        self.assertFalse(report["gate_passed"])
+        self.assertTrue(report["gate_passed"])
         self.assertIn(protected, repaired_lyrics)
         self.assertIn("Boardroom smiles while they cut them deals.", repaired_lyrics)
         self.assertNotIn("required_phrases_missing", {issue["id"] for issue in report["issues"]})
-        self.assertIn("lyrics_under_length", {issue["id"] for issue in report["issues"]})
+        self.assertIn("lyric_density_sections_extended", " ".join(report["repair_actions"]))
 
     def test_escaped_newlines_in_lyrics_are_repaired_before_counting(self):
         sections = ["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
