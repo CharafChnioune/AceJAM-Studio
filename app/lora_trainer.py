@@ -115,6 +115,10 @@ def _allow_cpu_training_on_apple_silicon() -> bool:
     return parse_bool(os.environ.get("ACEJAM_ALLOW_CPU_TRAINING"), False)
 
 
+def _allow_mps_fp16_training() -> bool:
+    return parse_bool(os.environ.get("ACEJAM_ALLOW_MPS_FP16_TRAINING"), False)
+
+
 def default_training_device(requested: Any = None) -> str:
     device = str(requested or "auto").strip().lower()
     if device == "metal":
@@ -133,6 +137,25 @@ def default_training_device(requested: Any = None) -> str:
     return "cpu"
 
 
+def training_precision_for_device(device: Any, requested: Any = None) -> str:
+    precision = str(requested or "auto").strip().lower()
+    aliases = {
+        "float32": "fp32",
+        "32": "fp32",
+        "32-true": "fp32",
+        "float16": "fp16",
+        "16": "fp16",
+        "16-mixed": "fp16",
+        "bfloat16": "bf16",
+        "bf16-mixed": "bf16",
+    }
+    precision = aliases.get(precision, precision or "auto")
+    device_type = str(device or "").split(":", 1)[0].lower()
+    if device_type == "mps" and not _allow_mps_fp16_training():
+        return "fp32"
+    return precision
+
+
 def training_device_policy() -> dict[str, Any]:
     apple_mps = _apple_silicon_mps_available()
     cpu_allowed = (not apple_mps) or _allow_cpu_training_on_apple_silicon()
@@ -144,6 +167,9 @@ def training_device_policy() -> dict[str, Any]:
         "cpu_allowed": cpu_allowed,
         "cpu_blocked": not cpu_allowed,
         "cpu_override_env": "ACEJAM_ALLOW_CPU_TRAINING",
+        "default_precision": training_precision_for_device(default_training_device("auto"), "auto"),
+        "mps_fp16_allowed": _allow_mps_fp16_training(),
+        "mps_fp16_override_env": "ACEJAM_ALLOW_MPS_FP16_TRAINING",
     }
 
 
@@ -511,6 +537,7 @@ class AceTrainingManager:
         tensor_output = Path(str(payload.get("tensor_output") or "")).expanduser() if payload.get("tensor_output") else self.tensor_dir / job_id
         variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
         device = default_training_device(payload.get("device"))
+        precision = training_precision_for_device(device, payload.get("precision"))
         command = [
             sys.executable,
             "-m",
@@ -529,7 +556,7 @@ class AceTrainingManager:
             "--device",
             device,
             "--precision",
-            str(payload.get("precision") or "auto"),
+            precision,
         ]
         if dataset_json:
             command.extend(["--dataset-json", dataset_json])
@@ -538,7 +565,7 @@ class AceTrainingManager:
         return self._start_job(
             kind="preprocess",
             command=command,
-            params={"model_variant": variant, "dataset_json": dataset_json, "audio_dir": audio_dir, "device": device},
+            params={"model_variant": variant, "dataset_json": dataset_json, "audio_dir": audio_dir, "device": device, "precision": precision},
             paths={"tensor_output": str(tensor_output), "dataset_json": dataset_json, "audio_dir": audio_dir},
         )
 
@@ -558,6 +585,7 @@ class AceTrainingManager:
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         epoch_audition = self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed)
         device = default_training_device(payload.get("device"))
+        precision = training_precision_for_device(device, payload.get("precision"))
         output_name = slug(trigger_tag or adapter_type, "adapter")
         output_dir = Path(str(payload.get("output_dir") or "")).expanduser() if payload.get("output_dir") else self.training_dir / f"{output_name}-{job_id}"
         log_dir = output_dir / "runs"
@@ -614,7 +642,7 @@ class AceTrainingManager:
             "--device",
             device,
             "--precision",
-            str(payload.get("precision") or "auto"),
+            precision,
         ]
         if parse_bool(payload.get("offload_encoder"), False):
             command.append("--offload-encoder")
@@ -671,6 +699,7 @@ class AceTrainingManager:
                 "save_every_n_epochs": 1,
                 "epoch_audition": epoch_audition,
                 "device": device,
+                "precision": precision,
             },
             paths={
                 "dataset_dir": str(dataset_dir),
@@ -690,6 +719,7 @@ class AceTrainingManager:
         variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
         output = self.training_dir / f"estimate-{job_id}.json"
         device = default_training_device(payload.get("device"))
+        precision = training_precision_for_device(device, payload.get("precision"))
         command = [
             sys.executable,
             "train.py",
@@ -715,12 +745,12 @@ class AceTrainingManager:
             "--device",
             device,
             "--precision",
-            str(payload.get("precision") or "auto"),
+            precision,
         ]
         return self._start_job(
             kind="estimate",
             command=command,
-            params={"model_variant": variant, "device": device},
+            params={"model_variant": variant, "device": device, "precision": precision},
             paths={"dataset_dir": str(dataset_dir), "estimate_output": str(output)},
         )
 
@@ -782,6 +812,7 @@ class AceTrainingManager:
 
         total_epochs = self._resume_total_epochs(job, params, latest_epoch)
         params["device"] = default_training_device("auto")
+        params["precision"] = training_precision_for_device(params["device"], params.get("precision"))
         if job.kind == "one_click_train":
             params["train_epochs"] = total_epochs
         else:
@@ -1020,7 +1051,7 @@ class AceTrainingManager:
             "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
             "device": device,
-            "precision": str(payload.get("precision") or "auto"),
+            "precision": training_precision_for_device(device, payload.get("precision")),
             "auto_load": parse_bool(payload.get("auto_load"), True),
             "lora_scale": parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0),
             "use_official_lm_labels": parse_bool(payload.get("use_official_lm_labels"), False),
@@ -1471,7 +1502,7 @@ class AceTrainingManager:
             "--device",
             str(params.get("device") or "auto"),
             "--precision",
-            str(params.get("precision") or "auto"),
+            training_precision_for_device(params.get("device") or "auto", params.get("precision")),
             "--gradient-checkpointing",
             "--no-offload-encoder",
             "--num-workers",

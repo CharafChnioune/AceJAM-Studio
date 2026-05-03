@@ -157,6 +157,25 @@ def patch_lora_adapter_name_sanitizer() -> bool:
     return True
 
 
+def patch_mps_training_auto_precision() -> bool:
+    path = VENDOR_DIR / "acestep" / "training_v2" / "gpu_utils.py"
+    text = path.read_text(encoding="utf-8")
+    original = (
+        '        elif device_type == "mps":\n'
+        '            precision = "fp16"\n'
+    )
+    patched = (
+        '        elif device_type == "mps":\n'
+        '            precision = "fp32"\n'
+    )
+    if patched in text:
+        return False
+    if original not in text:
+        raise RuntimeError(f"Could not find MPS auto precision block in {path}")
+    path.write_text(text.replace(original, patched, 1), encoding="utf-8")
+    return True
+
+
 def main() -> None:
     if not (VENDOR_DIR / "train.py").is_file():
         raise SystemExit(f"ACE-Step vendor checkout is missing: {VENDOR_DIR}")
@@ -165,6 +184,7 @@ def main() -> None:
         "variant_dir_map" if patch_variant_dir_map() else "",
         "chunked_training_scheduler_epochs" if patch_chunked_training_scheduler_epochs() else "",
         "lora_adapter_name_sanitizer" if patch_lora_adapter_name_sanitizer() else "",
+        "mps_training_auto_precision" if patch_mps_training_auto_precision() else "",
     ]
     applied = [item for item in changed if item]
     if applied:

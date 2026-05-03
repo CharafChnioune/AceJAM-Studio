@@ -4,7 +4,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from lora_trainer import AceTrainingManager, TrainingJob, default_training_device, model_to_variant, training_device_policy, utc_now
+from lora_trainer import (
+    AceTrainingManager,
+    TrainingJob,
+    default_training_device,
+    model_to_variant,
+    training_device_policy,
+    training_precision_for_device,
+    utc_now,
+)
 
 
 class CaptureTrainingManager(AceTrainingManager):
@@ -112,6 +120,17 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(default_training_device("auto"), "cpu")
             self.assertEqual(default_training_device("cpu"), "cpu")
 
+    def test_training_precision_for_mps_forces_fp32_by_default(self):
+        with patch.dict("lora_trainer.os.environ", {}, clear=True):
+            self.assertEqual(training_precision_for_device("mps", "auto"), "fp32")
+            self.assertEqual(training_precision_for_device("mps", "fp16"), "fp32")
+            self.assertEqual(training_precision_for_device("mps", "16-mixed"), "fp32")
+        with patch.dict("lora_trainer.os.environ", {"ACEJAM_ALLOW_MPS_FP16_TRAINING": "1"}, clear=True):
+            self.assertEqual(training_precision_for_device("mps", "fp16"), "fp16")
+            self.assertEqual(training_precision_for_device("mps", "auto"), "auto")
+        self.assertEqual(training_precision_for_device("cuda", "auto"), "auto")
+        self.assertEqual(training_precision_for_device("cpu", "auto"), "auto")
+
     def test_scan_and_save_dataset_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -187,6 +206,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["save_every_n_epochs"], 1)
             self.assertFalse(params["epoch_audition"]["enabled"])
             self.assertEqual(params["device"], "mps")
+            self.assertEqual(params["precision"], "fp32")
             self.assertEqual(manager.auto_epochs(20), 800)
             self.assertEqual(manager.auto_epochs(21), 500)
             self.assertEqual(manager.auto_epochs(101), 300)
@@ -212,6 +232,7 @@ class LoraTrainerTest(unittest.TestCase):
                 )
 
             self.assertEqual(params["device"], "cpu")
+            self.assertEqual(params["precision"], "auto")
 
     def test_preprocess_command_uses_vendor_module(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,6 +268,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("--lokr-weight-decompose", command)
             self.assertEqual(command[command.index("--save-every") + 1], "1")
             self.assertEqual(command[command.index("--device") + 1], "mps")
+            self.assertEqual(command[command.index("--precision") + 1], "fp32")
+            self.assertEqual(job["params"]["precision"], "fp32")
 
     def test_train_command_carries_trigger_tag_for_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -272,6 +295,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(job["params"]["device"], "mps")
             self.assertEqual(command[command.index("--save-every") + 1], "1")
             self.assertEqual(command[command.index("--device") + 1], "mps")
+            self.assertEqual(command[command.index("--precision") + 1], "fp32")
+            self.assertEqual(job["params"]["precision"], "fp32")
             self.assertTrue(Path(job["paths"]["output_dir"]).name.startswith("charaf-hook-"))
 
     def test_manual_train_accepts_epoch_audition_config(self):
@@ -455,11 +480,13 @@ class LoraTrainerTest(unittest.TestCase):
                 resumed = manager.resume_job("resumejob")
 
             self.assertEqual(resumed["params"]["device"], "mps")
+            self.assertEqual(resumed["params"]["precision"], "fp32")
             self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2, 3])
             self.assertEqual(manager.audition_requests[0]["lora_adapter_name"], "epoch_1_epoch_1_loss_0_9130")
             self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 2/3", "train epoch 3/3"])
             first_command = manager.commands[0][1]
             self.assertEqual(first_command[first_command.index("--device") + 1], "mps")
+            self.assertEqual(first_command[first_command.index("--precision") + 1], "fp32")
             self.assertEqual(first_command[first_command.index("--resume-from") + 1], str(checkpoint))
             self.assertEqual(first_command[first_command.index("--scheduler-epochs") + 1], "3")
 
