@@ -206,7 +206,16 @@ def _epoch_audition_search_text(*values: str | None) -> str:
     return re.sub(r"[^a-z0-9&]+", " ", text.lower()).strip()
 
 
-def epoch_audition_genre_profile(caption: str | None = "", lyrics_hint: str | None = "") -> dict[str, Any]:
+def epoch_audition_genre_profile(
+    caption: str | None = "",
+    lyrics_hint: str | None = "",
+    genre_key: str | None = "",
+) -> dict[str, Any]:
+    requested = _epoch_audition_search_text(genre_key)
+    if requested and requested != "auto":
+        for profile in EPOCH_AUDITION_GENRE_PROFILES:
+            if _epoch_audition_search_text(str(profile.get("key") or "")) == requested:
+                return dict(profile)
     search_text = _epoch_audition_search_text(caption, lyrics_hint)
     for profile in EPOCH_AUDITION_GENRE_PROFILES:
         for term in profile.get("terms", ()):
@@ -234,9 +243,10 @@ def build_epoch_audition_caption(
     caption: str | None = "",
     *,
     trigger_tag: str | None = "",
+    genre_key: str | None = "",
     genre_profile: dict[str, Any] | None = None,
 ) -> str:
-    profile = dict(genre_profile or epoch_audition_genre_profile(caption))
+    profile = dict(genre_profile or epoch_audition_genre_profile(caption, genre_key=genre_key))
     parts: list[str] = []
     seen: set[str] = set()
     _append_caption_parts(parts, trigger_tag, seen)
@@ -251,8 +261,9 @@ def default_epoch_audition_lyrics(
     *,
     trigger_tag: str | None = "",
     lyrics_hint: str | None = "",
+    genre_key: str | None = "",
 ) -> tuple[str, dict[str, Any]]:
-    profile = epoch_audition_genre_profile(caption, lyrics_hint)
+    profile = epoch_audition_genre_profile(caption, lyrics_hint, genre_key)
     lyrics = str(profile.get("lyrics") or "").strip()
     meta = {
         "lyrics_source": "genre_default",
@@ -747,12 +758,18 @@ class AceTrainingManager:
     ) -> dict[str, Any]:
         user_caption = str(payload.get("epoch_audition_caption") or "").strip()
         user_lyrics = str(payload.get("epoch_audition_lyrics") or "").strip()
+        user_genre = str(payload.get("epoch_audition_genre") or "auto").strip().lower() or "auto"
         enabled = parse_bool(payload.get("epoch_audition_enabled"), False) or bool(user_caption or user_lyrics)
-        profile = epoch_audition_genre_profile(user_caption, user_lyrics)
-        lyrics, lyrics_meta = default_epoch_audition_lyrics(user_caption, trigger_tag=trigger_tag, lyrics_hint=user_lyrics)
+        profile = epoch_audition_genre_profile(user_caption, user_lyrics, user_genre)
+        lyrics, lyrics_meta = default_epoch_audition_lyrics(
+            user_caption,
+            trigger_tag=trigger_tag,
+            lyrics_hint=user_lyrics,
+            genre_key=user_genre,
+        )
         if not enabled:
             lyrics = ""
-        caption = build_epoch_audition_caption(user_caption, trigger_tag=trigger_tag, genre_profile=profile) if enabled else ""
+        caption = build_epoch_audition_caption(user_caption, trigger_tag=trigger_tag, genre_key=user_genre, genre_profile=profile) if enabled else ""
         vocal_language = str(payload.get("vocal_language") or payload.get("language") or "unknown").strip() or "unknown"
         return {
             "enabled": enabled,
@@ -761,6 +778,7 @@ class AceTrainingManager:
             "user_caption": user_caption,
             "user_lyrics": user_lyrics,
             "lyrics_source": lyrics_meta["lyrics_source"],
+            "genre": user_genre,
             "genre_profile": lyrics_meta["genre_profile"],
             "duration": EPOCH_AUDITION_DURATION_SECONDS,
             "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),

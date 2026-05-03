@@ -344,6 +344,7 @@
     .muted-line { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-snug); }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
     .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-4); }
     .intent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-4); }
     .intent-tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-4) 0; }
     .intent-tab-btn {
@@ -1150,7 +1151,7 @@
       .nav button.active { border-left-color: transparent; border-bottom-color: var(--accent); }
       .nav-group-label { display: none; }
       .status { margin-top: var(--space-4); }
-      .topbar, .grid-2, .grid-3, .intent-grid, .assistant-grid, .quick-quality, .library-toolbar { grid-template-columns: 1fr; }
+      .topbar, .grid-2, .grid-3, .grid-4, .intent-grid, .assistant-grid, .quick-quality, .library-toolbar { grid-template-columns: 1fr; }
       .topbar > div:nth-child(4) { grid-column: auto; }
       .workspace { padding: var(--space-5); }
       .panel { padding: var(--space-5); }
@@ -2469,10 +2470,23 @@
           <label class="check"><input type="checkbox" id="lora-use" checked /> Use adapter</label>
         </div>
 
-        <div class="grid-3" style="margin-top:10px;">
+        <div class="grid-4" style="margin-top:10px;">
           <div>
             <label for="dataset-tag" data-tooltip="A short word the model learns to associate with this style. Use it in your generation captions later to invoke the trained sound.">Training tag</label>
             <input id="dataset-tag" type="text" placeholder="e.g. youssef-style or moody-trap" />
+          </div>
+          <div>
+            <label for="epoch-audition-genre" data-tooltip="Genre used for the fixed 20-second test after every epoch. The tag activates the LoRA in the caption; the lyrics stay clean and generic.">Test genre</label>
+            <select id="epoch-audition-genre">
+              <option value="auto">Auto from tags</option>
+              <option value="rap">Rap / hip hop</option>
+              <option value="pop">Pop</option>
+              <option value="rnb">R&B / soul</option>
+              <option value="rock">Rock</option>
+              <option value="edm">EDM / club</option>
+              <option value="cinematic">Cinematic</option>
+              <option value="country">Country / folk</option>
+            </select>
           </div>
           <div>
             <label for="dataset-language">Language</label>
@@ -2638,18 +2652,14 @@
           </div>
         </div>
         <div class="row" style="margin-top:10px;">
-          <label class="check"><input type="checkbox" id="epoch-audition-enabled" /> Epoch audition</label>
-          <span class="tiny">20 seconds, full-quality 64-step WAV with genre-default lyrics. Your trigger tag is added to the caption only.</span>
+          <label class="check"><input type="checkbox" id="epoch-audition-enabled" checked /> Epoch audition</label>
+          <span class="tiny">Every epoch: 20 seconds, full-quality 64-step WAV with genre-standard lyrics. The training tag is only added to the caption.</span>
         </div>
-        <div class="grid-2" style="margin-top:10px;">
-          <div>
-            <label for="epoch-audition-caption">Audition genre/tags</label>
-            <textarea id="epoch-audition-caption" placeholder="genre, instruments, mood; trigger tag is added automatically"></textarea>
-          </div>
-          <div>
-            <label for="epoch-audition-lyrics">Lyric notes</label>
-            <textarea id="epoch-audition-lyrics" placeholder="Optional genre hint only. AceJAM uses clean standard test lyrics."></textarea>
-          </div>
+        <div style="margin-top:10px;">
+          <label for="epoch-audition-lyrics-preview">Standard test lyrics</label>
+          <textarea id="epoch-audition-lyrics-preview" readonly></textarea>
+          <input id="epoch-audition-caption" type="hidden" value="" />
+          <input id="epoch-audition-lyrics" type="hidden" value="" />
         </div>
         <div class="grid-3" style="margin-top:10px;">
           <div>
@@ -2954,6 +2964,37 @@
     const DOCS_BEST_STANDARD_SHIFT = 3;
     const DEFAULT_BPM = 95;
     const DEFAULT_KEY_SCALE = "A minor";
+    const EPOCH_AUDITION_GENRE_PROFILES = {
+      rap: {
+        tags: "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
+        lyrics: "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows"
+      },
+      pop: {
+        tags: "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
+        lyrics: "[Verse]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives"
+      },
+      rnb: {
+        tags: "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
+        lyrics: "[Verse]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow"
+      },
+      rock: {
+        tags: "driving rock drums, electric guitars, clear lead vocal, strong chorus",
+        lyrics: "[Verse]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir"
+      },
+      edm: {
+        tags: "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
+        lyrics: "[Verse]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus]\nLift me higher when the drop arrives\nWe come alive under flashing lights"
+      },
+      cinematic: {
+        tags: "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
+        lyrics: "[Verse]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus]\nStand as one when the thunder calls\nLight breaks through every ancient wall"
+      },
+      country: {
+        tags: "warm acoustic guitars, steady country drums, clear heartfelt vocal",
+        lyrics: "[Verse]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus]\nTake me home where the porch light shines\nGood hearts gather at closing time"
+      }
+    };
+    const EPOCH_AUDITION_DEFAULT_GENRE = "pop";
     const taskForMode = { simple: "text2music", custom: "text2music", cover: "cover", repaint: "repaint", extract: "extract", lego: "lego", complete: "complete", album: "text2music" };
     const state = {
       mode: "simple",
@@ -3815,6 +3856,36 @@
       return Object.entries(defaults).some(([id, expected]) => controlValue(id) !== expected);
     }
 
+    function normalizedAuditionSearchText(...values) {
+      return values.join(" ").replace(/-/g, " ").toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();
+    }
+
+    function selectedEpochAuditionGenre() {
+      const selected = $("epoch-audition-genre")?.value || "auto";
+      if (selected && selected !== "auto" && EPOCH_AUDITION_GENRE_PROFILES[selected]) return selected;
+      const text = normalizedAuditionSearchText($("epoch-audition-caption")?.value || "");
+      const matches = [
+        ["rap", ["rap", "hip hop", "trap", "drill", "boom bap", "west coast", "gangster"]],
+        ["pop", ["pop", "radio", "dance pop", "synth pop", "electropop"]],
+        ["rnb", ["r&b", "rnb", "soul", "neo soul", "smooth", "slow jam"]],
+        ["rock", ["rock", "guitar", "punk", "metal", "alt rock", "indie rock"]],
+        ["edm", ["edm", "house", "techno", "trance", "club", "dance", "electronic"]],
+        ["cinematic", ["cinematic", "orchestral", "score", "trailer", "choir", "epic"]],
+        ["country", ["country", "folk", "americana", "acoustic", "banjo"]]
+      ];
+      for (const [genre, terms] of matches) {
+        if (terms.some((term) => text.includes(normalizedAuditionSearchText(term)))) return genre;
+      }
+      return EPOCH_AUDITION_DEFAULT_GENRE;
+    }
+
+    function updateEpochAuditionPreview() {
+      const genre = selectedEpochAuditionGenre();
+      const profile = EPOCH_AUDITION_GENRE_PROFILES[genre] || EPOCH_AUDITION_GENRE_PROFILES[EPOCH_AUDITION_DEFAULT_GENRE];
+      const preview = $("epoch-audition-lyrics-preview");
+      if (preview) preview.value = profile.lyrics;
+    }
+
     function setSummary(group, text, modified) {
       const summary = $(`summary-${group}`);
       const badge = document.querySelector(`[data-modified-for="${group}"]`);
@@ -3921,7 +3992,7 @@
           "adapter-type": "lora", "train-epochs": "10", "train-batch": "1", "grad-accum": "4",
           "learning-rate": "0.0001", "save-every": "every epoch", "train-device": "auto", "lora-rank": "64", "lora-alpha": "128",
           "lora-dropout": "0.1", "lokr-dim": "64", "lokr-alpha": "128", "train-seed": "42",
-          "epoch-audition-enabled": false, "epoch-audition-caption": "", "epoch-audition-lyrics": "",
+          "epoch-audition-enabled": true, "epoch-audition-genre": "auto", "epoch-audition-caption": "", "epoch-audition-lyrics": "",
           "epoch-audition-seed": "42", "epoch-audition-scale": "1",
           "grad-checkpoint": true, "offload-encoder": false, "lokr-weight": true
         })
@@ -5326,6 +5397,7 @@
       }
       renderSongIntentBuilder();
       hydrateLanguageSelect($("dataset-language"), $("dataset-language")?.value || "en");
+      updateEpochAuditionPreview();
       if ($("bpm") && !$("bpm").value) $("bpm").value = String(state.config.default_bpm || DEFAULT_BPM);
       hydrateAllKeyScaleSelects();
       for (const id of ["extract-track", "lego-track"]) {
@@ -7957,12 +8029,13 @@
 
     function epochAuditionPayload() {
       const caption = $("epoch-audition-caption")?.value.trim() || "";
-      const lyrics = $("epoch-audition-lyrics")?.value.trim() || "";
-      const enabled = Boolean($("epoch-audition-enabled")?.checked || caption || lyrics);
+      const genre = $("epoch-audition-genre")?.value || "auto";
+      const enabled = Boolean($("epoch-audition-enabled")?.checked);
       return {
         epoch_audition_enabled: enabled,
+        epoch_audition_genre: genre,
         epoch_audition_caption: caption,
-        epoch_audition_lyrics: lyrics,
+        epoch_audition_lyrics: "",
         epoch_audition_duration: 20,
         epoch_audition_seed: Number($("epoch-audition-seed")?.value || $("train-seed")?.value || 42),
         epoch_audition_scale: Number($("epoch-audition-scale")?.value || $("generation-lora-scale")?.value || 1)
@@ -8433,6 +8506,10 @@
         state.datasetImportRoot = "";
         state.datasetId = null;
         importDatasetFolder().catch((err) => $("lora-log").textContent = err.message);
+      });
+      ["epoch-audition-genre", "epoch-audition-caption"].forEach((id) => {
+        $(id)?.addEventListener("input", updateEpochAuditionPreview);
+        $(id)?.addEventListener("change", updateEpochAuditionPreview);
       });
       $("dataset-scan").addEventListener("click", () => scanDataset().catch((err) => $("lora-log").textContent = err.message));
       $("dataset-label").addEventListener("click", () => labelDataset().catch((err) => $("lora-log").textContent = err.message));

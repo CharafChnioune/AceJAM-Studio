@@ -377,6 +377,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "language": "en",
                     "train_epochs": 2,
                     "epoch_audition_enabled": True,
+                    "epoch_audition_genre": "rap",
                     "epoch_audition_caption": "bright pop",
                     "epoch_audition_lyrics": "[Verse]\nUser draft line should stay out of the generated test",
                     "epoch_audition_seed": 123,
@@ -391,8 +392,9 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("bright pop", audition["caption"])
             self.assertIn("clear intelligible vocal", audition["caption"])
             self.assertEqual(audition["lyrics_source"], "genre_default")
-            self.assertEqual(audition["genre_profile"], "pop")
-            self.assertIn("City lights", audition["lyrics"])
+            self.assertEqual(audition["genre"], "rap")
+            self.assertEqual(audition["genre_profile"], "rap")
+            self.assertIn("Every bar lands clean", audition["lyrics"])
             self.assertNotIn("charaf hook", audition["lyrics"])
             self.assertNotIn("User draft line", audition["lyrics"])
             self.assertEqual(audition["user_lyrics"], "[Verse]\nUser draft line should stay out of the generated test")
@@ -414,6 +416,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "language": "en",
                     "train_epochs": 2,
                     "epoch_audition_enabled": True,
+                    "epoch_audition_genre": "rap",
                     "epoch_audition_caption": "west coast rap, hip hop",
                 }
             )

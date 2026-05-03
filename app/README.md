@@ -64,7 +64,7 @@ Album planning now uses AceJAM Agents by default: direct local LLM calls for alb
 ## Trainer Flow
 
 1. Pick a dataset folder with the browser/Finder folder picker.
-2. Enter the trigger tag and fixed training language.
+2. Enter the trigger tag, test genre, and fixed training language.
 3. Click **Start training**.
 4. AceJAM imports the files into `data/lora_imports/<dataset_id>/`, labels sidecar-first, saves the official dataset JSON, preprocesses tensors, trains LoRA by default, registers the final adapter, and tries to auto-load it for generation.
 5. Advanced users can still edit labels, run preprocess/train separately, or switch to LoKr.
@@ -73,7 +73,7 @@ Registration uses the trigger tag as the adapter folder name under `data/loras/`
 
 Trainer device selection is independent from generation runtime settings. `auto` resolves to MPS on Apple Silicon when PyTorch MPS is available, CUDA when available elsewhere, and CPU as the fallback; CPU can still be selected explicitly.
 
-All LoRA/LoKr train commands save every epoch. The Trainer also exposes optional epoch auditions for PEFT LoRA: a fixed 20-second, full-quality 64-step WAV generation runs after each epoch checkpoint, records `epoch_auditions` on the job, and continues training even if an audition fails. The audition uses clean genre-default lyrics selected from the audition genre/tags field; the user's trigger tag is added to the caption only and is not sung. These audition renders are job artifacts only and are not saved to the Music Library; LoKr auditions are skipped because standard ACE-Step generation expects PEFT LoRA adapter files.
+All LoRA/LoKr train commands save every epoch. The Trainer runs PEFT LoRA epoch auditions by default: a fixed 20-second, full-quality 64-step WAV generation runs after each epoch checkpoint, records `epoch_auditions` on the job, and continues training even if an audition fails. The audition uses clean genre-default lyrics selected from the Test genre dropdown next to the trigger tag; the UI shows the exact standard lyrics in a read-only preview, removes the old free-form test-lyrics entry, and adds the user's trigger tag to the caption only. These audition renders are job artifacts only and are not saved to the Music Library; LoKr auditions are skipped because standard ACE-Step generation expects PEFT LoRA adapter files.
 
 The Trainer known-adapters dropdown includes LoRA and LoKr outputs. The generation and Album dropdowns list only loadable PEFT LoRA folders; LoKr remains trainable/visible for trainer inspection but is not offered for ACE-Step generation loading.
 
