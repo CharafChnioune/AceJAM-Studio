@@ -24,7 +24,7 @@ module.exports = {
         },
         path: "app",
         message: [
-          "python app.py"
+          "python -m uvicorn app:app --host 127.0.0.1 --port {{local.port}}"
         ],
         on: [{
           event: "/(http:\\/\\/[0-9.:]+)/",
