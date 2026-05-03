@@ -362,6 +362,24 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertNotIn("[drums return", fitted)
         self.assertNotIn("Arrangement note", fitted)
 
+    def test_epoch_audition_empty_verse_before_outro_stays_a_verse(self):
+        lyrics = "\n".join(
+            [
+                "[Final Chorus - rap, apocalyptic, choir vocals, full climax]",
+                "Count the room and keep it moving",
+                "Name the chair and keep it true",
+                "[Verse 4 - rap, acapella start, then drums return]",
+                "[Outro - acapella, close-mic vocal]",
+                "Borrowed soil and fountain pens",
+                "Concrete learned the mother tongue",
+            ]
+        )
+
+        fitted, _ = fit_epoch_audition_lyrics(lyrics, duration=20)
+
+        self.assertIn("[Verse]\nBorrowed soil", fitted)
+        self.assertNotIn("[Outro]", fitted)
+
     def test_epoch_auditions_run_once_per_epoch_with_checkpoint_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -113,6 +113,10 @@ def _epoch_audition_blocks(lines: list[str]) -> list[dict[str, Any]]:
         if section is not None:
             if current_lines:
                 blocks.append({"section": current_section, "lines": current_lines})
+            elif current_section == "[Verse]" and section == "[Outro]":
+                current_section = "[Verse]"
+                current_lines = []
+                continue
             current_section = section or current_section
             current_lines = []
             continue
