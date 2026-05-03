@@ -194,7 +194,6 @@ export function AlbumWizard() {
   // Poll job status + mirror into global JobTracker
   const addJob = useJobsStore((s) => s.addJob);
   const updateJob = useJobsStore((s) => s.updateJob);
-  const removeJob = useJobsStore((s) => s.removeJob);
 
   React.useEffect(() => {
     if (!jobId) return;
@@ -204,6 +203,16 @@ export function AlbumWizard() {
       label: values.album_title || "Album genereren",
       progress: 0,
       status: "queued",
+      state: "queued",
+      kindLabel: "Album job",
+      detailsPath: `/api/album/jobs/${encodeURIComponent(jobId)}`,
+      metadata: {
+        album_title: values.album_title,
+        artist_name: values.artist_name,
+        concept: values.concept,
+        num_tracks: values.num_tracks,
+        track_duration: values.track_duration,
+      },
       startedAt: Date.now(),
     });
     let cancelled = false;
@@ -218,19 +227,34 @@ export function AlbumWizard() {
         setJobStatus(description);
         const p = typeof j.progress === "number" ? j.progress : 0;
         setJobProgress(p);
-        updateJob(jobId, { progress: p, status: description });
+        updateJob(jobId, {
+          progress: p,
+          status: description,
+          state,
+          detailsPath: `/api/album/jobs/${encodeURIComponent(jobId)}`,
+          metadata: j as Record<string, unknown>,
+          error: j.error,
+        });
         if (state === "complete" && j.result) {
           setResult(MODE, j.result);
           toast.success("Album klaar.");
-          updateJob(jobId, { status: "complete", progress: 100 });
-          setTimeout(() => removeJob(jobId), 4000);
+          updateJob(jobId, {
+            status: "complete",
+            state,
+            progress: 100,
+            metadata: j as Record<string, unknown>,
+          });
           setJobId(null);
           return;
         }
         if (state === "error" || state === "failed") {
           toast.error(j.error || "Album-job mislukt");
-          updateJob(jobId, { status: "error" });
-          setTimeout(() => removeJob(jobId), 6000);
+          updateJob(jobId, {
+            status: "error",
+            state,
+            error: j.error,
+            metadata: j as Record<string, unknown>,
+          });
           setJobId(null);
           return;
         }
@@ -238,8 +262,7 @@ export function AlbumWizard() {
       } catch (e) {
         if (!cancelled) {
           toast.error(`Polling-fout: ${(e as Error).message}`);
-          updateJob(jobId, { status: "error" });
-          setTimeout(() => removeJob(jobId), 6000);
+          updateJob(jobId, { status: "error", state: "error", error: (e as Error).message });
           setJobId(null);
         }
       }

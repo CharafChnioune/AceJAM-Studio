@@ -70,7 +70,6 @@ export function TrainerWizard() {
 
   const addJob = useJobsStore((s) => s.addJob);
   const updateJobStore = useJobsStore((s) => s.updateJob);
-  const removeJob = useJobsStore((s) => s.removeJob);
 
   // ---- File selection ----------------------------------------------------
 
@@ -163,6 +162,19 @@ export function TrainerWizard() {
         label: form.trigger_tag || dataset?.dataset_id || "LoRA training",
         progress: 0,
         status: "queued",
+        state: "queued",
+        stage: "queued",
+        kindLabel: "LoRA training",
+        detailsPath: `/api/lora/jobs/${encodeURIComponent(id)}`,
+        logPath: `/api/lora/jobs/${encodeURIComponent(id)}/log`,
+        metadata: {
+          dataset_id: dataset?.dataset_id,
+          trigger_tag: form.trigger_tag,
+          language: form.default_language,
+          learning_rate: form.learning_rate,
+          train_epochs: form.train_epochs,
+          batch_size: form.batch_size,
+        },
         startedAt: Date.now(),
       });
       setStep(steps.length - 1);
@@ -179,12 +191,19 @@ export function TrainerWizard() {
           success: boolean;
           job?: {
             id?: string;
+            kind?: string;
             state?: string;
             status?: string;
+            stage?: string;
             progress?: number;
             step?: number;
             total_steps?: number;
             error?: string;
+            created_at?: string;
+            updated_at?: string;
+            params?: Record<string, unknown>;
+            paths?: Record<string, unknown>;
+            result?: Record<string, unknown>;
           };
         }>(`/api/lora/jobs/${encodeURIComponent(job.id)}`);
         if (cancelled) return;
@@ -201,17 +220,35 @@ export function TrainerWizard() {
           step: j.step,
           total_steps: j.total_steps,
         });
-        updateJobStore(job.id, { progress: p, status: description });
+        updateJobStore(job.id, {
+          progress: p,
+          status: description,
+          state,
+          stage: j.stage,
+          updatedAt: j.updated_at || Date.now(),
+          detailsPath: `/api/lora/jobs/${encodeURIComponent(job.id)}`,
+          logPath: `/api/lora/jobs/${encodeURIComponent(job.id)}/log`,
+          metadata: j as Record<string, unknown>,
+          error: j.error,
+        });
         if (state === "complete" || state === "succeeded") {
           toast.success("LoRA training klaar.");
-          updateJobStore(job.id, { status: "complete", progress: 100 });
-          setTimeout(() => removeJob(job.id), 4000);
+          updateJobStore(job.id, {
+            status: "complete",
+            state,
+            progress: 100,
+            metadata: j as Record<string, unknown>,
+          });
           return;
         }
         if (state === "error" || state === "failed") {
           toast.error(j.error ?? "Training mislukt");
-          updateJobStore(job.id, { status: "error" });
-          setTimeout(() => removeJob(job.id), 6000);
+          updateJobStore(job.id, {
+            status: "error",
+            state,
+            error: j.error,
+            metadata: j as Record<string, unknown>,
+          });
           return;
         }
         setTimeout(tick, 4000);

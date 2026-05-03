@@ -13,6 +13,14 @@ export interface JobEntry {
   label: string;
   progress?: number;
   status?: string;
+  state?: string;
+  stage?: string;
+  kindLabel?: string;
+  detailsPath?: string;
+  logPath?: string;
+  updatedAt?: number | string;
+  metadata?: Record<string, unknown>;
+  error?: string;
   startedAt: number;
 }
 
@@ -27,7 +35,14 @@ export const useJobsStore = create<JobsSlice>((set) => ({
   jobs: {},
   addJob: (entry) =>
     set((s) => ({
-      jobs: { ...s.jobs, [entry.id]: { ...entry, startedAt: entry.startedAt || Date.now() } },
+      jobs: {
+        ...s.jobs,
+        [entry.id]: {
+          ...s.jobs[entry.id],
+          ...entry,
+          startedAt: s.jobs[entry.id]?.startedAt || entry.startedAt || Date.now(),
+        },
+      },
     })),
   updateJob: (id, patch) =>
     set((s) =>
