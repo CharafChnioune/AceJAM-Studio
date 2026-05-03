@@ -8,6 +8,7 @@ from lora_trainer import (
     AceTrainingManager,
     TrainingJob,
     default_training_device,
+    fit_epoch_audition_lyrics,
     model_to_variant,
     training_device_policy,
     training_precision_for_device,
@@ -310,6 +311,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "tensor_dir": str(tensor_dir),
                     "song_model": "acestep-v15-turbo",
                     "trigger_tag": "charaf hook",
+                    "language": "en",
                     "train_epochs": 2,
                     "epoch_audition_enabled": True,
                     "epoch_audition_caption": "charaf hook, bright pop",
@@ -326,6 +328,39 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(audition["lyrics"], "[Verse]\nLine one\n\n[Chorus]\nHook line")
             self.assertEqual(audition["seed"], 123)
             self.assertEqual(audition["scale"], 0.75)
+            self.assertEqual(audition["vocal_language"], "en")
+
+    def test_epoch_audition_lyrics_are_fitted_for_twenty_seconds(self):
+        lyrics = "\n".join(
+            [
+                "[Final Chorus - rap, apocalyptic, choir vocals, full climax]",
+                "Count the room and keep it moving",
+                "Name the chair and keep it true",
+                "Every lie receives a number",
+                "Every shadow turns to proof",
+                "No more myth and no more static",
+                "[Verse 4 - rap, acapella start, then drums return]",
+                "Borrowed soil and fountain pens",
+                "Concrete learned the mother tongue",
+                "Every crack became a chorus",
+                "Every curb knew what was done",
+                "[drums return, building energy]",
+                "Arrangement note should not become lyrics",
+                "[Outro - fading, acapella, choir hum]",
+                "You signed the wrong silence",
+            ]
+        )
+
+        fitted, meta = fit_epoch_audition_lyrics(lyrics, duration=20)
+
+        self.assertLessEqual(len(fitted), 420)
+        self.assertEqual(meta["action"], "fit_for_20s")
+        self.assertIn("[Chorus]", fitted)
+        self.assertIn("[Verse]", fitted)
+        self.assertNotIn("Final Chorus -", fitted)
+        self.assertNotIn("Verse 4 -", fitted)
+        self.assertNotIn("[drums return", fitted)
+        self.assertNotIn("Arrangement note", fitted)
 
     def test_epoch_auditions_run_once_per_epoch_with_checkpoint_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -351,6 +386,7 @@ class LoraTrainerTest(unittest.TestCase):
                 "trigger_tag": "charaf hook",
                 "song_model": "acestep-v15-turbo",
                 "model_variant": "turbo",
+                "language": "en",
                 "training_seed": 42,
                 "epoch_audition": {
                     "enabled": True,
@@ -377,6 +413,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2])
             self.assertEqual(manager.audition_requests[0]["duration"], 20)
             self.assertEqual(manager.audition_requests[0]["lyrics"], "[Verse]\nLine one")
+            self.assertEqual(manager.audition_requests[0]["vocal_language"], "en")
+            self.assertEqual(manager.audition_requests[0]["lyrics_fit"]["action"], "none")
             self.assertTrue(manager.audition_requests[0]["checkpoint_path"].endswith("epoch_1_loss_0.1000"))
             stored = manager.get_job("auditionjob")
             self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded"])

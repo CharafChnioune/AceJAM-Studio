@@ -203,7 +203,7 @@ from acestep.constants import (
     VALID_TIME_SIGNATURES,
 )
 from acestep.handler import AceStepHandler
-from lora_trainer import AceTrainingManager
+from lora_trainer import AceTrainingManager, fit_epoch_audition_lyrics
 from local_composer import LocalComposer
 from album_quality_gate import (
     ALBUM_PAYLOAD_GATE_VERSION,
@@ -1541,13 +1541,18 @@ def _unload_llm_models_for_generation() -> None:
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     epoch = int(request.get("epoch") or 0)
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
+    runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=20)
+    vocal_language = str(request.get("vocal_language") or request.get("language") or "en").strip() or "en"
     raw_payload = {
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",
         "artist_name": "AceJAM LoRA",
         "title": f"{trigger} epoch {epoch}",
         "caption": str(request.get("caption") or trigger).strip(),
-        "lyrics": str(request.get("lyrics") or "").strip(),
+        "lyrics": runtime_lyrics,
+        "language": vocal_language,
+        "vocal_language": vocal_language,
+        "lyric_duration_fit": lyrics_fit,
         "duration": 20,
         "song_model": str(request.get("song_model") or "acestep-v15-turbo"),
         "seed": str(request.get("seed") or "42"),
@@ -1583,6 +1588,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "result_id": str(result.get("result_id") or first_audio.get("result_id") or ""),
         "audio_url": str(first_audio.get("audio_url") or ""),
         "audios": audios,
+        "lyrics_fit": lyrics_fit,
     }
 
 

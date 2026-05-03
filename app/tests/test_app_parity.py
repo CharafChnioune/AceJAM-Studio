@@ -1204,6 +1204,7 @@ class AppParityTest(unittest.TestCase):
                     "checkpoint_path": "/tmp/checkpoints/epoch_2_loss_0.1",
                     "caption": "charaf hook, bright pop",
                     "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "vocal_language": "en",
                     "duration": 20,
                     "seed": 123,
                     "lora_scale": 0.7,
@@ -1217,6 +1218,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(captured["task_type"], "text2music")
         self.assertEqual(captured["duration"], 20)
         self.assertEqual(captured["lyrics"], "[Verse]\nLine one\n\n[Chorus]\nHook line")
+        self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["ace_lm_model"], "none")
         self.assertFalse(captured["thinking"])
         self.assertFalse(captured["sample_mode"])
@@ -1229,6 +1231,67 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(captured["use_lora"])
         self.assertEqual(captured["lora_adapter_path"], "/tmp/checkpoints/epoch_2_loss_0.1")
         self.assertEqual(captured["lora_scale"], 0.7)
+        self.assertEqual(result["lyrics_fit"]["action"], "none")
+
+    def test_lora_epoch_audition_fits_long_lyrics_and_language_for_wav_test(self):
+        captured = {}
+        long_lyrics = "\n".join(
+            [
+                "[Final Chorus - rap, apocalyptic, choir vocals, full climax]",
+                "Count that room and keep it moving",
+                "Name that chair and tell it true",
+                "Every lie receives a number",
+                "Every shadow turns to proof",
+                "No more myth and no more static",
+                "[Verse 4 - rap, acapella start, then drums return]",
+                "Borrowed soil and fountain pens",
+                "Concrete learned the mother tongue",
+                "Every crack became a chorus",
+                "Every curb knew what was done",
+                "[drums return, building energy]",
+                "Arrangement note should not be sung",
+                "[Outro - fading, acapella, choir hum]",
+                "You signed the wrong silence",
+            ]
+        )
+
+        def fake_generation(params):
+            captured.update(params)
+            return {
+                "success": True,
+                "result_id": "audition-result",
+                "audios": [{"result_id": "audition-result", "audio_url": "/media/results/audition-result/take-1.wav"}],
+            }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
+            patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_generation):
+            result = acejam_app._run_lora_epoch_audition(
+                {
+                    "epoch": 1,
+                    "trigger_tag": "pac",
+                    "checkpoint_path": "/tmp/checkpoints/epoch_1_loss_0.9130",
+                    "caption": "pac, west coast rap, hip hop, gangster",
+                    "lyrics": long_lyrics,
+                    "vocal_language": "en",
+                    "seed": 42,
+                    "lora_scale": 1.0,
+                    "song_model": "acestep-v15-xl-sft",
+                    "model_variant": "xl_sft",
+                }
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(captured["duration"], 20)
+        self.assertEqual(captured["vocal_language"], "en")
+        self.assertLessEqual(len(captured["lyrics"]), 420)
+        self.assertIn("[Chorus]", captured["lyrics"])
+        self.assertIn("[Verse]", captured["lyrics"])
+        self.assertNotIn("Final Chorus -", captured["lyrics"])
+        self.assertNotIn("Verse 4 -", captured["lyrics"])
+        self.assertNotIn("[drums return", captured["lyrics"])
+        self.assertNotIn("Arrangement note", captured["lyrics"])
+        self.assertEqual(result["lyrics_fit"]["action"], "fit_for_20s")
 
     def test_lora_upload_path_sanitizer_preserves_relative_folders(self):
         self.assertEqual(str(acejam_app._safe_lora_upload_relative_path("dataset/sub/song.wav")), "dataset/sub/song.wav")

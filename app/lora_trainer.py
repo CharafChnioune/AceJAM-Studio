@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,10 @@ except Exception:  # pragma: no cover - dependency is installed in the app env.
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".m4a"}
 JOB_ACTIVE_STATES = {"queued", "running", "stopping"}
+EPOCH_AUDITION_DURATION_SECONDS = 20
+EPOCH_AUDITION_CHARS_PER_SECOND = 21
+EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 4
+EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 2.5
 
 
 def utc_now() -> str:
@@ -71,6 +76,128 @@ def parse_float(value: Any, default: float, minimum: float | None = None, maximu
     if maximum is not None:
         parsed = min(maximum, parsed)
     return parsed
+
+
+def _epoch_audition_section_marker(line: str) -> str | None:
+    match = re.fullmatch(r"\s*[*_`~]*\s*\[([^\]]+)\]\s*[*_`~]*\s*", str(line or ""))
+    if not match:
+        return None
+    label = re.sub(r"\s*[-:|,]\s*.*$", "", match.group(1).strip().lower())
+    label = re.sub(r"\s+\d+$", "", label)
+    label = re.sub(r"[^a-z0-9]+", " ", label).strip()
+    if not label:
+        return ""
+    if label in {"intro"}:
+        return "[Intro]"
+    if label in {"pre chorus", "prechorus"}:
+        return "[Pre-Chorus]"
+    if label in {"chorus", "final chorus", "hook", "refrain"}:
+        return "[Chorus]"
+    if label in {"verse", "rap", "spoken"}:
+        return "[Verse]"
+    if label in {"bridge"}:
+        return "[Bridge]"
+    if label in {"drop", "break", "interlude"}:
+        return "[Break]"
+    if label in {"outro"}:
+        return "[Outro]"
+    return ""
+
+
+def _epoch_audition_blocks(lines: list[str]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    current_section = "[Verse]"
+    current_lines: list[str] = []
+    for line in lines:
+        section = _epoch_audition_section_marker(line)
+        if section is not None:
+            if current_lines:
+                blocks.append({"section": current_section, "lines": current_lines})
+            current_section = section or current_section
+            current_lines = []
+            continue
+        text = str(line or "").strip()
+        if text:
+            current_lines.append(text)
+    if current_lines:
+        blocks.append({"section": current_section, "lines": current_lines})
+    return blocks
+
+
+def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDITION_DURATION_SECONDS) -> tuple[str, dict[str, Any]]:
+    raw = str(lyrics or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    duration_seconds = max(10, int(duration or EPOCH_AUDITION_DURATION_SECONDS))
+    max_chars = max(220, min(900, int(duration_seconds * EPOCH_AUDITION_CHARS_PER_SECOND)))
+    max_sung_lines = max(4, min(24, int(round(duration_seconds / EPOCH_AUDITION_SECONDS_PER_SUNG_LINE))))
+    source_lines = [line for line in raw.splitlines() if line.strip()]
+    normalized_lines: list[str] = []
+    for raw_line in source_lines:
+        stripped = raw_line.strip()
+        section = _epoch_audition_section_marker(stripped)
+        if section is not None:
+            if section:
+                normalized_lines.append(section)
+            continue
+        if re.match(r"(?i)^(lyrics?|caption|metadata|bpm|keyscale|duration|language)\s*:", stripped):
+            continue
+        normalized_lines.append(stripped)
+
+    blocks = _epoch_audition_blocks(normalized_lines)
+    if not blocks and normalized_lines:
+        blocks = [{"section": "[Verse]", "lines": [line for line in normalized_lines if _epoch_audition_section_marker(line) is None]}]
+
+    output: list[str] = []
+    sung_lines = 0
+    for block in blocks:
+        if sung_lines >= max_sung_lines:
+            break
+        lines = list(block.get("lines") or [])[:EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION]
+        if not lines:
+            continue
+        section = str(block.get("section") or "[Verse]")
+        if output:
+            output.append("")
+        output.append(section)
+        added_for_section = 0
+        for line in lines:
+            if sung_lines >= max_sung_lines:
+                break
+            candidate = "\n".join([*output, line]).strip()
+            if len(candidate) > max_chars:
+                break
+            output.append(line)
+            sung_lines += 1
+            added_for_section += 1
+        if added_for_section == 0:
+            while output and output[-1] in {"", section}:
+                output.pop()
+            break
+
+    fitted = "\n".join(output).strip()
+    if not fitted and raw:
+        kept: list[str] = ["[Verse]"]
+        for line in source_lines:
+            if _epoch_audition_section_marker(line) is not None:
+                continue
+            candidate = "\n".join([*kept, line.strip()]).strip()
+            if len(candidate) > max_chars or len(kept) > max_sung_lines:
+                break
+            kept.append(line.strip())
+        fitted = "\n".join(kept).strip()
+
+    source_char_count = len(raw)
+    runtime_char_count = len(fitted)
+    meta = {
+        "duration": duration_seconds,
+        "max_chars": max_chars,
+        "max_sung_lines": max_sung_lines,
+        "source_lyrics_chars": source_char_count,
+        "runtime_lyrics_chars": runtime_char_count,
+        "source_lyrics_lines": len(source_lines),
+        "runtime_lyrics_lines": len([line for line in fitted.splitlines() if line.strip()]),
+        "action": "none" if fitted == raw else "fit_for_20s",
+    }
+    return fitted, meta
 
 
 def model_to_variant(model_name: str | None) -> str:
@@ -440,13 +567,15 @@ class AceTrainingManager:
             raise ValueError("Epoch audition lyrics are required when epoch auditions are enabled")
         if enabled and not caption:
             caption = f"{trigger_tag}, LoRA epoch audition" if trigger_tag else "LoRA epoch audition"
+        vocal_language = str(payload.get("vocal_language") or payload.get("language") or "unknown").strip() or "unknown"
         return {
             "enabled": enabled,
             "caption": caption,
             "lyrics": lyrics,
-            "duration": 20,
+            "duration": EPOCH_AUDITION_DURATION_SECONDS,
             "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),
             "scale": parse_float(payload.get("epoch_audition_scale"), parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
+            "vocal_language": vocal_language,
         }
 
     def start_one_click_train(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1557,6 +1686,12 @@ class AceTrainingManager:
 
     def _run_epoch_audition(self, job_id: str, params: dict[str, Any], checkpoint_path: Path, epoch: int, log_path: Path) -> None:
         config = dict(params.get("epoch_audition") or {})
+        duration = parse_int(config.get("duration"), EPOCH_AUDITION_DURATION_SECONDS, 10, 60)
+        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(config.get("lyrics") or ""), duration=duration)
+        vocal_language = (
+            str(config.get("vocal_language") or config.get("language") or params.get("vocal_language") or params.get("language") or "unknown").strip()
+            or "unknown"
+        )
         base_record = {
             "epoch": int(epoch),
             "checkpoint_path": str(checkpoint_path),
@@ -1565,6 +1700,11 @@ class AceTrainingManager:
             "result_id": "",
             "audio_url": "",
             "created_at": utc_now(),
+            "duration": duration,
+            "source_lyrics_chars": lyrics_fit["source_lyrics_chars"],
+            "runtime_lyrics_chars": lyrics_fit["runtime_lyrics_chars"],
+            "lyrics_fit_action": lyrics_fit["action"],
+            "vocal_language": vocal_language,
         }
         self._record_epoch_audition(job_id, base_record)
         if self.audition_runner is None:
@@ -1579,15 +1719,27 @@ class AceTrainingManager:
             "checkpoint_path": str(checkpoint_path),
             "lora_adapter_name": safe_peft_adapter_name(f"epoch_{int(epoch)}_{checkpoint_path.name}"),
             "caption": str(config.get("caption") or ""),
-            "lyrics": str(config.get("lyrics") or ""),
-            "duration": 20,
+            "lyrics": runtime_lyrics,
+            "duration": duration,
             "seed": parse_int(config.get("seed"), parse_int(params.get("training_seed"), 42, 0, 2**31 - 1), 0, 2**31 - 1),
             "lora_scale": parse_float(config.get("scale"), parse_float(params.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
+            "vocal_language": vocal_language,
+            "language": vocal_language,
+            "lyrics_fit": lyrics_fit,
             "trigger_tag": str(params.get("trigger_tag") or ""),
             "song_model": str(params.get("song_model") or "acestep-v15-turbo"),
             "model_variant": str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or ""))),
             "adapter_type": str(params.get("adapter_type") or "lora"),
         }
+        if lyrics_fit["action"] != "none":
+            self._append_log(
+                log_path,
+                (
+                    f"[audition epoch {epoch}] fitted lyrics for {duration}s: "
+                    f"{lyrics_fit['source_lyrics_chars']}->{lyrics_fit['runtime_lyrics_chars']} chars, "
+                    f"{lyrics_fit['source_lyrics_lines']}->{lyrics_fit['runtime_lyrics_lines']} lines\n"
+                ),
+            )
         try:
             result = self.audition_runner(request)
             audios = list(result.get("audios") or []) if isinstance(result, dict) else []
