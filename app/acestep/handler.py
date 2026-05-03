@@ -242,6 +242,39 @@ class AceStepHandler:
         """Return True only when a checkpoint directory has usable model weights."""
         if not os.path.isdir(model_path):
             return False
+        model_index_path = os.path.join(model_path, "model_index.json")
+        if os.path.isfile(model_index_path):
+            try:
+                with open(model_index_path, "r", encoding="utf-8") as f:
+                    model_index = json.load(f)
+            except Exception:
+                return False
+            required_components = ("condition_encoder", "scheduler", "text_encoder", "tokenizer", "transformer", "vae")
+            weight_components = ("condition_encoder", "text_encoder", "transformer", "vae")
+            for component in required_components:
+                if isinstance(model_index, dict) and component not in model_index:
+                    return False
+                component_path = os.path.join(model_path, component)
+                if not os.path.isdir(component_path):
+                    return False
+                if component in weight_components:
+                    if not os.path.isfile(os.path.join(component_path, "config.json")):
+                        return False
+                    if not any(
+                        filename.endswith((".safetensors", ".bin", ".pt", ".ckpt"))
+                        and os.path.isfile(os.path.join(component_path, filename))
+                        and os.path.getsize(os.path.join(component_path, filename)) > 0
+                        for filename in os.listdir(component_path)
+                    ):
+                        return False
+                elif component == "scheduler" and not os.path.isfile(os.path.join(component_path, "scheduler_config.json")):
+                    return False
+                elif component == "tokenizer":
+                    if not os.path.isfile(os.path.join(component_path, "tokenizer_config.json")):
+                        return False
+                    if not any(os.path.isfile(os.path.join(component_path, filename)) for filename in ("tokenizer.json", "vocab.json")):
+                        return False
+            return True
         if not os.path.isfile(os.path.join(model_path, "config.json")):
             return False
         index_path = os.path.join(model_path, "model.safetensors.index.json")

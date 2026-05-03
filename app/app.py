@@ -303,6 +303,8 @@ from studio_core import (
     recommended_lm_model,
     recommended_song_model,
     quality_profile_model_settings,
+    diffusers_pipeline_dir_ready,
+    diffusers_pipeline_missing_reasons,
     runtime_planner_report,
     safe_filename,
     safe_id,
@@ -1316,11 +1318,20 @@ def _checkpoint_dir_ready(path: Path) -> bool:
 ACE_STEP_SHARED_RUNTIME_COMPONENTS = ("vae", "Qwen3-Embedding-0.6B")
 
 
+def _diffusers_pipeline_status_reason(path: Path) -> str:
+    reasons = diffusers_pipeline_missing_reasons(path)
+    if not reasons:
+        return "ready"
+    return f"{path.name} is missing Diffusers pipeline files: {', '.join(reasons)}"
+
+
 def _checkpoint_status_reason(path: Path) -> str:
     if not path.exists():
         return f"{path.name} is missing"
     if not path.is_dir():
         return f"{path.name} is not a checkpoint directory"
+    if (path / "model_index.json").is_file():
+        return _diffusers_pipeline_status_reason(path)
     if not (path / "config.json").is_file():
         return f"{path.name} is missing config.json"
     if not _checkpoint_dir_ready(path):
@@ -2510,6 +2521,9 @@ def _is_model_installed(model_name: str, ignore_active_job: bool = False) -> boo
     if not ignore_active_job and _download_job_active(model_name):
         return False
     checkpoint_path = MODEL_CACHE_DIR / "checkpoints" / model_name
+    role = str((OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(model_name) or {}).get("role") or "")
+    if role == "diffusers_export":
+        return diffusers_pipeline_dir_ready(checkpoint_path)
     if model_name == OFFICIAL_CORE_MODEL_ID:
         checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
         return all(_checkpoint_dir_ready(checkpoint_dir / component) for component in OFFICIAL_MAIN_MODEL_COMPONENTS)
@@ -2584,11 +2598,12 @@ def _download_model_worker(model_name: str) -> None:
         try:
             checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            role = str((OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(model_name) or {}).get("role") or "")
             if model_name in OFFICIAL_ACE_STEP_MODEL_REGISTRY:
                 _download_official_model_to_cache(model_name, checkpoint_dir)
             else:
                 handler._ensure_model_downloaded(model_name, str(checkpoint_dir))
-            if model_name.startswith("acestep-v15-"):
+            if model_name.startswith("acestep-v15-") and role != "diffusers_export":
                 if not _checkpoint_dir_ready(checkpoint_dir / "acestep-v15-turbo"):
                     _set_model_download_job(model_name, message="Downloading shared ACE-Step components...")
                     _download_official_model_to_cache("acestep-v15-turbo", checkpoint_dir)
@@ -2598,7 +2613,10 @@ def _download_model_worker(model_name: str) -> None:
                         _download_official_model_to_cache(OFFICIAL_CORE_MODEL_ID, checkpoint_dir)
                         break
             if not _is_model_installed(model_name, ignore_active_job=True):
-                reasons = "; ".join(_song_model_runtime_missing_reasons(model_name)) if model_name.startswith("acestep-v15-") else ""
+                if role == "diffusers_export":
+                    reasons = _diffusers_pipeline_status_reason(checkpoint_dir / model_name)
+                else:
+                    reasons = "; ".join(_song_model_runtime_missing_reasons(model_name)) if model_name.startswith("acestep-v15-") else ""
                 suffix = f" Missing: {reasons}." if reasons else ""
                 raise RuntimeError(f"{model_name} download finished but required checkpoint weights were not found.{suffix}")
             _set_model_download_job(

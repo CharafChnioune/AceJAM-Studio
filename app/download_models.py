@@ -10,10 +10,13 @@ from acestep.handler import AceStepHandler
 from studio_core import (
     ACE_STEP_LM_MODELS,
     KNOWN_ACE_STEP_MODELS,
+    OFFICIAL_ACE_STEP_MODEL_REGISTRY,
     OFFICIAL_CORE_MODEL_ID,
     OFFICIAL_MAIN_MODEL_COMPONENTS,
     OFFICIAL_MAIN_MODEL_REPO,
     OFFICIAL_UNRELEASED_MODELS,
+    diffusers_pipeline_dir_ready,
+    diffusers_pipeline_missing_reasons,
     official_boot_model_ids,
 )
 
@@ -25,9 +28,15 @@ SHARED_RUNTIME_COMPONENTS = ("vae", "Qwen3-Embedding-0.6B")
 WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pt", ".ckpt"}
 
 
+def _is_diffusers_export(name: str) -> bool:
+    return str((OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(name) or {}).get("role") or "") == "diffusers_export"
+
+
 def checkpoint_dir_ready(path: Path) -> bool:
     if not path.is_dir():
         return False
+    if _is_diffusers_export(path.name):
+        return diffusers_pipeline_dir_ready(path)
     if not (path / "config.json").is_file():
         return False
     index_path = path / "model.safetensors.index.json"
@@ -49,6 +58,11 @@ def missing_reason(name: str) -> str:
         return f"{name}: missing directory"
     if not path.is_dir():
         return f"{name}: not a directory"
+    if _is_diffusers_export(name):
+        reasons = diffusers_pipeline_missing_reasons(path)
+        if reasons:
+            return f"{name}: {', '.join(reasons)}"
+        return f"{name}: missing usable Diffusers pipeline files"
     if not (path / "config.json").is_file():
         return f"{name}: missing config.json"
     return f"{name}: missing usable weight files"

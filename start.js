@@ -13,7 +13,7 @@ module.exports = {
         venv: "env",
         env: {
           GRADIO_ANALYTICS_ENABLED: "False",
-          GRADIO_SERVER_NAME: "0.0.0.0",
+          GRADIO_SERVER_NAME: "127.0.0.1",
           GRADIO_SERVER_PORT: "{{local.port}}",
           PYTHONUNBUFFERED: "1",
           ACESTEP_LM_BACKEND: "{{platform === 'darwin' && arch === 'arm64' ? 'mlx' : 'pt'}}",
@@ -35,7 +35,7 @@ module.exports = {
     {
       method: "local.set",
       params: {
-        url: "{{input.event[1].replace('0.0.0.0', '127.0.0.1')}}",
+        url: "{{input.event[1]}}",
         bind_url: "{{input.event[1]}}"
       }
     }

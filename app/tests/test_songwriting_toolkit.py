@@ -82,10 +82,11 @@ from songwriting_toolkit import (
     normalize_artist_name,
     parse_duration_seconds,
     sanitize_artist_references,
+    song_intent_schema,
     toolkit_payload,
     trim_lyrics_to_limit,
 )
-from prompt_kit import PROMPT_KIT_VERSION
+from prompt_kit import GENRE_MODULES, PROMPT_KIT_VERSION
 from user_album_contract import extract_user_album_contract
 
 
@@ -1254,6 +1255,23 @@ kill all the rivals
 
     def test_toolkit_payload_has_official_dimensions_and_all_tools(self):
         payload = toolkit_payload({"acestep-v15-turbo"})
+        schema = payload["song_intent_schema"]
+        self.assertEqual(schema["counts"]["genre_modules"], 26)
+        self.assertEqual(schema["counts"]["tag_taxonomy_groups"], 10)
+        self.assertEqual(schema["counts"]["tag_taxonomy_terms"], 184)
+        self.assertEqual(schema["counts"]["lyric_meta_tags"], 36)
+        self.assertEqual(schema["counts"]["valid_languages"], 51)
+        self.assertEqual(schema["counts"]["valid_keyscales"], 70)
+        self.assertEqual(schema["counts"]["official_tasks"], 6)
+        self.assertEqual(schema["counts"]["task_modes"], 7)
+        self.assertEqual(schema["counts"]["track_stems"], 12)
+        self.assertEqual(schema["counts"]["render_models"], 9)
+        self.assertEqual(schema["counts"]["lm_models"], 3)
+        self.assertIn("cover-nofsq", schema["capabilities"]["local_task_variants"])
+        self.assertEqual({item["value"] for item in schema["groups"]["stems"]}, set(TAG_TAXONOMY["track_stems"]))
+        self.assertEqual({item["value"] for item in schema["groups"]["genre_modules"]}, set(GENRE_MODULES))
+        self.assertIn("acestep-v15-base", schema["capabilities"]["model_support"]["extract"])
+        self.assertIn("acestep-v15-xl-base", schema["capabilities"]["model_support"]["complete"])
         for category in [
             "genre_style",
             "mood_atmosphere",
@@ -1268,6 +1286,7 @@ kill all the rivals
         ]:
             self.assertIn(category, TAG_TAXONOMY)
             self.assertGreaterEqual(len(payload["tag_taxonomy"][category]), 8)
+            self.assertIn(category if category != "track_stems" else "stems", schema["groups"])
         self.assertIn("performance_modifiers", LYRIC_META_TAGS)
         tool_names = {tool["name"] for tool in CRAFT_TOOLS}
         self.assertTrue(

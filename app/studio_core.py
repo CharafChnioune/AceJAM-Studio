@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import platform
 import re
 import sys
@@ -91,6 +92,16 @@ OFFICIAL_LORA_MODEL_IDS = [
     "ACE-Step-v1.5-chinese-new-year-LoRA",
 ]
 OFFICIAL_LEGACY_MODEL_IDS = ["ACE-Step-v1-3.5B"]
+DIFFUSERS_PIPELINE_COMPONENTS = (
+    "condition_encoder",
+    "scheduler",
+    "text_encoder",
+    "tokenizer",
+    "transformer",
+    "vae",
+)
+DIFFUSERS_PIPELINE_WEIGHT_COMPONENTS = ("condition_encoder", "text_encoder", "transformer", "vae")
+DIFFUSERS_PIPELINE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".ckpt")
 OFFICIAL_ACE_STEP_MODEL_REGISTRY: dict[str, dict[str, Any]] = {
     OFFICIAL_CORE_MODEL_ID: {
         "id": OFFICIAL_CORE_MODEL_ID,
@@ -347,6 +358,65 @@ OFFICIAL_ACE_STEP_MODEL_REGISTRY: dict[str, dict[str, Any]] = {
         "source": "official_lora",
     },
 }
+
+
+def _has_diffusers_weight_file(path: Path) -> bool:
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    return any(
+        child.is_file() and child.stat().st_size > 0 and child.suffix in DIFFUSERS_PIPELINE_WEIGHT_SUFFIXES
+        for child in children
+    )
+
+
+def diffusers_pipeline_missing_reasons(path: Path | str) -> list[str]:
+    """Return missing pieces for a Diffusers pipeline export directory."""
+    pipeline_path = Path(path)
+    if not pipeline_path.exists():
+        return ["missing directory"]
+    if not pipeline_path.is_dir():
+        return ["not a directory"]
+
+    reasons: list[str] = []
+    model_index_path = pipeline_path / "model_index.json"
+    model_index: dict[str, Any] = {}
+    if not model_index_path.is_file():
+        reasons.append("missing model_index.json")
+    else:
+        try:
+            parsed = json.loads(model_index_path.read_text(encoding="utf-8"))
+            model_index = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            reasons.append("invalid model_index.json")
+
+    for component in DIFFUSERS_PIPELINE_COMPONENTS:
+        if model_index and component not in model_index:
+            reasons.append(f"model_index.json missing {component}")
+        component_path = pipeline_path / component
+        if not component_path.is_dir():
+            reasons.append(f"missing {component}/")
+            continue
+        if component in DIFFUSERS_PIPELINE_WEIGHT_COMPONENTS:
+            if not (component_path / "config.json").is_file():
+                reasons.append(f"missing {component}/config.json")
+            if not _has_diffusers_weight_file(component_path):
+                reasons.append(f"missing {component} weights")
+        elif component == "scheduler":
+            if not (component_path / "scheduler_config.json").is_file():
+                reasons.append("missing scheduler/scheduler_config.json")
+        elif component == "tokenizer":
+            if not (component_path / "tokenizer_config.json").is_file():
+                reasons.append("missing tokenizer/tokenizer_config.json")
+            if not any((component_path / name).is_file() for name in ("tokenizer.json", "vocab.json")):
+                reasons.append("missing tokenizer vocabulary")
+    return reasons
+
+
+def diffusers_pipeline_dir_ready(path: Path | str) -> bool:
+    return not diffusers_pipeline_missing_reasons(path)
+
 DEFAULT_BPM = 95
 DEFAULT_KEY_SCALE = "A minor"
 KEYSCALE_AUTO_VALUE = "auto"

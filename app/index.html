@@ -261,7 +261,6 @@
     body.mode-lora #local-ai-panel,
     body.mode-library #local-ai-panel { display: none; }
     body.mode-album #song-intent-builder,
-    body.mode-extract #song-intent-builder,
     body.mode-lora #song-intent-builder,
     body.mode-library #song-intent-builder,
     body.mode-settings #song-intent-builder,
@@ -345,6 +344,50 @@
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
     .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
     .intent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-4); }
+    .intent-tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-4) 0; }
+    .intent-tab-btn {
+      width: auto;
+      min-height: 32px;
+      padding: 0 var(--space-4);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      color: var(--muted);
+      background: rgba(255,255,255,0.025);
+    }
+    .intent-tab-btn.active {
+      color: var(--accent);
+      border-color: rgba(139, 215, 181, 0.48);
+      background: rgba(139, 215, 181, 0.1);
+    }
+    .intent-tab-panel { display: grid; gap: var(--space-4); }
+    .intent-tab-panel[hidden] { display: none; }
+    .intent-control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-4); }
+    .intent-chip-group {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: rgba(255,255,255,0.018);
+      padding: var(--space-4);
+    }
+    .intent-chip-head { display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; margin-bottom: var(--space-3); }
+    .intent-chip-head strong { font-size: var(--fs-sm); }
+    .intent-chip-search { min-height: 32px; margin-bottom: var(--space-3); font-size: var(--fs-sm); }
+    .intent-chip-list { display: flex; gap: var(--space-2); flex-wrap: wrap; max-height: 150px; overflow: auto; padding-right: var(--space-1); }
+    .intent-chip-btn {
+      width: auto;
+      min-height: 26px;
+      padding: 0 var(--space-3);
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(255,255,255,0.025);
+      font-size: var(--fs-xs);
+    }
+    .intent-chip-btn.selected {
+      color: var(--text);
+      border-color: rgba(139, 215, 181, 0.5);
+      background: rgba(139, 215, 181, 0.12);
+    }
+    .intent-schema-summary { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
     .chip-row { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; margin-top: var(--space-2); }
     .tag-chip {
       min-height: 24px;
@@ -1322,133 +1365,16 @@
         <div class="section-head">
           <div>
             <h3>Song Intent Builder</h3>
-            <div class="control-note">Local AI Writer/Planner fills these choices; ACE-Step uses the resulting caption to render audio.</div>
+            <div class="control-note">Schema-driven intent, captions, task modes, models, stems and adapter cues from ACE-Step sources.</div>
           </div>
-          <span class="badge ok">Menu + custom tags</span>
+          <span class="badge ok" id="intent-schema-badge">Loading schema</span>
         </div>
-        <div class="intent-grid">
-          <div>
-            <label for="intent-genre-family">Genre family</label>
-            <select id="intent-genre-family">
-              <option value="pop">Pop</option>
-              <option value="rap">Rap / Hip-hop</option>
-              <option value="rnb">R&B / Soul</option>
-              <option value="rock">Rock / Alternative</option>
-              <option value="edm">Electronic / EDM</option>
-              <option value="latin">Latin / Afro / Dancehall</option>
-              <option value="country">Country / Folk</option>
-              <option value="cinematic">Cinematic / Score</option>
-              <option value="jazz">Jazz / Blues</option>
-              <option value="instrumental">Instrumental</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-subgenre">Subgenre</label>
-            <select id="intent-subgenre"></select>
-          </div>
-          <div>
-            <label for="intent-mood">Mood</label>
-            <select id="intent-mood">
-              <option value="dark, tense">Dark / tense</option>
-              <option value="emotional, intimate">Emotional / intimate</option>
-              <option value="triumphant, cinematic">Triumphant / cinematic</option>
-              <option value="bright, uplifting">Bright / uplifting</option>
-              <option value="melancholic, reflective">Melancholic / reflective</option>
-              <option value="aggressive, urgent">Aggressive / urgent</option>
-              <option value="smooth, late-night">Smooth / late-night</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-energy">Energy</label>
-            <select id="intent-energy">
-              <option value="mid-tempo, controlled energy">Mid-tempo</option>
-              <option value="low-key, spacious">Low-key</option>
-              <option value="driving, high energy">High energy</option>
-              <option value="slow build, explosive hook">Build to hook</option>
-              <option value="club-ready, kinetic">Club-ready</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-vocal-type">Vocal</label>
-            <select id="intent-vocal-type">
-              <option value="clear male lead vocal">Clear male lead</option>
-              <option value="clear female lead vocal">Clear female lead</option>
-              <option value="male rap vocal, clear hook response">Male rap lead</option>
-              <option value="female rap vocal, clear hook response">Female rap lead</option>
-              <option value="melodic rap vocal, autotune touches">Melodic rap</option>
-              <option value="soulful R&B vocal, stacked harmonies">R&B harmonies</option>
-              <option value="instrumental, no lead vocal">Instrumental</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-language">Language</label>
-            <select id="intent-language"></select>
-          </div>
-          <div>
-            <label for="intent-drums">Drums / groove</label>
-            <select id="intent-drums">
-              <option value="crisp pocket drums, punchy snare">Crisp pocket</option>
-              <option value="boom-bap drums, dusty swing">Boom-bap</option>
-              <option value="trap hi-hats, 808 kick patterns">Trap hats</option>
-              <option value="four-on-the-floor kick, club groove">Four-on-floor</option>
-              <option value="live drums, big room fills">Live rock drums</option>
-              <option value="brushed drums, laid-back swing">Brushed swing</option>
-              <option value="no drums, spacious pulse">No drums</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-bass">Bass / low-end</label>
-            <select id="intent-bass">
-              <option value="deep 808 bass, controlled sub">808 sub</option>
-              <option value="warm synth bass, rounded low-end">Warm synth bass</option>
-              <option value="live bass guitar, locked groove">Live bass</option>
-              <option value="upright bass, woody low-end">Upright bass</option>
-              <option value="reese bass, wide low-mid movement">Reese bass</option>
-              <option value="minimal low-end, airy mix">Minimal bass</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-melodic">Melodic identity</label>
-            <select id="intent-melodic">
-              <option value="minor piano motif, subtle synth counterline">Piano motif</option>
-              <option value="soul sample chop, warm keys">Soul chop</option>
-              <option value="wide synth pads, arpeggiated lead">Synth pads</option>
-              <option value="clean electric guitar riff">Guitar riff</option>
-              <option value="brass stabs, tense string accents">Brass + strings</option>
-              <option value="acoustic guitar pattern, intimate keys">Acoustic pattern</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-texture">Texture / space</label>
-            <select id="intent-texture">
-              <option value="wide stereo space, detailed atmosphere">Wide stereo</option>
-              <option value="dry upfront vocal, clean negative space">Dry upfront</option>
-              <option value="vinyl texture, warm analog grain">Vinyl warmth</option>
-              <option value="glossy modern texture, airy reverb">Glossy modern</option>
-              <option value="dark cinematic ambience, controlled tails">Dark ambience</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-mix">Mix / master</label>
-            <select id="intent-mix">
-              <option value="polished modern mix, loud clean master">Polished modern</option>
-              <option value="club master, tight low-end, bright transient detail">Club master</option>
-              <option value="radio-ready vocal mix, clear lyric intelligibility">Vocal-forward</option>
-              <option value="warm analog master, glue compression">Analog glue</option>
-              <option value="cinematic wide master, deep dynamics">Cinematic wide</option>
-            </select>
-          </div>
-          <div>
-            <label for="intent-custom-tags">Custom tags</label>
-            <input id="intent-custom-tags" type="text" placeholder="West Coast, Dutch, gritty choir..." />
-          </div>
-        </div>
+        <div class="intent-schema-summary" id="intent-schema-summary"></div>
+        <div class="intent-tabs" id="intent-tabs"></div>
+        <div class="intent-tab-panels" id="intent-tab-panels"></div>
         <div class="field intent-caption" style="margin-top:12px;">
           <label for="intent-caption-preview">ACE-Step caption preview</label>
-          <textarea id="intent-caption-preview" placeholder="Menu choices will build a concrete ACE-Step caption. You can edit it directly."></textarea>
+          <textarea id="intent-caption-preview" placeholder="A concrete ACE-Step sonic portrait will appear here."></textarea>
           <div class="chip-row" id="intent-chip-preview"></div>
         </div>
       </section>
@@ -3179,19 +3105,67 @@
       updatePlannerSettingsSummary();
     }
 
-    const INTENT_SUBGENRES = {
-      pop: ["modern pop", "dance pop", "alt pop", "synth pop", "indie pop", "custom"],
-      rap: ["West Coast rap", "boom-bap", "trap", "drill", "melodic rap", "G-funk", "custom"],
-      rnb: ["modern R&B", "neo soul", "quiet storm", "alt R&B", "gospel soul", "custom"],
-      rock: ["modern rock", "indie rock", "alt rock", "punk rock", "arena rock", "custom"],
-      edm: ["house", "tech house", "future bass", "drum and bass", "ambient electronic", "custom"],
-      latin: ["reggaeton", "afrobeats", "dancehall", "latin pop", "amapiano", "custom"],
-      country: ["country pop", "folk", "americana", "bluegrass", "singer-songwriter", "custom"],
-      cinematic: ["cinematic score", "orchestral hybrid", "trailer music", "ambient score", "custom"],
-      jazz: ["jazz", "neo jazz", "blues", "swing", "smooth jazz", "custom"],
-      instrumental: ["instrumental pop", "ambient", "cinematic instrumental", "lo-fi instrumental", "custom"],
-      custom: ["custom"]
+    const INTENT_GROUP_LABELS = {
+      genre_modules: "Genre modules",
+      genre_style: "Genres / subgenres",
+      mood_atmosphere: "Mood",
+      drums_groove: "Drums / groove",
+      bass_low_end: "Bass / low-end",
+      melodic_identity: "Melodic identity",
+      instruments: "Instruments",
+      stems: "Track stems",
+      vocal_character: "Vocals",
+      speed_rhythm: "Energy / rhythm",
+      structure_hints: "Structure",
+      lyric_meta_tags: "Lyric tags",
+      timbre_texture: "Texture / space",
+      era_reference: "Era",
+      production_style: "Mix / master",
+      negative_control: "Negative",
+      task_modes: "Task",
+      source_audio_modes: "Source audio",
+      model_strategies: "Model strategy",
+      render_models: "Render models",
+      lm_models: "ACE-Step LM",
+      personalization: "Personalization",
+      languages: "Languages"
     };
+    const INTENT_SELECT_CONFIG = [
+      { id: "intent-genre-family", label: "Primary module", group: "genre_modules", tab: "style", fallback: "pop" },
+      { id: "intent-subgenre", label: "Subgenre", group: "genre_style", tab: "style", fallback: "pop" },
+      { id: "intent-mood", label: "Mood", group: "mood_atmosphere", tab: "style", fallback: "dark" },
+      { id: "intent-energy", label: "Energy", group: "speed_rhythm", tab: "groove", fallback: "mid-tempo" },
+      { id: "intent-drums", label: "Drums / groove", group: "drums_groove", tab: "groove", fallback: "punchy snare" },
+      { id: "intent-bass", label: "Bass / low-end", group: "bass_low_end", tab: "groove", fallback: "808 bass" },
+      { id: "intent-melodic", label: "Melodic identity", group: "melodic_identity", tab: "arrangement", fallback: "piano" },
+      { id: "intent-texture", label: "Texture / space", group: "timbre_texture", tab: "arrangement", fallback: "wide stereo" },
+      { id: "intent-mix", label: "Mix / master", group: "production_style", tab: "arrangement", fallback: "crisp modern mix" },
+      { id: "intent-vocal-type", label: "Vocal", group: "vocal_character", tab: "vocals", fallback: "male vocal" },
+      { id: "intent-language", label: "Language", group: "languages", tab: "vocals", fallback: "en" },
+      { id: "intent-task-mode", label: "Task mode", group: "task_modes", tab: "ace_step_mode", fallback: "text2music" },
+      { id: "intent-source-audio-mode", label: "Source mode", group: "source_audio_modes", tab: "ace_step_mode", fallback: "none" },
+      { id: "intent-track-name", label: "Track stem", group: "stems", tab: "ace_step_mode", fallback: "vocals" },
+      { id: "intent-model-strategy", label: "Strategy", group: "model_strategies", tab: "model_quality", fallback: "auto" },
+      { id: "intent-render-model", label: "Render model", group: "render_models", tab: "model_quality", fallback: "acestep-v15-xl-sft" },
+      { id: "intent-lm-model", label: "5Hz LM", group: "lm_models", tab: "model_quality", fallback: "acestep-5Hz-lm-4B" },
+      { id: "intent-personalization", label: "Adapter", group: "personalization", tab: "model_quality", fallback: "none" },
+    ];
+    const INTENT_CHECKBOX_CONFIG = [
+      { id: "intent-thinking", label: "Think", tab: "model_quality", checked: true },
+      { id: "intent-use-cot-metas", label: "CoT metas", tab: "model_quality", checked: true },
+      { id: "intent-use-cot-caption", label: "Caption rewrite", tab: "model_quality", checked: true },
+      { id: "intent-use-cot-language", label: "CoT language", tab: "model_quality", checked: true },
+      { id: "intent-auto-score", label: "Auto score", tab: "model_quality", checked: false },
+      { id: "intent-auto-lrc", label: "Auto LRC", tab: "model_quality", checked: false },
+      { id: "intent-return-audio-codes", label: "Audio codes", tab: "model_quality", checked: true },
+      { id: "intent-use-lora", label: "Use adapter", tab: "model_quality", checked: false },
+    ];
+    const INTENT_CAPTION_GROUPS = [
+      "genre_modules", "genre_style", "mood_atmosphere", "drums_groove", "bass_low_end",
+      "melodic_identity", "instruments", "vocal_character", "speed_rhythm",
+      "structure_hints", "timbre_texture", "era_reference", "production_style"
+    ];
+    const INTENT_GROUP_STORAGE_KEY = "acejam:intent-groups";
 
     function mountSharedExpertDrawer() {
       const slot = $("ace-step-expert-slot");
@@ -3207,38 +3181,271 @@
       slot.dataset.mounted = "1";
     }
 
-    function hydrateIntentSubgenres() {
-      const family = $("intent-genre-family")?.value || "pop";
-      const select = $("intent-subgenre");
-      if (!select) return;
-      const previous = select.value;
-      const options = INTENT_SUBGENRES[family] || INTENT_SUBGENRES.custom;
-      select.innerHTML = options.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
-      select.value = options.includes(previous) ? previous : options[0];
-    }
-
     function splitIntentTags(value) {
       return String(value || "").split(/[,;|]/).map((tag) => tag.trim()).filter(Boolean);
     }
 
+    function uniqueIntentTags(values, limit = 32) {
+      const seen = new Set();
+      const result = [];
+      for (const value of values.flatMap((item) => Array.isArray(item) ? item : [item])) {
+        const text = String(value || "").trim();
+        const key = text.toLowerCase();
+        if (text && key !== "custom" && !seen.has(key)) {
+          seen.add(key);
+          result.push(text);
+        }
+      }
+      return result.slice(0, limit);
+    }
+
+    function songIntentSchema() {
+      return state.config?.songwriting_toolkit?.song_intent_schema || {};
+    }
+
+    function intentOptionsForGroup(group) {
+      const options = songIntentSchema()?.groups?.[group] || [];
+      return Array.isArray(options) ? options : [];
+    }
+
+    function intentOptionValue(option) {
+      return typeof option === "string" ? option : String(option?.value || "");
+    }
+
+    function intentOptionLabel(option) {
+      if (typeof option === "string") return option;
+      return String(option?.label || option?.value || "");
+    }
+
+    function findIntentOption(group, value) {
+      const raw = String(value || "").trim();
+      const rawKey = raw.toLowerCase();
+      if (!rawKey) return null;
+      return intentOptionsForGroup(group).find((option) => {
+        const terms = [
+          intentOptionValue(option),
+          intentOptionLabel(option),
+          ...((option && typeof option === "object" && Array.isArray(option.aliases)) ? option.aliases : []),
+          ...((option && typeof option === "object" && Array.isArray(option.tags)) ? option.tags : []),
+        ].map((item) => String(item || "").toLowerCase()).filter(Boolean);
+        return terms.some((term) => term === rawKey || term.includes(rawKey) || rawKey.includes(term));
+      }) || null;
+    }
+
+    function resolveIntentOptionValue(group, value, fallback = "") {
+      const direct = String(value || "").trim();
+      const options = intentOptionsForGroup(group);
+      if (!options.length) return direct || fallback;
+      if (options.some((option) => intentOptionValue(option) === direct)) return direct;
+      const found = findIntentOption(group, direct);
+      if (found) return intentOptionValue(found);
+      if (fallback && options.some((option) => intentOptionValue(option) === fallback)) return fallback;
+      const fallbackFound = fallback ? findIntentOption(group, fallback) : null;
+      return fallbackFound ? intentOptionValue(fallbackFound) : intentOptionValue(options[0]);
+    }
+
+    function collectIntentRenderSnapshot() {
+      const values = {};
+      for (const config of INTENT_SELECT_CONFIG) values[config.id] = $(config.id)?.value || "";
+      for (const config of INTENT_CHECKBOX_CONFIG) values[config.id] = $(config.id)?.checked ? "1" : "0";
+      for (const id of ["intent-custom-tags", "intent-negative-tags", "intent-lora-activation"]) values[id] = $(id)?.value || "";
+      let groups = {};
+      try { groups = JSON.parse(sessionStorage.getItem(INTENT_GROUP_STORAGE_KEY) || "{}") || {}; } catch { groups = {}; }
+      document.querySelectorAll("[data-intent-chip].selected").forEach((button) => {
+        const group = button.dataset.intentGroup;
+        if (!group) return;
+        groups[group] ||= [];
+        groups[group].push(button.dataset.intentValue || "");
+      });
+      Object.keys(groups).forEach((group) => { groups[group] = uniqueIntentTags(groups[group], 1000); });
+      return { values, groups };
+    }
+
+    function persistIntentGroupSelections() {
+      const groups = {};
+      document.querySelectorAll("[data-intent-chip].selected").forEach((button) => {
+        const group = button.dataset.intentGroup;
+        if (!group) return;
+        groups[group] ||= [];
+        groups[group].push(button.dataset.intentValue || "");
+      });
+      Object.keys(groups).forEach((group) => { groups[group] = uniqueIntentTags(groups[group], 1000); });
+      sessionStorage.setItem(INTENT_GROUP_STORAGE_KEY, JSON.stringify(groups));
+    }
+
+    function savedIntentValue(id, snapshot, fallback = "") {
+      return snapshot?.values?.[id] || sessionStorage.getItem("acejam:" + id) || fallback;
+    }
+
+    function renderIntentSelect(config, snapshot) {
+      const options = intentOptionsForGroup(config.group);
+      const selected = resolveIntentOptionValue(config.group, savedIntentValue(config.id, snapshot, config.fallback), config.fallback);
+      const optionHtml = options.map((option) => {
+        const value = intentOptionValue(option);
+        const label = intentOptionLabel(option);
+        const selectedAttr = value === selected ? " selected" : "";
+        const title = typeof option === "object" && option.description ? ` title="${esc(option.description)}"` : "";
+        return `<option value="${esc(value)}"${selectedAttr}${title}>${esc(label)}</option>`;
+      }).join("");
+      return `<div>
+        <label for="${esc(config.id)}">${esc(config.label)}</label>
+        <select id="${esc(config.id)}" data-intent-control="${esc(config.group)}">${optionHtml}</select>
+      </div>`;
+    }
+
+    function renderIntentChecks(tabId, snapshot) {
+      const checks = INTENT_CHECKBOX_CONFIG.filter((config) => config.tab === tabId);
+      if (!checks.length) return "";
+      return `<div class="intent-chip-group">
+        <div class="intent-chip-head"><strong>LM / output</strong><span class="badge">${checks.length}</span></div>
+        <div class="row">
+          ${checks.map((config) => {
+            const saved = savedIntentValue(config.id, snapshot, config.checked ? "1" : "0");
+            return `<label class="check"><input type="checkbox" id="${esc(config.id)}"${saved === "1" ? " checked" : ""} /> ${esc(config.label)}</label>`;
+          }).join("")}
+        </div>
+      </div>`;
+    }
+
+    function renderIntentTextInputs(tabId, snapshot) {
+      if (tabId === "negative") {
+        return `<div class="intent-control-grid">
+          <div><label for="intent-negative-tags">Custom negative tags</label><input id="intent-negative-tags" type="text" value="${esc(savedIntentValue("intent-negative-tags", snapshot))}" placeholder="muddy mix, weak hook" /></div>
+        </div>`;
+      }
+      if (tabId === "model_quality") {
+        return `<div class="intent-control-grid">
+          <div><label for="intent-lora-activation">Adapter activation tag</label><input id="intent-lora-activation" type="text" value="${esc(savedIntentValue("intent-lora-activation", snapshot))}" placeholder="my custom style tag" /></div>
+        </div>`;
+      }
+      if (tabId === "style") {
+        return `<div class="intent-control-grid">
+          <div><label for="intent-custom-tags">Custom tags</label><input id="intent-custom-tags" type="text" value="${esc(savedIntentValue("intent-custom-tags", snapshot))}" placeholder="West Coast, Dutch, gritty choir" /></div>
+        </div>`;
+      }
+      return "";
+    }
+
+    function renderIntentChipGroup(group, snapshot) {
+      const options = intentOptionsForGroup(group);
+      if (!options.length) return "";
+      const selected = new Set((snapshot?.groups?.[group] || []).map((value) => resolveIntentOptionValue(group, value, value)));
+      const searchable = options.length > 10;
+      return `<div class="intent-chip-group" data-intent-chip-group="${esc(group)}">
+        <div class="intent-chip-head"><strong>${esc(INTENT_GROUP_LABELS[group] || group)}</strong><span class="badge">${options.length}</span></div>
+        ${searchable ? `<input class="intent-chip-search" type="search" data-intent-search="${esc(group)}" placeholder="Search ${esc(INTENT_GROUP_LABELS[group] || group)}" />` : ""}
+        <div class="intent-chip-list">
+          ${options.map((option) => {
+            const value = intentOptionValue(option);
+            const selectedClass = selected.has(value) ? " selected" : "";
+            const title = typeof option === "object" && option.description ? ` title="${esc(option.description)}"` : "";
+            return `<button type="button" class="intent-chip-btn${selectedClass}" data-intent-chip="1" data-intent-group="${esc(group)}" data-intent-value="${esc(value)}"${title}>${esc(intentOptionLabel(option))}</button>`;
+          }).join("")}
+        </div>
+      </div>`;
+    }
+
+    function activeIntentTabId() {
+      const tabs = songIntentSchema()?.tabs || [];
+      return state.intentActiveTab || tabs[0]?.id || "style";
+    }
+
+    function activateIntentTab(tabId) {
+      state.intentActiveTab = tabId;
+      document.querySelectorAll("[data-intent-tab]").forEach((button) => button.classList.toggle("active", button.dataset.intentTab === tabId));
+      document.querySelectorAll("[data-intent-tab-panel]").forEach((panel) => { panel.hidden = panel.dataset.intentTabPanel !== tabId; });
+    }
+
+    function renderSongIntentBuilder({ preserve = true } = {}) {
+      const schema = songIntentSchema();
+      const tabsRoot = $("intent-tabs");
+      const panelsRoot = $("intent-tab-panels");
+      if (!tabsRoot || !panelsRoot) return;
+      const groups = schema.groups || {};
+      const tabs = schema.tabs || [];
+      const snapshot = preserve ? collectIntentRenderSnapshot() : { values: {}, groups: {} };
+      const counts = schema.counts || {};
+      if ($("intent-schema-badge")) {
+        $("intent-schema-badge").textContent = schema.version ? `Schema ${schema.version}` : "Schema unavailable";
+        $("intent-schema-badge").className = `badge ${schema.version ? "ok" : "warn"}`;
+      }
+      if ($("intent-schema-summary")) {
+        $("intent-schema-summary").innerHTML = [
+          ["Genres", counts.genre_modules],
+          ["Tags", counts.tag_taxonomy_terms],
+          ["Lyrics", counts.lyric_meta_tags],
+          ["Tasks", counts.task_modes],
+          ["Stems", counts.track_stems],
+          ["Models", (counts.render_models || 0) + (counts.lm_models || 0)],
+          ["Languages", counts.valid_languages],
+        ].filter((item) => item[1]).map(([label, value]) => `<span class="badge">${esc(label)} <strong>${esc(value)}</strong></span>`).join("");
+      }
+      if (!Object.keys(groups).length || !tabs.length) {
+        tabsRoot.innerHTML = "";
+        panelsRoot.innerHTML = `<div class="control-note warn">Song Intent schema is unavailable.</div>`;
+        return;
+      }
+      tabsRoot.innerHTML = tabs.map((tab) =>
+        `<button type="button" class="intent-tab-btn" data-intent-tab="${esc(tab.id)}">${esc(tab.label)}</button>`
+      ).join("");
+      panelsRoot.innerHTML = tabs.map((tab) => {
+        const controls = INTENT_SELECT_CONFIG.filter((config) => config.tab === tab.id);
+        const controlHtml = controls.length ? `<div class="intent-control-grid">${controls.map((config) => renderIntentSelect(config, snapshot)).join("")}</div>` : "";
+        const chipHtml = (tab.groups || []).map((group) => renderIntentChipGroup(group, snapshot)).join("");
+        return `<div class="intent-tab-panel" data-intent-tab-panel="${esc(tab.id)}" hidden>
+          ${controlHtml}
+          ${renderIntentChecks(tab.id, snapshot)}
+          ${renderIntentTextInputs(tab.id, snapshot)}
+          ${chipHtml}
+        </div>`;
+      }).join("");
+      activateIntentTab(tabs.some((tab) => tab.id === activeIntentTabId()) ? activeIntentTabId() : tabs[0].id);
+    }
+
+    function hydrateIntentSubgenres() {
+      if (!$("intent-subgenre") && songIntentSchema()?.groups) renderSongIntentBuilder();
+    }
+
+    function selectedIntentGroupValues(group, { labels = false, includeOptionTags = false } = {}) {
+      const values = [];
+      document.querySelectorAll(`[data-intent-chip][data-intent-group="${CSS.escape(group)}"].selected`).forEach((button) => {
+        const value = button.dataset.intentValue || "";
+        const option = findIntentOption(group, value);
+        values.push(labels && option ? intentOptionLabel(option) : value);
+        if (includeOptionTags && option && Array.isArray(option.tags)) values.push(...option.tags);
+      });
+      return uniqueIntentTags(values, 1000);
+    }
+
+    function intentSelectTerms(id, group, { includeOptionTags = false, label = false } = {}) {
+      const value = $(id)?.value || "";
+      const option = findIntentOption(group, value);
+      const terms = [label && option ? intentOptionLabel(option) : value];
+      if (includeOptionTags && option && Array.isArray(option.tags)) terms.push(...option.tags);
+      return uniqueIntentTags(terms, 1000);
+    }
+
     function songIntentTags() {
-      const fields = [
-        "intent-subgenre",
-        "intent-mood",
-        "intent-energy",
-        "intent-vocal-type",
-        "intent-drums",
-        "intent-bass",
-        "intent-melodic",
-        "intent-texture",
-        "intent-mix"
-      ];
-      const tags = fields.map((id) => $(id)?.value).filter((value) => value && value !== "custom");
+      const tags = [
+        intentSelectTerms("intent-genre-family", "genre_modules", { includeOptionTags: true, label: true }),
+        intentSelectTerms("intent-subgenre", "genre_style"),
+        intentSelectTerms("intent-mood", "mood_atmosphere"),
+        intentSelectTerms("intent-energy", "speed_rhythm"),
+        intentSelectTerms("intent-vocal-type", "vocal_character"),
+        intentSelectTerms("intent-drums", "drums_groove"),
+        intentSelectTerms("intent-bass", "bass_low_end"),
+        intentSelectTerms("intent-melodic", "melodic_identity"),
+        intentSelectTerms("intent-texture", "timbre_texture"),
+        intentSelectTerms("intent-mix", "production_style"),
+        ...INTENT_CAPTION_GROUPS.map((group) => selectedIntentGroupValues(group, { labels: group === "genre_modules", includeOptionTags: group === "genre_modules" })),
+      ].flat();
       tags.push(...splitIntentTags($("intent-custom-tags")?.value));
-      return Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 16);
+      return uniqueIntentTags(tags, 32);
     }
 
     function songIntentPayload() {
+      const selectedRenderModel = $("intent-render-model")?.value || "";
+      const selectedLmModel = $("intent-lm-model")?.value || "";
       return {
         genre_family: $("intent-genre-family")?.value || "",
         subgenre: $("intent-subgenre")?.value || "",
@@ -3252,12 +3459,40 @@
         texture_space: $("intent-texture")?.value || "",
         mix_master: $("intent-mix")?.value || "",
         custom_tags: splitIntentTags($("intent-custom-tags")?.value),
+        genre_modules: uniqueIntentTags([$("intent-genre-family")?.value, selectedIntentGroupValues("genre_modules")], 1000),
+        style_tags: uniqueIntentTags([$("intent-subgenre")?.value, selectedIntentGroupValues("genre_style"), selectedIntentGroupValues("era_reference")], 1000),
+        rhythm_tags: uniqueIntentTags([$("intent-energy")?.value, $("intent-drums")?.value, selectedIntentGroupValues("speed_rhythm"), selectedIntentGroupValues("drums_groove")], 1000),
+        instrument_tags: uniqueIntentTags([$("intent-bass")?.value, $("intent-melodic")?.value, selectedIntentGroupValues("bass_low_end"), selectedIntentGroupValues("melodic_identity"), selectedIntentGroupValues("instruments"), selectedIntentGroupValues("stems")], 1000),
+        vocal_tags: uniqueIntentTags([$("intent-vocal-type")?.value, selectedIntentGroupValues("vocal_character")], 1000),
+        structure_tags: uniqueIntentTags([selectedIntentGroupValues("structure_hints"), selectedIntentGroupValues("lyric_meta_tags")], 1000),
+        production_tags: uniqueIntentTags([$("intent-texture")?.value, $("intent-mix")?.value, selectedIntentGroupValues("timbre_texture"), selectedIntentGroupValues("production_style")], 1000),
+        negative_tags: uniqueIntentTags([selectedIntentGroupValues("negative_control"), splitIntentTags($("intent-negative-tags")?.value)], 1000),
+        task_mode: $("intent-task-mode")?.value || "text2music",
+        model_strategy: $("intent-model-strategy")?.value || "auto",
+        source_audio_mode: $("intent-source-audio-mode")?.value || "none",
+        track_name: $("intent-track-name")?.value || "",
+        track_classes: selectedIntentGroupValues("stems"),
+        personalization: {
+          mode: $("intent-personalization")?.value || "none",
+          use_lora: Boolean($("intent-use-lora")?.checked),
+          activation_tag: $("intent-lora-activation")?.value || "",
+        },
+        ace_step_controls: {
+          render_model: selectedRenderModel,
+          lm_model: selectedLmModel,
+          thinking: Boolean($("intent-thinking")?.checked),
+          use_cot_metas: Boolean($("intent-use-cot-metas")?.checked),
+          use_cot_caption: Boolean($("intent-use-cot-caption")?.checked),
+          use_cot_language: Boolean($("intent-use-cot-language")?.checked),
+          auto_score: Boolean($("intent-auto-score")?.checked),
+          auto_lrc: Boolean($("intent-auto-lrc")?.checked),
+          return_audio_codes: Boolean($("intent-return-audio-codes")?.checked),
+        },
         caption: $("intent-caption-preview")?.value || "",
       };
     }
 
     function updateSongIntentPreview({ force = false } = {}) {
-      hydrateIntentSubgenres();
       const preview = $("intent-caption-preview");
       if (!preview) return;
       const tags = songIntentTags();
@@ -3274,6 +3509,30 @@
         $("caption").value = preview.value;
         $("caption").dataset.fromIntent = "1";
       }
+    }
+
+    function filterIntentChipGroup(group, query) {
+      const needle = String(query || "").trim().toLowerCase();
+      document.querySelectorAll(`[data-intent-chip][data-intent-group="${CSS.escape(group)}"]`).forEach((button) => {
+        const text = `${button.textContent || ""} ${button.dataset.intentValue || ""}`.toLowerCase();
+        button.hidden = Boolean(needle && !text.includes(needle));
+      });
+    }
+
+    function setIntentSelectValue(id, value, group) {
+      const select = $(id);
+      if (!select || value === undefined || value === null || value === "") return;
+      const resolved = resolveIntentOptionValue(group || select.dataset.intentControl || "", value, value);
+      if ([...select.options].some((option) => option.value === resolved)) select.value = resolved;
+    }
+
+    function setIntentGroupValues(group, values) {
+      const wanted = uniqueIntentTags(Array.isArray(values) ? values : splitIntentTags(values), 1000)
+        .map((value) => resolveIntentOptionValue(group, value, value).toLowerCase());
+      if (!wanted.length) return;
+      document.querySelectorAll(`[data-intent-chip][data-intent-group="${CSS.escape(group)}"]`).forEach((button) => {
+        button.classList.toggle("selected", wanted.includes((button.dataset.intentValue || "").toLowerCase()));
+      });
     }
 
     function captionFromIntentFallback(fallback = "") {
@@ -4946,7 +5205,7 @@
       for (const id of ["language", "album-language"]) {
         $(id).innerHTML = languages.map((lang) => `<option value="${esc(lang)}"${lang === "en" ? " selected" : ""}>${esc(lang)}</option>`).join("");
       }
-      hydrateLanguageSelect($("intent-language"), $("intent-language")?.value || "en");
+      renderSongIntentBuilder();
       hydrateLanguageSelect($("dataset-language"), $("dataset-language")?.value || "en");
       if ($("bpm") && !$("bpm").value) $("bpm").value = String(state.config.default_bpm || DEFAULT_BPM);
       hydrateAllKeyScaleSelects();
@@ -5218,20 +5477,40 @@
       setFieldValue("title", payload.title);
       const caption = captionFromPayload(payload);
       const intent = payload.song_intent && typeof payload.song_intent === "object" ? payload.song_intent : payload;
-      setSelectValue("intent-genre-family", intent.genre_family);
+      setIntentSelectValue("intent-genre-family", intent.genre_family || intent.genre_modules?.[0], "genre_modules");
       hydrateIntentSubgenres();
-      setSelectValue("intent-subgenre", intent.subgenre);
-      setSelectValue("intent-mood", intent.mood);
-      setSelectValue("intent-energy", intent.energy);
-      setSelectValue("intent-vocal-type", intent.vocal_type || intent.vocal_delivery);
-      setSelectValue("intent-language", intent.language || payload.vocal_language);
-      setSelectValue("intent-drums", intent.drum_groove || intent.drums);
-      setSelectValue("intent-bass", intent.bass_low_end || intent.bass);
-      setSelectValue("intent-melodic", intent.melodic_identity || intent.melodic_element);
-      setSelectValue("intent-texture", intent.texture_space || intent.texture);
-      setSelectValue("intent-mix", intent.mix_master || intent.mix);
+      setIntentSelectValue("intent-subgenre", intent.subgenre || intent.style_tags?.[0], "genre_style");
+      setIntentSelectValue("intent-mood", intent.mood, "mood_atmosphere");
+      setIntentSelectValue("intent-energy", intent.energy, "speed_rhythm");
+      setIntentSelectValue("intent-vocal-type", intent.vocal_type || intent.vocal_delivery || intent.vocal_tags?.[0], "vocal_character");
+      setIntentSelectValue("intent-language", intent.language || payload.vocal_language, "languages");
+      setIntentSelectValue("intent-drums", intent.drum_groove || intent.drums || intent.rhythm_tags?.[0], "drums_groove");
+      setIntentSelectValue("intent-bass", intent.bass_low_end || intent.bass || intent.instrument_tags?.[0], "bass_low_end");
+      setIntentSelectValue("intent-melodic", intent.melodic_identity || intent.melodic_element, "melodic_identity");
+      setIntentSelectValue("intent-texture", intent.texture_space || intent.texture, "timbre_texture");
+      setIntentSelectValue("intent-mix", intent.mix_master || intent.mix, "production_style");
+      setIntentSelectValue("intent-task-mode", intent.task_mode || payload.task_type, "task_modes");
+      setIntentSelectValue("intent-model-strategy", intent.model_strategy || payload.quality_profile, "model_strategies");
+      setIntentSelectValue("intent-source-audio-mode", intent.source_audio_mode, "source_audio_modes");
+      setIntentSelectValue("intent-render-model", intent.ace_step_controls?.render_model || payload.song_model, "render_models");
+      setIntentSelectValue("intent-lm-model", intent.ace_step_controls?.lm_model || payload.ace_lm_model, "lm_models");
+      setIntentSelectValue("intent-personalization", intent.personalization?.mode, "personalization");
+      setIntentGroupValues("genre_modules", intent.genre_modules || []);
+      setIntentGroupValues("genre_style", intent.style_tags || payload.tags || []);
+      setIntentGroupValues("drums_groove", intent.rhythm_tags || []);
+      setIntentGroupValues("bass_low_end", intent.instrument_tags || []);
+      setIntentGroupValues("instruments", intent.instrument_tags || []);
+      setIntentGroupValues("vocal_character", intent.vocal_tags || []);
+      setIntentGroupValues("structure_hints", intent.structure_tags || []);
+      setIntentGroupValues("lyric_meta_tags", intent.structure_tags || []);
+      setIntentGroupValues("production_style", intent.production_tags || []);
+      setIntentGroupValues("negative_control", intent.negative_tags || payload.negative_tags || []);
+      persistIntentGroupSelections();
       const customTags = Array.isArray(intent.custom_tags) ? intent.custom_tags.join(", ") : intent.custom_tags;
       setFieldValue("intent-custom-tags", customTags);
+      setFieldValue("intent-negative-tags", Array.isArray(intent.negative_tags) ? intent.negative_tags.join(", ") : intent.negative_tags);
+      setFieldValue("intent-lora-activation", intent.personalization?.activation_tag);
+      if ($("intent-use-lora") && intent.personalization?.use_lora !== undefined) $("intent-use-lora").checked = Boolean(intent.personalization.use_lora);
       setFieldValue("caption", caption);
       if (caption) {
         setFieldValue("intent-caption-preview", caption);
@@ -7846,9 +8125,37 @@
         $(id)?.addEventListener("input", persistPlannerSettings);
         $(id)?.addEventListener("change", persistPlannerSettings);
       });
-      ["intent-genre-family", "intent-subgenre", "intent-mood", "intent-energy", "intent-vocal-type", "intent-language", "intent-drums", "intent-bass", "intent-melodic", "intent-texture", "intent-mix", "intent-custom-tags"].forEach((id) => {
-        $(id)?.addEventListener("input", () => { updateSongIntentPreview(); renderReadinessStrips(); });
-        $(id)?.addEventListener("change", () => { updateSongIntentPreview({ force: id === "intent-genre-family" }); renderReadinessStrips(); });
+      $("song-intent-builder")?.addEventListener("click", (event) => {
+        const tabButton = event.target.closest("[data-intent-tab]");
+        if (tabButton) {
+          activateIntentTab(tabButton.dataset.intentTab);
+          return;
+        }
+        const chip = event.target.closest("[data-intent-chip]");
+        if (chip) {
+          chip.classList.toggle("selected");
+          persistIntentGroupSelections();
+          updateSongIntentPreview();
+          renderReadinessStrips();
+        }
+      });
+      $("song-intent-builder")?.addEventListener("input", (event) => {
+        const target = event.target;
+        if (target?.id?.startsWith("intent-")) {
+          if (target.type !== "checkbox") sessionStorage.setItem("acejam:" + target.id, target.value || "");
+          updateSongIntentPreview();
+          renderReadinessStrips();
+        }
+        if (target?.dataset?.intentSearch) filterIntentChipGroup(target.dataset.intentSearch, target.value);
+      });
+      $("song-intent-builder")?.addEventListener("change", (event) => {
+        const target = event.target;
+        if (target?.id?.startsWith("intent-")) {
+          if (target.type === "checkbox") sessionStorage.setItem("acejam:" + target.id, target.checked ? "1" : "0");
+          else sessionStorage.setItem("acejam:" + target.id, target.value || "");
+          updateSongIntentPreview({ force: target.id === "intent-genre-family" });
+          renderReadinessStrips();
+        }
       });
       $("intent-caption-preview")?.addEventListener("input", () => {
         $("intent-caption-preview").dataset.userEdited = "1";

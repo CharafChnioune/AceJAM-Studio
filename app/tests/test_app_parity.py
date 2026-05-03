@@ -68,6 +68,35 @@ class AppParityTest(unittest.TestCase):
         (path / weight_name).write_bytes(b"weights")
         return path
 
+    def _write_ready_diffusers_pipeline(self, root: Path, name: str = "acestep-v15-xl-turbo-diffusers") -> Path:
+        path = root / "checkpoints" / name
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "model_index.json").write_text(
+            json.dumps(
+                {
+                    "_class_name": "AceStepPipeline",
+                    "condition_encoder": ["ace_step", "AceStepConditionEncoder"],
+                    "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+                    "text_encoder": ["transformers", "Qwen3Model"],
+                    "tokenizer": ["transformers", "Qwen2TokenizerFast"],
+                    "transformer": ["diffusers", "AceStepTransformer1DModel"],
+                    "vae": ["diffusers", "AutoencoderOobleck"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        for component in ["condition_encoder", "text_encoder", "transformer", "vae"]:
+            component_path = path / component
+            component_path.mkdir()
+            (component_path / "config.json").write_text("{}", encoding="utf-8")
+            (component_path / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+        (path / "scheduler").mkdir()
+        (path / "scheduler" / "scheduler_config.json").write_text("{}", encoding="utf-8")
+        (path / "tokenizer").mkdir()
+        (path / "tokenizer" / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+        (path / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+        return path
+
     def test_nested_generation_metadata_is_canonicalized(self):
         payload = acejam_app._merge_nested_generation_metadata(
             {
@@ -267,6 +296,26 @@ class AppParityTest(unittest.TestCase):
 
             self.assertTrue(acejam_app._checkpoint_dir_ready(path))
 
+    def test_diffusers_export_readiness_accepts_model_index_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_ready_diffusers_pipeline(root)
+
+            with patch.object(acejam_app, "MODEL_CACHE_DIR", root):
+                self.assertTrue(acejam_app._is_model_installed("acestep-v15-xl-turbo-diffusers"))
+                self.assertEqual(acejam_app._checkpoint_status_reason(path), "ready")
+                self.assertNotIn("acestep-v15-xl-turbo-diffusers", acejam_app._installed_acestep_models())
+
+    def test_diffusers_export_reports_missing_pipeline_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_ready_diffusers_pipeline(root)
+            (path / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+
+            with patch.object(acejam_app, "MODEL_CACHE_DIR", root):
+                self.assertFalse(acejam_app._is_model_installed("acestep-v15-xl-turbo-diffusers"))
+                self.assertIn("transformer weights", acejam_app._checkpoint_status_reason(path))
+
     def test_official_parity_payload_exposes_wrappers_and_runtime(self):
         source_status = {
             "vendor_dir": str(acejam_app.OFFICIAL_ACE_STEP_DIR),
@@ -430,6 +479,25 @@ class AppParityTest(unittest.TestCase):
         self.assertIsNone(wrapped["error"])
         self.assertEqual(wrapped["data"], {"ok": True})
         self.assertIn("timestamp", wrapped)
+
+    def test_config_and_toolkit_expose_song_intent_schema(self):
+        client = TestClient(acejam_app.app)
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft", "acestep-v15-xl-base"}):
+            config_response = client.get("/api/config")
+            toolkit_response = client.get("/api/songwriting_toolkit")
+
+        self.assertEqual(config_response.status_code, 200)
+        self.assertEqual(toolkit_response.status_code, 200)
+        for payload in [config_response.json()["songwriting_toolkit"], toolkit_response.json()]:
+            schema = payload["song_intent_schema"]
+            self.assertEqual(schema["counts"]["genre_modules"], 26)
+            self.assertEqual(schema["counts"]["tag_taxonomy_terms"], 184)
+            self.assertEqual(schema["counts"]["lyric_meta_tags"], 36)
+            self.assertEqual(schema["counts"]["valid_languages"], 51)
+            self.assertEqual(schema["counts"]["track_stems"], 12)
+            self.assertIn("cover-nofsq", schema["capabilities"]["all_task_modes"])
+            self.assertIn("acestep-v15-xl-base", schema["capabilities"]["model_support"]["complete"])
 
     def test_official_api_key_accepts_body_token(self):
         client = TestClient(acejam_app.app)

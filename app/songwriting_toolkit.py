@@ -24,6 +24,17 @@ from prompt_kit import (
     prompt_kit_payload,
     section_map_for,
 )
+from acestep.constants import (
+    BPM_MAX,
+    BPM_MIN,
+    DURATION_MAX,
+    DURATION_MIN,
+    TASK_TYPES,
+    TRACK_NAMES,
+    VALID_KEYSCALES,
+    VALID_LANGUAGES,
+    VALID_TIME_SIGNATURES,
+)
 from album_quality_gate import evaluate_album_payload_quality
 from studio_core import (
     ACE_STEP_LYRICS_SAFE_HEADROOM,
@@ -34,6 +45,9 @@ from studio_core import (
     docs_best_model_settings,
     fit_ace_step_lyrics_to_limit,
     hit_readiness_report,
+    official_downloadable_model_ids,
+    official_model_registry,
+    official_render_model_ids,
     parse_bool,
     pro_quality_policy,
     runtime_planner_report,
@@ -60,6 +74,7 @@ OFFICIAL_SOURCES = [
 ]
 
 ALBUM_FINAL_MODEL = "acestep-v15-xl-sft"
+SONG_INTENT_SCHEMA_VERSION = "2026-05-03"
 
 
 def _portfolio_item(model: str, slug: str, label: str, summary: str) -> dict[str, Any]:
@@ -1644,6 +1659,296 @@ def build_album_plan(concept: str, num_tracks: int, track_duration: float, optio
     return {"tracks": normalized, "toolkit_report": toolkit_report}
 
 
+def _dedupe_strings(values: list[Any] | tuple[Any, ...] | set[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            result.append(text)
+            seen.add(key)
+    return result
+
+
+def _intent_option(
+    value: str,
+    label: str | None = None,
+    *,
+    description: str = "",
+    aliases: list[str] | None = None,
+    tags: list[str] | None = None,
+    meta: dict[str, Any] | None = None,
+    source: str = "acejam",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "value": str(value),
+        "label": str(label or value).replace("_", " ").title() if label is None else str(label),
+        "source": source,
+    }
+    if description:
+        payload["description"] = description
+    if aliases:
+        payload["aliases"] = _dedupe_strings(aliases)
+    if tags:
+        payload["tags"] = _dedupe_strings(tags)
+    if meta:
+        payload["meta"] = meta
+    return payload
+
+
+def _taxonomy_options(category: str) -> list[dict[str, Any]]:
+    return [
+        _intent_option(value, value, source=f"tag_taxonomy.{category}")
+        for value in TAG_TAXONOMY.get(category, [])
+    ]
+
+
+def _matching_taxonomy_terms(categories: list[str], patterns: list[str], extras: list[str] | None = None) -> list[str]:
+    pattern = re.compile("|".join(re.escape(item) for item in patterns), re.IGNORECASE)
+    terms: list[str] = []
+    for category in categories:
+        terms.extend(value for value in TAG_TAXONOMY.get(category, []) if pattern.search(value))
+    terms.extend(extras or [])
+    return _dedupe_strings(terms)
+
+
+def _render_model_summary(model_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+    tasks = list(meta.get("tasks") or [])
+    return _intent_option(
+        model_id,
+        model_id,
+        description=f"{meta.get('quality') or 'ACE-Step'} quality, {meta.get('steps') or 'variable'} steps",
+        tags=tasks,
+        meta={
+            "repo_id": meta.get("repo_id"),
+            "role": meta.get("role"),
+            "tasks": tasks,
+            "quality": meta.get("quality"),
+            "steps": meta.get("steps"),
+            "cfg": meta.get("cfg"),
+            "downloadable": bool(meta.get("downloadable")),
+            "render_usable": bool(meta.get("render_usable")),
+        },
+        source=str(meta.get("source") or "official_model_registry"),
+    )
+
+
+def song_intent_schema(installed_models: set[str] | list[str] | None = None) -> dict[str, Any]:
+    """Return the complete, UI-ready Song Intent Builder contract."""
+    installed = set(installed_models or [])
+    registry = official_model_registry()
+    render_models = [
+        _render_model_summary(model_id, registry.get(model_id, {}))
+        for model_id in official_render_model_ids()
+        if model_id in registry
+    ]
+    lm_models = [
+        _render_model_summary(model_id, meta)
+        for model_id, meta in registry.items()
+        if meta.get("role") == "ace_lm"
+    ]
+    downloadable_models = [
+        _render_model_summary(model_id, registry.get(model_id, {}))
+        for model_id in official_downloadable_model_ids()
+        if model_id in registry
+    ]
+    task_modes = [
+        _intent_option("text2music", "Text to music", description="Generate from caption, lyrics, metadata, and optional reference audio.", source="ace_step.tasks"),
+        _intent_option("cover", "Cover / style transfer", description="Use source audio as song material and optional reference audio for style.", source="ace_step.tasks"),
+        _intent_option("cover-nofsq", "Cover without FSQ", description="AceJAM cover variant for source-audio workflows.", source="acejam.tasks"),
+        _intent_option("repaint", "Repaint / edit section", description="Modify a selected source-audio region while preserving surrounding context.", source="ace_step.tasks"),
+        _intent_option("extract", "Extract stem", description="Base/XL-base only: isolate a selected track stem from a mix.", source="ace_step.tasks"),
+        _intent_option("lego", "Lego add stem", description="Base/XL-base only: generate a selected track from source-audio context.", source="ace_step.tasks"),
+        _intent_option("complete", "Complete arrangement", description="Base/XL-base only: complete partial tracks with selected stems.", source="ace_step.tasks"),
+    ]
+    all_task_ids = [option["value"] for option in task_modes]
+    model_support = {
+        task: [
+            model["value"]
+            for model in render_models
+            if task in (model.get("meta", {}).get("tasks") or [])
+        ]
+        for task in all_task_ids
+    }
+    source_audio_modes = [
+        _intent_option("none", "No source audio", source="ace_step.audio_control"),
+        _intent_option("reference_audio", "Reference audio", description="Style reference for text2music.", source="ace_step.audio_control"),
+        _intent_option("src_audio", "Source audio", description="Required for cover, repaint, extract, lego, and complete.", source="ace_step.audio_control"),
+        _intent_option("src_plus_reference", "Source plus reference", description="Edit source audio with optional style reference.", source="ace_step.audio_control"),
+        _intent_option("audio_codes", "Audio semantic codes", description="Advanced control from extracted audio codes.", source="ace_step.audio_control"),
+    ]
+    model_strategies = [
+        _intent_option("auto", "Auto", description="Use AceJAM's selected model and quality profile.", source="acejam.model_strategy"),
+        _intent_option("preview_fast", "Preview fast", description="Turbo draft settings.", tags=["turbo", "8 steps"], source="acejam.model_strategy"),
+        _intent_option("chart_master", "Chart master", description="High-quality final render settings.", tags=["XL SFT", "CFG"], source="acejam.model_strategy"),
+        _intent_option("base_control", "Base control", description="Use base/XL-base for extract, lego, and complete.", tags=["extract", "lego", "complete"], source="acejam.model_strategy"),
+        _intent_option("all_models_song", "All render models", description="Render comparison across official render-usable models.", source="acejam.model_strategy"),
+    ]
+    personalization = [
+        _intent_option("none", "No adapter", source="ace_step.personalization"),
+        _intent_option("lora", "LoRA adapter", description="Use a trained adapter during inference.", source="ace_step.personalization"),
+        _intent_option("lokr", "LoKr adapter", description="Use a LoKr-trained adapter exported for inference.", source="ace_step.personalization"),
+        _intent_option("activation_tag", "Activation tag", description="Add a trained style trigger tag to the caption.", source="ace_step.personalization"),
+    ]
+    drums = _matching_taxonomy_terms(
+        ["speed_rhythm", "instruments", "production_style", "structure_hints"],
+        ["drum", "kick", "snare", "hat", "breakbeat", "percussion", "four-on", "rhythm", "groove", "sidechain"],
+        ["no drums", "dembow rhythm", "log drum", "off-beat drums", "brush drums"],
+    )
+    bass = _matching_taxonomy_terms(
+        ["instruments", "timbre_texture"],
+        ["bass", "808", "sub", "low end", "low-end", "upright"],
+        ["reese bass", "controlled sub"],
+    )
+    melodic = _dedupe_strings(
+        [
+            value
+            for value in TAG_TAXONOMY["instruments"]
+            if not re.search(r"drum|kick|snare|hat|bass|percussion|breakbeat", value, re.IGNORECASE)
+        ]
+        + ["soul chop", "piano motif", "guitar riff", "vocal chop"]
+    )
+    genre_modules = [
+        _intent_option(
+            key,
+            module.get("label") or key,
+            description=str(module.get("structure") or ""),
+            aliases=list(module.get("aliases") or []),
+            tags=list(module.get("caption_dna") or []),
+            meta={
+                "bpm": module.get("bpm"),
+                "keys": module.get("keys"),
+                "hook_strategy": module.get("hook_strategy"),
+                "avoid": list(module.get("avoid") or []),
+                "density": module.get("density"),
+                "instrumental": bool(module.get("instrumental")),
+            },
+            source="prompt_kit.genre_modules",
+        )
+        for key, module in GENRE_MODULES.items()
+    ]
+    languages = [
+        _intent_option(
+            code,
+            str(LANGUAGE_PRESETS.get(code, {}).get("language") or code),
+            meta={
+                "prompt_kit_preset": code in LANGUAGE_PRESETS,
+                **({k: v for k, v in LANGUAGE_PRESETS.get(code, {}).items() if k != "language"} if code in LANGUAGE_PRESETS else {}),
+            },
+            source="ace_step.valid_languages",
+        )
+        for code in VALID_LANGUAGES
+    ]
+    groups = {
+        "genre_modules": genre_modules,
+        "genre_style": _taxonomy_options("genre_style"),
+        "mood_atmosphere": _taxonomy_options("mood_atmosphere"),
+        "drums_groove": [_intent_option(value, value, source="derived.drums_groove") for value in drums],
+        "bass_low_end": [_intent_option(value, value, source="derived.bass_low_end") for value in bass],
+        "melodic_identity": [_intent_option(value, value, source="derived.melodic_identity") for value in melodic],
+        "instruments": _taxonomy_options("instruments"),
+        "stems": _taxonomy_options("track_stems"),
+        "vocal_character": _taxonomy_options("vocal_character"),
+        "speed_rhythm": _taxonomy_options("speed_rhythm"),
+        "structure_hints": _taxonomy_options("structure_hints"),
+        "lyric_meta_tags": [
+            _intent_option(value, value, meta={"category": category}, source=f"lyric_meta_tags.{category}")
+            for category, values in LYRIC_META_TAGS.items()
+            for value in values
+        ],
+        "timbre_texture": _taxonomy_options("timbre_texture"),
+        "era_reference": _taxonomy_options("era_reference"),
+        "production_style": _taxonomy_options("production_style"),
+        "negative_control": [
+            _intent_option(value, value, source="acejam.negative_control")
+            for value in _dedupe_strings(
+                [
+                    "muddy mix",
+                    "generic lyrics",
+                    "weak hook",
+                    "empty lyrics",
+                    "off-key vocal",
+                    "unclear vocal",
+                    "noisy artifacts",
+                    "flat drums",
+                    "harsh high end",
+                    "overcompressed",
+                    "boring arrangement",
+                    "contradictory style",
+                    *negative_control_for("generic"),
+                ]
+            )
+        ],
+        "task_modes": task_modes,
+        "source_audio_modes": source_audio_modes,
+        "model_strategies": model_strategies,
+        "personalization": personalization,
+        "render_models": render_models,
+        "lm_models": lm_models,
+        "downloadable_models": downloadable_models,
+        "languages": languages,
+    }
+    tab_layout = [
+        {"id": "style", "label": "Style", "groups": ["genre_modules", "genre_style", "mood_atmosphere", "era_reference"]},
+        {"id": "groove", "label": "Groove", "groups": ["drums_groove", "bass_low_end", "speed_rhythm"]},
+        {"id": "arrangement", "label": "Arrangement", "groups": ["melodic_identity", "instruments", "stems", "structure_hints", "lyric_meta_tags"]},
+        {"id": "vocals", "label": "Vocals", "groups": ["vocal_character", "languages"]},
+        {"id": "ace_step_mode", "label": "ACE-Step Mode", "groups": ["task_modes", "source_audio_modes", "stems"]},
+        {"id": "model_quality", "label": "Model/Quality", "groups": ["model_strategies", "render_models", "lm_models", "personalization"]},
+        {"id": "negative", "label": "Negative", "groups": ["negative_control"]},
+    ]
+    return {
+        "version": SONG_INTENT_SCHEMA_VERSION,
+        "sources": OFFICIAL_SOURCES,
+        "groups": groups,
+        "tabs": tab_layout,
+        "metadata": {
+            "valid_languages": list(VALID_LANGUAGES),
+            "language_presets": LANGUAGE_PRESETS,
+            "valid_keyscales": sorted(VALID_KEYSCALES),
+            "valid_time_signatures": list(VALID_TIME_SIGNATURES),
+            "ranges": {"bpm": [BPM_MIN, BPM_MAX], "duration": [DURATION_MIN, DURATION_MAX]},
+            "track_names": list(TRACK_NAMES),
+            "installed_song_models": sorted(installed),
+        },
+        "capabilities": {
+            "official_tasks": list(TASK_TYPES),
+            "local_task_variants": ["cover-nofsq"],
+            "all_task_modes": all_task_ids,
+            "base_only_tasks": ["extract", "lego", "complete"],
+            "source_audio_tasks": ["cover", "cover-nofsq", "repaint", "extract", "lego", "complete"],
+            "lm_skipped_tasks": ["cover", "cover-nofsq", "repaint", "extract"],
+            "model_support": model_support,
+        },
+        "legacy_field_map": {
+            "genre_family": "genre_modules",
+            "subgenre": "genre_style",
+            "mood": "mood_atmosphere",
+            "energy": "speed_rhythm",
+            "vocal_type": "vocal_character",
+            "drum_groove": "drums_groove",
+            "bass_low_end": "bass_low_end",
+            "melodic_identity": "melodic_identity",
+            "texture_space": "timbre_texture",
+            "mix_master": "production_style",
+        },
+        "counts": {
+            "genre_modules": len(GENRE_MODULES),
+            "tag_taxonomy_groups": len(TAG_TAXONOMY),
+            "tag_taxonomy_terms": sum(len(values) for values in TAG_TAXONOMY.values()),
+            "lyric_meta_tags": sum(len(values) for values in LYRIC_META_TAGS.values()),
+            "valid_languages": len(VALID_LANGUAGES),
+            "valid_keyscales": len(VALID_KEYSCALES),
+            "official_tasks": len(TASK_TYPES),
+            "task_modes": len(all_task_ids),
+            "track_stems": len(TRACK_NAMES),
+            "render_models": len(render_models),
+            "lm_models": len(lm_models),
+        },
+    }
+
+
 def toolkit_payload(installed_models: set[str] | list[str] | None = None) -> dict[str, Any]:
     installed = set(installed_models or [])
     return {
@@ -1657,6 +1962,7 @@ def toolkit_payload(installed_models: set[str] | list[str] | None = None) -> dic
         "advanced_generation_settings": ADVANCED_GENERATION_ADVISORY,
         "ace_step_settings_registry": ace_step_settings_registry(),
         "sources": OFFICIAL_SOURCES,
+        "song_intent_schema": song_intent_schema(installed),
         "tag_taxonomy": TAG_TAXONOMY,
         "lyric_meta_tags": LYRIC_META_TAGS,
         "craft_tools": CRAFT_TOOLS,
