@@ -91,27 +91,121 @@ export const promptAssistantRun = (body: PromptAssistantRunRequest) =>
 
 export const getConfig = () => api.get<Record<string, unknown>>("/api/config");
 
-export interface LocalLLMModelEntry {
-  name: string;
-  provider: string;
-  capability?: string;
-  installed?: boolean;
-  size?: number;
-  context?: number;
-  description?: string;
+// ---- Local LLM catalog ----------------------------------------------------
+//
+// `/api/local-llm/catalog` returns the full mixed catalog: settings, providers,
+// per-provider sub-catalogs, and a flattened `details[]` with rich metadata
+// (kind, capabilities, image_generation, profile, etc). All model dropdowns
+// in the React UI consume this single endpoint and filter client-side.
+
+export type LLMProvider = "ollama" | "lmstudio" | "ace_step_lm";
+
+export interface LLMModelProfile {
+  label?: string;
+  dropdown_label?: string;
+  summary?: string;
+  quality?: string;
+  speed?: string;
+  vram?: string;
+  notes?: string;
+  warnings?: string[];
+  source_urls?: string[];
 }
 
-export const listLocalLLMModels = (capability?: string) => {
-  const qs = capability ? `?capability=${encodeURIComponent(capability)}` : "";
-  return api.get<{ success: boolean; models: LocalLLMModelEntry[] }>(
-    `/api/local-llm/models${qs}`,
-  );
-};
+export interface LLMModelDetail {
+  key: string;
+  name: string;
+  display_name?: string;
+  provider: LLMProvider;
+  kind?: "chat" | "embedding" | string;
+  type?: string;
+  capabilities?: string[] | Record<string, unknown>;
+  image_generation?: boolean;
+  vision?: boolean;
+  size_gb?: number;
+  parameter_size?: string;
+  format?: string;
+  quantization_level?: string;
+  loaded?: boolean;
+  status?: string;
+  profile?: LLMModelProfile;
+  mlx_preferred?: boolean;
+}
 
-export const listOllamaModels = () =>
-  api.get<{ success: boolean; models: Array<{ name: string; size?: number }> }>(
-    "/api/ollama_models",
+export interface LLMProviderEntry {
+  id: LLMProvider;
+  label: string;
+  host: string;
+  ready: boolean;
+}
+
+export interface LLMSubCatalog {
+  success: boolean;
+  ready: boolean;
+  host?: string;
+  models: string[];
+  chat_models: string[];
+  embedding_models: string[];
+  image_models: string[];
+  details: LLMModelDetail[];
+  error?: string;
+}
+
+export interface LLMCatalogResponse {
+  success: boolean;
+  settings: {
+    provider?: LLMProvider;
+    chat_model?: string;
+    embedding_provider?: LLMProvider;
+    embedding_model?: string;
+    art_provider?: LLMProvider;
+    art_model?: string;
+    [k: string]: unknown;
+  };
+  providers: LLMProviderEntry[];
+  catalogs: Partial<Record<LLMProvider, LLMSubCatalog>>;
+  details: LLMModelDetail[];
+  models: string[];
+  chat_models: string[];
+  embedding_models: string[];
+  image_models: string[];
+}
+
+export const getLLMCatalog = () =>
+  api.get<LLMCatalogResponse>("/api/local-llm/catalog");
+
+function capList(d: LLMModelDetail): string[] {
+  return Array.isArray(d.capabilities) ? d.capabilities : [];
+}
+
+export function chatModelDetails(c: LLMCatalogResponse | undefined): LLMModelDetail[] {
+  if (!c) return [];
+  return c.details.filter(
+    (d) =>
+      d.kind === "chat" ||
+      capList(d).includes("chat") ||
+      // ACE-Step LMs expose capabilities like 'composition'/'metadata' etc; treat them as chat planners
+      d.provider === "ace_step_lm",
   );
+}
+
+export function imageModelDetails(c: LLMCatalogResponse | undefined): LLMModelDetail[] {
+  if (!c) return [];
+  return c.details.filter(
+    (d) => d.image_generation === true || capList(d).includes("image_generation"),
+  );
+}
+
+export function embeddingModelDetails(c: LLMCatalogResponse | undefined): LLMModelDetail[] {
+  if (!c) return [];
+  return c.details.filter((d) => d.kind === "embedding");
+}
+
+export const PROVIDER_LABEL: Record<LLMProvider, string> = {
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+  ace_step_lm: "ACE-Step LM",
+};
 
 // ---- Generation ----
 

@@ -1,6 +1,7 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Wand2, ImagePlus, RefreshCw } from "lucide-react";
+import { Wand2, ImagePlus, RefreshCw, Settings as SettingsIcon } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,9 +16,11 @@ import {
 } from "@/components/ui/select";
 import {
   generateArt,
-  listLocalLLMModels,
+  getLLMCatalog,
+  imageModelDetails,
   type ArtMetadata,
   type ArtGenerateRequest,
+  type LLMProvider,
 } from "@/lib/api";
 import { useSettingsStore } from "@/store/settings";
 import { toast } from "@/components/ui/sonner";
@@ -46,13 +49,39 @@ export function ArtGenerator({
 }: ArtGeneratorProps) {
   const [prompt, setPrompt] = React.useState(defaultPrompt);
   const [art, setArt] = React.useState<ArtMetadata | null>(null);
+  const artProvider = useSettingsStore((s) => s.artProvider);
   const artModel = useSettingsStore((s) => s.artModel);
-  const setArtModel = useSettingsStore((s) => s.setArtModel);
+  const setArt_ = useSettingsStore((s) => s.setArt);
 
-  const modelsQuery = useQuery({
-    queryKey: ["local-llm-models", "image_generation"],
-    queryFn: () => listLocalLLMModels("image_generation"),
+  const catalogQuery = useQuery({
+    queryKey: ["llm-catalog"],
+    queryFn: getLLMCatalog,
+    staleTime: 30_000,
   });
+
+  const imageModels = React.useMemo(
+    () => imageModelDetails(catalogQuery.data),
+    [catalogQuery.data],
+  );
+
+  // Auto-pick: catalog.settings.art_model if installed
+  React.useEffect(() => {
+    if (artModel || !catalogQuery.data) return;
+    const settings = catalogQuery.data.settings;
+    if (
+      settings?.art_model &&
+      imageModels.some((m) => m.name === settings.art_model)
+    ) {
+      setArt_(
+        (settings.art_provider ?? "ollama") as LLMProvider,
+        settings.art_model,
+      );
+      return;
+    }
+    if (imageModels.length > 0) {
+      setArt_(imageModels[0].provider, imageModels[0].name);
+    }
+  }, [catalogQuery.data, imageModels, artModel, setArt_]);
 
   React.useEffect(() => {
     if (defaultPrompt && !prompt) setPrompt(defaultPrompt);
@@ -83,7 +112,8 @@ export function ArtGenerator({
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const models = modelsQuery.data?.models ?? [];
+  const isLoading = catalogQuery.isLoading;
+  const isEmpty = !isLoading && imageModels.length === 0;
 
   return (
     <div className={cn("space-y-3 rounded-xl border bg-card/40 p-4", className)}>
@@ -145,23 +175,39 @@ export function ArtGenerator({
             <Label className="text-xs uppercase tracking-wider text-muted-foreground">
               Image-model
             </Label>
-            <Select value={artModel} onValueChange={setArtModel}>
-              <SelectTrigger>
-                <SelectValue placeholder={
-                  modelsQuery.isLoading ? "Modellen laden…" : "Kies een Ollama image model"
-                } />
-              </SelectTrigger>
-              <SelectContent>
-                {models.length === 0 && (
-                  <SelectItem value="__none__" disabled>
-                    Geen image-modellen — open Settings.
-                  </SelectItem>
-                )}
-                {models.map((m) => (
-                  <SelectItem key={m.name} value={m.name}>{m.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {isEmpty ? (
+              <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2.5 text-xs text-yellow-200">
+                Geen Ollama image-model geïnstalleerd. Voorbeeld:{" "}
+                <code className="rounded bg-background/40 px-1">
+                  ollama pull aravhawk/flux:11.9bf16
+                </code>
+                <Link
+                  to="/settings"
+                  className="ml-2 inline-flex items-center gap-1 underline"
+                >
+                  <SettingsIcon className="size-3" /> Open Settings
+                </Link>
+              </div>
+            ) : (
+              <Select
+                value={artModel}
+                onValueChange={(v) => {
+                  const found = imageModels.find((m) => m.name === v);
+                  if (found) setArt_(found.provider, found.name);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={isLoading ? "Modellen laden…" : "Kies een image-model"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {imageModels.map((m) => (
+                    <SelectItem key={m.key} value={m.name}>
+                      {m.display_name || m.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
           <Button
             onClick={() => mutation.mutate({})}

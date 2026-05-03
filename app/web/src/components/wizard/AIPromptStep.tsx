@@ -1,6 +1,7 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Sparkles, Wand2, AlertTriangle } from "lucide-react";
+import { Sparkles, Wand2, AlertTriangle, ExternalLink } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,13 +10,18 @@ import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import {
-  listLocalLLMModels,
+  chatModelDetails,
+  getLLMCatalog,
   promptAssistantRun,
+  PROVIDER_LABEL,
+  type LLMProvider,
   type WizardMode,
 } from "@/lib/api";
 import { useSettingsStore } from "@/store/settings";
@@ -32,6 +38,10 @@ interface AIPromptStepProps {
 const EMPTY_WARNINGS: string[] = [];
 const EMPTY_PASTE: Array<{ label?: string; content: string }> = [];
 
+function modelKey(provider: LLMProvider, name: string): string {
+  return `${provider}:${name}`;
+}
+
 export function AIPromptStep({ mode, placeholder, examples, onHydrated }: AIPromptStepProps) {
   const prompt = useWizardStore((s) => s.prompts[mode]) ?? "";
   const warnings = useWizardStore((s) => s.warnings[mode]) ?? EMPTY_WARNINGS;
@@ -39,19 +49,56 @@ export function AIPromptStep({ mode, placeholder, examples, onHydrated }: AIProm
   const setPrompt = useWizardStore((s) => s.setPrompt);
   const setHydration = useWizardStore((s) => s.setHydration);
 
+  const plannerProvider = useSettingsStore((s) => s.plannerProvider);
   const plannerModel = useSettingsStore((s) => s.plannerModel);
   const setPlanner = useSettingsStore((s) => s.setPlanner);
 
-  const modelsQuery = useQuery({
-    queryKey: ["local-llm-models", "chat"],
-    queryFn: () => listLocalLLMModels("chat"),
+  const catalogQuery = useQuery({
+    queryKey: ["llm-catalog"],
+    queryFn: getLLMCatalog,
+    staleTime: 30_000,
   });
+
+  const allChatModels = React.useMemo(
+    () => chatModelDetails(catalogQuery.data),
+    [catalogQuery.data],
+  );
+
+  // Group by provider for the dropdown
+  const grouped = React.useMemo(() => {
+    const map = new Map<LLMProvider, typeof allChatModels>();
+    for (const m of allChatModels) {
+      const arr = map.get(m.provider) ?? [];
+      arr.push(m);
+      map.set(m.provider, arr);
+    }
+    return map;
+  }, [allChatModels]);
+
+  // Auto-pick a sensible default planner from catalog.settings or first chat model
+  React.useEffect(() => {
+    if (plannerModel || !catalogQuery.data) return;
+    const settings = catalogQuery.data.settings;
+    const preferred = settings?.chat_model;
+    const preferredProvider = (settings?.provider ?? "ollama") as LLMProvider;
+    if (preferred && allChatModels.some((m) => m.name === preferred)) {
+      setPlanner(preferredProvider, preferred);
+      return;
+    }
+    if (allChatModels.length > 0) {
+      const first = allChatModels[0];
+      setPlanner(first.provider, first.name);
+    }
+  }, [catalogQuery.data, allChatModels, plannerModel, setPlanner]);
+
+  const currentKey = plannerModel ? modelKey(plannerProvider, plannerModel) : "";
 
   const aiFill = useMutation({
     mutationFn: () =>
       promptAssistantRun({
         mode,
         user_prompt: prompt,
+        planner_lm_provider: plannerProvider,
         planner_model: plannerModel || undefined,
       }),
     onSuccess: (data) => {
@@ -70,7 +117,17 @@ export function AIPromptStep({ mode, placeholder, examples, onHydrated }: AIProm
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const models = modelsQuery.data?.models ?? [];
+  const onModelChange = (key: string) => {
+    if (!key) return;
+    const idx = key.indexOf(":");
+    if (idx < 0) return;
+    const provider = key.slice(0, idx) as LLMProvider;
+    const name = key.slice(idx + 1);
+    setPlanner(provider, name);
+  };
+
+  const isLoading = catalogQuery.isLoading;
+  const isEmpty = !isLoading && allChatModels.length === 0;
 
   return (
     <div className="space-y-5">
@@ -108,38 +165,47 @@ export function AIPromptStep({ mode, placeholder, examples, onHydrated }: AIProm
           <Label className="text-xs uppercase tracking-wider text-muted-foreground">
             Planner model
           </Label>
-          <Select
-            value={plannerModel}
-            onValueChange={(v) => setPlanner("ollama", v)}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder={
-                modelsQuery.isLoading ? "Modellen laden…" : "Kies een planner-model"
-              } />
-            </SelectTrigger>
-            <SelectContent>
-              {models.length === 0 && (
-                <SelectItem value="__none__" disabled>
-                  Geen modellen beschikbaar — open Settings.
-                </SelectItem>
-              )}
-              {models.map((m) => (
-                <SelectItem key={m.name} value={m.name}>
-                  <div className="flex items-center gap-2">
-                    <span>{m.name}</span>
-                    {m.installed === false && (
-                      <Badge variant="muted" className="text-[10px]">niet geïnstalleerd</Badge>
-                    )}
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {isEmpty ? (
+            <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-yellow-200">
+              Geen chat-modellen gevonden bij Ollama, LM Studio of de officiële
+              ACE-Step LM. Open <Link to="/settings" className="underline">Settings</Link> of
+              install een Ollama model met <code className="rounded bg-background/40 px-1">ollama pull qwen3:14b</code>.
+            </div>
+          ) : (
+            <Select value={currentKey} onValueChange={onModelChange}>
+              <SelectTrigger>
+                <SelectValue placeholder={isLoading ? "Catalog laden…" : "Kies een planner-model"} />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from(grouped.entries()).map(([provider, list]) => (
+                  <SelectGroup key={provider}>
+                    <SelectLabel>{PROVIDER_LABEL[provider]}</SelectLabel>
+                    {list.map((m) => {
+                      const dropdownLabel =
+                        m.profile?.dropdown_label || m.display_name || m.name;
+                      return (
+                        <SelectItem key={m.key} value={modelKey(m.provider, m.name)}>
+                          <div className="flex items-center gap-2">
+                            <span>{dropdownLabel}</span>
+                            {m.size_gb && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {m.size_gb.toFixed(1)} GB
+                              </span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
         <Button
           size="lg"
           onClick={() => aiFill.mutate()}
-          disabled={!prompt.trim() || aiFill.isPending}
+          disabled={!prompt.trim() || !plannerModel || aiFill.isPending}
           className="gap-2"
         >
           <Sparkles className="size-4" />

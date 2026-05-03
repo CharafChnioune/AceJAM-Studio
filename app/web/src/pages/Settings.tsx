@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   Sparkles, ImagePlus, Download, CheckCircle2, XCircle, Loader2, Cpu, Disc, Brush,
-  Layers, RefreshCw, Trash2, FlaskConical,
+  Layers, RefreshCw, Trash2, FlaskConical, Plus,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -15,159 +15,351 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { api, listLocalLLMModels } from "@/lib/api";
+import {
+  api,
+  chatModelDetails,
+  embeddingModelDetails,
+  getLLMCatalog,
+  imageModelDetails,
+  PROVIDER_LABEL,
+  type LLMModelDetail,
+  type LLMProvider,
+} from "@/lib/api";
 import { useSettingsStore } from "@/store/settings";
+import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
-import { cn } from "@/lib/utils";
+
+function modelKey(provider: LLMProvider, name: string) {
+  return `${provider}:${name}`;
+}
 
 // ---- LLM tab ------------------------------------------------------------
 
 function LLMTab() {
-  const planner = useSettingsStore((s) => s.plannerModel);
+  const qc = useQueryClient();
+  const plannerProvider = useSettingsStore((s) => s.plannerProvider);
+  const plannerModel = useSettingsStore((s) => s.plannerModel);
   const setPlanner = useSettingsStore((s) => s.setPlanner);
+  const artProvider = useSettingsStore((s) => s.artProvider);
   const artModel = useSettingsStore((s) => s.artModel);
-  const setArtModel = useSettingsStore((s) => s.setArtModel);
+  const setArt = useSettingsStore((s) => s.setArt);
+  const addJob = useJobsStore((s) => s.addJob);
+  const updateJob = useJobsStore((s) => s.updateJob);
+  const removeJob = useJobsStore((s) => s.removeJob);
 
-  const chatQ = useQuery({
-    queryKey: ["local-llm-models", "chat"],
-    queryFn: () => listLocalLLMModels("chat"),
+  const catalogQuery = useQuery({
+    queryKey: ["llm-catalog"],
+    queryFn: getLLMCatalog,
+    staleTime: 30_000,
   });
-  const imageQ = useQuery({
-    queryKey: ["local-llm-models", "image_generation"],
-    queryFn: () => listLocalLLMModels("image_generation"),
-  });
-  const ollamaStatus = useQuery({
-    queryKey: ["ollama-status"],
-    queryFn: () =>
-      api.get<{
-        success: boolean;
-        ready: boolean;
-        ollama_host: string;
-        model_count: number;
-        chat_model_count: number;
-        embedding_model_count: number;
-        running_models?: Array<{ name?: string }>;
-        error?: string;
-      }>("/api/ollama/status"),
-  });
+
+  const catalog = catalogQuery.data;
+  const chatModels = chatModelDetails(catalog);
+  const imageModels = imageModelDetails(catalog);
+  const embeddingModels = embeddingModelDetails(catalog);
+
+  // Group chat models by provider
+  const groupedChat = React.useMemo(() => {
+    const m = new Map<LLMProvider, LLMModelDetail[]>();
+    for (const d of chatModels) {
+      const arr = m.get(d.provider) ?? [];
+      arr.push(d);
+      m.set(d.provider, arr);
+    }
+    return m;
+  }, [chatModels]);
 
   const testChat = useMutation({
     mutationFn: () =>
       api.post<{ success: boolean; reply?: string; error?: string }>(
         "/api/ollama/test",
-        { model: planner, prompt: "Say hi in five words." },
+        { model: plannerModel, prompt: "Say hi in five words." },
       ),
-    onSuccess: (r) => r.success ? toast.success(`Reply: ${r.reply ?? ""}`) : toast.error(r.error ?? "test mislukt"),
+    onSuccess: (r) =>
+      r.success
+        ? toast.success(`Reply: ${r.reply ?? ""}`)
+        : toast.error(r.error ?? "test mislukt"),
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const status = ollamaStatus.data;
-  const ready = status?.ready;
+  // Ollama pull flow
+  const [pullModelName, setPullModelName] = React.useState("");
+  const startPull = useMutation({
+    mutationFn: () =>
+      api.post<{ success: boolean; job?: { id: string }; error?: string }>(
+        "/api/ollama/pull",
+        { model: pullModelName.trim(), reason: "manual settings" },
+      ),
+    onSuccess: (resp) => {
+      if (!resp.success || !resp.job?.id) {
+        toast.error(resp.error || "Pull starten mislukt");
+        return;
+      }
+      const id = resp.job.id;
+      addJob({
+        id,
+        kind: "ollama-pull",
+        label: `pull ${pullModelName.trim()}`,
+        progress: 0,
+        status: "queued",
+        startedAt: Date.now(),
+      });
+      setPullModelName("");
+      pollPull(id);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const pollPull = (jobId: string) => {
+    const tick = async () => {
+      try {
+        const resp = await api.get<{
+          success: boolean;
+          job?: { status?: string; progress?: number; error?: string };
+        }>(`/api/ollama/pull/${encodeURIComponent(jobId)}`);
+        const j = resp.job;
+        if (!j) return;
+        updateJob(jobId, { progress: j.progress, status: j.status });
+        if (j.status === "complete") {
+          toast.success("Ollama-model klaar.");
+          setTimeout(() => removeJob(jobId), 4000);
+          qc.invalidateQueries({ queryKey: ["llm-catalog"] });
+          return;
+        }
+        if (j.status === "error") {
+          toast.error(j.error || "Pull mislukt");
+          setTimeout(() => removeJob(jobId), 6000);
+          return;
+        }
+        setTimeout(tick, 2500);
+      } catch (e) {
+        toast.error(`Poll fout: ${(e as Error).message}`);
+      }
+    };
+    tick();
+  };
+
+  const providerCard = (id: LLMProvider) => {
+    const sub = catalog?.catalogs?.[id];
+    const provider = catalog?.providers.find((p) => p.id === id);
+    return (
+      <Card key={id}>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Cpu className="size-4" /> {PROVIDER_LABEL[id]}
+            {provider && (
+              provider.ready
+                ? <Badge className="gap-1"><CheckCircle2 className="size-3" /> ready</Badge>
+                : <Badge variant="destructive" className="gap-1"><XCircle className="size-3" /> offline</Badge>
+            )}
+          </CardTitle>
+          <CardDescription>
+            {provider?.host ?? sub?.host ?? "—"} · {sub?.details.length ?? 0} model{(sub?.details.length ?? 0) === 1 ? "" : "len"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1.5">
+          {!sub || sub.details.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Geen modellen geïnstalleerd.</p>
+          ) : (
+            sub.details.map((m) => (
+              <div
+                key={m.key}
+                className="flex items-center gap-2 rounded-md border bg-card/40 px-2 py-1.5 text-xs"
+              >
+                <span className="flex-1 truncate font-mono">
+                  {m.profile?.dropdown_label || m.display_name || m.name}
+                </span>
+                {m.size_gb && (
+                  <span className="text-[10px] text-muted-foreground">
+                    {m.size_gb.toFixed(1)} GB
+                  </span>
+                )}
+                {m.kind === "embedding" && (
+                  <Badge variant="muted" className="text-[10px]">embedding</Badge>
+                )}
+                {m.image_generation && (
+                  <Badge variant="muted" className="text-[10px]">image</Badge>
+                )}
+                {m.kind === "chat" && (
+                  <Badge variant="muted" className="text-[10px]">chat</Badge>
+                )}
+              </div>
+            ))
+          )}
+          {sub?.error && <p className="text-xs text-destructive">{sub.error}</p>}
+        </CardContent>
+      </Card>
+    );
+  };
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Cpu className="size-4" /> Ollama-status
-          </CardTitle>
-          <CardDescription>Bron van zowel planner-LLM als image-generator.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-3">
-            {ollamaStatus.isLoading ? (
-              <Skeleton className="h-6 w-32" />
-            ) : (
-              <>
-                {ready ? (
-                  <Badge className="gap-1"><CheckCircle2 className="size-3" /> Online</Badge>
-                ) : (
-                  <Badge variant="destructive" className="gap-1"><XCircle className="size-3" /> Offline</Badge>
-                )}
-                <code className="rounded bg-background/40 px-2 py-1 font-mono text-xs">
-                  {status?.ollama_host}
-                </code>
-                <span className="text-xs text-muted-foreground">
-                  {status?.chat_model_count ?? 0} chat · {status?.embedding_model_count ?? 0} embed · {status?.model_count ?? 0} totaal
-                </span>
-                <Button size="sm" variant="ghost" onClick={() => ollamaStatus.refetch()} className="ml-auto gap-1.5">
-                  <RefreshCw className="size-3" /> Refresh
-                </Button>
-              </>
-            )}
-          </div>
-          {status?.error && (
-            <p className="mt-2 text-xs text-destructive">{status.error}</p>
-          )}
-        </CardContent>
-      </Card>
+      {/* Provider overview cards */}
+      <div className="grid gap-3 lg:grid-cols-3">
+        {providerCard("ollama")}
+        {providerCard("lmstudio")}
+        {providerCard("ace_step_lm")}
+      </div>
 
+      {/* Planner selection */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Sparkles className="size-4 text-primary" /> AI planner (chat)
           </CardTitle>
-          <CardDescription>Vult elke wizard automatisch in via /api/prompt-assistant/run.</CardDescription>
+          <CardDescription>
+            Vult elke wizard automatisch in via /api/prompt-assistant/run.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Label>Model</Label>
-          {chatQ.isLoading ? (
+          {catalogQuery.isLoading ? (
             <Skeleton className="h-9 w-full" />
+          ) : chatModels.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nog geen chat-modellen. Pull er eentje hieronder.
+            </p>
           ) : (
-            <Select value={planner} onValueChange={(v) => setPlanner("ollama", v)}>
-              <SelectTrigger><SelectValue placeholder="Kies een planner-model" /></SelectTrigger>
+            <Select
+              value={plannerModel ? modelKey(plannerProvider, plannerModel) : ""}
+              onValueChange={(key) => {
+                const idx = key.indexOf(":");
+                if (idx > 0) {
+                  setPlanner(key.slice(0, idx) as LLMProvider, key.slice(idx + 1));
+                }
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Kies een planner-model" />
+              </SelectTrigger>
               <SelectContent>
-                {(chatQ.data?.models ?? []).map((m) => (
-                  <SelectItem key={m.name} value={m.name}>
-                    <div className="flex items-center gap-2">
-                      <span>{m.name}</span>
-                      {m.installed === false && <Badge variant="muted" className="text-[10px]">niet geïnstalleerd</Badge>}
-                    </div>
-                  </SelectItem>
+                {Array.from(groupedChat.entries()).map(([provider, list]) => (
+                  <SelectGroup key={provider}>
+                    <SelectLabel>{PROVIDER_LABEL[provider]}</SelectLabel>
+                    {list.map((m) => (
+                      <SelectItem key={m.key} value={modelKey(m.provider, m.name)}>
+                        {m.profile?.dropdown_label || m.display_name || m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
               </SelectContent>
             </Select>
           )}
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" disabled={!planner || testChat.isPending} onClick={() => testChat.mutate()} className="gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!plannerModel || testChat.isPending}
+              onClick={() => testChat.mutate()}
+              className="gap-1.5"
+            >
               <FlaskConical className="size-3" /> Test
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => qc.invalidateQueries({ queryKey: ["llm-catalog"] })}
+              className="gap-1.5"
+            >
+              <RefreshCw className="size-3" /> Refresh
             </Button>
           </div>
         </CardContent>
       </Card>
 
+      {/* Art model */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <ImagePlus className="size-4 text-primary" /> Album- & track-art
+            <ImagePlus className="size-4 text-primary" /> Album- &amp; track-art
           </CardTitle>
-          <CardDescription>Ollama image-model dat artwork rendert.</CardDescription>
+          <CardDescription>
+            Ollama image-model dat artwork rendert.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           <Label>Model</Label>
-          {imageQ.isLoading ? (
+          {catalogQuery.isLoading ? (
             <Skeleton className="h-9 w-full" />
+          ) : imageModels.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Geen image-modellen. Pull er eentje, bijvoorbeeld:
+              <code className="mx-1 rounded bg-background/40 px-1">aravhawk/flux:11.9bf16</code>
+            </p>
           ) : (
-            <Select value={artModel} onValueChange={setArtModel}>
-              <SelectTrigger><SelectValue placeholder="Kies een image-model" /></SelectTrigger>
+            <Select
+              value={artModel}
+              onValueChange={(v) => {
+                const found = imageModels.find((m) => m.name === v);
+                if (found) setArt(found.provider, found.name);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Kies een image-model" />
+              </SelectTrigger>
               <SelectContent>
-                {(imageQ.data?.models ?? []).map((m) => (
-                  <SelectItem key={m.name} value={m.name}>{m.name}</SelectItem>
+                {imageModels.map((m) => (
+                  <SelectItem key={m.key} value={m.name}>
+                    {m.display_name || m.name}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           )}
-          {(imageQ.data?.models ?? []).length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              Geen image-modellen geïnstalleerd. Installeer er één met
-              <code className="mx-1 rounded bg-background/40 px-1">ollama pull &lt;model&gt;</code>
-              of via de Models-tab.
-            </p>
-          )}
         </CardContent>
       </Card>
+
+      {/* Pull a new Ollama model */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Download className="size-4" /> Pull Ollama-model
+          </CardTitle>
+          <CardDescription>
+            Voer een Ollama tag in (bv. <code className="rounded bg-background/40 px-1">qwen3:14b</code>)
+            en download op de achtergrond. Je ziet de voortgang in de sidebar.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex gap-2">
+          <Input
+            placeholder="model:tag"
+            value={pullModelName}
+            onChange={(e) => setPullModelName(e.target.value)}
+            className="flex-1"
+          />
+          <Button
+            onClick={() => startPull.mutate()}
+            disabled={!pullModelName.trim() || startPull.isPending}
+            className="gap-1.5"
+          >
+            <Plus className="size-3" />
+            Start pull
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Embeddings (info-only) */}
+      {embeddingModels.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Embedding-modellen</CardTitle>
+            <CardDescription>Gebruikt door album-coherence.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-1.5">
+            {embeddingModels.map((m) => (
+              <div key={m.key} className="rounded-md border bg-card/30 p-2 text-xs">
+                <span className="font-mono">{m.name}</span>
+                <span className="ml-2 text-[10px] text-muted-foreground">
+                  {PROVIDER_LABEL[m.provider]}
+                </span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -201,6 +393,10 @@ function ModelsTab() {
       <CardContent className="space-y-2">
         {downloadsQ.isLoading ? (
           Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-md" />)
+        ) : models.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Geen modellen-lijst beschikbaar.
+          </p>
         ) : (
           models.map((m) => (
             <div

@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { LLMProvider } from "@/lib/api";
 
 interface SettingsSlice {
-  plannerProvider: string;
+  plannerProvider: LLMProvider;
   plannerModel: string;
+  artProvider: LLMProvider;
   artModel: string;
-  setPlanner: (provider: string, model: string) => void;
-  setArtModel: (model: string) => void;
+  setPlanner: (provider: LLMProvider, model: string) => void;
+  setArt: (provider: LLMProvider, model: string) => void;
 }
 
 export const useSettingsStore = create<SettingsSlice>()(
@@ -14,10 +16,12 @@ export const useSettingsStore = create<SettingsSlice>()(
     (set) => ({
       plannerProvider: "ollama",
       plannerModel: "",
+      artProvider: "ollama",
       artModel: "",
       setPlanner: (provider, model) =>
         set({ plannerProvider: provider, plannerModel: model }),
-      setArtModel: (model) => set({ artModel: model }),
+      setArt: (provider, model) =>
+        set({ artProvider: provider, artModel: model }),
     }),
     { name: "acejam-settings" },
   ),
