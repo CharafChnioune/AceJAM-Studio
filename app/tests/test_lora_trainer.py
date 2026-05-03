@@ -65,6 +65,20 @@ class ImmediateThread:
         self.target(*self.args)
 
 
+class FakeNanProcess:
+    pid = 12345
+
+    def __init__(self):
+        self.stdout = iter(["Epoch 2/2, Step 90, Loss: nan\n", "this should not be read\n"])
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self):
+        return -15 if self.terminated else 0
+
+
 class LoraTrainerTest(unittest.TestCase):
     def make_manager(self, root: Path) -> CaptureTrainingManager:
         return CaptureTrainingManager(
@@ -379,6 +393,32 @@ class LoraTrainerTest(unittest.TestCase):
 
         self.assertIn("[Verse]\nBorrowed soil", fitted)
         self.assertNotIn("[Outro]", fitted)
+
+    def test_training_command_step_fails_on_nonfinite_loss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AceTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            job = TrainingJob(
+                id="nanjob",
+                kind="train",
+                state="running",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+            fake = FakeNanProcess()
+
+            with patch("lora_trainer.subprocess.Popen", return_value=fake), \
+                self.assertRaisesRegex(RuntimeError, "non-finite loss"):
+                manager._run_command_step("nanjob", ["python", "train.py"], Path(job.log_path), stage="train epoch 2/300")
+
+            self.assertTrue(fake.terminated)
+            self.assertIn("Loss: nan", Path(job.log_path).read_text(encoding="utf-8"))
 
     def test_epoch_auditions_run_once_per_epoch_with_checkpoint_path(self):
         with tempfile.TemporaryDirectory() as tmp:

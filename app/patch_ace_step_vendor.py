@@ -158,6 +158,8 @@ def patch_lora_adapter_name_sanitizer() -> bool:
 
 
 def patch_mps_training_auto_precision() -> bool:
+    changed = False
+
     path = VENDOR_DIR / "acestep" / "training_v2" / "gpu_utils.py"
     text = path.read_text(encoding="utf-8")
     original = (
@@ -168,12 +170,45 @@ def patch_mps_training_auto_precision() -> bool:
         '        elif device_type == "mps":\n'
         '            precision = "fp32"\n'
     )
-    if patched in text:
-        return False
-    if original not in text:
-        raise RuntimeError(f"Could not find MPS auto precision block in {path}")
-    path.write_text(text.replace(original, patched, 1), encoding="utf-8")
-    return True
+    if patched not in text:
+        if original not in text:
+            raise RuntimeError(f"Could not find MPS auto precision block in {path}")
+        path.write_text(text.replace(original, patched, 1), encoding="utf-8")
+        changed = True
+
+    module_path = VENDOR_DIR / "acestep" / "training_v2" / "fixed_lora_module.py"
+    module_text = module_path.read_text(encoding="utf-8")
+    dtype_original = (
+        '    if device_type == "mps":\n'
+        '        return torch.float16\n'
+    )
+    dtype_patched = (
+        '    if device_type == "mps":\n'
+        '        return torch.float32\n'
+    )
+    if dtype_patched not in module_text:
+        if dtype_original not in module_text:
+            raise RuntimeError(f"Could not find MPS compute dtype block in {module_path}")
+        module_text = module_text.replace(dtype_original, dtype_patched, 1)
+        changed = True
+
+    fabric_original = (
+        '    if device_type == "mps":\n'
+        '        return "16-mixed"\n'
+    )
+    fabric_patched = (
+        '    if device_type == "mps":\n'
+        '        return "32-true"\n'
+    )
+    if fabric_patched not in module_text:
+        if fabric_original not in module_text:
+            raise RuntimeError(f"Could not find MPS fabric precision block in {module_path}")
+        module_text = module_text.replace(fabric_original, fabric_patched, 1)
+        changed = True
+
+    if changed:
+        module_path.write_text(module_text, encoding="utf-8")
+    return changed
 
 
 def main() -> None:

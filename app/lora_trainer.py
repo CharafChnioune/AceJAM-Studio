@@ -31,6 +31,7 @@ EPOCH_AUDITION_DURATION_SECONDS = 20
 EPOCH_AUDITION_CHARS_PER_SECOND = 21
 EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 4
 EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 2.5
+NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 
 
 def utc_now() -> str:
@@ -1456,6 +1457,7 @@ class AceTrainingManager:
     def _run_command_step(self, job_id: str, command: list[str], log_path: Path, *, stage: str) -> None:
         env = self._training_env()
         self._append_log(log_path, f"\n[{stage}] $ {' '.join(command)}\n\n")
+        nonfinite_loss_line = ""
         with log_path.open("a", encoding="utf-8") as log:
             process = subprocess.Popen(
                 command,
@@ -1476,6 +1478,10 @@ class AceTrainingManager:
             for line in process.stdout:
                 log.write(line)
                 log.flush()
+                if NONFINITE_TRAINING_LOSS_RE.search(line):
+                    nonfinite_loss_line = line.strip()
+                    process.terminate()
+                    break
             return_code = process.wait()
         with self._lock:
             self._processes.pop(job_id, None)
@@ -1484,6 +1490,8 @@ class AceTrainingManager:
             current.return_code = return_code
             current.updated_at = utc_now()
             self._write_job_unlocked(current)
+        if nonfinite_loss_line:
+            raise RuntimeError(f"{stage} produced non-finite loss: {nonfinite_loss_line}")
         if return_code != 0:
             raise RuntimeError(f"{stage} exited with code {return_code}")
 

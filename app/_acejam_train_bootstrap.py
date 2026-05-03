@@ -75,7 +75,13 @@ try:
             return "bf16-mixed"
         return "32-true"  # MPS and CPU both use fp32
 
+    def _fixed_compute_dtype(device_type: str) -> torch.dtype:
+        if device_type in ("cuda", "xpu"):
+            return torch.bfloat16
+        return torch.float32  # MPS and CPU both use fp32
+
     _flm._select_fabric_precision = _fixed_precision
+    _flm._select_compute_dtype = _fixed_compute_dtype
     _trainer._select_fabric_precision = _fixed_precision
 except (ImportError, AttributeError):
     pass
