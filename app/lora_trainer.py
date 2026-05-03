@@ -31,6 +31,7 @@ EPOCH_AUDITION_DURATION_SECONDS = 20
 EPOCH_AUDITION_CHARS_PER_SECOND = 8
 EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 2
 EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 5.0
+EPOCH_AUDITION_SECTION_STYLE = "clear dry lead vocal, intelligible delivery"
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
@@ -139,10 +140,55 @@ def _epoch_audition_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return blocks
 
 
+def _format_epoch_audition_time(seconds: float | int) -> str:
+    total = max(0, int(round(float(seconds))))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _epoch_audition_timed_section(section: str, start: float, end: float) -> str:
+    section_name = str(section or "[Verse]").strip().strip("[]") or "Verse"
+    return f"[{section_name} - seconds {int(round(start))}-{int(round(end))}, {EPOCH_AUDITION_SECTION_STYLE}]"
+
+
+def _add_epoch_audition_timing(blocks: list[dict[str, Any]], *, duration: int) -> tuple[str, list[dict[str, Any]]]:
+    active_blocks = [block for block in blocks if block.get("lines")]
+    if not active_blocks:
+        return "", []
+    section_count = len(active_blocks)
+    segment = max(1.0, float(duration) / float(section_count))
+    output: list[str] = []
+    slices: list[dict[str, Any]] = []
+    for index, block in enumerate(active_blocks):
+        start = min(float(duration), index * segment)
+        end = float(duration) if index == section_count - 1 else min(float(duration), (index + 1) * segment)
+        section = str(block.get("section") or "[Verse]")
+        lines = [str(line).strip() for line in list(block.get("lines") or []) if str(line).strip()]
+        if not lines:
+            continue
+        if output:
+            output.append("")
+        output.append(_epoch_audition_timed_section(section, start, end))
+        output.extend(lines)
+        slices.append(
+            {
+                "section": section.strip("[]"),
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "start_label": _format_epoch_audition_time(start),
+                "end_label": _format_epoch_audition_time(end),
+                "line_count": len(lines),
+            }
+        )
+    return "\n".join(output).strip(), slices
+
+
 def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDITION_DURATION_SECONDS) -> tuple[str, dict[str, Any]]:
     raw = str(lyrics or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     duration_seconds = max(10, int(duration or EPOCH_AUDITION_DURATION_SECONDS))
-    max_chars = max(100, min(360, int(duration_seconds * EPOCH_AUDITION_CHARS_PER_SECOND)))
+    lyric_char_budget = int(duration_seconds * EPOCH_AUDITION_CHARS_PER_SECOND)
+    # Timed section tags are part of ACE-Step's temporal script, but they add
+    # prompt text that should not reduce the sung-line budget to one section.
+    max_chars = max(280, min(420, lyric_char_budget + 140))
     max_sung_lines = max(2, min(8, int(round(duration_seconds / EPOCH_AUDITION_SECONDS_PER_SUNG_LINE))))
     source_lines = [line for line in raw.splitlines() if line.strip()]
     normalized_lines: list[str] = []
@@ -161,7 +207,7 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
     if not blocks and normalized_lines:
         blocks = [{"section": "[Verse]", "lines": [line for line in normalized_lines if _epoch_audition_section_marker(line) is None]}]
 
-    output: list[str] = []
+    output_blocks: list[dict[str, Any]] = []
     sung_lines = 0
     for block in blocks:
         if sung_lines >= max_sung_lines:
@@ -170,38 +216,38 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
         if not lines:
             continue
         section = str(block.get("section") or "[Verse]")
-        if output:
-            output.append("")
-        output.append(section)
+        selected: list[str] = []
         added_for_section = 0
         for line in lines:
             if sung_lines >= max_sung_lines:
                 break
-            candidate = "\n".join([*output, line]).strip()
+            candidate_blocks = [*output_blocks, {"section": section, "lines": [*selected, line]}]
+            candidate, _ = _add_epoch_audition_timing(candidate_blocks, duration=duration_seconds)
             if len(candidate) > max_chars:
                 break
-            output.append(line)
+            selected.append(line)
             sung_lines += 1
             added_for_section += 1
         if added_for_section == 0:
-            while output and output[-1] in {"", section}:
-                output.pop()
             break
+        output_blocks.append({"section": section, "lines": selected})
 
-    fitted = "\n".join(output).strip()
+    fitted, time_slices = _add_epoch_audition_timing(output_blocks, duration=duration_seconds)
     if not fitted and raw:
         kept: list[str] = ["[Verse]"]
         for line in source_lines:
             if _epoch_audition_section_marker(line) is not None:
                 continue
-            candidate = "\n".join([*kept, line.strip()]).strip()
+            candidate, _ = _add_epoch_audition_timing([{"section": "[Verse]", "lines": [*kept[1:], line.strip()]}], duration=duration_seconds)
             if len(candidate) > max_chars or len(kept) - 1 >= max_sung_lines:
                 break
             kept.append(line.strip())
-        fitted = "\n".join(kept).strip()
+        fitted, time_slices = _add_epoch_audition_timing([{"section": "[Verse]", "lines": kept[1:]}], duration=duration_seconds)
 
     source_char_count = len(raw)
     runtime_char_count = len(fitted)
+    runtime_lines = [line for line in fitted.splitlines() if line.strip()]
+    runtime_sung_lines = [line for line in runtime_lines if _epoch_audition_section_marker(line) is None]
     meta = {
         "duration": duration_seconds,
         "max_chars": max_chars,
@@ -209,7 +255,10 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
         "source_lyrics_chars": source_char_count,
         "runtime_lyrics_chars": runtime_char_count,
         "source_lyrics_lines": len(source_lines),
-        "runtime_lyrics_lines": len([line for line in fitted.splitlines() if line.strip()]),
+        "runtime_lyrics_lines": len(runtime_lines),
+        "runtime_sung_lines": len(runtime_sung_lines),
+        "timed_structure": bool(time_slices),
+        "time_slices": time_slices,
         "action": "none" if fitted == raw else "fit_for_20s",
     }
     return fitted, meta

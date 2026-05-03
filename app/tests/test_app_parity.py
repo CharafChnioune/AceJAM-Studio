@@ -1312,7 +1312,11 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(result["result_id"], "audition-result")
         self.assertEqual(captured["task_type"], "text2music")
         self.assertEqual(captured["duration"], 20)
-        self.assertEqual(captured["lyrics"], "[Verse]\nLine one\n\n[Chorus]\nHook line")
+        self.assertIn("[Verse - seconds", captured["lyrics"])
+        self.assertIn("[Chorus - seconds", captured["lyrics"])
+        self.assertIn("Line one", captured["lyrics"])
+        self.assertIn("Hook line", captured["lyrics"])
+        self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "123")
         self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 64)
@@ -1329,7 +1333,8 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(captured["use_lora"])
         self.assertEqual(captured["lora_adapter_path"], "/tmp/checkpoints/epoch_2_loss_0.1")
         self.assertEqual(captured["lora_scale"], 0.7)
-        self.assertEqual(result["lyrics_fit"]["action"], "none")
+        self.assertEqual(result["lyrics_fit"]["action"], "fit_for_20s")
+        self.assertTrue(result["lyrics_fit"]["timed_structure"])
 
     def test_lora_epoch_audition_auto_model_matches_checkpoint_variant(self):
         captured = {}
@@ -1415,10 +1420,11 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(captured["seed"], "42")
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         sung_lines = [line for line in captured["lyrics"].splitlines() if line.strip() and not line.startswith("[")]
-        self.assertLessEqual(len(captured["lyrics"]), 200)
+        self.assertLessEqual(len(captured["lyrics"]), 360)
         self.assertLessEqual(len(sung_lines), 4)
-        self.assertIn("[Chorus]", captured["lyrics"])
-        self.assertIn("[Verse]", captured["lyrics"])
+        self.assertIn("[Chorus - seconds", captured["lyrics"])
+        self.assertIn("[Verse - seconds", captured["lyrics"])
+        self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertNotIn("Final Chorus -", captured["lyrics"])
         self.assertNotIn("Verse 4 -", captured["lyrics"])
         self.assertNotIn("[drums return", captured["lyrics"])

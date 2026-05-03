@@ -2201,7 +2201,12 @@ def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     epoch = int(request.get("epoch") or 0)
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
-    runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=20)
+    request_fit = request.get("lyrics_fit") if isinstance(request.get("lyrics_fit"), dict) else {}
+    if request_fit.get("timed_structure"):
+        runtime_lyrics = str(request.get("lyrics") or "")
+        lyrics_fit = dict(request_fit)
+    else:
+        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=20)
     vocal_language = str(request.get("vocal_language") or request.get("language") or "en").strip() or "en"
     seed_value = request.get("seed")
     if seed_value in (None, ""):
@@ -2212,12 +2217,18 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         inference_steps = EPOCH_AUDITION_INFERENCE_STEPS
     inference_steps = max(1, min(64, inference_steps))
     song_model = _lora_epoch_audition_song_model(request)
+    raw_caption = str(request.get("caption") or trigger).strip()
+    clarity_caption = (
+        "20-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
+        "sparse arrangement, steady rhythm, no noisy vocal artifacts"
+    )
+    caption = f"{raw_caption}, {clarity_caption}" if raw_caption else clarity_caption
     raw_payload = {
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",
         "artist_name": "AceJAM LoRA",
         "title": f"{trigger} epoch {epoch}",
-        "caption": str(request.get("caption") or trigger).strip(),
+        "caption": caption,
         "lyrics": runtime_lyrics,
         "language": vocal_language,
         "vocal_language": vocal_language,

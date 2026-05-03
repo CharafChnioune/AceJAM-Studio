@@ -415,12 +415,15 @@ class LoraTrainerTest(unittest.TestCase):
         fitted, meta = fit_epoch_audition_lyrics(lyrics, duration=20)
 
         sung_lines = [line for line in fitted.splitlines() if line.strip() and not line.startswith("[")]
-        self.assertLessEqual(len(fitted), 200)
+        self.assertLessEqual(len(fitted), 360)
         self.assertLessEqual(len(sung_lines), 4)
         self.assertEqual(meta["action"], "fit_for_20s")
         self.assertEqual(meta["max_sung_lines"], 4)
-        self.assertIn("[Chorus]", fitted)
-        self.assertIn("[Verse]", fitted)
+        self.assertTrue(meta["timed_structure"])
+        self.assertEqual(meta["time_slices"][0]["start"], 0.0)
+        self.assertEqual(meta["time_slices"][-1]["end"], 20.0)
+        self.assertIn("[Chorus - seconds", fitted)
+        self.assertIn("[Verse - seconds", fitted)
         self.assertNotIn("Final Chorus -", fitted)
         self.assertNotIn("Verse 4 -", fitted)
         self.assertNotIn("[drums return", fitted)
@@ -441,7 +444,8 @@ class LoraTrainerTest(unittest.TestCase):
 
         fitted, _ = fit_epoch_audition_lyrics(lyrics, duration=20)
 
-        self.assertIn("[Verse]\nBorrowed soil", fitted)
+        self.assertIn("[Verse - seconds", fitted)
+        self.assertIn("Borrowed soil", fitted)
         self.assertNotIn("[Outro]", fitted)
 
     def test_training_command_step_fails_on_nonfinite_loss(self):
@@ -520,9 +524,11 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertTrue(all("--scheduler-epochs" in cmd for _, cmd in manager.commands))
             self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2])
             self.assertEqual(manager.audition_requests[0]["duration"], 20)
-            self.assertEqual(manager.audition_requests[0]["lyrics"], "[Verse]\nLine one")
+            self.assertIn("[Verse - seconds 0-20", manager.audition_requests[0]["lyrics"])
+            self.assertIn("Line one", manager.audition_requests[0]["lyrics"])
             self.assertEqual(manager.audition_requests[0]["vocal_language"], "en")
-            self.assertEqual(manager.audition_requests[0]["lyrics_fit"]["action"], "none")
+            self.assertEqual(manager.audition_requests[0]["lyrics_fit"]["action"], "fit_for_20s")
+            self.assertTrue(manager.audition_requests[0]["lyrics_fit"]["timed_structure"])
             self.assertTrue(manager.audition_requests[0]["checkpoint_path"].endswith("epoch_1_loss_0.1000"))
             stored = manager.get_job("auditionjob")
             self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded"])
