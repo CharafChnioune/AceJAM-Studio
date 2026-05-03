@@ -1538,11 +1538,22 @@ def _unload_llm_models_for_generation() -> None:
         pass
 
 
+EPOCH_AUDITION_INFERENCE_STEPS = 16
+
+
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     epoch = int(request.get("epoch") or 0)
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
     runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=20)
     vocal_language = str(request.get("vocal_language") or request.get("language") or "en").strip() or "en"
+    seed_value = request.get("seed")
+    if seed_value in (None, ""):
+        seed_value = "42"
+    try:
+        inference_steps = int(request.get("inference_steps") or EPOCH_AUDITION_INFERENCE_STEPS)
+    except (TypeError, ValueError):
+        inference_steps = EPOCH_AUDITION_INFERENCE_STEPS
+    inference_steps = max(1, min(64, inference_steps))
     raw_payload = {
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",
@@ -1555,8 +1566,9 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "lyric_duration_fit": lyrics_fit,
         "duration": 20,
         "song_model": str(request.get("song_model") or "acestep-v15-turbo"),
-        "seed": str(request.get("seed") or "42"),
+        "seed": str(seed_value),
         "use_random_seed": False,
+        "inference_steps": inference_steps,
         "batch_size": 1,
         "use_lora": True,
         "lora_adapter_path": str(request.get("checkpoint_path") or ""),
@@ -4719,6 +4731,14 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
+    seed_text = str(params.get("seed") or "-1").strip()
+    official_seed = -1
+    if not params.get("use_random_seed") and seed_text not in {"", "-1"}:
+        first_seed = seed_text.split(",", 1)[0].strip()
+        try:
+            official_seed = int(float(first_seed))
+        except (TypeError, ValueError):
+            official_seed = -1
     print(
         f"[generation] Official request: model={params.get('song_model')}, "
         f"lm={lm_model or 'NONE'}, requires_lm={needs_lm}, "
@@ -4828,7 +4848,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "latent_shift": params["latent_shift"],
             "latent_rescale": params["latent_rescale"],
             "inference_steps": params["inference_steps"],
-            "seed": -1,
+            "seed": official_seed,
             "guidance_scale": params["guidance_scale"],
             "use_adg": params["use_adg"],
             "cfg_interval_start": params["cfg_interval_start"],

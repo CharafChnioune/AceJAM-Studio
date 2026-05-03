@@ -1165,6 +1165,8 @@ class AppParityTest(unittest.TestCase):
                     "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
                     "duration": 30,
                     "audio_format": "wav32",
+                    "seed": 314,
+                    "use_random_seed": False,
                     "use_lora": True,
                     "lora_adapter_path": adapter_path,
                     "lora_adapter_name": "unit",
@@ -1182,6 +1184,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["lora_adapter_path"], adapter_path)
         self.assertEqual(request["lora_adapter_name"], "unit")
         self.assertEqual(request["lora_scale"], 0.65)
+        self.assertEqual(request["params"]["seed"], 314)
+        self.assertEqual(request["config"]["seeds"], "314")
 
     def test_lora_epoch_audition_uses_private_generation_without_library_save(self):
         captured = {}
@@ -1219,6 +1223,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(captured["duration"], 20)
         self.assertEqual(captured["lyrics"], "[Verse]\nLine one\n\n[Chorus]\nHook line")
         self.assertEqual(captured["vocal_language"], "en")
+        self.assertEqual(captured["seed"], "123")
+        self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         self.assertEqual(captured["ace_lm_model"], "none")
         self.assertFalse(captured["thinking"])
         self.assertFalse(captured["sample_mode"])
@@ -1284,6 +1290,8 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(captured["duration"], 20)
         self.assertEqual(captured["vocal_language"], "en")
+        self.assertEqual(captured["seed"], "42")
+        self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         self.assertLessEqual(len(captured["lyrics"]), 420)
         self.assertIn("[Chorus]", captured["lyrics"])
         self.assertIn("[Verse]", captured["lyrics"])
