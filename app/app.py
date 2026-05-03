@@ -12312,7 +12312,14 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                     }
                 )
             finally:
-                _set_lora_autolabel_job(job_id, succeeded=succeeded, failed=failed)
+                # Push labels live so the React UI can render per-file rows
+                # as they arrive instead of waiting for completion.
+                _set_lora_autolabel_job(
+                    job_id,
+                    succeeded=succeeded,
+                    failed=failed,
+                    labels=list(labels),
+                )
 
         _set_lora_autolabel_job(
             job_id,
@@ -12321,7 +12328,7 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
             progress=100,
             processed=total,
             current_file="",
-            labels=labels,
+            labels=list(labels),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:

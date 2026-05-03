@@ -349,6 +349,20 @@ export const deleteSong = (song_id: string) =>
 
 // ---- LoRA dataset auto-label background job ----
 
+export interface LoraAutolabelLabel {
+  path?: string;
+  filename: string;
+  lyrics?: string;
+  caption?: string;
+  language?: string;
+  bpm?: number | string;
+  keyscale?: string;
+  label_source?: string;
+  error?: string;
+  lyrics_path?: string;
+  metadata_path?: string;
+}
+
 export interface LoraAutolabelJob {
   id: string;
   state?: string;
@@ -361,7 +375,7 @@ export interface LoraAutolabelJob {
   current_file?: string;
   logs?: string[];
   errors?: string[];
-  labels?: Array<Record<string, unknown>>;
+  labels?: LoraAutolabelLabel[];
   dataset_id?: string;
 }
 

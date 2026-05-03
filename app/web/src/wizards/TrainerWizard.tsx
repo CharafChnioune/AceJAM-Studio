@@ -18,6 +18,7 @@ import {
   getLoraAutolabelJob,
   startLoraAutolabelJob,
   type LoraAutolabelJob,
+  type LoraAutolabelLabel,
 } from "@/lib/api";
 import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
@@ -62,6 +63,162 @@ interface TrainJobState {
 }
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
+
+function labelSourceBadge(source?: string) {
+  if (!source) return { variant: "muted" as const, label: "—" };
+  if (source === "existing_sidecar")
+    return { variant: "muted" as const, label: "bestaande sidecar" };
+  if (source === "official_ace_step_understand_music")
+    return { variant: "default" as const, label: "AI gelabeld" };
+  if (source === "understand_music_failed")
+    return { variant: "destructive" as const, label: "fout" };
+  return { variant: "muted" as const, label: source };
+}
+
+function AutolabelLiveView({ job }: { job: LoraAutolabelJob }) {
+  const labels = job.labels ?? [];
+  const state = (job.state ?? "").toLowerCase();
+  const inFlight = state !== "complete" && state !== "error";
+  const succeeded = job.succeeded ?? 0;
+  const failed = job.failed ?? 0;
+  const total = job.total ?? 0;
+  const progress = job.progress ?? 0;
+  const reverseLabels = React.useMemo(
+    () => [...labels].reverse(),
+    [labels],
+  );
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4"
+    >
+      <div className="flex items-center gap-3">
+        <Loader2
+          className={cn(
+            "size-5 text-primary",
+            inFlight && "animate-spin",
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium">
+            {state === "complete"
+              ? "Auto-label klaar"
+              : state === "error"
+                ? "Auto-label fout"
+                : "AI labelt elke clip…"}
+          </p>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {job.current_file
+              ? `bezig: ${job.current_file}`
+              : `${job.processed ?? 0}/${total} verwerkt`}
+          </p>
+        </div>
+        <span className="font-mono text-sm tabular-nums">{progress}%</span>
+      </div>
+
+      <Progress value={progress} />
+
+      <div className="flex flex-wrap gap-1.5 text-[10px]">
+        <Badge variant="muted">{total} totaal</Badge>
+        {succeeded > 0 && (
+          <Badge variant="muted" className="text-emerald-300">
+            ✓ {succeeded} gelabeld
+          </Badge>
+        )}
+        {failed > 0 && (
+          <Badge variant="destructive">✗ {failed} mislukt</Badge>
+        )}
+        {state && (
+          <Badge variant="outline" className="text-[10px]">
+            state: {state}
+          </Badge>
+        )}
+      </div>
+
+      {labels.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            Live labels — meest recente eerst
+          </p>
+          <div className="scroll-fade-y no-scrollbar max-h-[260px] space-y-1.5 overflow-y-auto pr-1">
+            <AnimatePresence initial={false}>
+              {reverseLabels.map((label, idx) => (
+                <LiveLabelRow key={`${label.filename}-${idx}`} label={label} />
+              ))}
+            </AnimatePresence>
+          </div>
+        </div>
+      )}
+
+      {state === "error" && job.errors && job.errors.length > 0 && (
+        <details className="rounded-md border bg-background/40 p-2 text-xs">
+          <summary className="cursor-pointer font-medium">
+            {job.errors.length} fout(en)
+          </summary>
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[10px] text-destructive">
+            {job.errors.join("\n")}
+          </pre>
+        </details>
+      )}
+    </motion.div>
+  );
+}
+
+function LiveLabelRow({ label }: { label: LoraAutolabelLabel }) {
+  const badge = labelSourceBadge(label.label_source);
+  const lyrics = (label.lyrics ?? "").replace(/\s+/g, " ").trim();
+  const lyricsPreview =
+    lyrics.length > 140 ? `${lyrics.slice(0, 140)}…` : lyrics;
+  const isInstrumental = lyrics.toLowerCase() === "[instrumental]";
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -6 }}
+      transition={{ duration: 0.15 }}
+      className="rounded-md border bg-background/40 p-2 text-xs"
+    >
+      <div className="flex items-center gap-2">
+        <FileMusic className="size-3.5 shrink-0 text-primary" />
+        <span className="flex-1 truncate font-mono">{label.filename}</span>
+        <Badge variant={badge.variant} className="text-[10px]">
+          {badge.label}
+        </Badge>
+      </div>
+      {label.caption && (
+        <p className="mt-1 truncate text-[10px] text-muted-foreground">
+          “{label.caption}”
+        </p>
+      )}
+      <p
+        className={cn(
+          "mt-1 line-clamp-2 text-[11px] leading-snug",
+          isInstrumental ? "italic text-muted-foreground" : "text-foreground/85",
+        )}
+      >
+        {lyricsPreview || "—"}
+      </p>
+      <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+        {label.language && (
+          <span className="rounded bg-background/60 px-1.5">{label.language}</span>
+        )}
+        {label.bpm != null && (
+          <span className="rounded bg-background/60 px-1.5">{label.bpm} bpm</span>
+        )}
+        {label.keyscale && (
+          <span className="rounded bg-background/60 px-1.5">{label.keyscale}</span>
+        )}
+        {label.error && (
+          <span className="rounded bg-destructive/30 px-1.5 text-destructive-foreground">
+            {label.error.slice(0, 60)}
+          </span>
+        )}
+      </div>
+    </motion.div>
+  );
+}
 
 export function TrainerWizard() {
   const navigate = useNavigate();
@@ -136,17 +293,27 @@ export function TrainerWizard() {
         toast.error(resp.error || "Import mislukt");
         return;
       }
+      const datasetId = resp.dataset_id;
+      const fileCount = resp.copied_files?.length ?? 0;
       setDataset({
-        dataset_id: resp.dataset_id,
-        files: resp.copied_files?.length ?? 0,
+        dataset_id: datasetId,
+        files: fileCount,
         copied_files: resp.copied_files,
         skipped_files: resp.skipped_files,
         status: "imported",
       });
-      setForm((f) => ({ ...f, dataset_id: resp.dataset_id! }));
+      setForm((f) => ({ ...f, dataset_id: datasetId }));
       toast.success(
-        `${resp.copied_files?.length ?? 0} audio-bestanden geïmporteerd & gelabeld.`,
+        `${fileCount} audio-bestanden geïmporteerd. AI auto-label start nu…`,
       );
+      // Auto-trigger the understand_music auto-label job so the user
+      // immediately sees per-file lyrics + caption being written.
+      // skip_existing=true means files that already have sidecars are
+      // skipped instantly; everything else runs through ACE-Step's
+      // understand_music aux on the audio_codes.
+      void startAutolabel.mutateAsync(datasetId).catch(() => {
+        /* errors are surfaced via toast in the mutation */
+      });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -154,13 +321,16 @@ export function TrainerWizard() {
   // ---- AI auto-label (understand_music) job ------------------------------
 
   const startAutolabel = useMutation({
-    mutationFn: () =>
-      startLoraAutolabelJob({
-        dataset_id: dataset!.dataset_id,
+    mutationFn: (datasetId?: string) => {
+      const id = (datasetId ?? dataset?.dataset_id ?? "").trim();
+      if (!id) throw new Error("Geen dataset_id beschikbaar");
+      return startLoraAutolabelJob({
+        dataset_id: id,
         language: form.default_language,
         skip_existing: true,
-      }),
-    onSuccess: (resp) => {
+      });
+    },
+    onSuccess: (resp, variables) => {
       if (!resp.success || !resp.job_id) {
         toast.error(resp.error || "Auto-label kon niet starten");
         return;
@@ -174,10 +344,11 @@ export function TrainerWizard() {
         total: 0,
       };
       setAutolabelJob(initial);
+      const datasetId = variables ?? dataset?.dataset_id ?? "";
       addJob({
         id,
         kind: "lora",
-        label: `Auto-label ${dataset!.dataset_id.slice(0, 12)}`,
+        label: `Auto-label ${datasetId.slice(0, 12)}`,
         progress: 0,
         status: "queued",
         startedAt: Date.now(),
@@ -500,6 +671,8 @@ export function TrainerWizard() {
               <Badge>status: {dataset.status}</Badge>
             </motion.div>
           )}
+
+          {autolabelJob && <AutolabelLiveView job={autolabelJob} />}
         </div>
       ),
     },
@@ -602,7 +775,7 @@ export function TrainerWizard() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => startAutolabel.mutate()}
+                onClick={() => startAutolabel.mutate(dataset?.dataset_id)}
                 disabled={startAutolabel.isPending || !!autolabelJob}
                 className="gap-1.5"
               >
