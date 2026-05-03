@@ -1561,7 +1561,8 @@ class AceTrainingManager:
             raise ValueError(f"Cannot resume epoch {latest_epoch}; total epochs is only {total}")
         return total
 
-    def _failed_audition_for_epoch(self, job: TrainingJob, epoch: int) -> bool:
+    def _audition_needs_resume_for_epoch(self, job: TrainingJob, epoch: int) -> bool:
+        found = False
         for item in list((job.result or {}).get("epoch_auditions") or []):
             if not isinstance(item, dict):
                 continue
@@ -1569,9 +1570,41 @@ class AceTrainingManager:
                 item_epoch = int(item.get("epoch") or -1)
             except (TypeError, ValueError):
                 item_epoch = -1
-            if item_epoch == int(epoch) and str(item.get("status") or "").lower() == "failed":
+            if item_epoch != int(epoch):
+                continue
+            found = True
+            status = str(item.get("status") or "").lower()
+            if status != "succeeded":
                 return True
-        return False
+            if not (str(item.get("audio_url") or "").strip() or str(item.get("result_id") or "").strip()):
+                return True
+        return not found
+
+    def _mark_interrupted_epoch_auditions(
+        self,
+        result: dict[str, Any],
+        *,
+        error: str = "Interrupted by app restart",
+    ) -> tuple[dict[str, Any], bool]:
+        auditions = list(result.get("epoch_auditions") or [])
+        changed = False
+        recovered: list[Any] = []
+        for item in auditions:
+            if not isinstance(item, dict):
+                recovered.append(item)
+                continue
+            record = dict(item)
+            if str(record.get("status") or "").lower() == "running":
+                record["status"] = "failed"
+                record["error"] = str(record.get("error") or error)
+                record["updated_at"] = utc_now()
+                changed = True
+            recovered.append(record)
+        if changed:
+            updated = dict(result)
+            updated["epoch_auditions"] = recovered
+            return updated, True
+        return result, False
 
     def _resume_train_command(
         self,
@@ -1842,8 +1875,8 @@ class AceTrainingManager:
                 log_path,
                 f"\n[resume] continuing from {latest_checkpoint} on device {params.get('device') or 'auto'}\n",
             )
-            if self._epoch_audition_enabled(params) and self._failed_audition_for_epoch(job, latest_epoch):
-                self._append_log(log_path, f"[resume] retrying failed audition for epoch {latest_epoch}\n")
+            if self._epoch_audition_enabled(params) and self._audition_needs_resume_for_epoch(job, latest_epoch):
+                self._append_log(log_path, f"[resume] retrying incomplete audition for epoch {latest_epoch}\n")
                 self._set_job_state(job_id, stage=f"audition epoch {latest_epoch}/{total_epochs}", progress=0.0)
                 self._run_epoch_audition(job_id, params, latest_checkpoint, latest_epoch, log_path)
 
@@ -2156,9 +2189,15 @@ class AceTrainingManager:
     def _mark_stale_jobs(self) -> None:
         with self._lock:
             for job in self._load_jobs_unlocked():
+                result, auditions_changed = self._mark_interrupted_epoch_auditions(dict(job.result or {}))
+                if auditions_changed:
+                    job.result = result
                 if job.state in JOB_ACTIVE_STATES:
                     job.state = "failed"
                     job.error = "Job was interrupted by an app restart"
+                    job.updated_at = utc_now()
+                    self._write_job_unlocked(job)
+                elif auditions_changed:
                     job.updated_at = utc_now()
                     self._write_job_unlocked(job)
 

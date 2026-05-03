@@ -518,6 +518,45 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual([item["status"] for item in auditions], ["failed", "succeeded"])
             self.assertIn("audition boom", auditions[0]["error"])
 
+    def test_startup_marks_running_epoch_auditions_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = TrainingJob(
+                id="stalejob",
+                kind="one_click_train",
+                state="running",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "data" / "lora_jobs" / "stalejob" / "job.log"),
+                result={
+                    "epoch_auditions": [
+                        {
+                            "epoch": 2,
+                            "checkpoint_path": "/tmp/checkpoint",
+                            "status": "running",
+                            "error": "",
+                            "audio_url": "",
+                            "result_id": "",
+                        }
+                    ]
+                },
+            )
+            job_dir = root / "data" / "lora_jobs" / "stalejob"
+            job_dir.mkdir(parents=True)
+            (job_dir / "job.json").write_text(json.dumps(job.to_dict()), encoding="utf-8")
+
+            manager = AceTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+
+            stored = manager.get_job("stalejob")
+            self.assertEqual(stored["state"], "failed")
+            self.assertEqual(stored["error"], "Job was interrupted by an app restart")
+            audition = stored["result"]["epoch_auditions"][0]
+            self.assertEqual(audition["status"], "failed")
+            self.assertEqual(audition["error"], "Interrupted by app restart")
+
     def test_resume_job_forces_mps_and_retries_failed_latest_audition(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -599,6 +638,97 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(first_command[first_command.index("--precision") + 1], "fp32")
             self.assertEqual(first_command[first_command.index("--resume-from") + 1], str(checkpoint))
             self.assertEqual(first_command[first_command.index("--scheduler-epochs") + 1], "3")
+
+    def test_resume_job_retries_incomplete_latest_audition_from_latest_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ResumeTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            tensor_dir = root / "data" / "lora_tensors" / "resume"
+            output_dir = root / "data" / "lora_training" / "resume"
+            checkpoint_1 = output_dir / "checkpoints" / "epoch_1_loss_0.9130"
+            checkpoint_2 = output_dir / "checkpoints" / "epoch_2_loss_0.8726"
+            tensor_dir.mkdir(parents=True)
+            checkpoint_1.mkdir(parents=True)
+            checkpoint_2.mkdir(parents=True)
+            job = TrainingJob(
+                id="resumeepoch2",
+                kind="one_click_train",
+                state="failed",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=[
+                    "acejam-one-click-lora",
+                    "--dataset-dir",
+                    "/stale/tensors",
+                    "--output-dir",
+                    "/stale/output",
+                    "--log-dir",
+                    "/stale/runs",
+                    "--epochs",
+                    "3",
+                    "--device",
+                    "cpu",
+                    "--precision",
+                    "auto",
+                ],
+                params={
+                    "adapter_type": "lora",
+                    "trigger_tag": "charaf hook",
+                    "song_model": "acestep-v15-xl-sft",
+                    "model_variant": "xl_sft",
+                    "train_epochs": 3,
+                    "training_seed": 42,
+                    "device": "cpu",
+                    "epoch_audition": {
+                        "enabled": True,
+                        "caption": "charaf hook",
+                        "lyrics": "[Verse]\nLine",
+                        "duration": 20,
+                    },
+                },
+                paths={
+                    "tensor_output": str(tensor_dir),
+                    "output_dir": str(output_dir),
+                    "final_adapter": str(output_dir / "final"),
+                    "log_dir": str(output_dir / "runs"),
+                },
+                log_path=str(root / "data" / "lora_jobs" / "resumeepoch2" / "job.log"),
+                result={
+                    "epochs": 3,
+                    "epoch_auditions": [
+                        {
+                            "epoch": 1,
+                            "checkpoint_path": str(checkpoint_1),
+                            "status": "succeeded",
+                            "result_id": "ok-1",
+                            "audio_url": "/media/results/ok-1/take.wav",
+                        },
+                        {
+                            "epoch": 2,
+                            "checkpoint_path": str(checkpoint_2),
+                            "status": "running",
+                            "result_id": "",
+                            "audio_url": "",
+                        },
+                    ],
+                },
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            with patch("lora_trainer.default_training_device", return_value="mps"), \
+                patch("lora_trainer.threading.Thread", ImmediateThread):
+                resumed = manager.resume_job("resumeepoch2")
+
+            self.assertEqual(resumed["params"]["device"], "mps")
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [2, 3])
+            self.assertEqual(manager.audition_requests[0]["checkpoint_path"], str(checkpoint_2))
+            self.assertEqual(manager.audition_requests[0]["lora_adapter_name"], "epoch_2_epoch_2_loss_0_8726")
+            self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 3/3"])
+            command = manager.commands[0][1]
+            self.assertEqual(command[command.index("--resume-from") + 1], str(checkpoint_2))
+            self.assertEqual(command[command.index("--device") + 1], "mps")
+            self.assertEqual(command[command.index("--precision") + 1], "fp32")
 
     def test_lokr_epoch_auditions_are_skipped_but_save_every_epoch_stays(self):
         with tempfile.TemporaryDirectory() as tmp:
