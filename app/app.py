@@ -1538,7 +1538,7 @@ def _unload_llm_models_for_generation() -> None:
         pass
 
 
-EPOCH_AUDITION_INFERENCE_STEPS = 16
+EPOCH_AUDITION_INFERENCE_STEPS = 64
 
 
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:

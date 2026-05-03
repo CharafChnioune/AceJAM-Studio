@@ -1073,6 +1073,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("renderTrainerDevicePolicy", html)
         self.assertIn('device: $("train-device")?.value || "auto"', html)
         self.assertIn("epoch_audition_duration: 20", html)
+        self.assertIn("full-quality 64-step WAV", html)
         self.assertIn("...epochAuditionPayload()", html)
         self.assertIn("renderLoraAuditions(job)", html)
 
@@ -1198,7 +1199,7 @@ class AppParityTest(unittest.TestCase):
                 "audios": [{"result_id": "audition-result", "audio_url": "/media/results/audition-result/take-1.wav"}],
             }
 
-        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}), \
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
             patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_generation):
             result = acejam_app._run_lora_epoch_audition(
@@ -1212,8 +1213,8 @@ class AppParityTest(unittest.TestCase):
                     "duration": 20,
                     "seed": 123,
                     "lora_scale": 0.7,
-                    "song_model": "acestep-v15-turbo",
-                    "model_variant": "turbo",
+                    "song_model": "acestep-v15-xl-sft",
+                    "model_variant": "xl_sft",
                 }
             )
 
@@ -1224,6 +1225,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(captured["lyrics"], "[Verse]\nLine one\n\n[Chorus]\nHook line")
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "123")
+        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 64)
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         self.assertEqual(captured["ace_lm_model"], "none")
         self.assertFalse(captured["thinking"])
