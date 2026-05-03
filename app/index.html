@@ -4884,7 +4884,7 @@
         renderModelAdvice(model === "auto" ? state.config?.default_song_model : model, true, task);
         return;
       }
-      const actual = model === "auto" ? selectedActualSongModel(mode) : model;
+      const actual = model === "auto" ? selectedActualSongModel(state.mode) : model;
       const caps = state.config.model_capabilities?.[actual]?.tasks || [];
       const profile = state.config.model_profiles?.[actual];
       const installed = profile?.installed !== false;

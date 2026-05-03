@@ -1036,6 +1036,12 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("Planner provider", html)
         self.assertNotIn("Album planner", html)
 
+    def test_ui_global_model_advice_uses_state_mode(self):
+        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("selectedActualSongModel(state.mode)", html)
+        self.assertNotIn("selectedActualSongModel(mode) : model", html)
+
     def test_album_payload_options_normalize_planning_engine(self):
         direct = acejam_app._album_options_from_payload({"concept": "one song"}, song_model="auto")
         micro = acejam_app._album_options_from_payload({"concept": "one song", "agent_engine": "legacy_crewai"}, song_model="auto")
