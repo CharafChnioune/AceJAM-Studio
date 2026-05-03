@@ -2640,8 +2640,9 @@ class AppParityTest(unittest.TestCase):
 
             self.assertEqual(gate["status"], "error")
             self.assertFalse(gate["passed"])
-            self.assertTrue(gate["blocking"])
-            self.assertFalse(result["success"])
+            self.assertFalse(gate["blocking"])
+            self.assertTrue(result["success"])
+            self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
 
     def test_vocal_intelligibility_generation_retries_until_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2858,13 +2859,29 @@ class AppParityTest(unittest.TestCase):
                 patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
                 patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
                 patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
-                with self.assertRaisesRegex(RuntimeError, "verifier failed"):
-                    acejam_app._run_advanced_generation({"title": "ignored"})
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
 
             self.assertEqual(calls, ["asrerr"])
+            self.assertTrue(result["success"])
+            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "error")
+            self.assertFalse(result["vocal_intelligibility_gate"]["blocking"])
+            self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
             saved = json.loads((results / "asrerr" / "result.json").read_text(encoding="utf-8"))
-            self.assertFalse(saved["success"])
+            self.assertTrue(saved["success"])
             self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "error")
+
+    def test_vocal_intelligibility_asr_timeout_returns_advisory_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = Path(tmp) / "take.wav"
+            audio_path.write_text("audio", encoding="utf-8")
+            with patch.object(acejam_app, "ACEJAM_VOCAL_ASR_MODEL", "local-whisper"), \
+                patch.object(acejam_app, "ACEJAM_VOCAL_ASR_TIMEOUT", 5), \
+                patch.object(acejam_app.subprocess, "run", side_effect=acejam_app.subprocess.TimeoutExpired(["asr"], 5)):
+                transcripts = acejam_app._transcribe_audio_paths([audio_path], language="en", expected_keywords=["albus"])
+
+            self.assertEqual(transcripts[0]["status"], "error")
+            self.assertFalse(transcripts[0]["blocking"])
+            self.assertIn("timed out after 5s", transcripts[0]["issue"])
 
 
 if __name__ == "__main__":

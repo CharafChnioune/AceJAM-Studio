@@ -6647,15 +6647,32 @@ print(json.dumps(results))
     env.setdefault("HF_HUB_OFFLINE", "1")
     env.setdefault("TRANSFORMERS_OFFLINE", "1")
     env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        input=json.dumps(request),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=ACEJAM_VOCAL_ASR_TIMEOUT,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            input=json.dumps(request),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=ACEJAM_VOCAL_ASR_TIMEOUT,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        issue = f"ASR subprocess timed out after {ACEJAM_VOCAL_ASR_TIMEOUT}s"
+        return [
+            {
+                "path": str(path),
+                "status": "error",
+                "passed": False,
+                "blocking": False,
+                "issue": issue,
+                "text": "",
+                "word_count": 0,
+                "keyword_hits": [],
+                "missing_keywords": expected_keywords,
+            }
+            for path in paths
+        ]
     if proc.returncode != 0:
         issue = (proc.stderr or proc.stdout or "ASR subprocess failed").strip()[-1200:]
         return [
@@ -6743,14 +6760,17 @@ def _apply_vocal_intelligibility_gate_to_result(
         audio["vocal_intelligibility_audit"] = audit
         if audit.get("passed") and audit.get("status") not in {"error", "unavailable"}:
             passed_ids.append(str(audio.get("id") or ""))
+    verifier_error = bool(transcripts and any(item.get("status") in {"error", "unavailable"} for item in transcripts))
     blocking = (not passed_ids) and (
         not transcripts
-        or any(item.get("blocking") or item.get("status") in {"error", "unavailable"} for item in transcripts)
+        or any(item.get("blocking") for item in transcripts)
     )
+    if verifier_error:
+        blocking = False
     status = (
         "pass"
         if passed_ids
-        else ("error" if transcripts and any(item.get("status") in {"error", "unavailable"} for item in transcripts) else "fail")
+        else ("error" if verifier_error else "fail")
     )
     gate = {
         "version": "acejam-vocal-intelligibility-gate-2026-05-01",
@@ -6776,6 +6796,16 @@ def _apply_vocal_intelligibility_gate_to_result(
                 "status": "pass",
                 "reasons": ["vocal_intelligibility_pass"],
             }
+    elif verifier_error:
+        result["success"] = True
+        result.pop("error", None)
+        suggestions = list(result.get("rerender_suggestions") or [])
+        suggestions.append("Vocal intelligibility verifier could not complete; listen manually or rerun ASR later.")
+        result["rerender_suggestions"] = suggestions
+        warnings = list(result.get("payload_warnings") or [])
+        if "vocal_intelligibility_verifier_error" not in warnings:
+            warnings.append("vocal_intelligibility_verifier_error")
+        result["payload_warnings"] = warnings
     else:
         result["success"] = False
         result["error"] = "Vocal intelligibility gate rejected every take."
@@ -6787,8 +6817,12 @@ def _apply_vocal_intelligibility_gate_to_result(
         try:
             meta = json.loads(result_path.read_text(encoding="utf-8"))
             meta["success"] = result.get("success", meta.get("success"))
-            meta["error"] = result.get("error", meta.get("error"))
+            if "error" in result:
+                meta["error"] = result.get("error")
+            elif verifier_error:
+                meta.pop("error", None)
             meta["audios"] = audios
+            meta["payload_warnings"] = result.get("payload_warnings") or meta.get("payload_warnings") or []
             meta["vocal_intelligibility_gate"] = gate
             meta["recommended_take"] = result.get("recommended_take")
             meta["rerender_suggestions"] = result.get("rerender_suggestions") or meta.get("rerender_suggestions") or []
@@ -7770,16 +7804,8 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             result["vocal_intelligibility_history"] = history
             return result
         if gate.get("status") == "error":
-            debug_path = RESULTS_DIR / "vocal_intelligibility_gate.jsonl"
-            raise RuntimeError(
-                "Vocal intelligibility verifier failed before audio quality could be judged. "
-                f"Debug log: {debug_path}. Issues: "
-                + "; ".join(
-                    str(item.get("issue") or "asr_error")
-                    for item in gate.get("transcripts", [])
-                    if item.get("status") == "error"
-                )
-            )
+            result["vocal_intelligibility_history"] = history
+            return result
         issue_summary = ", ".join(
             sorted(
                 {
