@@ -96,6 +96,9 @@ export default function App() {
           </Routes>
         </div>
       </div>
+      <div className="fixed inset-x-3 bottom-3 z-40 sm:hidden">
+        <JobTracker compact />
+      </div>
     </TooltipProvider>
   );
 }

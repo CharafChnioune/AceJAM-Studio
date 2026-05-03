@@ -47,7 +47,6 @@ function LLMTab() {
   const setArt = useSettingsStore((s) => s.setArt);
   const addJob = useJobsStore((s) => s.addJob);
   const updateJob = useJobsStore((s) => s.updateJob);
-  const removeJob = useJobsStore((s) => s.removeJob);
 
   const catalogQuery = useQuery({
     queryKey: ["llm-catalog"],
@@ -104,6 +103,13 @@ function LLMTab() {
         label: `pull ${pullModelName.trim()}`,
         progress: 0,
         status: "queued",
+        state: "queued",
+        kindLabel: "Ollama pull",
+        detailsPath: `/api/ollama/pull/${encodeURIComponent(id)}`,
+        metadata: {
+          model: pullModelName.trim(),
+          reason: "manual settings",
+        },
         startedAt: Date.now(),
       });
       setPullModelName("");
@@ -121,16 +127,23 @@ function LLMTab() {
         }>(`/api/ollama/pull/${encodeURIComponent(jobId)}`);
         const j = resp.job;
         if (!j) return;
-        updateJob(jobId, { progress: j.progress, status: j.status });
+        updateJob(jobId, {
+          progress: j.progress,
+          status: j.status,
+          state: j.status,
+          detailsPath: `/api/ollama/pull/${encodeURIComponent(jobId)}`,
+          metadata: j as Record<string, unknown>,
+          error: j.error,
+        });
         if (j.status === "complete") {
           toast.success("Ollama-model klaar.");
-          setTimeout(() => removeJob(jobId), 4000);
+          updateJob(jobId, { status: "complete", state: "complete", progress: 100 });
           qc.invalidateQueries({ queryKey: ["llm-catalog"] });
           return;
         }
         if (j.status === "error") {
           toast.error(j.error || "Pull mislukt");
-          setTimeout(() => removeJob(jobId), 6000);
+          updateJob(jobId, { status: "error", state: "error", error: j.error });
           return;
         }
         setTimeout(tick, 2500);

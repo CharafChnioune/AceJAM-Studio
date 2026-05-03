@@ -51,7 +51,7 @@ SONG_MODEL_TO_VARIANT = {model: variant for variant, model in VARIANT_TO_SONG_MO
 EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "rap",
-        "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster"),
+        "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster", "2pac", "tupac"),
         "caption_tags": "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
         "lyrics": "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
     },
@@ -237,6 +237,14 @@ def _append_caption_parts(parts: list[str], value: str | None, seen: set[str]) -
             continue
         seen.add(key)
         parts.append(cleaned)
+
+
+def _caption_contains_trigger_tag(caption: str, trigger_tag: str) -> bool:
+    trigger = str(trigger_tag or "").strip()
+    if not trigger:
+        return False
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(trigger)}(?![A-Za-z0-9])"
+    return re.search(pattern, str(caption or ""), flags=re.IGNORECASE) is not None
 
 
 def build_epoch_audition_caption(
@@ -808,6 +816,75 @@ class AceTrainingManager:
             "scale": parse_float(payload.get("epoch_audition_scale"), parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
             "vocal_language": vocal_language,
         }
+
+    def _dataset_audition_context(self, labels: list[dict[str, Any]], *, trigger_tag: str) -> str:
+        parts: list[str] = []
+        seen: set[str] = set()
+        _append_caption_parts(parts, trigger_tag, seen)
+        for key in ("genre", "caption"):
+            for entry in labels:
+                value = str(entry.get(key) or "").strip()
+                if not value:
+                    continue
+                if key == "caption":
+                    value = re.sub(r"\b\d+\b", " ", value)
+                    value = re.sub(r"\s+", " ", value).strip()
+                _append_caption_parts(parts, value, seen)
+                if len(parts) >= 8:
+                    break
+            if len(parts) >= 8:
+                break
+        return ", ".join(parts[:8])
+
+    def _dataset_training_warnings(self, labels: list[dict[str, Any]]) -> dict[str, Any]:
+        total = len(labels)
+        missing_lyrics = [
+            entry for entry in labels
+            if str(entry.get("lyrics") or "").strip().lower() == "[instrumental]"
+            and not str(entry.get("lyrics_path") or "").strip()
+            and str(entry.get("lyrics_source") or "") == "default_instrumental"
+        ]
+        if not missing_lyrics:
+            return {"missing_lyrics_count": 0, "vocal_audition_unreliable": False, "warnings": []}
+        return {
+            "missing_lyrics_count": len(missing_lyrics),
+            "sample_count": total,
+            "vocal_audition_unreliable": True,
+            "warnings": [
+                (
+                    f"{len(missing_lyrics)}/{total} training samples have no lyrics sidecar, metadata, or CSV lyrics. "
+                    "ACE-Step preprocessing keeps them as [Instrumental], so vocal/lyric epoch auditions do not validate lyric conditioning."
+                )
+            ],
+        }
+
+    def _apply_one_click_dataset_context(self, params: dict[str, Any], labels: list[dict[str, Any]]) -> dict[str, Any]:
+        updated = dict(params)
+        warnings = self._dataset_training_warnings(labels)
+        updated["dataset_warnings"] = warnings
+        audition = dict(updated.get("epoch_audition") or {})
+        if audition.get("enabled") and not str(audition.get("user_caption") or "").strip():
+            trigger = str(updated.get("trigger_tag") or "").strip()
+            context_caption = self._dataset_audition_context(labels, trigger_tag=trigger)
+            genre = str(audition.get("genre") or "auto")
+            profile = epoch_audition_genre_profile(context_caption, str(audition.get("user_lyrics") or ""), genre)
+            lyrics, lyrics_meta = default_epoch_audition_lyrics(
+                context_caption,
+                trigger_tag=trigger,
+                lyrics_hint=str(audition.get("user_lyrics") or ""),
+                genre_key=genre,
+            )
+            audition.update(
+                {
+                    "caption": build_epoch_audition_caption(context_caption, trigger_tag=trigger, genre_key=genre, genre_profile=profile),
+                    "lyrics": lyrics,
+                    "lyrics_source": lyrics_meta["lyrics_source"],
+                    "genre_profile": lyrics_meta["genre_profile"],
+                    "dataset_caption_source": "labeled_dataset",
+                }
+            )
+        updated["epoch_audition"] = audition
+        return updated
 
     def start_one_click_train(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.require_ready()
@@ -1535,6 +1612,7 @@ class AceTrainingManager:
                 tag_position=str(params.get("tag_position") or "prepend"),
                 genre_ratio=params.get("genre_ratio", 0),
             )
+            params = self._apply_one_click_dataset_context(params, labels)
             epochs = params.get("train_epochs") or self.auto_epochs(len(labels))
             params["train_epochs"] = epochs
 
@@ -1580,7 +1658,7 @@ class AceTrainingManager:
                 stage="preprocess",
                 progress=34,
                 paths={"import_root": str(import_root), "dataset_json": dataset_json, "tensor_output": str(tensor_output)},
-                result={"sample_count": len(labels), "epochs": epochs},
+                result={"sample_count": len(labels), "epochs": epochs, "dataset_warnings": params.get("dataset_warnings") or {}},
             )
             self._run_command_step(job.id, preprocess_command, log_path, stage="preprocess")
 
@@ -1677,7 +1755,7 @@ class AceTrainingManager:
                     "final_adapter": str(output_dir / "final"),
                     "log_dir": str(log_dir),
                 },
-                result={"sample_count": len(labels), "epochs": epochs},
+                result={"sample_count": len(labels), "epochs": epochs, "dataset_warnings": params.get("dataset_warnings") or {}},
             )
             self._run_train_command_with_epoch_auditions(
                 job.id,
@@ -1752,6 +1830,7 @@ class AceTrainingManager:
                     "epoch_audition": params.get("epoch_audition") or {},
                     "epoch_auditions": existing_result.get("epoch_auditions", []),
                     "epoch_auditions_skipped_reason": existing_result.get("epoch_auditions_skipped_reason", ""),
+                    "dataset_warnings": params.get("dataset_warnings") or {},
                 }
                 self._write_job_unlocked(current)
             self._append_log(log_path, f"\n[complete] adapter registered at {registered}\n")
@@ -2336,7 +2415,7 @@ class AceTrainingManager:
         trigger = str(trigger_tag or "").strip()
         if not trigger:
             return caption
-        if trigger.lower() in caption.lower():
+        if _caption_contains_trigger_tag(caption, trigger):
             return caption
         if tag_position == "replace":
             return trigger
@@ -2585,13 +2664,31 @@ class AceTrainingManager:
             except Exception:
                 metadata = {}
         csv_row = csv_meta.get(audio_path.name, {})
+        csv_lyrics = (
+            csv_row.get("Lyrics")
+            or csv_row.get("lyrics")
+            or csv_row.get("Lyric")
+            or csv_row.get("lyric")
+            or csv_row.get("Formatted Lyrics")
+            or csv_row.get("formatted_lyrics")
+            or ""
+        )
         lyrics = ""
+        lyrics_source = "default_instrumental"
         if lyrics_path.is_file():
             lyrics = lyrics_path.read_text(encoding="utf-8", errors="replace").strip()
+            lyrics_source = "sidecar_lyrics"
         elif legacy_lyrics_path.is_file():
             lyrics = legacy_lyrics_path.read_text(encoding="utf-8", errors="replace").strip()
+            lyrics_source = "sidecar_lyrics"
+        elif str(metadata.get("lyrics") or "").strip():
+            lyrics = str(metadata.get("lyrics") or "").strip()
+            lyrics_source = "metadata_lyrics"
+        elif str(csv_lyrics or "").strip():
+            lyrics = str(csv_lyrics or "").strip()
+            lyrics_source = "csv_lyrics"
         else:
-            lyrics = str(metadata.get("lyrics") or "[Instrumental]")
+            lyrics = "[Instrumental]"
         caption = ""
         if caption_path.is_file():
             caption = caption_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -2613,6 +2710,7 @@ class AceTrainingManager:
             "metadata_path": str(json_path if json_path.is_file() else ""),
             "caption": caption,
             "lyrics": lyrics,
+            "lyrics_source": lyrics_source,
             "genre": str(metadata.get("genre") or csv_row.get("Genre") or ""),
             "bpm": metadata.get("bpm") or csv_row.get("BPM") or None,
             "keyscale": metadata.get("keyscale") or metadata.get("key_scale") or csv_row.get("Key") or "",

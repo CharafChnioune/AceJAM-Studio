@@ -235,6 +235,40 @@ export const generateAdvanced = (body: Record<string, unknown>) =>
 export const createSample = (body: Record<string, unknown>) =>
   api.post<GenerateAdvancedResponse>("/api/create_sample", body);
 
+export interface GenerationJob {
+  id: string;
+  task_id?: string;
+  kind?: "generation";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  created_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  result?: GenerateAdvancedResponse;
+  result_summary?: Record<string, unknown>;
+  warnings?: string[];
+  logs?: string[];
+  error?: string;
+}
+
+export interface GenerationJobResponse {
+  success: boolean;
+  job_id?: string;
+  task_id?: string;
+  job?: GenerationJob;
+  error?: string;
+}
+
+export const startGenerationJob = (body: Record<string, unknown>) =>
+  api.post<GenerationJobResponse>("/api/generation/jobs", body);
+
+export const getGenerationJob = (jobId: string) =>
+  api.get<GenerationJobResponse>(`/api/generation/jobs/${encodeURIComponent(jobId)}`);
+
 // ---- Albums ----
 
 export interface AlbumPlanJobRequest extends Record<string, unknown> {

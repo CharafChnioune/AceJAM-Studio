@@ -2,13 +2,14 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Sparkles, Music4 } from "lucide-react";
+import { Music4 } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { TagInput } from "@/components/wizard/TagInput";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { ArtGenerator } from "@/components/art/ArtGenerator";
@@ -26,9 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { customSchema, simpleDefaults, type CustomFormValues, defaultTrackArtPrompt } from "@/lib/schemas";
-import { generateAdvanced } from "@/lib/api";
+import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
-import { toast } from "@/components/ui/sonner";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "custom" as const;
@@ -109,18 +109,13 @@ export function CustomWizard() {
     }
   }, [storePrompt, form]);
 
-  const generate = useMutation({
-    mutationFn: (payload: Record<string, unknown>) => generateAdvanced(payload),
-    onSuccess: (resp) => {
-      if (!resp.success) {
-        toast.error(resp.error || "Generatie mislukte");
-        return;
-      }
+  const generation = useGenerationJobRunner({
+    mode: MODE,
+    label: "track",
+    onComplete: (resp) => {
       setResult(MODE, resp as unknown as Record<string, unknown>);
-      toast.success(`"${resp.title || "track"}" is klaar.`);
       setStep(7);
     },
-    onError: (err: Error) => toast.error(err.message),
   });
 
   const hydrate = (payload: Record<string, unknown>) => {
@@ -134,9 +129,9 @@ export function CustomWizard() {
     form.reset({ ...form.getValues(), ...next });
   };
 
-  const handleFinish = () => {
+  const buildPayload = () => {
     const v = form.getValues();
-    const payload: Record<string, unknown> = {
+    return {
       task_type: v.task_type,
       title: v.title,
       artist_name: v.artist_name,
@@ -160,7 +155,10 @@ export function CustomWizard() {
       audio_format: v.audio_format,
       batch_size: v.batch_size,
     };
-    generate.mutate(payload);
+  };
+
+  const handleFinish = () => {
+    void generation.start(buildPayload());
   };
 
   const audioUrl =
@@ -501,7 +499,7 @@ export function CustomWizard() {
       render: () => (
         <div className="space-y-4">
           <ReviewStep
-            payload={form.getValues()}
+            payload={buildPayload()}
             warnings={warnings}
             primaryFields={[
               { key: "title", label: "Titel" },
@@ -518,11 +516,13 @@ export function CustomWizard() {
               { key: "batch_size", label: "Batch" },
             ]}
           />
-          {generate.isPending && (
-            <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm">
-              <Sparkles className="size-4 animate-pulse text-primary" />
-              <span>ACE-Step is je track aan het renderen…</span>
-            </div>
+          <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
+          {(generation.jobId || generation.isSubmitting) && (
+            <GenerationJobStatus
+              job={generation.activeJob}
+              jobId={generation.jobId}
+              onOpen={generation.openActiveJob}
+            />
           )}
         </div>
       ),
@@ -542,7 +542,22 @@ export function CustomWizard() {
         const artist = (lastResult.artist_name as string | undefined) || values.artist_name;
         return (
           <div className="space-y-4">
-            {audioUrl && <WaveformPlayer src={audioUrl} title={title} artist={artist} />}
+            {audioUrl && (
+              <WaveformPlayer
+                src={audioUrl}
+                title={title}
+                artist={artist}
+                metadata={{
+                  model: lastResult.song_model ?? values.song_model,
+                  quality: values.quality_profile,
+                  duration: lastResult.duration ?? values.duration,
+                  bpm: lastResult.bpm ?? values.bpm,
+                  key: lastResult.key_scale ?? values.key_scale,
+                  seed: lastResult.seed ?? values.seed,
+                  resultId,
+                }}
+              />
+            )}
             <ArtGenerator
               scope="single"
               attachToResultId={resultId}
@@ -580,8 +595,8 @@ export function CustomWizard() {
       step={step}
       onStepChange={setStep}
       onFinish={handleFinish}
-      isFinishing={generate.isPending}
-      finishLabel={generate.isPending ? "Genereert…" : "Genereer track"}
+      isFinishing={generation.isSubmitting || generation.isRunning}
+      finishLabel={generation.isSubmitting || generation.isRunning ? "Rendert…" : "Genereer track"}
     />
   );
 }

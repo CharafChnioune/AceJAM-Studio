@@ -1,13 +1,14 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
-import { useMutation } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Music4, Sparkles } from "lucide-react";
+import { Music4 } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/SourceAudioStep";
 import { TagInput } from "@/components/wizard/TagInput";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
@@ -26,7 +27,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { generateAdvanced, type WizardMode, api } from "@/lib/api";
+import { type WizardMode, api } from "@/lib/api";
+import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
 import { toast } from "@/components/ui/sonner";
 import { cn, formatDuration } from "@/lib/utils";
@@ -166,56 +168,53 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     }
   };
 
-  const generate = useMutation({
-    mutationFn: () => {
-      const v = form.getValues();
-      const payload: Record<string, unknown> = {
-        task_type: v.task_type,
-        title: v.title,
-        artist_name: v.artist_name,
-        caption: v.caption,
-        tags: v.tags,
-        negative_tags: v.negative_tags,
-        lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
-        instrumental: v.instrumental,
-        audio_duration: v.duration,
-        duration: v.duration,
-        bpm: v.bpm,
-        key_scale: v.key_scale,
-        vocal_language: v.vocal_language,
-        song_model: v.song_model,
-        src_audio_id: source?.uploadId,
-      };
-      if (config.variant === "cover") {
-        payload.audio_cover_strength = v.audio_cover_strength;
-        payload.cover_noise_strength = v.cover_noise_strength;
-      }
-      if (config.variant === "repaint") {
-        payload.repainting_start = v.repainting_start;
-        payload.repainting_end = v.repainting_end;
-        payload.repaint_mode = v.repaint_mode;
-        payload.repaint_strength = v.repaint_strength;
-      }
-      if (config.variant === "extract" || config.variant === "lego" || config.variant === "complete") {
-        payload.track_names = v.track_names;
-      }
-      if (config.variant === "lego" || config.variant === "complete") {
-        payload.audio_code_string = audioCodes;
-        payload.global_caption = v.global_caption;
-      }
-      return generateAdvanced(payload);
-    },
-    onSuccess: (resp) => {
-      if (!resp.success) {
-        toast.error(resp.error || "Generatie mislukte");
-        return;
-      }
+  const generation = useGenerationJobRunner({
+    mode: config.mode,
+    label: config.title,
+    onComplete: (resp) => {
       setResult(config.mode, resp as unknown as Record<string, unknown>);
-      toast.success(`"${resp.title || config.variant}" is klaar.`);
-      setStep(steps.length - 1);
+      setStep(999);
     },
-    onError: (err: Error) => toast.error(err.message),
   });
+
+  const buildPayload = () => {
+    const v = form.getValues();
+    const payload: Record<string, unknown> = {
+      task_type: v.task_type,
+      title: v.title,
+      artist_name: v.artist_name,
+      caption: v.caption,
+      tags: v.tags,
+      negative_tags: v.negative_tags,
+      lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
+      instrumental: v.instrumental,
+      audio_duration: v.duration,
+      duration: v.duration,
+      bpm: v.bpm,
+      key_scale: v.key_scale,
+      vocal_language: v.vocal_language,
+      song_model: v.song_model,
+      src_audio_id: source?.uploadId,
+    };
+    if (config.variant === "cover") {
+      payload.audio_cover_strength = v.audio_cover_strength;
+      payload.cover_noise_strength = v.cover_noise_strength;
+    }
+    if (config.variant === "repaint") {
+      payload.repainting_start = v.repainting_start;
+      payload.repainting_end = v.repainting_end;
+      payload.repaint_mode = v.repaint_mode;
+      payload.repaint_strength = v.repaint_strength;
+    }
+    if (config.variant === "extract" || config.variant === "lego" || config.variant === "complete") {
+      payload.track_names = v.track_names;
+    }
+    if (config.variant === "lego" || config.variant === "complete") {
+      payload.audio_code_string = audioCodes;
+      payload.global_caption = v.global_caption;
+    }
+    return payload;
+  };
 
   const audioUrl =
     (lastResult?.audio_url as string | undefined) ||
@@ -497,7 +496,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       render: () => (
         <div className="space-y-4">
           <ReviewStep
-            payload={{ ...form.getValues(), src_audio_id: source?.uploadId }}
+            payload={buildPayload()}
             warnings={warnings}
             primaryFields={[
               { key: "task_type", label: "Modus" },
@@ -508,11 +507,13 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
               { key: "src_audio_id", label: "Source ID" },
             ]}
           />
-          {generate.isPending && (
-            <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm">
-              <Sparkles className="size-4 animate-pulse text-primary" />
-              <span>Renderen…</span>
-            </div>
+          <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
+          {(generation.jobId || generation.isSubmitting) && (
+            <GenerationJobStatus
+              job={generation.activeJob}
+              jobId={generation.jobId}
+              onOpen={generation.openActiveJob}
+            />
           )}
         </div>
       ),
@@ -533,7 +534,21 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
           (lastResult.artist_name as string | undefined) || values.artist_name;
         return (
           <div className="space-y-4">
-            {audioUrl && <WaveformPlayer src={audioUrl} title={title} artist={artist} />}
+            {audioUrl && (
+              <WaveformPlayer
+                src={audioUrl}
+                title={title}
+                artist={artist}
+                metadata={{
+                  model: lastResult.song_model ?? values.song_model,
+                  duration: lastResult.duration ?? values.duration,
+                  bpm: lastResult.bpm ?? values.bpm,
+                  key: lastResult.key_scale ?? values.key_scale,
+                  seed: lastResult.seed,
+                  resultId,
+                }}
+              />
+            )}
             {resultId && (
               <ArtGenerator
                 scope="single"
@@ -571,9 +586,9 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       steps={steps}
       step={step}
       onStepChange={setStep}
-      onFinish={() => generate.mutate()}
-      isFinishing={generate.isPending}
-      finishLabel={generate.isPending ? "Renderen…" : "Genereer"}
+      onFinish={() => void generation.start(buildPayload())}
+      isFinishing={generation.isSubmitting || generation.isRunning}
+      finishLabel={generation.isSubmitting || generation.isRunning ? "Renderen…" : "Genereer"}
     />
   );
 }

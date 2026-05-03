@@ -1,13 +1,14 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
-import { useMutation } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Newspaper, Music4, Sparkles, Hash } from "lucide-react";
+import { Newspaper, Music4, Hash } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { TagInput } from "@/components/wizard/TagInput";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { ArtGenerator } from "@/components/art/ArtGenerator";
@@ -24,9 +25,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { generateAdvanced } from "@/lib/api";
+import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
-import { toast } from "@/components/ui/sonner";
 import { defaultTrackArtPrompt } from "@/lib/schemas";
 import { formatDuration } from "@/lib/utils";
 
@@ -97,47 +97,43 @@ export function NewsWizard() {
     }
   }, [storePrompt, form]);
 
-  const generate = useMutation({
-    mutationFn: () => {
-      const v = form.getValues();
-      const payload: Record<string, unknown> = {
-        task_type: "text2music",
-        title: v.title,
-        artist_name: v.artist_name,
-        news_angle: v.news_angle,
-        satire_mode: v.satire_mode,
-        caption: v.caption,
-        tags: v.tags,
-        negative_tags: v.negative_tags,
-        lyrics: v.lyrics,
-        instrumental: false,
-        audio_duration: v.duration,
-        duration: v.duration,
-        bpm: v.bpm,
-        key_scale: v.key_scale,
-        vocal_language: v.vocal_language || "nl",
-        song_model: v.song_model,
-        social_pack: {
-          post_caption: v.social_post_caption,
-          hook_line: v.social_hook_line,
-          hashtags: v.social_hashtags
-            ? v.social_hashtags.split(/[ ,]+/).filter(Boolean)
-            : [],
-        },
-      };
-      return generateAdvanced(payload);
-    },
-    onSuccess: (resp) => {
-      if (!resp.success) {
-        toast.error(resp.error || "Generatie mislukte");
-        return;
-      }
+  const generation = useGenerationJobRunner({
+    mode: MODE,
+    label: "news track",
+    onComplete: (resp) => {
       setResult(MODE, resp as unknown as Record<string, unknown>);
-      toast.success(`"${resp.title || "news track"}" is klaar.`);
-      setStep(steps.length - 1);
+      setStep(999);
     },
-    onError: (err: Error) => toast.error(err.message),
   });
+
+  const buildPayload = () => {
+    const v = form.getValues();
+    return {
+      task_type: "text2music",
+      title: v.title,
+      artist_name: v.artist_name,
+      news_angle: v.news_angle,
+      satire_mode: v.satire_mode,
+      caption: v.caption,
+      tags: v.tags,
+      negative_tags: v.negative_tags,
+      lyrics: v.lyrics,
+      instrumental: false,
+      audio_duration: v.duration,
+      duration: v.duration,
+      bpm: v.bpm,
+      key_scale: v.key_scale,
+      vocal_language: v.vocal_language || "nl",
+      song_model: v.song_model,
+      social_pack: {
+        post_caption: v.social_post_caption,
+        hook_line: v.social_hook_line,
+        hashtags: v.social_hashtags
+          ? v.social_hashtags.split(/[ ,]+/).filter(Boolean)
+          : [],
+      },
+    };
+  };
 
   const hydrate = (payload: Record<string, unknown>) => {
     const social = (payload.social_pack as Record<string, unknown> | undefined) ?? {};
@@ -335,7 +331,7 @@ export function NewsWizard() {
       render: () => (
         <div className="space-y-4">
           <ReviewStep
-            payload={form.getValues() as unknown as Record<string, unknown>}
+            payload={buildPayload()}
             warnings={warnings}
             primaryFields={[
               { key: "title", label: "Titel" },
@@ -347,11 +343,13 @@ export function NewsWizard() {
               { key: "tags", label: "Tags" },
             ]}
           />
-          {generate.isPending && (
-            <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm">
-              <Sparkles className="size-4 animate-pulse text-primary" />
-              <span>Renderen…</span>
-            </div>
+          <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
+          {(generation.jobId || generation.isSubmitting) && (
+            <GenerationJobStatus
+              job={generation.activeJob}
+              jobId={generation.jobId}
+              onOpen={generation.openActiveJob}
+            />
           )}
         </div>
       ),
@@ -368,7 +366,21 @@ export function NewsWizard() {
         const artist = (lastResult.artist_name as string) || values.artist_name;
         return (
           <div className="space-y-4">
-            {audioUrl && <WaveformPlayer src={audioUrl} title={title} artist={artist} />}
+            {audioUrl && (
+              <WaveformPlayer
+                src={audioUrl}
+                title={title}
+                artist={artist}
+                metadata={{
+                  model: lastResult.song_model ?? values.song_model,
+                  duration: lastResult.duration ?? values.duration,
+                  bpm: lastResult.bpm ?? values.bpm,
+                  key: lastResult.key_scale ?? values.key_scale,
+                  seed: lastResult.seed,
+                  resultId,
+                }}
+              />
+            )}
             {resultId && (
               <ArtGenerator
                 scope="single"
@@ -406,9 +418,9 @@ export function NewsWizard() {
       steps={steps}
       step={step}
       onStepChange={setStep}
-      onFinish={() => generate.mutate()}
-      isFinishing={generate.isPending}
-      finishLabel={generate.isPending ? "Renderen…" : "Genereer track"}
+      onFinish={() => void generation.start(buildPayload())}
+      isFinishing={generation.isSubmitting || generation.isRunning}
+      finishLabel={generation.isSubmitting || generation.isRunning ? "Renderen…" : "Genereer track"}
     />
   );
 }
