@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import gc
 import hashlib
 import importlib
@@ -350,6 +351,30 @@ def _cleanup_accelerator_memory() -> None:
         empty_cache = getattr(mps, "empty_cache", None)
         if callable(empty_cache):
             empty_cache()
+
+
+_accelerator_cleanup_lock = threading.Lock()
+_accelerator_cleanup_active = False
+
+
+def _schedule_accelerator_cleanup(context: str = "") -> None:
+    global _accelerator_cleanup_active
+    with _accelerator_cleanup_lock:
+        if _accelerator_cleanup_active:
+            return
+        _accelerator_cleanup_active = True
+
+    def worker() -> None:
+        global _accelerator_cleanup_active
+        try:
+            _cleanup_accelerator_memory()
+        except Exception as exc:
+            print(f"[cleanup] accelerator cleanup skipped after {context or 'request'}: {exc}", flush=True)
+        finally:
+            with _accelerator_cleanup_lock:
+                _accelerator_cleanup_active = False
+
+    threading.Thread(target=worker, name="acejam-accelerator-cleanup", daemon=True).start()
 
 
 def _default_acestep_checkpoint() -> str:
@@ -11203,7 +11228,8 @@ async def api_generate_advanced(request: Request):
     payload: dict[str, Any] = {}
     try:
         payload = await request.json()
-        return JSONResponse(_run_advanced_generation(payload))
+        result = await asyncio.to_thread(_run_advanced_generation, payload)
+        return JSONResponse(result)
     except HTTPException:
         raise
     except Exception as exc:
@@ -11214,7 +11240,7 @@ async def api_generate_advanced(request: Request):
             status_code=400,
         )
     finally:
-        _cleanup_accelerator_memory()
+        _schedule_accelerator_cleanup("api_generate_advanced")
 
 
 @app.post("/api/generate_portfolio")
@@ -11222,7 +11248,8 @@ async def api_generate_portfolio(request: Request):
     payload: dict[str, Any] = {}
     try:
         payload = await request.json()
-        return JSONResponse(_run_model_portfolio_generation(payload))
+        result = await asyncio.to_thread(_run_model_portfolio_generation, payload)
+        return JSONResponse(result)
     except HTTPException:
         raise
     except Exception as exc:
@@ -11233,7 +11260,7 @@ async def api_generate_portfolio(request: Request):
             status_code=400,
         )
     finally:
-        _cleanup_accelerator_memory()
+        _schedule_accelerator_cleanup("api_generate_portfolio")
 
 
 @app.post("/api/uploads")

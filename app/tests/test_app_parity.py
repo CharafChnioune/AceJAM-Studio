@@ -561,6 +561,44 @@ class AppParityTest(unittest.TestCase):
         self.assertIn(">Library</a>", html)
         self.assertIn("if (payload.save_to_library) await loadLibrary();", html)
 
+    def test_generate_advanced_http_uses_worker_thread_and_background_cleanup(self):
+        client = TestClient(acejam_app.app)
+        to_thread_calls = []
+
+        async def fake_to_thread(func, *args, **kwargs):
+            to_thread_calls.append(func)
+            return func(*args, **kwargs)
+
+        with patch.object(acejam_app.asyncio, "to_thread", new=fake_to_thread), \
+            patch.object(acejam_app, "_run_advanced_generation", return_value={"success": True, "audios": []}) as run, \
+            patch.object(acejam_app, "_schedule_accelerator_cleanup") as cleanup:
+            response = client.post("/api/generate_advanced", json={"title": "Threaded"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(to_thread_calls, [run])
+        run.assert_called_once()
+        cleanup.assert_called_once_with("api_generate_advanced")
+
+    def test_generate_portfolio_http_uses_worker_thread_and_background_cleanup(self):
+        client = TestClient(acejam_app.app)
+        to_thread_calls = []
+
+        async def fake_to_thread(func, *args, **kwargs):
+            to_thread_calls.append(func)
+            return func(*args, **kwargs)
+
+        with patch.object(acejam_app.asyncio, "to_thread", new=fake_to_thread), \
+            patch.object(acejam_app, "_run_model_portfolio_generation", return_value={"success": True, "audios": []}) as run, \
+            patch.object(acejam_app, "_schedule_accelerator_cleanup") as cleanup:
+            response = client.post("/api/generate_portfolio", json={"title": "Threaded"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(to_thread_calls, [run])
+        run.assert_called_once()
+        cleanup.assert_called_once_with("api_generate_portfolio")
+
     def test_official_api_key_accepts_body_token(self):
         client = TestClient(acejam_app.app)
         previous = os.environ.get("ACESTEP_API_KEY")
