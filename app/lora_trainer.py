@@ -1562,6 +1562,7 @@ class AceTrainingManager:
                     }
                     transcribed_ok = 0
                     transcribed_failed = 0
+                    transcribe_labels: list[dict[str, Any]] = []
                     for idx, item in enumerate(missing):
                         audio_path = Path(str(item.get("path") or ""))
                         if not audio_path.is_file():
@@ -1576,17 +1577,39 @@ class AceTrainingManager:
                             transcribe_total=len(missing),
                             transcribe_succeeded=transcribed_ok,
                             transcribe_failed=transcribed_failed,
+                            transcribe_labels=list(transcribe_labels),
                         )
                         try:
                             understood = self.understand_music(audio_path, request_body)
                             self.write_label_sidecars(audio_path, understood)
                             transcribed_ok += 1
+                            transcribe_labels.append(
+                                {
+                                    "path": str(audio_path),
+                                    "filename": audio_path.name,
+                                    "lyrics": str(understood.get("lyrics") or "[Instrumental]"),
+                                    "caption": str(understood.get("caption") or ""),
+                                    "language": str(understood.get("language") or "unknown"),
+                                    "bpm": understood.get("bpm"),
+                                    "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
+                                    "label_source": "official_ace_step_understand_music",
+                                }
+                            )
                             self._append_log(
                                 log_path,
                                 f"[transcribe] {audio_path.name}: {(understood.get('lyrics') or '')[:80]!r}\n",
                             )
                         except Exception as transcribe_exc:
                             transcribed_failed += 1
+                            transcribe_labels.append(
+                                {
+                                    "path": str(audio_path),
+                                    "filename": audio_path.name,
+                                    "lyrics": "[Instrumental]",
+                                    "label_source": "understand_music_failed",
+                                    "error": str(transcribe_exc),
+                                }
+                            )
                             self._append_log(
                                 log_path,
                                 f"[transcribe] {audio_path.name}: FAILED — {transcribe_exc}\n",
@@ -1598,6 +1621,7 @@ class AceTrainingManager:
                         transcribe_processed=len(missing),
                         transcribe_succeeded=transcribed_ok,
                         transcribe_failed=transcribed_failed,
+                        transcribe_labels=list(transcribe_labels),
                         current_file="",
                     )
                     # Re-scan so the freshly written sidecars are picked up
@@ -2382,7 +2406,13 @@ class AceTrainingManager:
         progress: float | None = None,
         paths: dict[str, str] | None = None,
         result: dict[str, Any] | None = None,
+        **extras: Any,
     ) -> None:
+        """Update job state. Anything that doesn't match the typed fields lands
+        in `current.result` so callers can attach progress detail (current_file,
+        transcribe_processed/total/succeeded/failed, transcribe_labels, etc.)
+        without growing the dataclass schema for every new metric.
+        """
         with self._lock:
             current = self._read_job_unlocked(job_id)
             if state is not None:
@@ -2395,6 +2425,11 @@ class AceTrainingManager:
                 current.paths.update({str(k): str(v) for k, v in paths.items()})
             if result:
                 current.result.update(result)
+            for key, value in extras.items():
+                if value is None:
+                    current.result.pop(key, None)
+                else:
+                    current.result[key] = value
             current.updated_at = utc_now()
             self._write_job_unlocked(current)
 

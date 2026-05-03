@@ -60,6 +60,7 @@ interface TrainJobState {
   transcribe_total?: number;
   transcribe_succeeded?: number;
   transcribe_failed?: number;
+  transcribe_labels?: LoraAutolabelLabel[];
 }
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
@@ -304,16 +305,13 @@ export function TrainerWizard() {
       });
       setForm((f) => ({ ...f, dataset_id: datasetId }));
       toast.success(
-        `${fileCount} audio-bestanden geïmporteerd. AI auto-label start nu…`,
+        `${fileCount} audio-bestanden geïmporteerd. AI labeling gebeurt zodra je op Start training drukt.`,
       );
-      // Auto-trigger the understand_music auto-label job so the user
-      // immediately sees per-file lyrics + caption being written.
-      // skip_existing=true means files that already have sidecars are
-      // skipped instantly; everything else runs through ACE-Step's
-      // understand_music aux on the audio_codes.
-      void startAutolabel.mutateAsync(datasetId).catch(() => {
-        /* errors are surfaced via toast in the mutation */
-      });
+      // Note: we deliberately do NOT auto-start the understand_music job
+      // here. ACE-Step's LM is heavy (loads the 5Hz LM + extracts codes per
+      // file) so we run it only at training time as the `transcribe` stage
+      // of `_run_one_click_job`. Users who want to label upfront can press
+      // "Run autolabel-job nu" on the next wizard step.
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -488,6 +486,22 @@ export function TrainerWizard() {
         const state = (j.state ?? "running").toLowerCase();
         const description = j.status ?? state;
         const p = typeof j.progress === "number" ? j.progress : 0;
+        // _set_job_state in lora_trainer.py merges arbitrary kwargs into
+        // `result`, so the per-file transcribe progress lives there. Read
+        // both top-level (legacy) and `result.*` (current) shapes.
+        const r = (j.result ?? {}) as Record<string, unknown>;
+        const pickNum = (k: string) => {
+          const v = (j as Record<string, unknown>)[k] ?? r[k];
+          return typeof v === "number" ? v : undefined;
+        };
+        const pickStr = (k: string) => {
+          const v = (j as Record<string, unknown>)[k] ?? r[k];
+          return typeof v === "string" ? v : undefined;
+        };
+        const labelsRaw = r["transcribe_labels"];
+        const transcribeLabels = Array.isArray(labelsRaw)
+          ? (labelsRaw as LoraAutolabelLabel[])
+          : undefined;
         setJob({
           id: job.id,
           state,
@@ -496,11 +510,12 @@ export function TrainerWizard() {
           progress: p,
           step: j.step,
           total_steps: j.total_steps,
-          current_file: j.current_file,
-          transcribe_processed: j.transcribe_processed,
-          transcribe_total: j.transcribe_total,
-          transcribe_succeeded: j.transcribe_succeeded,
-          transcribe_failed: j.transcribe_failed,
+          current_file: pickStr("current_file"),
+          transcribe_processed: pickNum("transcribe_processed"),
+          transcribe_total: pickNum("transcribe_total"),
+          transcribe_succeeded: pickNum("transcribe_succeeded"),
+          transcribe_failed: pickNum("transcribe_failed"),
+          transcribe_labels: transcribeLabels,
         });
         updateJobStore(job.id, {
           progress: p,
@@ -969,6 +984,27 @@ export function TrainerWizard() {
               </Button>
             </div>
           </div>
+
+          {/* Live per-file labels while the training thread is in the
+              `transcribe` stage. Reuses the same AutolabelLiveView the
+              standalone autolabel-job uses, so users get the same
+              filename + lyrics-preview + caption stream. */}
+          {job?.stage === "transcribe" && (
+            <AutolabelLiveView
+              job={{
+                id: job.id,
+                state: job.state,
+                status: job.status,
+                progress: job.progress,
+                processed: job.transcribe_processed,
+                total: job.transcribe_total,
+                succeeded: job.transcribe_succeeded,
+                failed: job.transcribe_failed,
+                current_file: job.current_file,
+                labels: job.transcribe_labels,
+              }}
+            />
+          )}
         </div>
       ),
     },
