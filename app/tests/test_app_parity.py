@@ -406,6 +406,78 @@ class AppParityTest(unittest.TestCase):
                 "acestep-v15-xl-base",
             )
 
+    def test_docs_daily_simple_defaults_use_turbo_and_auto_metadata(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-turbo"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", "acestep-5Hz-lm-1.7B"}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "ui_mode": "simple",
+                    "task_type": "text2music",
+                    "song_model": "auto",
+                    "caption": "modern pop, clean drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                }
+            )
+
+        self.assertEqual(params["quality_profile"], "docs_daily")
+        self.assertEqual(params["song_model"], "acestep-v15-xl-turbo")
+        self.assertEqual(params["inference_steps"], 8)
+        self.assertEqual(params["guidance_scale"], 7.0)
+        self.assertEqual(params["shift"], 3.0)
+        self.assertEqual(params["audio_format"], "flac")
+        self.assertEqual(params["duration"], -1.0)
+        self.assertIsNone(params["bpm"])
+        self.assertEqual(params["key_scale"], "")
+        self.assertEqual(params["time_signature"], "")
+
+    def test_metadata_locks_can_force_auto_even_with_concrete_values(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "caption": "bright pop, crisp drums",
+            "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+            "duration": 180,
+            "bpm": 120,
+            "key_scale": "D minor",
+            "time_signature": "4",
+            "metadata_locks": {"duration": False, "bpm": False, "key_scale": False, "time_signature": False},
+        }
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(payload)
+
+        self.assertEqual(params["duration"], -1.0)
+        self.assertIsNone(params["bpm"])
+        self.assertEqual(params["key_scale"], "")
+        self.assertEqual(params["time_signature"], "")
+
+    def test_query_result_returns_acejam_result_for_ui_rendering(self):
+        task_id = "unit-query-result"
+        result = {
+            "success": True,
+            "runner": "official",
+            "result_id": "result-query",
+            "params": {"caption": "bright pop", "lyrics": "[Verse]\nLine", "bpm": None, "duration": -1, "key_scale": "", "time_signature": ""},
+            "audios": [
+                {
+                    "id": "take-1",
+                    "result_id": "result-query",
+                    "audio_url": "/media/results/result-query/take.wav",
+                    "download_url": "/media/results/result-query/take.wav",
+                    "seed": "123",
+                }
+            ],
+        }
+        with acejam_app._api_generation_tasks_lock:
+            acejam_app._api_generation_tasks.pop(task_id, None)
+        acejam_app._set_api_generation_task(task_id, status=1, state="succeeded", result=result)
+
+        item = acejam_app._official_query_item(task_id)
+
+        self.assertEqual(item["status"], 1)
+        self.assertEqual(item["acejam_result"]["result_id"], "result-query")
+        self.assertEqual(item["acejam_result"]["audios"][0]["audio_url"], "/media/results/result-query/take.wav")
+
     def test_new_expert_fields_reach_official_request_payload(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -738,10 +810,10 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["guidance_scale"], 8.0)
         self.assertEqual(normalized["shift"], 3.0)
         self.assertTrue(normalized["use_adg"])
-        self.assertEqual(normalized["batch_size"], 3)
+        self.assertEqual(normalized["batch_size"], 1)
         self.assertEqual(normalized["sampler_mode"], "heun")
-        self.assertEqual(normalized["audio_format"], "wav")
-        self.assertEqual(normalized["runner_plan"], "fast")
+        self.assertEqual(normalized["audio_format"], "wav32")
+        self.assertEqual(normalized["runner_plan"], "official")
 
     def test_text2music_supplied_lyrics_forces_direct_render_globally(self):
         payload = {
@@ -800,14 +872,14 @@ class AppParityTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(params["bpm"], acejam_app.DEFAULT_BPM)
+        self.assertIsNone(params["bpm"])
         self.assertEqual(params["key_scale"], acejam_app.DEFAULT_KEY_SCALE)
-        self.assertEqual(params["time_signature"], "4")
+        self.assertEqual(params["time_signature"], "")
         with tempfile.TemporaryDirectory() as tmp:
             request = acejam_app._official_request_payload(params, Path(tmp))
-        self.assertEqual(request["params"]["bpm"], 95)
+        self.assertIsNone(request["params"]["bpm"])
         self.assertEqual(request["params"]["keyscale"], "A minor")
-        self.assertEqual(request["params"]["timesignature"], "4")
+        self.assertEqual(request["params"]["timesignature"], "")
 
     def test_auto_key_stays_empty_for_ace_step_payload(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
@@ -1168,10 +1240,10 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("user secrets", acejam_app._redact_official_runner_log_line(prompt_line))
         self.assertIn("redacted", acejam_app._redact_official_runner_log_line(codes_line))
 
-    def test_ui_uses_keyscale_selects_and_bpm_default(self):
+    def test_ui_uses_keyscale_selects_and_auto_bpm_default(self):
         html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('<input id="bpm" type="number" min="30" max="300" value="95"', html)
+        self.assertIn('<input id="bpm" type="number" min="30" max="300" value="" placeholder="Auto"', html)
         self.assertIn('<select id="key-scale"', html)
         self.assertIn('data-field="key_scale" data-key-scale-select', html)
         self.assertIn('data-field="keyscale" data-key-scale-select', html)
@@ -1662,8 +1734,8 @@ class AppParityTest(unittest.TestCase):
             normalized = acejam_app._parse_generation_payload(payload)
 
         self.assertEqual(normalized["sample_query"], "")
-        self.assertFalse(normalized["requires_official_runner"])
-        self.assertEqual(normalized["runner_plan"], "fast")
+        self.assertTrue(normalized["requires_official_runner"])
+        self.assertEqual(normalized["runner_plan"], "official")
 
     def test_explicit_lm_controls_upgrade_none_to_4b_default(self):
         with patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):

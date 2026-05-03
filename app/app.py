@@ -194,7 +194,9 @@ if NANO_VLLM_DIR.exists():
 
 import torch
 from fastapi import File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from gradio import Server
 
 from local_llm import (
@@ -288,6 +290,7 @@ from studio_core import (
     DEFAULT_BPM,
     DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
+    QUALITY_PROFILE_DOCS_DAILY,
     KNOWN_ACE_STEP_MODELS,
     MAX_BATCH_SIZE,
     OFFICIAL_ACE_STEP_MODEL_REGISTRY,
@@ -392,7 +395,9 @@ def _song_model_label(name: str) -> str:
 
 def _app_ui_hash() -> str:
     try:
-        return hashlib.sha256((BASE_DIR / "index.html").read_bytes()).hexdigest()[:16]
+        return hashlib.sha256(
+            (BASE_DIR / "web" / "dist" / "index.html").read_bytes()
+        ).hexdigest()[:16]
     except Exception:
         return "unknown"
 
@@ -1534,6 +1539,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     normalized = dict(payload or {})
     warnings: list[str] = []
     mode = _prompt_assistant_mode(mode)
+    normalized.setdefault("ui_mode", mode)
     planner_provider = _writer_provider_from_payload({**normalized, **body})
     planner_model = str(
         body.get("planner_model")
@@ -1562,7 +1568,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         warnings.append(f"Auto score/LRC were turned off {reason}.")
     normalized["auto_score"] = False
     normalized["auto_lrc"] = False
-    quality_profile = normalize_quality_profile(normalized.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    quality_profile = _default_quality_profile_for_payload(normalized, normalized.get("task_type"))
     normalized["quality_profile"] = quality_profile
 
     if mode == "album":
@@ -1725,11 +1731,12 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     if instrumental and not str(normalized.get("lyrics") or "").strip():
         normalized["lyrics"] = "[Instrumental]"
     normalized.setdefault("lyrics", "")
-    normalized.setdefault("duration", 180)
-    normalized.setdefault("bpm", DEFAULT_BPM)
-    normalized.setdefault("key_scale", DEFAULT_KEY_SCALE)
-    normalized.setdefault("time_signature", "4")
-    normalized.setdefault("vocal_language", "en")
+    normalized.setdefault("duration", "auto")
+    normalized.setdefault("bpm", "auto")
+    normalized.setdefault("key_scale", "auto")
+    normalized.setdefault("time_signature", "auto")
+    normalized.setdefault("vocal_language", "unknown")
+    normalized["metadata_locks"] = _effective_metadata_locks(normalized)
     normalized.setdefault("seed", "-1")
     normalized.setdefault("use_random_seed", True)
     mode_defaults = quality_profile_model_settings(str(normalized.get("song_model") or ""), quality_profile)
@@ -2091,10 +2098,21 @@ def _song_model_for_quality_profile(requested: str | None, quality_profile: str 
         return _normalize_song_model(value)
     installed = _installed_acestep_models()
     if normalize_task_type(task_type) in {"extract", "lego", "complete"}:
+        for candidate in ["acestep-v15-xl-base", "acestep-v15-base"]:
+            if candidate in installed:
+                return candidate
         return "acestep-v15-xl-base"
+    if profile == QUALITY_PROFILE_DOCS_DAILY:
+        for candidate in ["acestep-v15-xl-turbo", "acestep-v15-turbo"]:
+            if candidate in installed:
+                return candidate
+        return "acestep-v15-xl-turbo"
     if profile == "chart_master":
+        for candidate in ["acestep-v15-xl-sft", "acestep-v15-sft"]:
+            if candidate in installed:
+                return candidate
         return "acestep-v15-xl-sft"
-    if profile in {"chart_master", "balanced_pro"}:
+    if profile == "balanced_pro":
         return recommended_song_model(installed)
     if profile == "preview_fast":
         for candidate in ["acestep-v15-xl-turbo", "acestep-v15-turbo"]:
@@ -4417,7 +4435,7 @@ def _album_agent_engine_label_value(value: Any) -> str:
 
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
     strategy = str(payload.get("song_model_strategy") or "all_models_album")
-    quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    quality_profile = _default_quality_profile_for_payload({**payload, "ui_mode": "album"}, "text2music")
     payload_song_model = str(payload.get("requested_song_model") or payload.get("song_model") or "").strip()
     selected_song_model = str(song_model or "").strip()
     requested_song_model = (
@@ -4544,26 +4562,56 @@ def _payload_has_any(payload: dict[str, Any], keys: list[str]) -> bool:
     return any(key in payload for key in keys)
 
 
+METADATA_LOCK_ALIASES: dict[str, tuple[str, ...]] = {
+    "duration": ("duration", "audio_duration", "track_duration"),
+    "bpm": ("bpm",),
+    "key_scale": ("key_scale", "keyscale", "keyScale", "key"),
+    "time_signature": ("time_signature", "timesignature", "timeSignature"),
+    "vocal_language": ("vocal_language", "language"),
+}
+
+
+def _is_auto_metadata_value(value: Any) -> bool:
+    if value is None:
+        return True
+    return str(value).strip().lower() in {"", "auto", "none", "n/a", "na", "null"}
+
+
+def _metadata_locks(payload: dict[str, Any]) -> dict[str, Any]:
+    locks = payload.get("metadata_locks")
+    return dict(locks) if isinstance(locks, dict) else {}
+
+
+def _metadata_field_locked(payload: dict[str, Any], field: str) -> bool:
+    aliases = METADATA_LOCK_ALIASES.get(field, (field,))
+    locks = _metadata_locks(payload)
+    for alias in aliases:
+        if alias in locks:
+            return parse_bool(locks.get(alias), False)
+    for alias in aliases:
+        if alias in payload and not _is_auto_metadata_value(payload.get(alias)):
+            return True
+    return False
+
+
 def _bpm_from_payload(payload: dict[str, Any]) -> int | None:
-    if not _payload_has_any(payload, ["bpm"]):
-        return DEFAULT_BPM
+    if not _metadata_field_locked(payload, "bpm"):
+        return None
     value = payload.get("bpm")
-    if value is None or str(value).strip().lower() in {"", "auto", "none", "n/a", "na"}:
+    if _is_auto_metadata_value(value):
         return None
     return clamp_int(value, DEFAULT_BPM, BPM_MIN, BPM_MAX)
 
 
 def _key_scale_from_payload(payload: dict[str, Any]) -> str:
-    key_fields = ["key_scale", "keyscale", "keyScale", "key"]
-    if not _payload_has_any(payload, key_fields):
-        return DEFAULT_KEY_SCALE
+    if not _metadata_field_locked(payload, "key_scale"):
+        return ""
     return normalize_key_scale(get_param(payload, "key_scale", ""))
 
 
 def _time_signature_from_payload(payload: dict[str, Any]) -> str:
-    time_fields = ["time_signature", "timesignature", "timeSignature"]
-    if not _payload_has_any(payload, time_fields):
-        return "4"
+    if not _metadata_field_locked(payload, "time_signature"):
+        return ""
     value = str(get_param(payload, "time_signature", "") or "").strip()
     if value.lower() in {"auto", "none", "n/a", "na"}:
         return ""
@@ -4574,6 +4622,35 @@ def _time_signature_from_payload(payload: dict[str, Any]) -> str:
         except ValueError:
             return ""
     return ""
+
+
+def _duration_from_payload(payload: dict[str, Any]) -> float:
+    if not _metadata_field_locked(payload, "duration"):
+        return -1.0
+    value = get_param(payload, "duration")
+    if _is_auto_metadata_value(value):
+        return -1.0
+    return clamp_float(value, 60.0, DURATION_MIN, DURATION_MAX)
+
+
+def _vocal_language_from_payload(payload: dict[str, Any]) -> str:
+    if not _metadata_field_locked(payload, "vocal_language"):
+        return "unknown"
+    return _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown"))
+
+
+def _effective_metadata_locks(payload: dict[str, Any]) -> dict[str, bool]:
+    return {field: _metadata_field_locked(payload, field) for field in METADATA_LOCK_ALIASES}
+
+
+def _default_quality_profile_for_payload(payload: dict[str, Any], task_type: str | None = None) -> str:
+    if payload.get("quality_profile"):
+        return normalize_quality_profile(payload.get("quality_profile"))
+    mode = str(payload.get("ui_mode") or payload.get("mode") or "").strip().lower()
+    task = normalize_task_type(task_type or payload.get("task_type"))
+    if mode == "simple" and task == "text2music":
+        return QUALITY_PROFILE_DOCS_DAILY
+    return DEFAULT_QUALITY_PROFILE
 
 
 def _merge_song_album_metadata(song_id: str, extra: dict[str, Any]) -> None:
@@ -5043,7 +5120,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     payload = apply_ace_step_text_budget(payload, task_type=task_type)
     payload = _apply_studio_lm_policy(payload)
-    quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    quality_profile = _default_quality_profile_for_payload(payload, task_type)
     song_model = _song_model_for_quality_profile(get_param(payload, "song_model", payload.get("song_model")), quality_profile, task_type)
     ensure_task_supported(song_model, task_type)
     if song_model in OFFICIAL_UNRELEASED_MODELS:
@@ -5054,10 +5131,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"{song_model} is not installed and is not in the known ACE-Step download list.")
     is_album_track = bool(payload.get("album_metadata") or payload.get("album_id") or payload.get("track_variant"))
     requested_batch_size = payload.get("batch_size")
-    default_batch_size = 3 if quality_profile == "chart_master" and task_type == "text2music" and not is_album_track else 1
+    default_batch_size = 1
     batch_size = clamp_int(requested_batch_size, default_batch_size, 1, MAX_BATCH_SIZE)
     planner_settings = planner_llm_settings_from_payload(payload)
-    duration = clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX)
+    duration = _duration_from_payload(payload)
     model_defaults = quality_profile_model_settings(song_model, quality_profile)
     is_turbo = "turbo" in song_model
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
@@ -5078,11 +5155,12 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     vocal_clarity_recovery = _vocal_clarity_recovery_enabled(payload)
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_fields_used(payload))
-    use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
+    profile_requires_official = quality_profile in {QUALITY_PROFILE_DOCS_DAILY, DEFAULT_QUALITY_PROFILE}
+    use_official = profile_requires_official or bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     if use_official and requested_format == "ogg":
         raise ValueError("OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
-    vocal_language = _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown"))
+    vocal_language = _vocal_language_from_payload(payload)
     track_names = normalize_track_names(payload.get("track_names") or payload.get("track_classes") or payload.get("track_name"))
     instruction = str(payload.get("instruction") or "").strip() or build_task_instruction(task_type, track_names)
 
@@ -5112,6 +5190,15 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         sample_mode = False
         sample_query = ""
         lm_controls = []
+    lm_requested_explicitly = any(key in payload for key in ["ace_lm_model", "lm_model", "lm_model_path", "use_official_lm"])
+    if (
+        requested_lm_model == "none"
+        and not lm_requested_explicitly
+        and not direct_lyrics_render
+        and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS
+        and (not supplied_vocal_lyrics or allow_supplied_lyrics_lm)
+    ):
+        requested_lm_model = recommended_lm_model(_installed_lm_models(), quality_profile)
     lm_quality_defaults = (
         requested_lm_model != "none"
         and task_type not in DOCS_BEST_SOURCE_TASK_LM_SKIPS
@@ -5182,6 +5269,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "instrumental": instrumental,
         "vocal_clarity_recovery": vocal_clarity_recovery,
         "duration": duration,
+        "metadata_locks": _effective_metadata_locks(payload),
         "bpm": bpm,
         "key_scale": _key_scale_from_payload(payload),
         "time_signature": time_signature,
@@ -5546,10 +5634,11 @@ def _lm_validation_status(payload: dict[str, Any], requires_lm: bool) -> dict[st
 
 def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_model: str, official_used: list[str]) -> dict[str, Any]:
     track_names = normalize_track_names(payload.get("track_names") or payload.get("track_classes") or payload.get("track_name"))
-    quality_profile = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    quality_profile = _default_quality_profile_for_payload(payload, task_type)
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_used)
-    use_official = bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
+    profile_requires_official = quality_profile in {QUALITY_PROFILE_DOCS_DAILY, DEFAULT_QUALITY_PROFILE}
+    use_official = profile_requires_official or bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
     model_defaults = quality_profile_model_settings(song_model, quality_profile)
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     time_signature = _time_signature_from_payload(payload)
@@ -5594,12 +5683,13 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "payload_warnings": preview_warnings,
         "ace_step_text_budget": dict(payload.get("ace_step_text_budget") or {}),
         "instrumental": parse_bool(payload.get("instrumental"), False),
-        "duration": clamp_float(get_param(payload, "duration"), 60.0, DURATION_MIN, DURATION_MAX),
+        "duration": _duration_from_payload(payload),
+        "metadata_locks": _effective_metadata_locks(payload),
         "bpm": bpm,
         "key_scale": _key_scale_from_payload(payload),
         "time_signature": time_signature,
-        "vocal_language": _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown")),
-        "batch_size": clamp_int(payload.get("batch_size"), 3 if quality_profile == "chart_master" and task_type == "text2music" else 1, 1, MAX_BATCH_SIZE),
+        "vocal_language": _vocal_language_from_payload(payload),
+        "batch_size": clamp_int(payload.get("batch_size"), 1, 1, MAX_BATCH_SIZE),
         "seed": str(payload.get("seeds") or payload.get("seed") or "-1"),
         "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
         "song_model": song_model,
@@ -5667,7 +5757,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     normalized_text = apply_ace_step_text_budget(normalized_text, task_type=task_type)
     normalized_text = _apply_studio_lm_policy(normalized_text)
-    quality_profile = normalize_quality_profile(normalized_text.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    quality_profile = _default_quality_profile_for_payload(normalized_text, task_type)
     song_model = _song_model_for_quality_profile(get_param(normalized_text, "song_model", normalized_text.get("song_model")), quality_profile, task_type)
     official_used = _active_official_fields(normalized_text, task_type, official_fields_used(normalized_text))
     field_errors: dict[str, str] = {}
@@ -6046,6 +6136,7 @@ def _generation_metadata_audit(params: dict[str, Any], official_request: dict[st
     return {
         "metadata_present": not missing,
         "missing": missing,
+        "metadata_locks": _jsonable(params.get("metadata_locks") or {}),
         "bpm": {"value": effective.get("bpm"), "present": effective.get("bpm") not in [None, ""]},
         "keyscale": {"value": effective.get("keyscale"), "present": effective.get("keyscale") not in [None, ""]},
         "duration": {"value": effective.get("duration"), "present": effective.get("duration") not in [None, ""]},
@@ -6181,7 +6272,11 @@ def _estimate_bpm_from_audio(samples: np.ndarray, sample_rate: int) -> float | N
 
 
 def _audio_quality_audit(path: Path, params: dict[str, Any], *, seed: str = "") -> dict[str, Any]:
-    requested_duration = float(params.get("duration") or 0.0)
+    try:
+        requested_raw_duration = float(params.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        requested_raw_duration = 0.0
+    requested_duration = requested_raw_duration if requested_raw_duration > 0 else 0.0
     targets = PRO_AUDIO_TARGETS
     try:
         data, sample_rate = sf.read(str(path), always_2d=True, dtype="float32")
@@ -6351,7 +6446,8 @@ def _build_pro_quality_audit(
     suggestions: list[str] = []
     if recommended and recommended["score"] < 85:
         suggestions.append("Regenerate with a new seed or review prompt/lyrics before final release.")
-    if not metadata_audit.get("metadata_present"):
+    locks = metadata_audit.get("metadata_locks") if isinstance(metadata_audit.get("metadata_locks"), dict) else {}
+    if not metadata_audit.get("metadata_present") and any(locks.values()):
         suggestions.append("Keep BPM/key/time signature locked before rendering.")
     if hit_readiness.get("status") != "pass":
         suggestions.append("Improve hook clarity, sections, or runtime text budget before the next take.")
@@ -7836,7 +7932,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
 
 def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[str, Any], family_id: str) -> dict[str, Any]:
     model_name = str(model_item.get("model") or "")
-    quality_profile = normalize_quality_profile(raw_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    quality_profile = _default_quality_profile_for_payload(raw_payload, "text2music")
     model_defaults = quality_profile_model_settings(model_name, quality_profile)
     payload = dict(raw_payload or {})
     has_vocal_lyrics = bool(str(payload.get("lyrics") or "").strip() and str(payload.get("lyrics") or "").strip().lower() != "[instrumental]")
@@ -8009,6 +8105,34 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
 
 
 app = Server(title="AceJAM")
+
+
+# ---- React (shadcn) UI mount at /v2 ------------------------------------------------
+# When ACEJAM_DEV=1 the Vite dev server runs on :5173; allow CORS so it can
+# reach this FastAPI server without rebuilding on every change. In production
+# the built React app is served as static assets from app/web/dist mounted on
+# /v2, so the page and the API share an origin and CORS is not needed.
+if os.getenv("ACEJAM_DEV", "").strip() in {"1", "true", "yes"}:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+_REACT_WEB_DIST = Path(__file__).resolve().parent / "web" / "dist"
+if _REACT_WEB_DIST.is_dir():
+    # html=True makes StaticFiles serve index.html for unknown paths under /v2,
+    # which is what we need for the SPA (HashRouter keeps client routes after #).
+    app.mount(
+        "/v2",
+        StaticFiles(directory=str(_REACT_WEB_DIST), html=True),
+        name="acejam_web_v2",
+    )
 
 
 @app.api(name="compose", concurrency_limit=1, time_limit=120)
@@ -8728,7 +8852,7 @@ def generate_album(
                         if lora_key in track and track.get(lora_key) not in (None, ""):
                             lora_source[lora_key] = track.get(lora_key)
                     track_lora_request = _lora_adapter_request(lora_source)
-                    quality_profile = normalize_quality_profile(track.get("quality_profile") or request_payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+                    quality_profile = _default_quality_profile_for_payload({**request_payload, **track}, "text2music")
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
                     request_key_scale = request_payload.get("key_scale") or request_payload.get("keyscale") or request_payload.get("key")
                     effective_key_scale = (
@@ -9871,7 +9995,13 @@ def _official_query_item(task_id: str) -> dict[str, Any]:
                     "audio_id": audio.get("id") or "",
                 }
             )
-        return {"task_id": task_id, "status": 1, "result": json.dumps(result_payload), "error": None}
+        return {
+            "task_id": task_id,
+            "status": 1,
+            "result": json.dumps(result_payload),
+            "acejam_result": _jsonable(result),
+            "error": None,
+        }
     if status_code == 2:
         return {"task_id": task_id, "status": 2, "result": "", "error": task.get("error") or "Task failed"}
     return {"task_id": task_id, "status": 0, "result": "", "error": None}
@@ -9913,7 +10043,7 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "server_url": base_url,
         "entrypoint": "http",
         "file_url_supported": False,
-        "message": "Open AceJAM through the Pinokio Web UI HTTP URL, not file://app/index.html.",
+        "message": "Open AceJAM through the Pinokio Web UI HTTP URL, not a file:// path.",
         "active_song_model": ACTIVE_ACE_STEP_MODEL,
         "installed_song_model_count": len(installed_models),
         "installed_lm_model_count": len([name for name in installed_lms if name not in {"auto", "none"}]),
@@ -12267,7 +12397,14 @@ async def art_media(art_id: str, filename: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def homepage():
-    return (BASE_DIR / "index.html").read_text(encoding="utf-8")
+    web_index = BASE_DIR / "web" / "dist" / "index.html"
+    if web_index.is_file():
+        return web_index.read_text(encoding="utf-8")
+    return (
+        "<h1>AceJAM web UI is not built yet</h1>"
+        "<p>Run <code>npm install &amp;&amp; npm run build</code> in <code>app/web</code>, "
+        "or use the Pinokio installer / updater.</p>"
+    )
 
 
 demo = app

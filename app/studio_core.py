@@ -420,6 +420,7 @@ def diffusers_pipeline_dir_ready(path: Path | str) -> bool:
 DEFAULT_BPM = 95
 DEFAULT_KEY_SCALE = "A minor"
 KEYSCALE_AUTO_VALUE = "auto"
+METADATA_AUTO_VALUE = "auto"
 VALID_KEY_SCALES = [
     f"{note}{accidental} {mode}"
     for note in KEYSCALE_NOTES
@@ -559,7 +560,7 @@ OFFICIAL_TRAINING_FEATURES: dict[str, dict[str, Any]] = {
     "tensorboard_runs": {"status": "guarded", "endpoint": "/api/lora/status"},
 }
 
-DOCS_BEST_QUALITY_POLICY_VERSION = "chart-master-2026-04-26"
+DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-docs-defaults-2026-05-03"
 DOCS_BEST_AUDIO_FORMAT = "wav32"
 DOCS_BEST_TURBO_STEPS = 8
 DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20
@@ -597,7 +598,9 @@ DOCS_BEST_TURBO_SHIFT = 3.0
 BALANCED_PRO_STANDARD_SHIFT = 1.0
 CHART_MASTER_STANDARD_SHIFT = 3.0
 DOCS_BEST_STANDARD_SHIFT = CHART_MASTER_STANDARD_SHIFT
-DOCS_BEST_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
+DOCS_DAILY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
+MAX_QUALITY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
+DOCS_BEST_DEFAULT_LM_MODEL = MAX_QUALITY_DEFAULT_LM_MODEL
 DOCS_BEST_DEFAULT_LM_BACKEND = "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "pt"
 ACE_STEP_SETTINGS_POLICY_VERSION = "ace-step-settings-parity-2026-04-26"
 PRO_QUALITY_AUDIT_VERSION = "ace-step-pro-quality-audit-2026-04-27"
@@ -640,17 +643,19 @@ PRO_AUDIO_TARGETS: dict[str, Any] = {
 }
 
 QUALITY_PROFILE_OFFICIAL_RAW = "official_raw"
+QUALITY_PROFILE_DOCS_DAILY = "docs_daily"
 QUALITY_PROFILE_PREVIEW_FAST = "preview_fast"
 QUALITY_PROFILE_BALANCED_PRO = "balanced_pro"
 QUALITY_PROFILE_CHART_MASTER = "chart_master"
 DEFAULT_QUALITY_PROFILE = QUALITY_PROFILE_CHART_MASTER
 QUALITY_PROFILES = [
     QUALITY_PROFILE_OFFICIAL_RAW,
+    QUALITY_PROFILE_DOCS_DAILY,
     QUALITY_PROFILE_PREVIEW_FAST,
     QUALITY_PROFILE_BALANCED_PRO,
     QUALITY_PROFILE_CHART_MASTER,
 ]
-CHART_MASTER_SINGLE_TAKES = 3
+CHART_MASTER_SINGLE_TAKES = 1
 CHART_MASTER_ALBUM_TAKES = 1
 
 OFFICIAL_HELPER_FUNCTIONS = {
@@ -688,10 +693,14 @@ def normalize_quality_profile(value: Any) -> str:
     normalized = str(value or DEFAULT_QUALITY_PROFILE).strip().lower().replace("-", "_")
     aliases = {
         "best": QUALITY_PROFILE_CHART_MASTER,
+        "max": QUALITY_PROFILE_CHART_MASTER,
+        "max_quality": QUALITY_PROFILE_CHART_MASTER,
         "chart": QUALITY_PROFILE_CHART_MASTER,
         "chartmaster": QUALITY_PROFILE_CHART_MASTER,
         "chart_master": QUALITY_PROFILE_CHART_MASTER,
-        "daily": QUALITY_PROFILE_BALANCED_PRO,
+        "docs": QUALITY_PROFILE_DOCS_DAILY,
+        "docs_daily": QUALITY_PROFILE_DOCS_DAILY,
+        "daily": QUALITY_PROFILE_DOCS_DAILY,
         "balanced": QUALITY_PROFILE_BALANCED_PRO,
         "balanced_pro": QUALITY_PROFILE_BALANCED_PRO,
         "fast": QUALITY_PROFILE_PREVIEW_FAST,
@@ -715,6 +724,20 @@ def _quality_profile_base_settings(profile: str) -> dict[str, Any]:
             "shift": 1.0,
             "infer_method": "ode",
             "sampler_mode": "euler",
+            "audio_format": "flac",
+            "use_adg": False,
+            "single_song_takes": 1,
+            "album_takes": 1,
+        }
+    if normalized == QUALITY_PROFILE_DOCS_DAILY:
+        return {
+            "quality_profile": QUALITY_PROFILE_DOCS_DAILY,
+            "quality_preset": "docs-daily-ace-step",
+            "inference_steps": DOCS_BEST_TURBO_STEPS,
+            "guidance_scale": DOCS_BEST_TURBO_GUIDANCE,
+            "shift": DOCS_BEST_TURBO_SHIFT,
+            "infer_method": "ode",
+            "sampler_mode": "heun",
             "audio_format": "flac",
             "use_adg": False,
             "single_song_takes": 1,
@@ -775,6 +798,8 @@ def quality_profile_model_settings(song_model: Any, quality_profile: Any = DEFAU
         settings["use_adg"] = False
         if profile == QUALITY_PROFILE_PREVIEW_FAST:
             settings["audio_format"] = "wav"
+        elif profile == QUALITY_PROFILE_DOCS_DAILY:
+            settings["audio_format"] = "flac"
     elif profile == QUALITY_PROFILE_BALANCED_PRO:
         settings["inference_steps"] = int(BALANCED_PRO_MODEL_STEPS.get(str(song_model or "").strip(), BALANCED_PRO_STANDARD_STEPS))
     elif profile == QUALITY_PROFILE_CHART_MASTER:
@@ -797,6 +822,14 @@ def quality_profiles_payload() -> dict[str, Any]:
             "single_song_takes": 1,
             "album_takes": 1,
         },
+        QUALITY_PROFILE_DOCS_DAILY: {
+            "label": "Docs Daily",
+            "summary": "Simple-mode docs default: XL Turbo/Turbo, 8 steps, shift 3, guidance 7, FLAC.",
+            "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_DOCS_DAILY) for model in KNOWN_ACE_STEP_MODELS},
+            "preferred_model_order": ["acestep-v15-xl-turbo", "acestep-v15-turbo"],
+            "single_song_takes": 1,
+            "album_takes": 1,
+        },
         QUALITY_PROFILE_PREVIEW_FAST: {
             "label": "Preview fast",
             "summary": "Turbo-first draft profile for quick idea checks.",
@@ -814,8 +847,8 @@ def quality_profiles_payload() -> dict[str, Any]:
             "album_takes": 1,
         },
         QUALITY_PROFILE_CHART_MASTER: {
-            "label": "Chart Master",
-            "summary": "Default final-render profile: XL/SFT preference, 64 steps, lossless studio output.",
+            "label": "Max Quality",
+            "summary": "Default final-render profile: XL/SFT preference, 64 steps, shift 3, wav32 studio output.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_CHART_MASTER) for model in KNOWN_ACE_STEP_MODELS},
             "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": CHART_MASTER_SINGLE_TAKES,
@@ -829,10 +862,30 @@ def docs_best_quality_policy() -> dict[str, Any]:
     return {
         "version": DOCS_BEST_QUALITY_POLICY_VERSION,
         "default_profile": DEFAULT_QUALITY_PROFILE,
+        "default_by_mode": {
+            "simple": QUALITY_PROFILE_DOCS_DAILY,
+            "custom": QUALITY_PROFILE_CHART_MASTER,
+            "album": QUALITY_PROFILE_CHART_MASTER,
+            "cover": QUALITY_PROFILE_CHART_MASTER,
+            "repaint": QUALITY_PROFILE_CHART_MASTER,
+            "extract": QUALITY_PROFILE_CHART_MASTER,
+            "lego": QUALITY_PROFILE_CHART_MASTER,
+            "complete": QUALITY_PROFILE_CHART_MASTER,
+        },
+        "max_quality_profile": QUALITY_PROFILE_CHART_MASTER,
+        "chart_master_alias": QUALITY_PROFILE_CHART_MASTER,
         "profiles": profiles,
-        "standard": "Chart Master defaults prioritize final-render quality over speed while keeping official raw defaults selectable.",
+        "standard": "Simple uses Docs Daily. Custom, Album, Cover, Repaint and source tasks use Max Quality unless explicitly changed.",
         "settings_policy_version": ACE_STEP_SETTINGS_POLICY_VERSION,
         "audio_format": DOCS_BEST_AUDIO_FORMAT,
+        "metadata_defaults": {
+            "bpm": None,
+            "key_scale": "",
+            "time_signature": "",
+            "duration": -1,
+            "vocal_language": "unknown",
+            "lock_rule": "Concrete user or AI values are locked; blank/auto values are passed through to ACE-Step auto metadata.",
+        },
         "model_step_defaults": dict(DOCS_BEST_MODEL_STEPS),
         "turbo_models": {
             "inference_steps": DOCS_BEST_TURBO_STEPS,
@@ -859,6 +912,13 @@ def docs_best_quality_policy() -> dict[str, Any]:
             "sampler_mode": "heun",
         },
         "lm_defaults": dict(DOCS_BEST_LM_DEFAULTS),
+        "lm_defaults_by_profile": {
+            QUALITY_PROFILE_DOCS_DAILY: {
+                **dict(DOCS_BEST_LM_DEFAULTS),
+                "ace_lm_model": DOCS_DAILY_DEFAULT_LM_MODEL,
+            },
+            QUALITY_PROFILE_CHART_MASTER: dict(DOCS_BEST_LM_DEFAULTS),
+        },
         "lm_task_policy": {
             "uses_lm_when_controls_active": sorted(DOCS_BEST_LM_TASKS),
             "skips_lm_for_source_tasks": sorted(DOCS_BEST_SOURCE_TASK_LM_SKIPS),
@@ -1754,8 +1814,8 @@ def _field_note(field: str) -> str:
         "caption": f"Official request budget: less than {ACE_STEP_CAPTION_CHAR_LIMIT} characters.",
         "lyrics": f"Official request budget: less than {ACE_STEP_LYRICS_CHAR_LIMIT} characters.",
         "duration": "Official range is 10-600 seconds; source-audio tasks lock duration to the source where ACE-Step does that internally.",
-        "quality_profile": "AceJAM profile selector: official_raw, preview_fast, balanced_pro, or chart_master. Chart Master is the default final-render profile.",
-        "inference_steps": "Docs: Turbo recommended 8; Base/SFT 32-64 for quality. Chart Master uses 64 for Base/SFT/XL SFT/Base; Balanced Pro keeps the previous 50-step preset.",
+        "quality_profile": "AceJAM profile selector: docs_daily for Simple, chart_master/Max Quality for final renders, plus preview_fast, balanced_pro, and official_raw.",
+        "inference_steps": "Docs: Turbo recommended 8; Base/SFT 32-64 for quality. Max Quality uses 64 for Base/SFT/XL SFT/Base; Balanced Pro keeps the previous 50-step preset.",
         "guidance_scale": "Only effective for non-turbo models.",
         "shift": "Official default is 1.0. Chart Master uses 3.0 for final renders. Custom timesteps override shift.",
         "timesteps": "Overrides inference_steps and shift when present.",
@@ -1882,6 +1942,7 @@ class AceStepSettingsRegistry:
             "profiles": {
                 "official_defaults": dict(ACE_STEP_OFFICIAL_DEFAULTS),
                 "official_raw": quality_profiles_payload()[QUALITY_PROFILE_OFFICIAL_RAW],
+                "docs_daily": quality_profiles_payload()[QUALITY_PROFILE_DOCS_DAILY],
                 "docs_recommended": cls.docs_recommended(),
                 "preview_fast": quality_profiles_payload()[QUALITY_PROFILE_PREVIEW_FAST],
                 "balanced_pro": quality_profiles_payload()[QUALITY_PROFILE_BALANCED_PRO],
@@ -2155,7 +2216,7 @@ def runtime_planner_report(payload: dict[str, Any], *, task_type: str | None = N
     else:
         risk = "low"
     notes = []
-    if profile == QUALITY_PROFILE_CHART_MASTER and takes >= 3:
+    if profile == QUALITY_PROFILE_CHART_MASTER and takes > 1:
         notes.append("chart_master_multi_take")
     if risk == "high":
         notes.append("long_final_render")
@@ -2752,8 +2813,14 @@ def recommended_song_model(installed_models: set[str] | list[str] | None = None)
     return "acestep-v15-xl-sft"
 
 
-def recommended_lm_model(installed_models: set[str] | list[str] | None = None) -> str:
+def recommended_lm_model(installed_models: set[str] | list[str] | None = None, quality_profile: str | None = None) -> str:
     installed = set(installed_models or [])
+    profile = normalize_quality_profile(quality_profile) if quality_profile else ""
+    if profile == QUALITY_PROFILE_DOCS_DAILY:
+        for candidate in ["acestep-5Hz-lm-1.7B", "acestep-5Hz-lm-0.6B", "acestep-5Hz-lm-4B"]:
+            if candidate in installed:
+                return candidate
+        return "none"
     for candidate in sorted(installed):
         lowered = candidate.lower()
         if "acestep-5hz-lm-4b" in lowered and "abliter" in lowered:
@@ -2953,8 +3020,15 @@ def studio_ui_schema() -> dict[str, Any]:
         "payload_validation_endpoint": "/api/payload/validate",
         "official_parity_endpoint": "/api/ace-step/parity",
         "ace_step_settings_registry": settings_registry,
-        "default_bpm": DEFAULT_BPM,
-        "default_key_scale": DEFAULT_KEY_SCALE,
+        "default_bpm": None,
+        "default_key_scale": KEYSCALE_AUTO_VALUE,
+        "metadata_auto": {
+            "bpm": None,
+            "key_scale": KEYSCALE_AUTO_VALUE,
+            "time_signature": "",
+            "duration": METADATA_AUTO_VALUE,
+            "vocal_language": "unknown",
+        },
         "valid_keyscales": VALID_KEY_SCALES,
         "task_required_fields": copy.deepcopy(ACE_STEP_TASK_REQUIRED_FIELDS),
         "task_policy": settings_registry["task_policy"],

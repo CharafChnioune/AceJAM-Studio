@@ -29,5 +29,17 @@ module.exports = {
     params: {
       path: "cache"
     }
+  }, {
+    when: "{{exists('app/web/node_modules')}}",
+    method: "fs.rm",
+    params: {
+      path: "app/web/node_modules"
+    }
+  }, {
+    when: "{{exists('app/web/dist')}}",
+    method: "fs.rm",
+    params: {
+      path: "app/web/dist"
+    }
   }]
 }

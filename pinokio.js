@@ -25,7 +25,7 @@ module.exports = {
         if (local && local.url) {
           return [{
             default: true,
-            icon: "fa-solid fa-rocket",
+            icon: "fa-solid fa-wand-magic-sparkles",
             text: "Open Web UI",
             href: local.url,
           }, {

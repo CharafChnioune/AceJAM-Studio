@@ -1,0 +1,480 @@
+import * as React from "react";
+import { useNavigate } from "react-router-dom";
+import { useForm, Controller } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useMutation } from "@tanstack/react-query";
+import { motion } from "framer-motion";
+import { Music4, Sparkles, ImagePlus } from "lucide-react";
+
+import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
+import { AIPromptStep } from "@/components/wizard/AIPromptStep";
+import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { QualityPresets } from "@/components/wizard/QualityPresets";
+import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { LyricSync } from "@/components/audio/LyricSync";
+import { ArtGenerator } from "@/components/art/ArtGenerator";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { simpleSchema, simpleDefaults, type SimpleFormValues, defaultTrackArtPrompt } from "@/lib/schemas";
+import { createSample } from "@/lib/api";
+import { useWizardStore } from "@/store/wizard";
+import { toast } from "@/components/ui/sonner";
+import { formatDuration } from "@/lib/utils";
+
+const MODE = "simple" as const;
+
+const LANGUAGES = [
+  ["en", "English"],
+  ["nl", "Nederlands"],
+  ["es", "Español"],
+  ["fr", "Français"],
+  ["de", "Deutsch"],
+  ["pt", "Português"],
+  ["it", "Italiano"],
+  ["ja", "日本語"],
+  ["ko", "한국어"],
+  ["zh", "中文"],
+] as const;
+
+const SONG_MODELS = [
+  ["acestep-v15-xl-sft", "ACE-Step v1.5 XL SFT (aanbevolen)"],
+  ["acestep-v15-xl-base", "ACE-Step v1.5 XL Base"],
+  ["acestep-v15-xl-turbo", "ACE-Step v1.5 XL Turbo"],
+  ["acestep-v15-sft", "ACE-Step v1.5 SFT"],
+  ["acestep-v15-base", "ACE-Step v1.5 Base"],
+  ["acestep-v15-turbo", "ACE-Step v1.5 Turbo"],
+  ["acestep-v15-turbo-shift1", "ACE-Step v1.5 Turbo (shift 1)"],
+] as const;
+
+const QUALITY_PROFILES = [
+  ["draft", "Draft (snel, ~8 stappen)"],
+  ["standard", "Standard (32 stappen)"],
+  ["chart_master", "Chart Master (64 stappen, max kwaliteit)"],
+] as const;
+
+function ResultPlayback({
+  src,
+  title,
+  artist,
+  resultId,
+  staticLyrics,
+}: {
+  src: string;
+  title?: string;
+  artist?: string;
+  resultId?: string;
+  staticLyrics?: string;
+}) {
+  const [t, setT] = React.useState(0);
+  return (
+    <div className="space-y-3">
+      <WaveformPlayer src={src} title={title} artist={artist} onTimeUpdate={setT} />
+      <LyricSync resultId={resultId} audioCurrentTime={t} staticLyrics={staticLyrics} />
+    </div>
+  );
+}
+
+export function SimpleWizard() {
+  const navigate = useNavigate();
+  const setResult = useWizardStore((s) => s.setResult);
+  const lastResult = useWizardStore((s) => s.lastResult[MODE]);
+  const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
+  const storePrompt = useWizardStore((s) => s.prompts[MODE]);
+
+  const form = useForm<SimpleFormValues>({
+    resolver: zodResolver(simpleSchema),
+    defaultValues: simpleDefaults,
+    mode: "onChange",
+  });
+
+  const [step, setStep] = React.useState(0);
+  const values = form.watch();
+
+  // Mirror the AI-prompt textarea (stored in Zustand) into the form so
+  // validation / Next-button enablement react to user typing.
+  React.useEffect(() => {
+    if ((storePrompt ?? "") !== (form.getValues("simple_description") ?? "")) {
+      form.setValue("simple_description", storePrompt ?? "", { shouldValidate: true });
+    }
+  }, [storePrompt, form]);
+
+  const generate = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => createSample(payload),
+    onSuccess: (resp) => {
+      if (!resp.success) {
+        toast.error(resp.error || "Generatie mislukte");
+        return;
+      }
+      setResult(MODE, resp as unknown as Record<string, unknown>);
+      toast.success(`"${resp.title || "track"}" is klaar.`);
+      setStep(4);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const hydrate = (payload: Record<string, unknown>) => {
+    const next: Partial<SimpleFormValues> = {};
+    for (const [k, v] of Object.entries(payload)) {
+      if (k in simpleDefaults || k === "simple_description") {
+        // @ts-expect-error dynamic key set
+        next[k] = v;
+      }
+    }
+    form.reset({ ...form.getValues(), ...next });
+  };
+
+  const handleFinish = () => {
+    const v = form.getValues();
+    const payload: Record<string, unknown> = {
+      task_type: "text2music",
+      simple_description: v.simple_description,
+      song_description: v.simple_description,
+      title: v.title,
+      artist_name: v.artist_name,
+      caption: v.caption,
+      tags: v.tags,
+      negative_tags: v.negative_tags,
+      lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
+      instrumental: v.instrumental,
+      audio_duration: v.duration,
+      duration: v.duration,
+      bpm: v.bpm,
+      key_scale: v.key_scale,
+      time_signature: v.time_signature,
+      vocal_language: v.vocal_language,
+      song_model: v.song_model,
+      quality_profile: v.quality_profile,
+      seed: v.seed,
+    };
+    generate.mutate(payload);
+  };
+
+  const audioUrl =
+    (lastResult?.audio_url as string | undefined) ||
+    (typeof lastResult?.audio === "string"
+      ? `data:audio/wav;base64,${lastResult.audio}`
+      : undefined);
+
+  const steps: WizardStepDef[] = [
+    {
+      key: "ai",
+      title: "AI prompt",
+      description:
+        "Beschrijf je idee in eigen woorden — de AI vult de rest van de wizard alvast in.",
+      isValid: (values.simple_description ?? "").trim().length >= 4,
+      render: () => (
+        <AIPromptStep
+          mode="simple"
+          placeholder="Bijv. 'energetic synthwave instrumental, 90s sci-fi feel, neon pads, 110 bpm'"
+          examples={[
+            "uplifting indie-pop ballad, female vocals, 80 bpm",
+            "lo-fi hip-hop instrumental with rain sfx, mellow",
+            "cinematic orchestral hybrid, 6/8, building to drop",
+          ]}
+          onHydrated={(payload) => {
+            hydrate(payload);
+            // Sync AI prompt back into the form so isValid passes
+            const desc =
+              (payload.simple_description as string | undefined) ??
+              (payload.song_description as string | undefined) ??
+              form.getValues("simple_description");
+            if (desc) form.setValue("simple_description", desc, { shouldValidate: true });
+          }}
+        />
+      ),
+    },
+    {
+      key: "identity",
+      title: "Identiteit",
+      description: "Titel, artiest en taal — voorgevuld door AI, hier nog aanpasbaar.",
+      isValid: true,
+      render: () => (
+        <div className="space-y-4">
+          <FieldGroup title="Titel & artiest">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="title">Titel</Label>
+                <Input id="title" placeholder="Bijv. Neon Horizon" {...form.register("title")} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="artist">Artiest</Label>
+                <Input id="artist" placeholder="Bijv. Aurora Kite" {...form.register("artist_name")} />
+              </div>
+            </div>
+          </FieldGroup>
+
+          <FieldGroup title="Taal & lyrics">
+            <div className="grid gap-3 sm:grid-cols-[200px_1fr]">
+              <div className="space-y-1.5">
+                <Label>Taal</Label>
+                <Controller
+                  control={form.control}
+                  name="vocal_language"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {LANGUAGES.map(([code, name]) => (
+                          <SelectItem key={code} value={code}>{name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label>Instrumentaal</Label>
+                  <Controller
+                    control={form.control}
+                    name="instrumental"
+                    render={({ field }) => (
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    )}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Aan = geen vocals, lyrics-veld wordt genegeerd.
+                </p>
+              </div>
+            </div>
+            {!values.instrumental && (
+              <div className="space-y-1.5">
+                <Label htmlFor="lyrics">Lyrics</Label>
+                <Textarea
+                  id="lyrics"
+                  rows={8}
+                  className="font-mono text-xs"
+                  placeholder={"[Verse 1]\n…\n\n[Chorus]\n…"}
+                  {...form.register("lyrics")}
+                />
+              </div>
+            )}
+          </FieldGroup>
+
+          <FieldGroup title="Tags & sfeer" description="Komma-gescheiden lijst — gebruik genres, instrumenten, mood-tags.">
+            <div className="grid gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="caption">Caption</Label>
+                <Textarea id="caption" rows={2} {...form.register("caption")} />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="tags">Tags</Label>
+                  <Textarea id="tags" rows={2} {...form.register("tags")} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="neg">Negative tags</Label>
+                  <Textarea id="neg" rows={2} placeholder="Bijv. muddy mix, generic lyrics" {...form.register("negative_tags")} />
+                </div>
+              </div>
+            </div>
+          </FieldGroup>
+        </div>
+      ),
+    },
+    {
+      key: "render",
+      title: "Render",
+      description: "Lengte, model, kwaliteit, optioneel toonsoort en bpm.",
+      isValid: true,
+      render: () => (
+        <div className="space-y-4">
+          <FieldGroup title="Lengte">
+            <div className="space-y-3">
+              <div className="flex items-baseline justify-between">
+                <Label>Duur</Label>
+                <span className="font-mono text-sm">{formatDuration(values.duration)}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="duration"
+                render={({ field }) => (
+                  <Slider
+                    value={[field.value ?? 60]}
+                    min={20}
+                    max={600}
+                    step={5}
+                    onValueChange={(v) => field.onChange(v[0] ?? 60)}
+                  />
+                )}
+              />
+            </div>
+          </FieldGroup>
+
+          <FieldGroup title="Kwaliteit" description="Kies een preset; je kunt onder 'Muzikaal' nog fine-tunen.">
+            <QualityPresets
+              value={values.quality_profile}
+              onChange={(p) => form.setValue("quality_profile", p)}
+            />
+          </FieldGroup>
+          <FieldGroup title="Song model">
+            <Controller
+              control={form.control}
+              name="song_model"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {SONG_MODELS.map(([id, label]) => (
+                      <SelectItem key={id} value={id}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </FieldGroup>
+
+          <FieldGroup title="Muzikaal (optioneel)" description="Laat leeg om door het model te laten kiezen.">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label>BPM</Label>
+                <Input
+                  type="number"
+                  min={40}
+                  max={300}
+                  placeholder="auto"
+                  {...form.register("bpm", { valueAsNumber: true })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Key</Label>
+                <Input placeholder="bv. C major" {...form.register("key_scale")} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Time signature</Label>
+                <Input placeholder="4/4" {...form.register("time_signature")} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Seed</Label>
+              <Input
+                type="number"
+                placeholder="-1 voor random"
+                {...form.register("seed", { valueAsNumber: true })}
+              />
+            </div>
+          </FieldGroup>
+        </div>
+      ),
+    },
+    {
+      key: "review",
+      title: "Review & genereer",
+      description: "Controleer de payload, en klik op Genereer.",
+      isValid: form.formState.isValid,
+      render: () => (
+        <div className="space-y-4">
+          <ReviewStep
+            payload={form.getValues()}
+            warnings={warnings}
+            primaryFields={[
+              { key: "title", label: "Titel" },
+              { key: "artist_name", label: "Artiest" },
+              { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
+              { key: "song_model", label: "Model" },
+              { key: "vocal_language", label: "Taal" },
+              { key: "quality_profile", label: "Kwaliteit" },
+              { key: "tags", label: "Tags" },
+              { key: "bpm", label: "BPM" },
+            ]}
+          />
+          {generate.isPending && (
+            <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm">
+              <Sparkles className="size-4 animate-pulse text-primary" />
+              <span>ACE-Step is je track aan het renderen…</span>
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "result",
+      title: "Resultaat",
+      description: "Speel je track af, genereer artwork, of bouw verder.",
+      isValid: true,
+      hidden: !lastResult,
+      render: () => {
+        if (!lastResult) return null;
+        const resultId =
+          (lastResult.result_id as string | undefined) ||
+          (lastResult.song_id as string | undefined) ||
+          (lastResult.id as string | undefined);
+        const title = (lastResult.title as string | undefined) || values.title;
+        const artist = (lastResult.artist_name as string | undefined) || values.artist_name;
+        return (
+          <div className="space-y-4">
+            {audioUrl && (
+              <ResultPlayback
+                src={audioUrl}
+                title={title}
+                artist={artist}
+                resultId={resultId}
+                staticLyrics={(lastResult.lyrics as string | undefined) ?? values.lyrics}
+              />
+            )}
+            <ArtGenerator
+              scope="single"
+              attachToResultId={resultId}
+              title={title}
+              caption={(lastResult.caption as string | undefined) ?? values.caption}
+              defaultPrompt={defaultTrackArtPrompt({
+                title,
+                artist_name: artist,
+                caption: (lastResult.caption as string | undefined) ?? values.caption,
+                tags: (lastResult.tags as string | undefined) ?? values.tags,
+              })}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex flex-wrap items-center gap-2"
+            >
+              {Array.isArray(lastResult.payload_warnings) &&
+                (lastResult.payload_warnings as string[]).map((w, i) => (
+                  <Badge key={i} variant="muted" className="text-[11px]">
+                    {w}
+                  </Badge>
+                ))}
+              <Button variant="outline" onClick={() => navigate("/library")} className="gap-2">
+                <Music4 className="size-4" />
+                Open library
+              </Button>
+              <Button variant="ghost" onClick={() => setStep(0)} className="gap-2">
+                <ImagePlus className="size-4" />
+                Nog één maken
+              </Button>
+            </motion.div>
+          </div>
+        );
+      },
+    },
+  ];
+
+  return (
+    <WizardShell
+      title="Simple wizard"
+      subtitle="Een track in 4 stappen: AI vult voor, jij kiest, ACE-Step rendert."
+      steps={steps}
+      step={step}
+      onStepChange={setStep}
+      onFinish={handleFinish}
+      isFinishing={generate.isPending}
+      finishLabel={generate.isPending ? "Genereert…" : "Genereer track"}
+    />
+  );
+}

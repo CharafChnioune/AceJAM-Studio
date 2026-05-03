@@ -18,3 +18,7 @@
 /app/**/.pytest_cache/
 /.DS_Store
 **/.DS_Store
+/app/web/node_modules/
+/app/web/dist/
+/app/web/.vite/
+/.playwright-mcp/

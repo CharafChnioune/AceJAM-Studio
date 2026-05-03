@@ -1,0 +1,579 @@
+import * as React from "react";
+import { useNavigate } from "react-router-dom";
+import { useForm, Controller } from "react-hook-form";
+import { useMutation } from "@tanstack/react-query";
+import { motion } from "framer-motion";
+import { Music4, Sparkles } from "lucide-react";
+
+import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
+import { AIPromptStep } from "@/components/wizard/AIPromptStep";
+import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/SourceAudioStep";
+import { TagInput } from "@/components/wizard/TagInput";
+import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { ArtGenerator } from "@/components/art/ArtGenerator";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { generateAdvanced, type WizardMode, api } from "@/lib/api";
+import { useWizardStore } from "@/store/wizard";
+import { toast } from "@/components/ui/sonner";
+import { cn, formatDuration } from "@/lib/utils";
+import { defaultTrackArtPrompt } from "@/lib/schemas";
+
+const TASK_TYPE_BY_MODE: Record<string, string> = {
+  cover: "cover",
+  repaint: "repaint",
+  extract: "extract",
+  lego: "lego",
+  complete: "complete",
+};
+
+const STEM_OPTIONS = [
+  "vocals",
+  "drums",
+  "bass",
+  "guitar",
+  "keyboard",
+  "synth",
+  "strings",
+  "brass",
+  "fx",
+];
+
+interface BaseSourceForm {
+  task_type: string;
+  title: string;
+  artist_name: string;
+  caption: string;
+  tags: string;
+  negative_tags: string;
+  lyrics: string;
+  instrumental: boolean;
+  duration: number;
+  bpm?: number;
+  key_scale?: string;
+  vocal_language: string;
+  song_model: string;
+  // Mode-specific:
+  audio_cover_strength?: number;
+  cover_noise_strength?: number;
+  repainting_start?: number;
+  repainting_end?: number;
+  repaint_mode?: string;
+  repaint_strength?: number;
+  track_names?: string[];
+  global_caption?: string;
+}
+
+export interface SourceAudioWizardConfig {
+  mode: WizardMode;
+  title: string;
+  subtitle: string;
+  examples: string[];
+  // Which mode-specific section to show on step 2
+  variant: "cover" | "repaint" | "extract" | "lego" | "complete";
+  defaultModel?: string;
+}
+
+export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig }) {
+  const navigate = useNavigate();
+  const setResult = useWizardStore((s) => s.setResult);
+  const lastResult = useWizardStore((s) => s.lastResult[config.mode]);
+  const warnings = useWizardStore((s) => s.warnings[config.mode]) ?? [];
+
+  const form = useForm<BaseSourceForm>({
+    defaultValues: {
+      task_type: TASK_TYPE_BY_MODE[config.variant] ?? "cover",
+      title: "",
+      artist_name: "",
+      caption: "",
+      tags: "",
+      negative_tags: "",
+      lyrics: config.variant === "extract" ? "[Instrumental]" : "",
+      instrumental: config.variant === "extract",
+      duration: 60,
+      vocal_language: "en",
+      song_model: config.defaultModel ?? "acestep-v15-xl-base",
+      audio_cover_strength: 0.6,
+      cover_noise_strength: 0.2,
+      repainting_start: 0,
+      repainting_end: 30,
+      repaint_mode: "balanced",
+      repaint_strength: 0.6,
+      track_names: ["vocals", "drums", "bass"],
+      global_caption: "",
+    },
+    mode: "onChange",
+  });
+
+  const [step, setStep] = React.useState(0);
+  const [source, setSource] = React.useState<SourceAudioValue | undefined>();
+  const [audioCodes, setAudioCodes] = React.useState<string>("");
+  const storePrompt = useWizardStore((s) => s.prompts[config.mode]);
+  const aiDescription = storePrompt ?? "";
+  const values = form.watch();
+
+  React.useEffect(() => {
+    if (source?.duration && (config.variant === "cover" || config.variant === "extract")) {
+      form.setValue("duration", source.duration);
+    }
+    if (source?.duration && config.variant === "repaint") {
+      form.setValue("repainting_end", Math.min(30, source.duration));
+    }
+  }, [source?.duration, config.variant, form]);
+
+  // Auto-extract audio codes for lego/complete
+  React.useEffect(() => {
+    if (!source?.uploadId) return;
+    if (config.variant !== "lego" && config.variant !== "complete") return;
+    if (audioCodes) return;
+    api
+      .post<{ success: boolean; audio_code_string?: string; error?: string }>(
+        "/api/audio-codes",
+        { upload_id: source.uploadId },
+      )
+      .then((resp) => {
+        if (resp.success && resp.audio_code_string) {
+          setAudioCodes(resp.audio_code_string);
+        } else if (resp.error) {
+          toast.error(`Audio-codes: ${resp.error}`);
+        }
+      })
+      .catch((e) => toast.error(`Audio-codes: ${(e as Error).message}`));
+  }, [source?.uploadId, config.variant, audioCodes]);
+
+  const hydrate = (payload: Record<string, unknown>) => {
+    for (const k of Object.keys(form.getValues())) {
+      if (k in payload) {
+        // @ts-expect-error dynamic
+        form.setValue(k, payload[k]);
+      }
+    }
+    if (Array.isArray(payload.track_names)) {
+      form.setValue("track_names", payload.track_names as string[]);
+    }
+  };
+
+  const generate = useMutation({
+    mutationFn: () => {
+      const v = form.getValues();
+      const payload: Record<string, unknown> = {
+        task_type: v.task_type,
+        title: v.title,
+        artist_name: v.artist_name,
+        caption: v.caption,
+        tags: v.tags,
+        negative_tags: v.negative_tags,
+        lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
+        instrumental: v.instrumental,
+        audio_duration: v.duration,
+        duration: v.duration,
+        bpm: v.bpm,
+        key_scale: v.key_scale,
+        vocal_language: v.vocal_language,
+        song_model: v.song_model,
+        src_audio_id: source?.uploadId,
+      };
+      if (config.variant === "cover") {
+        payload.audio_cover_strength = v.audio_cover_strength;
+        payload.cover_noise_strength = v.cover_noise_strength;
+      }
+      if (config.variant === "repaint") {
+        payload.repainting_start = v.repainting_start;
+        payload.repainting_end = v.repainting_end;
+        payload.repaint_mode = v.repaint_mode;
+        payload.repaint_strength = v.repaint_strength;
+      }
+      if (config.variant === "extract" || config.variant === "lego" || config.variant === "complete") {
+        payload.track_names = v.track_names;
+      }
+      if (config.variant === "lego" || config.variant === "complete") {
+        payload.audio_code_string = audioCodes;
+        payload.global_caption = v.global_caption;
+      }
+      return generateAdvanced(payload);
+    },
+    onSuccess: (resp) => {
+      if (!resp.success) {
+        toast.error(resp.error || "Generatie mislukte");
+        return;
+      }
+      setResult(config.mode, resp as unknown as Record<string, unknown>);
+      toast.success(`"${resp.title || config.variant}" is klaar.`);
+      setStep(steps.length - 1);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const audioUrl =
+    (lastResult?.audio_url as string | undefined) ||
+    (typeof lastResult?.audio === "string"
+      ? `data:audio/wav;base64,${lastResult.audio}`
+      : undefined);
+
+  const renderModeStep = () => {
+    if (config.variant === "cover") {
+      return (
+        <FieldGroup
+          title="Cover-sterkte"
+          description="Hoe sterk vasthouden aan het origineel (1) of geheel hercomponeren (0)."
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-3">
+              <div className="flex items-baseline justify-between">
+                <Label>Cover strength</Label>
+                <span className="font-mono text-xs">{(values.audio_cover_strength ?? 0).toFixed(2)}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="audio_cover_strength"
+                render={({ field }) => (
+                  <Slider value={[field.value ?? 0.6]} min={0} max={1} step={0.01} onValueChange={(v) => field.onChange(v[0])} />
+                )}
+              />
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-baseline justify-between">
+                <Label>Noise strength</Label>
+                <span className="font-mono text-xs">{(values.cover_noise_strength ?? 0).toFixed(2)}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="cover_noise_strength"
+                render={({ field }) => (
+                  <Slider value={[field.value ?? 0.2]} min={0} max={1} step={0.01} onValueChange={(v) => field.onChange(v[0])} />
+                )}
+              />
+            </div>
+          </div>
+        </FieldGroup>
+      );
+    }
+    if (config.variant === "repaint") {
+      const max = source?.duration ?? 600;
+      return (
+        <FieldGroup
+          title="Repaint regio"
+          description="Welk deel van de track wordt opnieuw geschilderd."
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-3">
+              <div className="flex items-baseline justify-between">
+                <Label>Start</Label>
+                <span className="font-mono text-xs">{formatDuration(values.repainting_start ?? 0)}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="repainting_start"
+                render={({ field }) => (
+                  <Slider value={[field.value ?? 0]} min={0} max={max} step={1} onValueChange={(v) => field.onChange(v[0])} />
+                )}
+              />
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-baseline justify-between">
+                <Label>End</Label>
+                <span className="font-mono text-xs">{formatDuration(values.repainting_end ?? 30)}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="repainting_end"
+                render={({ field }) => (
+                  <Slider value={[field.value ?? 30]} min={0} max={max} step={1} onValueChange={(v) => field.onChange(v[0])} />
+                )}
+              />
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Mode</Label>
+              <Controller
+                control={form.control}
+                name="repaint_mode"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="balanced">Balanced</SelectItem>
+                      <SelectItem value="strength">Strength-based</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-baseline justify-between">
+                <Label>Strength</Label>
+                <span className="font-mono text-xs">{(values.repaint_strength ?? 0.6).toFixed(2)}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="repaint_strength"
+                render={({ field }) => (
+                  <Slider value={[field.value ?? 0.6]} min={0} max={1} step={0.01} onValueChange={(v) => field.onChange(v[0])} />
+                )}
+              />
+            </div>
+          </div>
+        </FieldGroup>
+      );
+    }
+    if (config.variant === "extract" || config.variant === "lego" || config.variant === "complete") {
+      return (
+        <FieldGroup
+          title="Stems"
+          description="Welke stems wil je isoleren / regenereren?"
+        >
+          <div className="flex flex-wrap gap-2">
+            {STEM_OPTIONS.map((s) => {
+              const active = (values.track_names ?? []).includes(s);
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => {
+                    const next = active
+                      ? (values.track_names ?? []).filter((x) => x !== s)
+                      : [...(values.track_names ?? []), s];
+                    form.setValue("track_names", next);
+                  }}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-xs transition-colors",
+                    active
+                      ? "border-primary/60 bg-primary/15 text-primary"
+                      : "border-border/60 text-muted-foreground hover:border-foreground/40",
+                  )}
+                >
+                  {s}
+                </button>
+              );
+            })}
+          </div>
+          {(config.variant === "lego" || config.variant === "complete") && (
+            <div className="space-y-1.5">
+              <Label>Global caption</Label>
+              <Textarea rows={2} {...form.register("global_caption")} placeholder="Sfeer / vibe over alle stems heen" />
+              {audioCodes && (
+                <Badge variant="muted" className="text-[10px]">
+                  Audio codes geladen ({audioCodes.length} bytes)
+                </Badge>
+              )}
+            </div>
+          )}
+        </FieldGroup>
+      );
+    }
+    return null;
+  };
+
+  const steps: WizardStepDef[] = [
+    {
+      key: "ai",
+      title: "AI prompt",
+      description:
+        "Beschrijf wat je met de bron-audio wilt doen. AI vult tags, lyrics en parameters in.",
+      isValid: aiDescription.trim().length >= 4 || !!source,
+      render: () => (
+        <AIPromptStep
+          mode={config.mode}
+          placeholder={config.examples[0]}
+          examples={config.examples}
+          onHydrated={(payload) => {
+            hydrate(payload);
+          }}
+        />
+      ),
+    },
+    {
+      key: "source",
+      title: "Bron-audio",
+      description:
+        "Upload de WAV/MP3 die als referentie dient. Wordt automatisch geconverteerd naar ACE-Step codes waar nodig.",
+      isValid: !!source?.uploadId,
+      render: () => (
+        <SourceAudioStep value={source} onChange={setSource} />
+      ),
+    },
+    {
+      key: "mode",
+      title: `${config.title}-instellingen`,
+      isValid: true,
+      render: () => (
+        <div className="space-y-4">{renderModeStep()}</div>
+      ),
+    },
+    {
+      key: "fields",
+      title: "Identiteit & sfeer",
+      isValid: true,
+      hidden: config.variant === "extract",
+      render: () => (
+        <div className="space-y-4">
+          <FieldGroup title="Naam">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Titel</Label>
+                <Input {...form.register("title")} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Artiest</Label>
+                <Input {...form.register("artist_name")} />
+              </div>
+            </div>
+          </FieldGroup>
+          <FieldGroup title="Caption & tags">
+            <div className="space-y-1.5">
+              <Label>Caption</Label>
+              <Textarea rows={2} {...form.register("caption")} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Tags</Label>
+              <Controller
+                control={form.control}
+                name="tags"
+                render={({ field }) => (
+                  <TagInput value={field.value} onChange={field.onChange} />
+                )}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Negative tags</Label>
+              <Controller
+                control={form.control}
+                name="negative_tags"
+                render={({ field }) => (
+                  <TagInput value={field.value} onChange={field.onChange} variant="negative" />
+                )}
+              />
+            </div>
+          </FieldGroup>
+          {config.variant !== "extract" && (
+            <FieldGroup title="Lyrics & taal">
+              <div className="grid gap-3 sm:grid-cols-[200px_1fr]">
+                <div className="space-y-1.5">
+                  <Label>Taal</Label>
+                  <Input {...form.register("vocal_language")} />
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label>Instrumentaal</Label>
+                    <Controller
+                      control={form.control}
+                      name="instrumental"
+                      render={({ field }) => (
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      )}
+                    />
+                  </div>
+                </div>
+              </div>
+              {!values.instrumental && (
+                <div className="space-y-1.5">
+                  <Label>Lyrics</Label>
+                  <Textarea rows={8} className="font-mono text-xs" {...form.register("lyrics")} />
+                </div>
+              )}
+            </FieldGroup>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "review",
+      title: "Review & genereer",
+      isValid: !!source?.uploadId,
+      render: () => (
+        <div className="space-y-4">
+          <ReviewStep
+            payload={{ ...form.getValues(), src_audio_id: source?.uploadId }}
+            warnings={warnings}
+            primaryFields={[
+              { key: "task_type", label: "Modus" },
+              { key: "title", label: "Titel" },
+              { key: "song_model", label: "Model" },
+              { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
+              { key: "vocal_language", label: "Taal" },
+              { key: "src_audio_id", label: "Source ID" },
+            ]}
+          />
+          {generate.isPending && (
+            <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm">
+              <Sparkles className="size-4 animate-pulse text-primary" />
+              <span>Renderen…</span>
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "result",
+      title: "Resultaat",
+      isValid: true,
+      hidden: !lastResult,
+      render: () => {
+        if (!lastResult) return null;
+        const resultId =
+          (lastResult.result_id as string | undefined) ||
+          (lastResult.id as string | undefined);
+        const title =
+          (lastResult.title as string | undefined) || values.title || config.title;
+        const artist =
+          (lastResult.artist_name as string | undefined) || values.artist_name;
+        return (
+          <div className="space-y-4">
+            {audioUrl && <WaveformPlayer src={audioUrl} title={title} artist={artist} />}
+            {resultId && (
+              <ArtGenerator
+                scope="single"
+                attachToResultId={resultId}
+                title={title}
+                caption={(lastResult.caption as string | undefined) ?? values.caption}
+                defaultPrompt={defaultTrackArtPrompt({
+                  title,
+                  artist_name: artist,
+                  caption: (lastResult.caption as string | undefined) ?? values.caption,
+                  tags: (lastResult.tags as string | undefined) ?? values.tags,
+                })}
+              />
+            )}
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex flex-wrap gap-2"
+            >
+              <Button variant="outline" onClick={() => navigate("/library")} className="gap-2">
+                <Music4 className="size-4" /> Open library
+              </Button>
+              <Button variant="ghost" onClick={() => setStep(0)}>Nieuw {config.title.toLowerCase()}</Button>
+            </motion.div>
+          </div>
+        );
+      },
+    },
+  ];
+
+  return (
+    <WizardShell
+      title={config.title}
+      subtitle={config.subtitle}
+      steps={steps}
+      step={step}
+      onStepChange={setStep}
+      onFinish={() => generate.mutate()}
+      isFinishing={generate.isPending}
+      finishLabel={generate.isPending ? "Renderen…" : "Genereer"}
+    />
+  );
+}
