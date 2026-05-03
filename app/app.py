@@ -2985,6 +2985,47 @@ _album_jobs: dict[str, dict[str, Any]] = {}
 _album_jobs_lock = threading.Lock()
 _api_generation_tasks: dict[str, dict[str, Any]] = {}
 _api_generation_tasks_lock = threading.Lock()
+_lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
+_lora_autolabel_jobs_lock = threading.Lock()
+
+
+def _set_lora_autolabel_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    with _lora_autolabel_jobs_lock:
+        job = _lora_autolabel_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "state": "queued",
+                "status": "Queued",
+                "progress": 0,
+                "processed": 0,
+                "total": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "current_file": "",
+                "logs": [],
+                "errors": [],
+                "labels": [],
+                "dataset_id": "",
+                "started_at": None,
+                "finished_at": None,
+            },
+        )
+        if "logs" in updates:
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (list(job.get("logs") or []) + [str(item) for item in new_logs])[-500:]
+        for key, value in updates.items():
+            job[key] = value
+        return _jsonable(dict(job))
+
+
+def _lora_autolabel_job_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _lora_autolabel_jobs_lock:
+        if job_id:
+            job = _lora_autolabel_jobs.get(job_id)
+            return _jsonable(dict(job)) if job else {}
+        return [_jsonable(dict(job)) for job in _lora_autolabel_jobs.values()]
 
 
 def _community_feed(limit: int = 100, *, refresh_disk: bool = True) -> list[dict[str, Any]]:
@@ -12114,6 +12155,214 @@ async def api_lora_dataset_autolabel(request: Request):
         return JSONResponse({"success": True, "labels": labels, "dataset_health": _lora_dataset_health(labels)})
     except ModelDownloadStarted as exc:
         return JSONResponse(_download_started_payload(exc.model_name, exc.job))
+
+
+# ---------------------------------------------------------------------------
+# Background dataset auto-labeling job
+#
+# Runs the official ACE-Step LM `understand_music` aux on every audio file in
+# a LoRA training dataset. Writes `<stem>.lyrics.txt` and `<stem>.json`
+# sidecar files so `_run_one_click_job` -> `label_entries` picks them up
+# instead of falling back to "[Instrumental]".
+#
+# Per ACE-Step LoRA training tutorial (https://github.com/ace-step/ACE-Step-1.5
+# /blob/main/docs/en/LoRA_Training_Tutorial.md): training samples need
+# .lyrics.txt + .json sidecars; transcribed lyrics may contain errors and
+# users are encouraged to review them after this auto-pass.
+# ---------------------------------------------------------------------------
+
+
+def _lora_dataset_understand_one(
+    audio_path: Path,
+    *,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    with handler_lock:
+        _ensure_song_model(body.get("song_model"))
+        codes = handler.convert_src_audio_to_codes(str(audio_path))
+    return _run_official_lm_aux("understand_music", body, audio_codes=codes)
+
+
+def _lora_write_sidecars(audio_path: Path, payload: dict[str, Any]) -> dict[str, str]:
+    """Write .lyrics.txt and .json sidecars next to audio_path. Returns paths written."""
+    stem = audio_path.stem
+    lyrics_path = audio_path.with_name(f"{stem}.lyrics.txt")
+    metadata_path = audio_path.with_name(f"{stem}.json")
+    lyrics_text = str(payload.get("lyrics") or "").strip() or "[Instrumental]"
+    lyrics_path.write_text(lyrics_text + "\n", encoding="utf-8")
+    metadata = {
+        "caption": str(payload.get("caption") or "").strip(),
+        "lyrics": lyrics_text,
+        "bpm": payload.get("bpm"),
+        "keyscale": str(payload.get("key_scale") or payload.get("keyscale") or "").strip(),
+        "timesignature": str(payload.get("time_signature") or payload.get("timesignature") or "").strip(),
+        "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
+        "is_instrumental": lyrics_text.strip().lower() == "[instrumental]",
+        "label_source": "official_ace_step_understand_music",
+        "ace_lm_model": str(payload.get("ace_lm_model") or ""),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"lyrics_path": str(lyrics_path), "metadata_path": str(metadata_path)}
+
+
+def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
+    try:
+        dataset_id = str(body.get("dataset_id") or "").strip()
+        if not dataset_id:
+            _set_lora_autolabel_job(
+                job_id,
+                state="error",
+                status="dataset_id required",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+            return
+        import_root = training_manager.import_root_for(safe_id(dataset_id))
+        if not import_root.is_dir():
+            _set_lora_autolabel_job(
+                job_id,
+                state="error",
+                status=f"dataset directory not found: {import_root}",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+            return
+        audio_paths = sorted(
+            p for p in import_root.rglob("*")
+            if p.is_file() and p.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
+        )
+        total = len(audio_paths)
+        _set_lora_autolabel_job(
+            job_id,
+            state="running",
+            status=f"Processing {total} audio file(s)",
+            total=total,
+            dataset_id=dataset_id,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        labels: list[dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        skip_existing = parse_bool(body.get("skip_existing"), True)
+        request_body = dict(body)
+        request_body.setdefault("vocal_language", body.get("language") or "unknown")
+
+        for idx, audio_path in enumerate(audio_paths):
+            stem = audio_path.stem
+            existing_lyrics = audio_path.with_name(f"{stem}.lyrics.txt")
+            existing_meta = audio_path.with_name(f"{stem}.json")
+            relative = audio_path.relative_to(import_root)
+            _set_lora_autolabel_job(
+                job_id,
+                processed=idx,
+                progress=int(round(100 * idx / max(total, 1))),
+                current_file=str(relative),
+                status=f"[{idx + 1}/{total}] {relative}",
+            )
+            if skip_existing and existing_lyrics.is_file() and existing_meta.is_file():
+                try:
+                    existing_lyric_text = existing_lyrics.read_text(encoding="utf-8", errors="replace").strip()
+                except Exception:
+                    existing_lyric_text = "[Instrumental]"
+                labels.append(
+                    {
+                        "path": str(audio_path),
+                        "filename": audio_path.name,
+                        "lyrics": existing_lyric_text,
+                        "label_source": "existing_sidecar",
+                    }
+                )
+                succeeded += 1
+                continue
+            try:
+                understood = _lora_dataset_understand_one(audio_path, body=request_body)
+                paths = _lora_write_sidecars(audio_path, understood)
+                labels.append(
+                    {
+                        "path": str(audio_path),
+                        "filename": audio_path.name,
+                        "lyrics": str(understood.get("lyrics") or "[Instrumental]"),
+                        "caption": str(understood.get("caption") or ""),
+                        "language": str(understood.get("language") or "unknown"),
+                        "bpm": understood.get("bpm"),
+                        "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
+                        "label_source": "official_ace_step_understand_music",
+                        **paths,
+                    }
+                )
+                succeeded += 1
+            except ModelDownloadStarted as dl:
+                _set_lora_autolabel_job(
+                    job_id,
+                    state="error",
+                    status=f"Model download required: {dl.model_name}",
+                    errors=[str(dl)],
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                return
+            except Exception as exc:
+                failed += 1
+                err = f"{audio_path.name}: {exc}"
+                _set_lora_autolabel_job(job_id, logs=[err])
+                labels.append(
+                    {
+                        "path": str(audio_path),
+                        "filename": audio_path.name,
+                        "lyrics": "[Instrumental]",
+                        "label_source": "understand_music_failed",
+                        "error": str(exc),
+                    }
+                )
+            finally:
+                _set_lora_autolabel_job(job_id, succeeded=succeeded, failed=failed)
+
+        _set_lora_autolabel_job(
+            job_id,
+            state="complete",
+            status=f"Auto-label complete: {succeeded} succeeded, {failed} failed",
+            progress=100,
+            processed=total,
+            current_file="",
+            labels=labels,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        _set_lora_autolabel_job(
+            job_id,
+            state="error",
+            status=f"Worker crashed: {exc}",
+            errors=[traceback.format_exc()],
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+@app.post("/api/lora/dataset/autolabel/jobs")
+async def api_lora_autolabel_create_job(request: Request):
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    dataset_id = str(body.get("dataset_id") or "").strip()
+    if not dataset_id:
+        return JSONResponse({"success": False, "error": "dataset_id is required"}, status_code=400)
+    job_id = uuid.uuid4().hex[:12]
+    snapshot = _set_lora_autolabel_job(job_id, dataset_id=dataset_id, state="queued", status="Queued auto-label job")
+    threading.Thread(target=_lora_autolabel_worker, args=(job_id, dict(body)), daemon=True).start()
+    return JSONResponse({"success": True, "job_id": job_id, "job": snapshot})
+
+
+@app.get("/api/lora/dataset/autolabel/jobs")
+async def api_lora_autolabel_list_jobs():
+    return JSONResponse({"success": True, "jobs": _lora_autolabel_job_snapshot(None)})
+
+
+@app.get("/api/lora/dataset/autolabel/jobs/{job_id}")
+async def api_lora_autolabel_get_job(job_id: str):
+    snapshot = _lora_autolabel_job_snapshot(job_id)
+    if not snapshot:
+        return JSONResponse({"success": False, "error": "Job not found"}, status_code=404)
+    return JSONResponse({"success": True, "job": snapshot})
 
 
 @app.post("/api/lora/one-click-train")

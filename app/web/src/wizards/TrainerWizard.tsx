@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Loader2, Music4, Upload, GraduationCap, X, FileMusic,
+  Loader2, Music4, Upload, GraduationCap, X, FileMusic, Mic2, SkipForward,
 } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
@@ -13,7 +13,12 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api";
+import {
+  api,
+  getLoraAutolabelJob,
+  startLoraAutolabelJob,
+  type LoraAutolabelJob,
+} from "@/lib/api";
 import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
@@ -56,6 +61,8 @@ export function TrainerWizard() {
   const [drag, setDrag] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [dataset, setDataset] = React.useState<DatasetState | null>(null);
+  const [autolabelJob, setAutolabelJob] = React.useState<LoraAutolabelJob | null>(null);
+  const [autolabelSkipped, setAutolabelSkipped] = React.useState(false);
   const [job, setJob] = React.useState<TrainJobState | null>(null);
   const [form, setForm] = React.useState<TrainerForm>({
     dataset_id: "",
@@ -131,6 +138,83 @@ export function TrainerWizard() {
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  // ---- AI auto-label (understand_music) job ------------------------------
+
+  const startAutolabel = useMutation({
+    mutationFn: () =>
+      startLoraAutolabelJob({
+        dataset_id: dataset!.dataset_id,
+        language: form.default_language,
+        skip_existing: true,
+      }),
+    onSuccess: (resp) => {
+      if (!resp.success || !resp.job_id) {
+        toast.error(resp.error || "Auto-label kon niet starten");
+        return;
+      }
+      const id = resp.job_id;
+      const initial: LoraAutolabelJob = resp.job ?? {
+        id,
+        state: "queued",
+        progress: 0,
+        processed: 0,
+        total: 0,
+      };
+      setAutolabelJob(initial);
+      addJob({
+        id,
+        kind: "lora",
+        label: `Auto-label ${dataset!.dataset_id.slice(0, 12)}`,
+        progress: 0,
+        status: "queued",
+        startedAt: Date.now(),
+      });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  React.useEffect(() => {
+    const id = autolabelJob?.id;
+    if (!id) return;
+    const state = (autolabelJob?.state ?? "").toLowerCase();
+    if (state === "complete" || state === "error") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const resp = await getLoraAutolabelJob(id);
+        if (cancelled) return;
+        const j = resp.job;
+        if (!j) return;
+        setAutolabelJob(j);
+        const s = (j.state ?? "running").toLowerCase();
+        const desc = j.status ?? s;
+        updateJobStore(id, { progress: j.progress ?? 0, status: desc });
+        if (s === "complete") {
+          toast.success(
+            `Auto-label klaar: ${j.succeeded ?? 0} succes, ${j.failed ?? 0} mislukt`,
+          );
+          updateJobStore(id, { status: "complete", progress: 100 });
+          setTimeout(() => removeJob(id), 4000);
+          return;
+        }
+        if (s === "error") {
+          toast.error(j.status || "Auto-label mislukt");
+          updateJobStore(id, { status: "error" });
+          setTimeout(() => removeJob(id), 6000);
+          return;
+        }
+        setTimeout(tick, 2000);
+      } catch (e) {
+        if (!cancelled) toast.error(`Poll-fout: ${(e as Error).message}`);
+      }
+    };
+    tick();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autolabelJob?.id]);
 
   // ---- Training job ------------------------------------------------------
 
@@ -388,6 +472,116 @@ export function TrainerWizard() {
               )}
               <Badge>status: {dataset.status}</Badge>
             </motion.div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "autolabel",
+      title: "AI transcribe & label",
+      description:
+        "Laat ACE-Step's understand_music elke clip beluisteren en automatisch lyrics + caption + bpm/key afleiden. Schrijft .lyrics.txt en .json sidecar-bestanden zodat training echte lyric-conditioning krijgt. Per ACE-Step docs: review de getranscribeerde lyrics achteraf op fouten.",
+      isValid:
+        !!dataset?.dataset_id &&
+        (autolabelSkipped ||
+          (autolabelJob?.state ?? "").toLowerCase() === "complete"),
+      hidden: !dataset?.dataset_id,
+      render: () => (
+        <div className="space-y-4">
+          {!autolabelJob && !autolabelSkipped && (
+            <FieldGroup
+              title="Heb je vocal-tracks of pure instrumentals?"
+              description="Bij vocals: laat AI lyrics extraheren. Bij instrumentals: skip — alle samples krijgen dan [Instrumental]."
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Button
+                  onClick={() => startAutolabel.mutate()}
+                  disabled={startAutolabel.isPending}
+                  className="gap-2"
+                >
+                  {startAutolabel.isPending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Mic2 className="size-4" />
+                  )}
+                  Start AI auto-label
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setAutolabelSkipped(true)}
+                  className="gap-2"
+                >
+                  <SkipForward className="size-4" />
+                  Skip (alles instrumental)
+                </Button>
+              </div>
+            </FieldGroup>
+          )}
+
+          {autolabelJob && (
+            <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4 text-sm">
+              <div className="flex items-center gap-3">
+                <Loader2
+                  className={cn(
+                    "size-5 text-primary",
+                    (autolabelJob.state ?? "") !== "complete" &&
+                      (autolabelJob.state ?? "") !== "error" &&
+                      "animate-spin",
+                  )}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">
+                    {autolabelJob.status ?? autolabelJob.state ?? "—"}
+                  </p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {autolabelJob.current_file || `${autolabelJob.processed ?? 0}/${autolabelJob.total ?? 0}`}
+                  </p>
+                </div>
+                <span className="font-mono text-sm tabular-nums">
+                  {autolabelJob.progress ?? 0}%
+                </span>
+              </div>
+              <Progress value={autolabelJob.progress ?? 0} />
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                {typeof autolabelJob.succeeded === "number" && (
+                  <Badge variant="muted">{autolabelJob.succeeded} succeeded</Badge>
+                )}
+                {typeof autolabelJob.failed === "number" && autolabelJob.failed > 0 && (
+                  <Badge variant="destructive">{autolabelJob.failed} failed</Badge>
+                )}
+                {typeof autolabelJob.total === "number" && (
+                  <Badge variant="muted">{autolabelJob.total} totaal</Badge>
+                )}
+              </div>
+              {autolabelJob.errors && autolabelJob.errors.length > 0 && (
+                <details className="rounded-md border bg-background/40 p-2 text-xs">
+                  <summary className="cursor-pointer font-medium">
+                    {autolabelJob.errors.length} fout(en)
+                  </summary>
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[10px] text-destructive">
+                    {autolabelJob.errors.join("\n")}
+                  </pre>
+                </details>
+              )}
+              {autolabelJob.logs && autolabelJob.logs.length > 0 && (
+                <details className="rounded-md border bg-background/40 p-2 text-xs">
+                  <summary className="cursor-pointer font-medium">
+                    {autolabelJob.logs.length} log entries
+                  </summary>
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[10px] text-muted-foreground">
+                    {autolabelJob.logs.join("\n")}
+                  </pre>
+                </details>
+              )}
+            </div>
+          )}
+
+          {autolabelSkipped && (
+            <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-yellow-200">
+              Auto-label overgeslagen. Alle samples worden als
+              <code className="mx-1 rounded bg-background/40 px-1">[Instrumental]</code>
+              getraind. Vocal/lyric-epoch auditions worden niet gevalideerd.
+            </div>
           )}
         </div>
       ),

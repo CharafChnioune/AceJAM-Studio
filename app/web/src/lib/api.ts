@@ -346,3 +346,38 @@ export const getStatus = () =>
 
 export const deleteSong = (song_id: string) =>
   api.post<{ success: boolean; error?: string }>("/api/delete_song", { song_id });
+
+// ---- LoRA dataset auto-label background job ----
+
+export interface LoraAutolabelJob {
+  id: string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  processed?: number;
+  total?: number;
+  succeeded?: number;
+  failed?: number;
+  current_file?: string;
+  logs?: string[];
+  errors?: string[];
+  labels?: Array<Record<string, unknown>>;
+  dataset_id?: string;
+}
+
+export const startLoraAutolabelJob = (body: {
+  dataset_id: string;
+  ace_lm_model?: string;
+  language?: string;
+  song_model?: string;
+  skip_existing?: boolean;
+}) =>
+  api.post<{ success: boolean; job_id?: string; job?: LoraAutolabelJob; error?: string }>(
+    "/api/lora/dataset/autolabel/jobs",
+    body,
+  );
+
+export const getLoraAutolabelJob = (jobId: string) =>
+  api.get<{ success: boolean; job?: LoraAutolabelJob; error?: string }>(
+    `/api/lora/dataset/autolabel/jobs/${encodeURIComponent(jobId)}`,
+  );
