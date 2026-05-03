@@ -28,9 +28,9 @@ except Exception:  # pragma: no cover - dependency is installed in the app env.
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".m4a"}
 JOB_ACTIVE_STATES = {"queued", "running", "stopping"}
 EPOCH_AUDITION_DURATION_SECONDS = 20
-EPOCH_AUDITION_CHARS_PER_SECOND = 21
-EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 4
-EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 2.5
+EPOCH_AUDITION_CHARS_PER_SECOND = 8
+EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 2
+EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 5.0
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
@@ -142,8 +142,8 @@ def _epoch_audition_blocks(lines: list[str]) -> list[dict[str, Any]]:
 def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDITION_DURATION_SECONDS) -> tuple[str, dict[str, Any]]:
     raw = str(lyrics or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     duration_seconds = max(10, int(duration or EPOCH_AUDITION_DURATION_SECONDS))
-    max_chars = max(220, min(900, int(duration_seconds * EPOCH_AUDITION_CHARS_PER_SECOND)))
-    max_sung_lines = max(4, min(24, int(round(duration_seconds / EPOCH_AUDITION_SECONDS_PER_SUNG_LINE))))
+    max_chars = max(100, min(360, int(duration_seconds * EPOCH_AUDITION_CHARS_PER_SECOND)))
+    max_sung_lines = max(2, min(8, int(round(duration_seconds / EPOCH_AUDITION_SECONDS_PER_SUNG_LINE))))
     source_lines = [line for line in raw.splitlines() if line.strip()]
     normalized_lines: list[str] = []
     for raw_line in source_lines:
@@ -195,7 +195,7 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
             if _epoch_audition_section_marker(line) is not None:
                 continue
             candidate = "\n".join([*kept, line.strip()]).strip()
-            if len(candidate) > max_chars or len(kept) > max_sung_lines:
+            if len(candidate) > max_chars or len(kept) - 1 >= max_sung_lines:
                 break
             kept.append(line.strip())
         fitted = "\n".join(kept).strip()

@@ -1414,7 +1414,9 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "42")
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
-        self.assertLessEqual(len(captured["lyrics"]), 420)
+        sung_lines = [line for line in captured["lyrics"].splitlines() if line.strip() and not line.startswith("[")]
+        self.assertLessEqual(len(captured["lyrics"]), 200)
+        self.assertLessEqual(len(sung_lines), 4)
         self.assertIn("[Chorus]", captured["lyrics"])
         self.assertIn("[Verse]", captured["lyrics"])
         self.assertNotIn("Final Chorus -", captured["lyrics"])

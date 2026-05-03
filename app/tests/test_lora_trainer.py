@@ -414,8 +414,11 @@ class LoraTrainerTest(unittest.TestCase):
 
         fitted, meta = fit_epoch_audition_lyrics(lyrics, duration=20)
 
-        self.assertLessEqual(len(fitted), 420)
+        sung_lines = [line for line in fitted.splitlines() if line.strip() and not line.startswith("[")]
+        self.assertLessEqual(len(fitted), 200)
+        self.assertLessEqual(len(sung_lines), 4)
         self.assertEqual(meta["action"], "fit_for_20s")
+        self.assertEqual(meta["max_sung_lines"], 4)
         self.assertIn("[Chorus]", fitted)
         self.assertIn("[Verse]", fitted)
         self.assertNotIn("Final Chorus -", fitted)
