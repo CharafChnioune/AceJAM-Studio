@@ -129,6 +129,34 @@ def patch_chunked_training_scheduler_epochs() -> bool:
     return changed
 
 
+def patch_lora_adapter_name_sanitizer() -> bool:
+    path = VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "lora" / "lifecycle.py"
+    text = path.read_text(encoding="utf-8")
+    original = (
+        'def _default_adapter_name_from_path(lora_path: str) -> str:\n'
+        '    """Derive a default adapter name from path (e.g. \'final\' from \'./lora/final\')."""\n'
+        '    name = os.path.basename(lora_path.rstrip(os.sep))\n'
+        '    return name if name else "default"\n'
+    )
+    patched = (
+        'def _default_adapter_name_from_path(lora_path: str) -> str:\n'
+        '    """Derive a PEFT-safe default adapter name from a path basename."""\n'
+        '    import re\n\n'
+        '    name = os.path.basename(lora_path.rstrip(os.sep)) or "default"\n'
+        '    safe = re.sub(r"[^0-9A-Za-z_]+", "_", name)\n'
+        '    safe = re.sub(r"_+", "_", safe).strip("_") or "default"\n'
+        '    if safe[0].isdigit():\n'
+        '        safe = f"adapter_{safe}"\n'
+        '    return safe[:90]\n'
+    )
+    if patched in text:
+        return False
+    if original not in text:
+        raise RuntimeError(f"Could not find LoRA adapter name helper in {path}")
+    path.write_text(text.replace(original, patched, 1), encoding="utf-8")
+    return True
+
+
 def main() -> None:
     if not (VENDOR_DIR / "train.py").is_file():
         raise SystemExit(f"ACE-Step vendor checkout is missing: {VENDOR_DIR}")
@@ -136,6 +164,7 @@ def main() -> None:
         "preprocess_audio" if patch_preprocess_audio() else "",
         "variant_dir_map" if patch_variant_dir_map() else "",
         "chunked_training_scheduler_epochs" if patch_chunked_training_scheduler_epochs() else "",
+        "lora_adapter_name_sanitizer" if patch_lora_adapter_name_sanitizer() else "",
     ]
     applied = [item for item in changed if item]
     if applied:

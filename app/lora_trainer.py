@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from lora_utils import safe_peft_adapter_name
 
 try:
     import soundfile as sf
@@ -104,15 +107,44 @@ def _torch_cuda_available() -> bool:
         return False
 
 
+def _apple_silicon_mps_available() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64" and _torch_mps_available()
+
+
+def _allow_cpu_training_on_apple_silicon() -> bool:
+    return parse_bool(os.environ.get("ACEJAM_ALLOW_CPU_TRAINING"), False)
+
+
 def default_training_device(requested: Any = None) -> str:
     device = str(requested or "auto").strip().lower()
+    if device == "metal":
+        device = "mps"
     if device and device != "auto":
+        if device == "cpu" and _apple_silicon_mps_available() and not _allow_cpu_training_on_apple_silicon():
+            raise RuntimeError(
+                "CPU LoRA training is blocked on Apple Silicon while MPS is available. "
+                "Choose Trainer device auto/mps, or set ACEJAM_ALLOW_CPU_TRAINING=1 for debugging."
+            )
         return device
-    if sys.platform == "darwin" and _torch_mps_available():
+    if _apple_silicon_mps_available():
         return "mps"
     if _torch_cuda_available():
         return "cuda"
     return "cpu"
+
+
+def training_device_policy() -> dict[str, Any]:
+    apple_mps = _apple_silicon_mps_available()
+    cpu_allowed = (not apple_mps) or _allow_cpu_training_on_apple_silicon()
+    return {
+        "default": default_training_device("auto"),
+        "apple_silicon": sys.platform == "darwin" and platform.machine() == "arm64",
+        "mps_available": apple_mps,
+        "cuda_available": _torch_cuda_available(),
+        "cpu_allowed": cpu_allowed,
+        "cpu_blocked": not cpu_allowed,
+        "cpu_override_env": "ACEJAM_ALLOW_CPU_TRAINING",
+    }
 
 
 @dataclass
@@ -226,6 +258,7 @@ class AceTrainingManager:
             "active_job": active,
             "adapter_count": len(self.list_adapters()),
             "tensorboard_runs": self.tensorboard_runs(),
+            "trainer_device_policy": training_device_policy(),
         }
 
     def vendor_ready(self) -> bool:
@@ -721,6 +754,74 @@ class AceTrainingManager:
             process.terminate()
         return self.get_job(job_id)
 
+    def resume_job(self, job_id: str) -> dict[str, Any]:
+        self.require_ready()
+        job_id = slug(job_id, "job")
+        with self._lock:
+            active = next((job for job in self._load_jobs_unlocked() if job.state in JOB_ACTIVE_STATES), None)
+            if active:
+                raise RuntimeError(f"Stop active training job {active.id} before resuming.")
+            job = self._read_job_unlocked(job_id)
+            if job.kind not in {"train", "one_click_train"}:
+                raise ValueError("Only train and one-click LoRA jobs can be resumed")
+            params = dict(job.params or {})
+            paths = dict(job.paths or {})
+
+        dataset_dir = Path(str(paths.get("dataset_dir") or paths.get("tensor_output") or "")).expanduser()
+        output_dir = Path(str(paths.get("output_dir") or "")).expanduser()
+        if not dataset_dir.is_dir():
+            raise FileNotFoundError(f"Tensor dataset directory not found for resume: {dataset_dir}")
+        if not output_dir.is_dir():
+            raise FileNotFoundError(f"Training output directory not found for resume: {output_dir}")
+        latest_checkpoint = self._latest_checkpoint(output_dir)
+        if latest_checkpoint is None:
+            raise FileNotFoundError(f"No checkpoint found to resume in {output_dir / 'checkpoints'}")
+        latest_epoch = self._checkpoint_epoch(latest_checkpoint)
+        if latest_epoch <= 0:
+            raise RuntimeError(f"Could not determine checkpoint epoch from {latest_checkpoint}")
+
+        total_epochs = self._resume_total_epochs(job, params, latest_epoch)
+        params["device"] = default_training_device("auto")
+        if job.kind == "one_click_train":
+            params["train_epochs"] = total_epochs
+        else:
+            params["epochs"] = total_epochs
+        log_dir = Path(str(paths.get("log_dir") or output_dir / "runs")).expanduser()
+        command = self._resume_train_command(job, params, dataset_dir, output_dir, log_dir, total_epochs)
+        command = self._command_with_arg(command, "--device", params["device"])
+        command = self._command_with_arg(command, "--save-every", "1")
+        command = self._command_with_arg(command, "--scheduler-epochs", str(total_epochs))
+        command = self._command_without_arg(command, "--resume-from")
+
+        with self._lock:
+            current = self._read_job_unlocked(job_id)
+            current.state = "queued"
+            current.stage = f"resume from epoch {latest_epoch}"
+            current.error = ""
+            current.return_code = None
+            current.command = command
+            current.params = params
+            current.paths.update(
+                {
+                    "dataset_dir": str(dataset_dir),
+                    "tensor_output": str(dataset_dir),
+                    "output_dir": str(output_dir),
+                    "final_adapter": str(output_dir / "final"),
+                    "log_dir": str(log_dir),
+                    "resume_from": str(latest_checkpoint),
+                }
+            )
+            current.updated_at = utc_now()
+            self._write_job_unlocked(current)
+
+        thread = threading.Thread(
+            target=self._run_resume_job,
+            args=(job_id, int(total_epochs), latest_checkpoint, int(latest_epoch)),
+            daemon=True,
+        )
+        thread.start()
+        return self.get_job(job_id)
+
     def list_adapters(self) -> list[dict[str, Any]]:
         roots = [self.exports_dir, self.training_dir]
         adapters: list[dict[str, Any]] = []
@@ -1079,6 +1180,12 @@ class AceTrainingManager:
                         "both",
                     ]
                 )
+            with self._lock:
+                current = self._read_job_unlocked(job.id)
+                current.command = list(train_command)
+                current.params = dict(params)
+                current.updated_at = utc_now()
+                self._write_job_unlocked(current)
             self._set_job_state(
                 job.id,
                 stage="train",
@@ -1249,6 +1356,144 @@ class AceTrainingManager:
             return None
         return max(matches, key=lambda path: path.stat().st_mtime)
 
+    def _checkpoint_epoch(self, checkpoint_path: Path) -> int:
+        import re
+
+        match = re.search(r"(?:^|[_-])epoch[_-](\d+)(?:[_-]|$)", checkpoint_path.name)
+        if not match:
+            match = re.search(r"epoch[_-]?(\d+)", checkpoint_path.name)
+        if not match:
+            return 0
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return 0
+
+    def _latest_checkpoint(self, output_dir: Path) -> Path | None:
+        checkpoints_dir = output_dir / "checkpoints"
+        if not checkpoints_dir.is_dir():
+            return None
+        matches = [path for path in checkpoints_dir.iterdir() if path.exists() and self._checkpoint_epoch(path) > 0]
+        if not matches:
+            return None
+        return max(matches, key=lambda path: (self._checkpoint_epoch(path), path.stat().st_mtime))
+
+    def _resume_total_epochs(self, job: TrainingJob, params: dict[str, Any], latest_epoch: int) -> int:
+        existing_result = dict(job.result or {})
+        raw = params.get("train_epochs") or params.get("epochs") or existing_result.get("epochs")
+        if raw in (None, "", "auto"):
+            raise ValueError("Cannot resume because the original total epoch count is unknown")
+        total = parse_int(raw, latest_epoch, 1, 10000)
+        if total < latest_epoch:
+            raise ValueError(f"Cannot resume epoch {latest_epoch}; total epochs is only {total}")
+        return total
+
+    def _failed_audition_for_epoch(self, job: TrainingJob, epoch: int) -> bool:
+        for item in list((job.result or {}).get("epoch_auditions") or []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                item_epoch = int(item.get("epoch") or -1)
+            except (TypeError, ValueError):
+                item_epoch = -1
+            if item_epoch == int(epoch) and str(item.get("status") or "").lower() == "failed":
+                return True
+        return False
+
+    def _resume_train_command(
+        self,
+        job: TrainingJob,
+        params: dict[str, Any],
+        dataset_dir: Path,
+        output_dir: Path,
+        log_dir: Path,
+        total_epochs: int,
+    ) -> list[str]:
+        existing = list(job.command or [])
+        if "--dataset-dir" in existing and "--output-dir" in existing:
+            command = existing
+            command = self._command_with_arg(command, "--dataset-dir", str(dataset_dir))
+            command = self._command_with_arg(command, "--output-dir", str(output_dir))
+            command = self._command_with_arg(command, "--log-dir", str(log_dir))
+            command = self._command_with_arg(command, "--epochs", str(total_epochs))
+            return command
+
+        adapter_type = str(params.get("adapter_type") or "lora").lower()
+        command = [
+            sys.executable,
+            str(self.base_dir / "_acejam_train_bootstrap.py"),
+            "--plain",
+            "--yes",
+            "--checkpoint-dir",
+            str(self.checkpoint_dir),
+            "--model-variant",
+            str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or "acestep-v15-sft"))),
+            "--dataset-dir",
+            str(dataset_dir),
+            "--output-dir",
+            str(output_dir),
+            "--adapter-type",
+            adapter_type,
+            "--batch-size",
+            str(parse_int(params.get("train_batch_size", params.get("batch_size")), 1, 1, 64)),
+            "--gradient-accumulation",
+            str(parse_int(params.get("gradient_accumulation"), 4, 1, 128)),
+            "--epochs",
+            str(total_epochs),
+            "--save-every",
+            "1",
+            "--lr",
+            str(parse_float(params.get("learning_rate"), 1e-4, 1e-7, 1.0)),
+            "--shift",
+            str(parse_float(params.get("training_shift", params.get("shift")), 3.0, 0.1, 10.0)),
+            "--seed",
+            str(parse_int(params.get("training_seed", params.get("seed")), 42, 0, 2**31 - 1)),
+            "--num-inference-steps",
+            "8",
+            "--warmup-steps",
+            "100",
+            "--weight-decay",
+            "0.01",
+            "--max-grad-norm",
+            "1.0",
+            "--optimizer-type",
+            "adamw",
+            "--scheduler-type",
+            "cosine",
+            "--log-dir",
+            str(log_dir),
+            "--log-every",
+            "10",
+            "--log-heavy-every",
+            "50",
+            "--sample-every-n-epochs",
+            "0",
+            "--device",
+            str(params.get("device") or "auto"),
+            "--precision",
+            str(params.get("precision") or "auto"),
+            "--gradient-checkpointing",
+            "--no-offload-encoder",
+            "--num-workers",
+            "0",
+        ]
+        if adapter_type == "lokr":
+            command.extend(["--lokr-linear-dim", "64", "--lokr-linear-alpha", "128", "--lokr-factor", "-1", "--lokr-weight-decompose"])
+        else:
+            command.extend(
+                [
+                    "--rank",
+                    str(parse_int(params.get("rank"), 64, 1, 512)),
+                    "--alpha",
+                    str(parse_int(params.get("alpha"), 128, 1, 1024)),
+                    "--dropout",
+                    str(parse_float(params.get("dropout"), 0.1, 0.0, 1.0)),
+                    "--attention-type",
+                    str(params.get("attention_type") or "both"),
+                ]
+            )
+        return command
+
     def _record_epoch_audition(self, job_id: str, audition: dict[str, Any]) -> None:
         def _audition_epoch(item: dict[str, Any]) -> int:
             try:
@@ -1294,6 +1539,7 @@ class AceTrainingManager:
             "job_id": job_id,
             "epoch": int(epoch),
             "checkpoint_path": str(checkpoint_path),
+            "lora_adapter_name": safe_peft_adapter_name(f"epoch_{int(epoch)}_{checkpoint_path.name}"),
             "caption": str(config.get("caption") or ""),
             "lyrics": str(config.get("lyrics") or ""),
             "duration": 20,
@@ -1333,6 +1579,8 @@ class AceTrainingManager:
         params: dict[str, Any],
         progress_start: float = 0.0,
         progress_end: float = 95.0,
+        start_epoch: int = 1,
+        initial_checkpoint: Path | None = None,
     ) -> None:
         command = self._command_with_arg(train_command, "--save-every", "1")
         audition_enabled = self._epoch_audition_enabled(params)
@@ -1348,8 +1596,9 @@ class AceTrainingManager:
             return
 
         total_epochs = max(1, int(epochs or 1))
-        last_checkpoint: Path | None = None
-        for epoch in range(1, total_epochs + 1):
+        first_epoch = max(1, int(start_epoch or 1))
+        last_checkpoint: Path | None = initial_checkpoint
+        for epoch in range(first_epoch, total_epochs + 1):
             before_progress = progress_start + ((epoch - 1) / total_epochs) * (progress_end - progress_start)
             self._set_job_state(job_id, stage=f"train epoch {epoch}/{total_epochs}", progress=before_progress)
             chunk_command = self._command_with_arg(command, "--epochs", str(epoch))
@@ -1367,6 +1616,68 @@ class AceTrainingManager:
             self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
             self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path)
         self._set_job_state(job_id, stage="train", progress=progress_end)
+
+    def _run_resume_job(self, job_id: str, total_epochs: int, latest_checkpoint: Path, latest_epoch: int) -> None:
+        try:
+            if self.release_models is not None:
+                self.release_models()
+            with self._lock:
+                job = self._read_job_unlocked(job_id)
+                job.state = "running"
+                job.stage = f"resume from epoch {latest_epoch}"
+                job.updated_at = utc_now()
+                self._write_job_unlocked(job)
+            params = dict(job.params or {})
+            output_dir = Path(job.paths.get("output_dir") or "")
+            log_path = Path(job.log_path)
+            self._append_log(
+                log_path,
+                f"\n[resume] continuing from {latest_checkpoint} on device {params.get('device') or 'auto'}\n",
+            )
+            if self._epoch_audition_enabled(params) and self._failed_audition_for_epoch(job, latest_epoch):
+                self._append_log(log_path, f"[resume] retrying failed audition for epoch {latest_epoch}\n")
+                self._set_job_state(job_id, stage=f"audition epoch {latest_epoch}/{total_epochs}", progress=0.0)
+                self._run_epoch_audition(job_id, params, latest_checkpoint, latest_epoch, log_path)
+
+            if latest_epoch < total_epochs:
+                self._run_train_command_with_epoch_auditions(
+                    job_id,
+                    job.command,
+                    output_dir,
+                    log_path,
+                    epochs=total_epochs,
+                    params=params,
+                    progress_start=(latest_epoch / total_epochs) * 95.0,
+                    progress_end=95.0,
+                    start_epoch=latest_epoch + 1,
+                    initial_checkpoint=latest_checkpoint,
+                )
+            with self._lock:
+                current = self._read_job_unlocked(job_id)
+                current.return_code = 0
+                current.updated_at = utc_now()
+                if current.state == "stopping":
+                    current.state = "stopped"
+                else:
+                    current.state = "succeeded"
+                    current.stage = "complete"
+                    current.progress = 100.0
+                    current.result = self._job_result(current)
+                self._write_job_unlocked(current)
+        except Exception as exc:
+            with self._lock:
+                try:
+                    current = self._read_job_unlocked(job_id)
+                except Exception:
+                    return
+                current.state = "failed"
+                current.error = str(exc)
+                current.updated_at = utc_now()
+                self._write_job_unlocked(current)
+            try:
+                self._append_log(Path(current.log_path), f"\n[resume failed] {exc}\n")
+            except Exception:
+                pass
 
     def _run_train_job_with_epoch_auditions(self, job: TrainingJob) -> None:
         with self._lock:
@@ -1579,7 +1890,7 @@ class AceTrainingManager:
                 self._write_job_unlocked(current)
 
     def _job_result(self, job: TrainingJob) -> dict[str, Any]:
-        if job.kind == "train":
+        if job.kind in {"train", "one_click_train"}:
             final_adapter = job.paths.get("final_adapter", "")
             existing_result = dict(job.result or {})
             result = {
@@ -1600,7 +1911,7 @@ class AceTrainingManager:
                     model_variant=str(params.get("model_variant") or ""),
                     song_model=str(params.get("song_model") or ""),
                     job_id=job.id,
-                    epochs=parse_int(params.get("epochs"), 0, 0, None) or None,
+                    epochs=parse_int(params.get("epochs") or params.get("train_epochs") or existing_result.get("epochs"), 0, 0, None) or None,
                     metadata={
                         "epoch_audition": params.get("epoch_audition") or {},
                         "source_paths": {

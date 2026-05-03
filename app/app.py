@@ -1555,7 +1555,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "batch_size": 1,
         "use_lora": True,
         "lora_adapter_path": str(request.get("checkpoint_path") or ""),
-        "lora_adapter_name": f"{trigger} epoch {epoch}",
+        "lora_adapter_name": str(request.get("lora_adapter_name") or f"{trigger} epoch {epoch}"),
         "lora_scale": request.get("lora_scale", 1.0),
         "adapter_model_variant": str(request.get("model_variant") or ""),
         "save_to_library": False,
@@ -10678,6 +10678,14 @@ async def api_lora_job_stop(job_id: str):
         return JSONResponse({"success": True, "job": training_manager.stop_job(job_id)})
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+
+
+@app.post("/api/lora/jobs/{job_id}/resume")
+async def api_lora_job_resume(job_id: str):
+    try:
+        return JSONResponse({"success": True, "job": training_manager.resume_job(job_id)})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.get("/api/lora/adapters")

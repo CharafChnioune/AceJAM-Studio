@@ -2642,6 +2642,7 @@
               <option value="cpu">cpu</option>
               <option value="cuda">cuda</option>
             </select>
+            <small id="train-device-note">Auto selects the best trainer device.</small>
           </div>
         </div>
         <div class="grid-3" style="margin-top:10px;">
@@ -5007,6 +5008,7 @@
       renderSettingsHealthCards();
       renderAceStepParityCard();
       renderAceStepSettingsPanel();
+      renderTrainerDevicePolicy(state.config?.lora_status?.trainer?.trainer_device_policy);
       loadOutputStatus();
       updateCapability();
       updateAllLmAdvice();
@@ -7454,9 +7456,25 @@
       const data = await api("/api/lora/status");
       if (state.config) state.config.lora_status = data;
       renderTrainerReady(data);
+      renderTrainerDevicePolicy(data.trainer?.trainer_device_policy);
       renderLoraHealth(data.dataset_health);
       renderSettingsHealthCards();
       return data;
+    }
+
+    function renderTrainerDevicePolicy(policy = null) {
+      const select = $("train-device");
+      const note = $("train-device-note");
+      if (!select) return;
+      const cpuOption = [...select.options].find((option) => option.value === "cpu");
+      const cpuBlocked = Boolean(policy?.cpu_blocked);
+      if (cpuOption) cpuOption.disabled = cpuBlocked;
+      if (cpuBlocked && select.value === "cpu") select.value = "auto";
+      if (note && policy) {
+        note.textContent = cpuBlocked
+          ? `Auto uses ${policy.default || "mps"}; CPU is blocked while Apple MPS is available.`
+          : `Auto uses ${policy.default || "the best available trainer device"}.`;
+      }
     }
 
     async function importDatasetFolder() {

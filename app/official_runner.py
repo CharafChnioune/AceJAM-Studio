@@ -9,6 +9,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from lora_utils import safe_peft_adapter_name
+
 
 ACE_STEP_CAPTION_CHAR_LIMIT = 512
 ACE_STEP_LYRICS_CHAR_LIMIT = 4096
@@ -335,7 +337,12 @@ def _apply_lora_request(dit_handler: Any, request: dict[str, Any]) -> dict[str, 
     if not adapter_path:
         raise RuntimeError("Official runner received use_lora=true without lora_adapter_path")
     scale = float(request.get("lora_scale") or 1.0)
-    status = dit_handler.load_lora(adapter_path)
+    adapter_name = safe_peft_adapter_name(request.get("lora_adapter_name") or Path(adapter_path).name)
+    add_lora = getattr(dit_handler, "add_lora", None)
+    if callable(add_lora):
+        status = add_lora(adapter_path, adapter_name=adapter_name)
+    else:
+        status = dit_handler.load_lora(adapter_path)
     if str(status).startswith("❌"):
         raise RuntimeError(status)
     scale_status = dit_handler.set_lora_scale(scale)
@@ -347,6 +354,7 @@ def _apply_lora_request(dit_handler: Any, request: dict[str, Any]) -> dict[str, 
         "success": True,
         "active": True,
         "path": adapter_path,
+        "adapter_name": adapter_name,
         "scale": scale,
         "status": status,
         "scale_status": scale_status,

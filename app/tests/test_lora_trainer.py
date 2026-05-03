@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from lora_trainer import AceTrainingManager, TrainingJob, default_training_device, model_to_variant, utc_now
+from lora_trainer import AceTrainingManager, TrainingJob, default_training_device, model_to_variant, training_device_policy, utc_now
 
 
 class CaptureTrainingManager(AceTrainingManager):
@@ -42,6 +42,20 @@ class AuditionTrainingManager(AceTrainingManager):
         }
 
 
+class ResumeTrainingManager(AuditionTrainingManager):
+    def require_ready(self):
+        return None
+
+
+class ImmediateThread:
+    def __init__(self, target, args=(), daemon=None):
+        self.target = target
+        self.args = args
+
+    def start(self):
+        self.target(*self.args)
+
+
 class LoraTrainerTest(unittest.TestCase):
     def make_manager(self, root: Path) -> CaptureTrainingManager:
         return CaptureTrainingManager(
@@ -64,9 +78,28 @@ class LoraTrainerTest(unittest.TestCase):
 
     def test_default_training_device_prefers_mps_on_darwin_auto(self):
         with patch("lora_trainer.sys.platform", "darwin"), \
+            patch("lora_trainer.platform.machine", return_value="arm64"), \
             patch("lora_trainer._torch_mps_available", return_value=True), \
             patch("lora_trainer._torch_cuda_available", return_value=True):
             self.assertEqual(default_training_device("auto"), "mps")
+
+    def test_default_training_device_blocks_cpu_on_apple_silicon_mps(self):
+        with patch("lora_trainer.sys.platform", "darwin"), \
+            patch("lora_trainer.platform.machine", return_value="arm64"), \
+            patch("lora_trainer._torch_mps_available", return_value=True), \
+            patch.dict("lora_trainer.os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "CPU LoRA training is blocked"):
+                default_training_device("cpu")
+            policy = training_device_policy()
+            self.assertTrue(policy["cpu_blocked"])
+            self.assertEqual(policy["default"], "mps")
+
+    def test_default_training_device_allows_cpu_with_debug_override(self):
+        with patch("lora_trainer.sys.platform", "darwin"), \
+            patch("lora_trainer.platform.machine", return_value="arm64"), \
+            patch("lora_trainer._torch_mps_available", return_value=True), \
+            patch.dict("lora_trainer.os.environ", {"ACEJAM_ALLOW_CPU_TRAINING": "1"}, clear=True):
+            self.assertEqual(default_training_device("cpu"), "cpu")
 
     def test_default_training_device_uses_cuda_then_cpu_for_auto(self):
         with patch("lora_trainer.sys.platform", "linux"), \
@@ -77,7 +110,7 @@ class LoraTrainerTest(unittest.TestCase):
             patch("lora_trainer._torch_mps_available", return_value=False), \
             patch("lora_trainer._torch_cuda_available", return_value=False):
             self.assertEqual(default_training_device("auto"), "cpu")
-        self.assertEqual(default_training_device("cpu"), "cpu")
+            self.assertEqual(default_training_device("cpu"), "cpu")
 
     def test_scan_and_save_dataset_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,21 +191,25 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(manager.auto_epochs(21), 500)
             self.assertEqual(manager.auto_epochs(101), 300)
 
-    def test_one_click_explicit_cpu_device_is_preserved(self):
+    def test_one_click_explicit_cpu_device_is_preserved_when_debug_override_is_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
-            params = manager._one_click_params(
-                {
-                    "dataset_id": "unit",
-                    "import_root": str(root),
-                    "trigger_tag": "voicehook",
-                    "language": "nl",
-                    "device": "cpu",
-                },
-                dataset_id="unit",
-                import_root=root,
-            )
+            with patch("lora_trainer.sys.platform", "darwin"), \
+                patch("lora_trainer.platform.machine", return_value="arm64"), \
+                patch("lora_trainer._torch_mps_available", return_value=True), \
+                patch.dict("lora_trainer.os.environ", {"ACEJAM_ALLOW_CPU_TRAINING": "1"}, clear=True):
+                params = manager._one_click_params(
+                    {
+                        "dataset_id": "unit",
+                        "import_root": str(root),
+                        "trigger_tag": "voicehook",
+                        "language": "nl",
+                        "device": "cpu",
+                    },
+                    dataset_id="unit",
+                    import_root=root,
+                )
 
             self.assertEqual(params["device"], "cpu")
 
@@ -200,7 +237,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "song_model": "acestep-v15-turbo",
                     "adapter_type": "lokr",
                     "train_epochs": 3,
-                    "device": "cpu",
+                    "device": "mps",
                 }
             )
             command = job["command"]
@@ -209,7 +246,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("lokr", command)
             self.assertIn("--lokr-weight-decompose", command)
             self.assertEqual(command[command.index("--save-every") + 1], "1")
-            self.assertEqual(command[command.index("--device") + 1], "cpu")
+            self.assertEqual(command[command.index("--device") + 1], "mps")
 
     def test_train_command_carries_trigger_tag_for_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,6 +396,72 @@ class LoraTrainerTest(unittest.TestCase):
             auditions = stored["result"]["epoch_auditions"]
             self.assertEqual([item["status"] for item in auditions], ["failed", "succeeded"])
             self.assertIn("audition boom", auditions[0]["error"])
+
+    def test_resume_job_forces_mps_and_retries_failed_latest_audition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ResumeTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            tensor_dir = root / "data" / "lora_tensors" / "resume"
+            output_dir = root / "data" / "lora_training" / "resume"
+            checkpoint = output_dir / "checkpoints" / "epoch_1_loss_0.9130"
+            tensor_dir.mkdir(parents=True)
+            checkpoint.mkdir(parents=True)
+            job = TrainingJob(
+                id="resumejob",
+                kind="one_click_train",
+                state="failed",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["acejam-one-click-lora"],
+                params={
+                    "adapter_type": "lora",
+                    "trigger_tag": "charaf hook",
+                    "song_model": "acestep-v15-turbo",
+                    "model_variant": "turbo",
+                    "train_epochs": 3,
+                    "training_seed": 42,
+                    "device": "cpu",
+                    "epoch_audition": {
+                        "enabled": True,
+                        "caption": "charaf hook",
+                        "lyrics": "[Verse]\nLine",
+                        "duration": 20,
+                    },
+                },
+                paths={
+                    "tensor_output": str(tensor_dir),
+                    "output_dir": str(output_dir),
+                    "final_adapter": str(output_dir / "final"),
+                    "log_dir": str(output_dir / "runs"),
+                },
+                log_path=str(root / "data" / "lora_jobs" / "resumejob" / "job.log"),
+                result={
+                    "epochs": 3,
+                    "epoch_auditions": [
+                        {
+                            "epoch": 1,
+                            "checkpoint_path": str(checkpoint),
+                            "status": "failed",
+                            "error": "module name can't contain dot",
+                        }
+                    ],
+                },
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            with patch("lora_trainer.default_training_device", return_value="mps"), \
+                patch("lora_trainer.threading.Thread", ImmediateThread):
+                resumed = manager.resume_job("resumejob")
+
+            self.assertEqual(resumed["params"]["device"], "mps")
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2, 3])
+            self.assertEqual(manager.audition_requests[0]["lora_adapter_name"], "epoch_1_epoch_1_loss_0_9130")
+            self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 2/3", "train epoch 3/3"])
+            first_command = manager.commands[0][1]
+            self.assertEqual(first_command[first_command.index("--device") + 1], "mps")
+            self.assertEqual(first_command[first_command.index("--resume-from") + 1], str(checkpoint))
+            self.assertEqual(first_command[first_command.index("--scheduler-epochs") + 1], "3")
 
     def test_lokr_epoch_auditions_are_skipped_but_save_every_epoch_stays(self):
         with tempfile.TemporaryDirectory() as tmp:

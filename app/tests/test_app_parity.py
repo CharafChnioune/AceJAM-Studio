@@ -1063,6 +1063,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('id="epoch-audition-seed"', html)
         self.assertIn('id="epoch-audition-scale"', html)
         self.assertIn('id="train-device"', html)
+        self.assertIn('id="train-device-note"', html)
+        self.assertIn("renderTrainerDevicePolicy", html)
         self.assertIn('device: $("train-device")?.value || "auto"', html)
         self.assertIn("epoch_audition_duration: 20", html)
         self.assertIn("...epochAuditionPayload()", html)
@@ -1073,7 +1075,7 @@ class AppParityTest(unittest.TestCase):
 
         class StubTrainingManager:
             def status(self):
-                return {"ready": True}
+                return {"ready": True, "trainer_device_policy": {"default": "mps", "cpu_blocked": True}}
 
             def list_adapters(self):
                 return [
@@ -1095,6 +1097,55 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(status["adapters"][0]["display_name"], "charaf hook")
         self.assertEqual(status["adapters"][0]["trigger_tag"], "charaf hook")
         self.assertEqual(adapters["adapters"][0]["display_name"], "charaf hook")
+
+    def test_official_runner_uses_safe_lora_adapter_name_for_decimal_checkpoints(self):
+        official_runner = importlib.import_module("official_runner")
+
+        class StubHandler:
+            def __init__(self):
+                self.calls = []
+
+            def add_lora(self, path, adapter_name=None):
+                self.calls.append(("add_lora", path, adapter_name))
+                return "✅ LoRA loaded"
+
+            def set_lora_scale(self, scale):
+                self.calls.append(("set_lora_scale", scale))
+                return "✅ scale"
+
+            def set_use_lora(self, use):
+                self.calls.append(("set_use_lora", use))
+                return "✅ use"
+
+        handler = StubHandler()
+        result = official_runner._apply_lora_request(
+            handler,
+            {
+                "use_lora": True,
+                "lora_adapter_path": "/tmp/checkpoints/epoch_1_loss_0.9130",
+                "lora_adapter_name": "epoch_1_loss_0.9130",
+                "lora_scale": 0.7,
+            },
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["adapter_name"], "epoch_1_loss_0_9130")
+        self.assertEqual(handler.calls[0], ("add_lora", "/tmp/checkpoints/epoch_1_loss_0.9130", "epoch_1_loss_0_9130"))
+
+    def test_lora_resume_endpoint_delegates_to_training_manager(self):
+        client = TestClient(acejam_app.app)
+
+        class StubTrainingManager:
+            def resume_job(self, job_id):
+                return {"id": job_id, "state": "queued", "params": {"device": "mps"}}
+
+        with patch.object(acejam_app, "training_manager", StubTrainingManager()):
+            response = client.post("/api/lora/jobs/resumejob/resume")
+
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["job"]["id"], "resumejob")
+        self.assertEqual(payload["job"]["params"]["device"], "mps")
 
     def test_lora_payload_reaches_generation_and_official_runner(self):
         adapter_path = "/tmp/unit-adapter"
