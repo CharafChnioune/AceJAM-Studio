@@ -2336,6 +2336,36 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _training_understand_music(audio_path: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Run ACE-Step understand_music on a single audio file (called from training thread)."""
+    with handler_lock:
+        _ensure_song_model(body.get("song_model"))
+        codes = handler.convert_src_audio_to_codes(str(audio_path))
+    return _run_official_lm_aux("understand_music", body, audio_codes=codes)
+
+
+def _training_write_label_sidecars(audio_path: Path, payload: dict[str, Any]) -> dict[str, str]:
+    """Write `<stem>.lyrics.txt` and `<stem>.json` sidecars next to audio_path."""
+    stem = audio_path.stem
+    lyrics_path = audio_path.with_name(f"{stem}.lyrics.txt")
+    metadata_path = audio_path.with_name(f"{stem}.json")
+    lyrics_text = str(payload.get("lyrics") or "").strip() or "[Instrumental]"
+    lyrics_path.write_text(lyrics_text + "\n", encoding="utf-8")
+    metadata = {
+        "caption": str(payload.get("caption") or "").strip(),
+        "lyrics": lyrics_text,
+        "bpm": payload.get("bpm"),
+        "keyscale": str(payload.get("key_scale") or payload.get("keyscale") or "").strip(),
+        "timesignature": str(payload.get("time_signature") or payload.get("timesignature") or "").strip(),
+        "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
+        "is_instrumental": lyrics_text.strip().lower() == "[instrumental]",
+        "label_source": "official_ace_step_understand_music",
+        "ace_lm_model": str(payload.get("ace_lm_model") or ""),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"lyrics_path": str(lyrics_path), "metadata_path": str(metadata_path)}
+
+
 training_manager = AceTrainingManager(
     base_dir=BASE_DIR,
     data_dir=DATA_DIR,
@@ -2343,6 +2373,8 @@ training_manager = AceTrainingManager(
     release_models=_release_models_for_training,
     adapter_ready=_activate_trained_adapter,
     audition_runner=_run_lora_epoch_audition,
+    understand_music=_training_understand_music,
+    write_label_sidecars=_training_write_label_sidecars,
 )
 
 
@@ -12172,39 +12204,6 @@ async def api_lora_dataset_autolabel(request: Request):
 # ---------------------------------------------------------------------------
 
 
-def _lora_dataset_understand_one(
-    audio_path: Path,
-    *,
-    body: dict[str, Any],
-) -> dict[str, Any]:
-    with handler_lock:
-        _ensure_song_model(body.get("song_model"))
-        codes = handler.convert_src_audio_to_codes(str(audio_path))
-    return _run_official_lm_aux("understand_music", body, audio_codes=codes)
-
-
-def _lora_write_sidecars(audio_path: Path, payload: dict[str, Any]) -> dict[str, str]:
-    """Write .lyrics.txt and .json sidecars next to audio_path. Returns paths written."""
-    stem = audio_path.stem
-    lyrics_path = audio_path.with_name(f"{stem}.lyrics.txt")
-    metadata_path = audio_path.with_name(f"{stem}.json")
-    lyrics_text = str(payload.get("lyrics") or "").strip() or "[Instrumental]"
-    lyrics_path.write_text(lyrics_text + "\n", encoding="utf-8")
-    metadata = {
-        "caption": str(payload.get("caption") or "").strip(),
-        "lyrics": lyrics_text,
-        "bpm": payload.get("bpm"),
-        "keyscale": str(payload.get("key_scale") or payload.get("keyscale") or "").strip(),
-        "timesignature": str(payload.get("time_signature") or payload.get("timesignature") or "").strip(),
-        "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
-        "is_instrumental": lyrics_text.strip().lower() == "[instrumental]",
-        "label_source": "official_ace_step_understand_music",
-        "ace_lm_model": str(payload.get("ace_lm_model") or ""),
-    }
-    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-    return {"lyrics_path": str(lyrics_path), "metadata_path": str(metadata_path)}
-
-
 def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
     try:
         dataset_id = str(body.get("dataset_id") or "").strip()
@@ -12274,8 +12273,8 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                 succeeded += 1
                 continue
             try:
-                understood = _lora_dataset_understand_one(audio_path, body=request_body)
-                paths = _lora_write_sidecars(audio_path, understood)
+                understood = _training_understand_music(audio_path, request_body)
+                paths = _training_write_label_sidecars(audio_path, understood)
                 labels.append(
                     {
                         "path": str(audio_path),

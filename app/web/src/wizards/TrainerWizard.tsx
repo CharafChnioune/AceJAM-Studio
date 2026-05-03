@@ -26,12 +26,15 @@ import { cn } from "@/lib/utils";
 interface TrainerForm {
   dataset_id: string;
   trigger_tag: string;
+  genre: string;
+  genre_ratio: number;
   default_language: string;
   default_bpm: number;
   default_time_signature: string;
   learning_rate: number;
   train_epochs: number;
   batch_size: number;
+  auto_understand_music: boolean;
 }
 
 interface DatasetState {
@@ -47,9 +50,15 @@ interface TrainJobState {
   id: string;
   state?: string;
   status?: string;
+  stage?: string;
   progress?: number;
   step?: number;
   total_steps?: number;
+  current_file?: string;
+  transcribe_processed?: number;
+  transcribe_total?: number;
+  transcribe_succeeded?: number;
+  transcribe_failed?: number;
 }
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
@@ -67,12 +76,15 @@ export function TrainerWizard() {
   const [form, setForm] = React.useState<TrainerForm>({
     dataset_id: "",
     trigger_tag: "",
+    genre: "",
+    genre_ratio: 0,
     default_language: "en",
     default_bpm: 120,
     default_time_signature: "4/4",
     learning_rate: 1e-4,
     train_epochs: 10,
     batch_size: 1,
+    auto_understand_music: true,
   });
 
   const addJob = useJobsStore((s) => s.addJob);
@@ -228,6 +240,9 @@ export function TrainerWizard() {
         dataset_id: dataset?.dataset_id,
         trigger_tag: form.trigger_tag,
         language: form.default_language,
+        genre: form.genre,
+        genre_ratio: form.genre_ratio,
+        auto_understand_music: form.auto_understand_music,
         training_defaults: {
           learning_rate: form.learning_rate,
           train_epochs: form.train_epochs,
@@ -265,9 +280,15 @@ export function TrainerWizard() {
             id?: string;
             state?: string;
             status?: string;
+            stage?: string;
             progress?: number;
             step?: number;
             total_steps?: number;
+            current_file?: string;
+            transcribe_processed?: number;
+            transcribe_total?: number;
+            transcribe_succeeded?: number;
+            transcribe_failed?: number;
             error?: string;
           };
         }>(`/api/lora/jobs/${encodeURIComponent(job.id)}`);
@@ -281,9 +302,15 @@ export function TrainerWizard() {
           id: job.id,
           state,
           status: description,
+          stage: j.stage,
           progress: p,
           step: j.step,
           total_steps: j.total_steps,
+          current_file: j.current_file,
+          transcribe_processed: j.transcribe_processed,
+          transcribe_total: j.transcribe_total,
+          transcribe_succeeded: j.transcribe_succeeded,
+          transcribe_failed: j.transcribe_failed,
         });
         updateJobStore(job.id, { progress: p, status: description });
         if (state === "complete" || state === "succeeded") {
@@ -477,112 +504,133 @@ export function TrainerWizard() {
       ),
     },
     {
-      key: "autolabel",
-      title: "AI transcribe & label",
+      key: "content",
+      title: "Genre, content & auto-transcribe",
       description:
-        "Laat ACE-Step's understand_music elke clip beluisteren en automatisch lyrics + caption + bpm/key afleiden. Schrijft .lyrics.txt en .json sidecar-bestanden zodat training echte lyric-conditioning krijgt. Per ACE-Step docs: review de getranscribeerde lyrics achteraf op fouten.",
-      isValid:
-        !!dataset?.dataset_id &&
-        (autolabelSkipped ||
-          (autolabelJob?.state ?? "").toLowerCase() === "complete"),
+        "Vertel de trainer om welk genre het gaat en of we voor het trainen automatisch via ACE-Step understand_music lyrics + caption per clip moeten ophalen.",
+      isValid: !!dataset?.dataset_id,
       hidden: !dataset?.dataset_id,
       render: () => (
         <div className="space-y-4">
-          {!autolabelJob && !autolabelSkipped && (
-            <FieldGroup
-              title="Heb je vocal-tracks of pure instrumentals?"
-              description="Bij vocals: laat AI lyrics extraheren. Bij instrumentals: skip — alle samples krijgen dan [Instrumental]."
-            >
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Button
-                  onClick={() => startAutolabel.mutate()}
-                  disabled={startAutolabel.isPending}
-                  className="gap-2"
-                >
-                  {startAutolabel.isPending ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <Mic2 className="size-4" />
-                  )}
-                  Start AI auto-label
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setAutolabelSkipped(true)}
-                  className="gap-2"
-                >
-                  <SkipForward className="size-4" />
-                  Skip (alles instrumental)
-                </Button>
-              </div>
-            </FieldGroup>
-          )}
-
-          {autolabelJob && (
-            <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4 text-sm">
-              <div className="flex items-center gap-3">
-                <Loader2
-                  className={cn(
-                    "size-5 text-primary",
-                    (autolabelJob.state ?? "") !== "complete" &&
-                      (autolabelJob.state ?? "") !== "error" &&
-                      "animate-spin",
-                  )}
+          <FieldGroup
+            title="Genre"
+            description="Bv. 'lofi hip-hop', 'progressive metal', 'ambient electronic'. Helpt epoch-auditions met passende test-prompts."
+          >
+            <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
+              <div className="space-y-1.5">
+                <Label>Genre-tag</Label>
+                <Input
+                  value={form.genre}
+                  onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
+                  placeholder="bv. synthwave, drill, neo-soul"
                 />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {autolabelJob.status ?? autolabelJob.state ?? "—"}
-                  </p>
-                  <p className="truncate text-[10px] text-muted-foreground">
-                    {autolabelJob.current_file || `${autolabelJob.processed ?? 0}/${autolabelJob.total ?? 0}`}
-                  </p>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-baseline justify-between">
+                  <Label>Genre-ratio</Label>
+                  <span className="font-mono text-xs">{form.genre_ratio}%</span>
                 </div>
-                <span className="font-mono text-sm tabular-nums">
-                  {autolabelJob.progress ?? 0}%
-                </span>
+                <Slider
+                  value={[form.genre_ratio]}
+                  min={0}
+                  max={100}
+                  step={5}
+                  onValueChange={(v) =>
+                    setForm((f) => ({ ...f, genre_ratio: v[0] ?? 0 }))
+                  }
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Hoeveel % van de samples krijgt expliciet de genre-tag.
+                </p>
               </div>
-              <Progress value={autolabelJob.progress ?? 0} />
-              <div className="flex flex-wrap gap-2 text-[11px]">
-                {typeof autolabelJob.succeeded === "number" && (
-                  <Badge variant="muted">{autolabelJob.succeeded} succeeded</Badge>
-                )}
-                {typeof autolabelJob.failed === "number" && autolabelJob.failed > 0 && (
-                  <Badge variant="destructive">{autolabelJob.failed} failed</Badge>
-                )}
-                {typeof autolabelJob.total === "number" && (
-                  <Badge variant="muted">{autolabelJob.total} totaal</Badge>
-                )}
-              </div>
-              {autolabelJob.errors && autolabelJob.errors.length > 0 && (
-                <details className="rounded-md border bg-background/40 p-2 text-xs">
-                  <summary className="cursor-pointer font-medium">
-                    {autolabelJob.errors.length} fout(en)
-                  </summary>
-                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[10px] text-destructive">
-                    {autolabelJob.errors.join("\n")}
-                  </pre>
-                </details>
-              )}
-              {autolabelJob.logs && autolabelJob.logs.length > 0 && (
-                <details className="rounded-md border bg-background/40 p-2 text-xs">
-                  <summary className="cursor-pointer font-medium">
-                    {autolabelJob.logs.length} log entries
-                  </summary>
-                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[10px] text-muted-foreground">
-                    {autolabelJob.logs.join("\n")}
-                  </pre>
-                </details>
-              )}
             </div>
-          )}
+          </FieldGroup>
 
-          {autolabelSkipped && (
-            <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-yellow-200">
-              Auto-label overgeslagen. Alle samples worden als
-              <code className="mx-1 rounded bg-background/40 px-1">[Instrumental]</code>
-              getraind. Vocal/lyric-epoch auditions worden niet gevalideerd.
+          <FieldGroup
+            title="Auto-transcribe vóór training"
+            description="De training-thread roept ACE-Step's understand_music aan voor élk audio-bestand zonder .lyrics.txt + .json sidecars en schrijft die ter plekke. Dit voorkomt de '[Instrumental]'-fallback waar dataset-health voor waarschuwt."
+          >
+            <div className="flex items-start justify-between gap-3 rounded-md border bg-card/40 p-3">
+              <div className="min-w-0 flex-1 space-y-1">
+                <Label className="flex items-center gap-1.5">
+                  <Mic2 className="size-3.5" /> AI auto-transcribe vocals + caption
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Aan = vocal LoRA's krijgen echte lyric-conditioning. Uit = alle
+                  samples blijven <code className="rounded bg-background/40 px-1">[Instrumental]</code>
+                  (alleen voor pure instrumentale datasets). Per ACE-Step docs:
+                  transcribed lyrics moeten achteraf gereviewed worden op fouten.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant={form.auto_understand_music ? "default" : "outline"}
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    auto_understand_music: !f.auto_understand_music,
+                  }))
+                }
+                className="gap-1.5"
+              >
+                {form.auto_understand_music ? (
+                  <>
+                    <Mic2 className="size-3.5" /> Aan
+                  </>
+                ) : (
+                  <>
+                    <SkipForward className="size-3.5" /> Uit
+                  </>
+                )}
+              </Button>
             </div>
-          )}
+            {!form.auto_understand_music && (
+              <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2.5 text-xs text-yellow-200">
+                Auto-transcribe staat uit. Bij vocal-tracks zonder bestaande
+                sidecars valt training terug op{" "}
+                <code className="rounded bg-background/40 px-1">[Instrumental]</code>{" "}
+                en mist lyric-conditioning.
+              </div>
+            )}
+          </FieldGroup>
+
+          <FieldGroup
+            title="Optioneel: alleen labelen zonder trainen"
+            description="Schrijf nu de sidecars zonder direct te starten met trainen, zodat je ze handmatig kunt reviewen voordat je doorgaat."
+          >
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => startAutolabel.mutate()}
+                disabled={startAutolabel.isPending || !!autolabelJob}
+                className="gap-1.5"
+              >
+                {startAutolabel.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Mic2 className="size-3.5" />
+                )}
+                Run autolabel-job nu
+              </Button>
+              {autolabelJob && (
+                <Badge variant="muted" className="gap-1">
+                  <Loader2
+                    className={cn(
+                      "size-3",
+                      (autolabelJob.state ?? "") !== "complete" &&
+                        (autolabelJob.state ?? "") !== "error" &&
+                        "animate-spin",
+                    )}
+                  />
+                  {autolabelJob.status} · {autolabelJob.progress ?? 0}%
+                </Badge>
+              )}
+            </div>
+            {autolabelJob && (
+              <Progress value={autolabelJob.progress ?? 0} className="mt-2" />
+            )}
+          </FieldGroup>
         </div>
       ),
     },
@@ -654,34 +702,62 @@ export function TrainerWizard() {
       isValid: !job || job.state === "complete",
       hidden: !job,
       render: () => (
-        <div className="rounded-xl border border-primary/30 bg-primary/5 p-5 text-sm">
-          <div className="flex items-center gap-3">
-            <Loader2
-              className={
-                job?.state === "complete" || job?.state === "error"
-                  ? "size-5 text-primary"
-                  : "size-5 animate-spin text-primary"
-              }
-            />
-            <div className="flex-1">
-              <p className="font-medium">{job?.status ?? job?.state ?? "—"}</p>
-              <p className="text-xs text-muted-foreground">
-                {job?.step != null && job?.total_steps != null
-                  ? `step ${job.step}/${job.total_steps}`
-                  : `job ${job?.id ?? ""}`}
-              </p>
+        <div className="space-y-3">
+          <div className="rounded-xl border border-primary/30 bg-primary/5 p-5 text-sm">
+            <div className="flex items-center gap-3">
+              <Loader2
+                className={
+                  job?.state === "complete" || job?.state === "error"
+                    ? "size-5 text-primary"
+                    : "size-5 animate-spin text-primary"
+                }
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{job?.status ?? job?.state ?? "—"}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {job?.stage ? `stage: ${job.stage}` : `job ${job?.id ?? ""}`}
+                  {job?.step != null && job?.total_steps != null
+                    ? ` · step ${job.step}/${job.total_steps}`
+                    : ""}
+                </p>
+              </div>
+              <span className="font-mono text-sm tabular-nums">{job?.progress ?? 0}%</span>
             </div>
-            <span className="font-mono text-sm">{job?.progress ?? 0}%</span>
-          </div>
-          <Progress value={job?.progress ?? 0} className="mt-3" />
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={() => navigate("/settings")}
-              className="gap-2"
-            >
-              <Music4 className="size-4" /> Bekijk LoRA in Settings
-            </Button>
+            <Progress value={job?.progress ?? 0} className="mt-3" />
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {job?.stage && (
+                <Badge variant="outline" className="text-[10px]">{job.stage}</Badge>
+              )}
+              {typeof job?.transcribe_total === "number" && job.transcribe_total > 0 && (
+                <Badge variant="muted" className="text-[10px]">
+                  transcribe {job.transcribe_processed ?? 0}/{job.transcribe_total}
+                </Badge>
+              )}
+              {typeof job?.transcribe_succeeded === "number" && job.transcribe_succeeded > 0 && (
+                <Badge variant="muted" className="text-[10px]">
+                  ✓ {job.transcribe_succeeded}
+                </Badge>
+              )}
+              {typeof job?.transcribe_failed === "number" && job.transcribe_failed > 0 && (
+                <Badge variant="destructive" className="text-[10px]">
+                  ✗ {job.transcribe_failed}
+                </Badge>
+              )}
+            </div>
+            {job?.current_file && (
+              <p className="mt-2 truncate font-mono text-[10px] text-muted-foreground">
+                {job.current_file}
+              </p>
+            )}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => navigate("/settings")}
+                className="gap-2"
+              >
+                <Music4 className="size-4" /> Bekijk LoRA in Settings
+              </Button>
+            </div>
           </div>
         </div>
       ),

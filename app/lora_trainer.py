@@ -564,6 +564,8 @@ class AceTrainingManager:
         release_models: Callable[[], None] | None = None,
         adapter_ready: Callable[[Path, float], dict[str, Any]] | None = None,
         audition_runner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        understand_music: Callable[[Path, dict[str, Any]], dict[str, Any]] | None = None,
+        write_label_sidecars: Callable[[Path, dict[str, Any]], dict[str, str]] | None = None,
     ) -> None:
         self.base_dir = base_dir
         self.data_dir = data_dir
@@ -579,6 +581,8 @@ class AceTrainingManager:
         self.release_models = release_models
         self.adapter_ready = adapter_ready
         self.audition_runner = audition_runner
+        self.understand_music = understand_music
+        self.write_label_sidecars = write_label_sidecars
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen[str]] = {}
 
@@ -699,6 +703,25 @@ class AceTrainingManager:
 
     def import_root_for(self, dataset_id: str) -> Path:
         return self.imports_dir / slug(dataset_id, "dataset")
+
+    @staticmethod
+    def _needs_understand(item: dict[str, Any]) -> bool:
+        """True when an audio sample lacks usable lyric/caption sidecars."""
+        if not isinstance(item, dict):
+            return False
+        path = Path(str(item.get("path") or ""))
+        if not path.is_file():
+            return False
+        stem = path.stem
+        lyrics_path = path.with_name(f"{stem}.lyrics.txt")
+        legacy_lyrics_path = path.with_suffix(".txt")
+        json_path = path.with_name(f"{stem}.json")
+        if lyrics_path.is_file() or legacy_lyrics_path.is_file() or json_path.is_file():
+            return False
+        existing_lyrics = str(item.get("lyrics") or "").strip()
+        if existing_lyrics and existing_lyrics.lower() != "[instrumental]":
+            return False
+        return True
 
     def label_entries(
         self,
@@ -1430,6 +1453,79 @@ class AceTrainingManager:
             files = list(scanned.get("files") or [])
             if not files:
                 raise ValueError("No supported audio files found in the imported dataset")
+
+            # ---- Auto-transcribe via ACE-Step understand_music --------------
+            #
+            # Per ACE-Step LoRA Training Tutorial, training samples need
+            # `<stem>.lyrics.txt` + `<stem>.json` sidecars. Without them
+            # `label_entries()` falls back to "[Instrumental]" and the dataset
+            # health check warns "vocal/lyric epoch auditions do not validate
+            # lyric conditioning". Run understand_music on every audio file
+            # that lacks sidecars before labeling, so the official ACE-Step
+            # pipeline gets real lyric conditioning.
+            auto_understand = parse_bool(params.get("auto_understand_music"), True)
+            if auto_understand and self.understand_music and self.write_label_sidecars:
+                missing = [item for item in files if self._needs_understand(item)]
+                if missing:
+                    self._set_job_state(
+                        job.id,
+                        stage="transcribe",
+                        progress=8,
+                    )
+                    self._append_log(
+                        log_path,
+                        f"[transcribe] running understand_music on {len(missing)} file(s) without sidecars\n",
+                    )
+                    request_body = {
+                        "vocal_language": language,
+                        "language": language,
+                        "ace_lm_model": params.get("ace_lm_model") or "auto",
+                        "song_model": params.get("song_model"),
+                        "lm_backend": params.get("lm_backend"),
+                    }
+                    transcribed_ok = 0
+                    transcribed_failed = 0
+                    for idx, item in enumerate(missing):
+                        audio_path = Path(str(item.get("path") or ""))
+                        if not audio_path.is_file():
+                            continue
+                        progress = 8 + int(round(8 * idx / max(len(missing), 1)))
+                        self._set_job_state(
+                            job.id,
+                            stage="transcribe",
+                            progress=progress,
+                            current_file=audio_path.name,
+                            transcribe_processed=idx,
+                            transcribe_total=len(missing),
+                            transcribe_succeeded=transcribed_ok,
+                            transcribe_failed=transcribed_failed,
+                        )
+                        try:
+                            understood = self.understand_music(audio_path, request_body)
+                            self.write_label_sidecars(audio_path, understood)
+                            transcribed_ok += 1
+                            self._append_log(
+                                log_path,
+                                f"[transcribe] {audio_path.name}: {(understood.get('lyrics') or '')[:80]!r}\n",
+                            )
+                        except Exception as transcribe_exc:
+                            transcribed_failed += 1
+                            self._append_log(
+                                log_path,
+                                f"[transcribe] {audio_path.name}: FAILED — {transcribe_exc}\n",
+                            )
+                    self._set_job_state(
+                        job.id,
+                        stage="transcribe",
+                        progress=16,
+                        transcribe_processed=len(missing),
+                        transcribe_succeeded=transcribed_ok,
+                        transcribe_failed=transcribed_failed,
+                        current_file="",
+                    )
+                    # Re-scan so the freshly written sidecars are picked up
+                    scanned = self.scan_dataset(import_root)
+                    files = list(scanned.get("files") or [])
 
             self._set_job_state(job.id, stage="label", progress=16)
             labels = self.label_entries(

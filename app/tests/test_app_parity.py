@@ -571,15 +571,12 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("cover-nofsq", schema["capabilities"]["all_task_modes"])
             self.assertIn("acestep-v15-xl-base", schema["capabilities"]["model_support"]["complete"])
 
-    def test_ai_fill_hydrates_song_intent_builder_chip_groups(self):
-        html = (acejam_app.BASE_DIR / "index.html").read_text(encoding="utf-8")
-
-        self.assertIn("resolveIntentKnownOptionValue", html)
-        self.assertIn('setIntentGroupValues("genre_style", [intent.subgenre, intent.style_tags, payload.tags]);', html)
-        self.assertIn('setIntentGroupValues("speed_rhythm", [intent.energy, intent.rhythm_tags]);', html)
-        self.assertIn('setIntentGroupValues("instruments", [intent.instrument_tags]);', html)
-        self.assertIn('setIntentGroupValues("timbre_texture", [intent.texture_space, intent.production_tags]);', html)
-        self.assertIn('setIntentGroupValues("negative_control", [intent.negative_tags, payload.negative_tags]);', html)
+    # Removed: test_ai_fill_hydrates_song_intent_builder_chip_groups asserted
+    # specific JS strings in app/index.html, which was removed in v0.2 when the
+    # React + shadcn UI replaced the legacy Python SPA. Equivalent hydration
+    # logic now lives in app/web/src/components/wizard/AIPromptStep.tsx and is
+    # validated via the React build's TypeScript checks plus Playwright smoke
+    # tests against /api/prompt-assistant/run.
 
     def test_official_runner_timeout_expands_for_long_mlx_generations(self):
         request_payload = {
@@ -626,12 +623,9 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(songs[0]["id"], "song123")
         self.assertEqual(songs[0]["audio_url"], "/media/songs/song123/take.wav")
 
-    def test_results_show_saved_library_link(self):
-        html = (acejam_app.BASE_DIR / "index.html").read_text(encoding="utf-8")
-
-        self.assertIn("audio.library_url", html)
-        self.assertIn(">Library</a>", html)
-        self.assertIn("if (payload.save_to_library) await loadLibrary();", html)
+    # Removed: test_results_show_saved_library_link asserted strings inside the
+    # legacy Python SPA (app/index.html) that no longer exists post v0.2. The
+    # React Library page (app/web/src/pages/Library.tsx) covers this flow.
 
     def test_generate_advanced_http_uses_worker_thread_and_background_cleanup(self):
         client = TestClient(acejam_app.app)
@@ -1240,54 +1234,12 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("user secrets", acejam_app._redact_official_runner_log_line(prompt_line))
         self.assertIn("redacted", acejam_app._redact_official_runner_log_line(codes_line))
 
-    def test_ui_uses_keyscale_selects_and_auto_bpm_default(self):
-        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
+    # Removed: test_ui_uses_keyscale_selects_and_auto_bpm_default + the Local
+    # AI writer selector test inspected DOM ids inside the legacy Python SPA
+    # (app/index.html) which is gone post v0.2. Equivalent React widgets live
+    # in app/web/src/wizards/CustomWizard.tsx and Settings.tsx.
 
-        self.assertIn('<input id="bpm" type="number" min="30" max="300" value="" placeholder="Auto"', html)
-        self.assertIn('<select id="key-scale"', html)
-        self.assertIn('data-field="key_scale" data-key-scale-select', html)
-        self.assertIn('data-field="keyscale" data-key-scale-select', html)
-        self.assertIn("Pro Quality", html)
-        self.assertIn("lora-health-grid", html)
-        self.assertNotIn('id="key-scale" type="text"', html)
-
-    def test_ui_has_single_local_ai_writer_planner_selector(self):
-        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
-
-        self.assertIn("Local AI Writer/Planner", html)
-        self.assertIn('id="settings-local-ai-slot"', html)
-        self.assertIn('id="planner-provider"', html)
-        self.assertIn('id="ollama-model"', html)
-        self.assertIn('id="embedding-provider"', html)
-        self.assertIn('id="embedding-model"', html)
-        self.assertIn('id="art-model"', html)
-        self.assertIn('id="ollama-test-art-btn"', html)
-        self.assertIn("body:not(.mode-settings) #local-ai-panel", html)
-        self.assertIn("ACE-Step Audio Model", html)
-        self.assertIn('id="album-agent-engine"', html)
-        self.assertIn("AceJAM Direct (recommended)", html)
-        self.assertIn("CrewAI Micro Tasks (experimental)", html)
-        self.assertIn("agent_engine:", html)
-        self.assertIn("planning_engine", html)
-        self.assertIn("local_ai_writer", html)
-        self.assertIn("ace_step_audio", html)
-        self.assertIn("ace_step_optional_lm", html)
-        self.assertNotIn('id="ai-fill-provider"', html)
-        self.assertNotIn('id="ai-fill-ollama"', html)
-        self.assertNotIn('id="album-planner-provider"', html)
-        self.assertNotIn('id="album-ollama"', html)
-        self.assertNotIn('id="album-embed-provider"', html)
-        self.assertNotIn('id="album-embed"', html)
-        self.assertNotIn('id="local-llm-provider"', html)
-        self.assertNotIn("Legacy LM", html)
-        self.assertNotIn("Planner provider", html)
-        self.assertNotIn("Album planner", html)
-
-    def test_ui_global_model_advice_uses_state_mode(self):
-        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
-
-        self.assertIn("selectedActualSongModel(state.mode)", html)
-        self.assertNotIn("selectedActualSongModel(mode) : model", html)
+    # Removed: test_ui_global_model_advice_uses_state_mode (legacy SPA gone).
 
     def test_album_payload_options_normalize_planning_engine(self):
         direct = acejam_app._album_options_from_payload({"concept": "one song"}, song_model="auto")
@@ -1296,43 +1248,14 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(direct["agent_engine"], "acejam_agents")
         self.assertEqual(micro["agent_engine"], "crewai_micro")
 
-    def test_lora_one_click_ui_and_adapterbar_are_exposed(self):
-        html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
-
-        self.assertIn('id="dataset-folder" type="file" webkitdirectory directory multiple', html)
-        self.assertIn('id="dataset-language"', html)
-        self.assertIn('id="lora-one-click-train"', html)
-        self.assertIn('id="generation-lora-select"', html)
-        self.assertIn('id="generation-lora-use"', html)
-        self.assertIn('id="generation-lora-scale"', html)
-        self.assertIn('id="album-lora-select"', html)
-        self.assertIn('id="album-lora-use"', html)
-        self.assertIn('id="album-lora-scale"', html)
-        self.assertIn("loadableGenerationAdapters", html)
-        self.assertIn('renderAdapterSelect("album-lora-select"', html)
-        self.assertIn('id="epoch-audition-enabled"', html)
-        self.assertIn('id="epoch-audition-genre"', html)
-        self.assertIn('id="epoch-audition-caption"', html)
-        self.assertIn('id="epoch-audition-lyrics"', html)
-        self.assertIn('id="epoch-audition-lyrics-preview"', html)
-        self.assertIn('id="epoch-audition-seed"', html)
-        self.assertIn('id="epoch-audition-scale"', html)
-        self.assertIn('id="train-device"', html)
-        self.assertIn('id="train-device-note"', html)
-        self.assertIn("renderTrainerDevicePolicy", html)
-        self.assertIn('device: $("train-device")?.value || "auto"', html)
-        self.assertIn("function selectedTrainerSongModel()", html)
-        self.assertIn('return value === "auto" ? "acestep-v15-xl-sft" : value;', html)
-        self.assertIn("song_model: selectedTrainerSongModel()", html)
-        self.assertIn("epoch_audition_duration: 20", html)
-        self.assertIn("epoch_audition_genre: genre", html)
-        self.assertIn("full-quality 64-step WAV", html)
-        self.assertIn("Standard test lyrics", html)
-        self.assertIn("Test genre", html)
-        self.assertNotIn("Extra test tags", html)
-        self.assertNotIn("Lyric notes", html)
-        self.assertIn("...epochAuditionPayload()", html)
-        self.assertIn("renderLoraAuditions(job)", html)
+    # Removed: test_lora_one_click_ui_and_adapterbar_are_exposed and the
+    # epoch-audition / trainer device / song-model UI assertions all targeted
+    # the legacy Python SPA (app/index.html). Equivalent React widgets live in
+    # app/web/src/wizards/TrainerWizard.tsx (file picker, hyperparameters,
+    # auto-transcribe, genre, training-job progress) and Settings.tsx (LoRA
+    # load/scale/unload). Their behavior is validated via TS type checks +
+    # Playwright smoke tests; the live API contract is covered elsewhere in
+    # this file.
 
     def test_lora_status_and_adapters_expose_display_name_and_trigger(self):
         client = TestClient(acejam_app.app)

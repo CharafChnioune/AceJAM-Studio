@@ -20,17 +20,12 @@ class LauncherScriptTest(unittest.TestCase):
         self.assertIn('url: "{{input.event[1]}}"', start_js)
         self.assertIn('bind_url: "{{input.event[1]}}"', start_js)
 
-    def test_song_intent_builder_is_schema_driven(self):
-        root = Path(__file__).resolve().parents[2]
-        index_html = (root / "app" / "index.html").read_text(encoding="utf-8")
-
-        self.assertNotIn("INTENT_SUBGENRES", index_html)
-        self.assertIn("song_intent_schema", index_html)
-        self.assertIn("renderSongIntentBuilder", index_html)
-        self.assertIn("data-intent-tab", index_html)
-        self.assertIn("genre_modules", index_html)
-        self.assertIn("model_strategies", index_html)
-        self.assertIn("negative_control", index_html)
+    # Removed: test_song_intent_builder_is_schema_driven asserted on the
+    # legacy Python SPA (app/index.html) that was deleted in v0.2 when the
+    # React + shadcn wizard UI took over. Equivalent intent builder now lives
+    # in app/web/src/wizards/CustomWizard.tsx and is covered by TS type
+    # checks plus Playwright smoke tests.
+    pass
 
 
 if __name__ == "__main__":
