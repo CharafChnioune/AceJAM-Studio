@@ -11475,36 +11475,81 @@ def _update_result_item(result_id: str, audio_id: str, field: str, value: Any) -
 
 @app.post("/api/lrc")
 async def api_lrc(request: Request):
-    body = await request.json()
-    result_id = safe_id(str(body.get("result_id") or ""))
-    audio_id = str(body.get("audio_id") or "take-1")
-    meta = _load_result_meta(result_id)
-    extra = _result_extra_cache.get(result_id)
-    if not extra:
-        return JSONResponse({"success": False, "error": "LRC cache expired; regenerate with Auto LRC enabled"}, status_code=400)
-    index = max(0, int(audio_id.split("-")[-1]) - 1) if "-" in audio_id else 0
-    params = meta.get("params", {})
-    seed = int((meta.get("audios", [{}])[index].get("seed") or 42))
-    lrc = _calculate_lrc(_extra_for_index(extra, index), float(params.get("duration") or 60), str(params.get("vocal_language") or "unknown"), int(params.get("inference_steps") or 8), seed)
-    _update_result_item(result_id, audio_id, "lrc", lrc)
-    return JSONResponse(lrc)
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:
+        body = {}
+    result_id_raw = str(body.get("result_id") or "").strip()
+    if not result_id_raw:
+        return JSONResponse(
+            {"success": False, "error": "result_id is required"},
+            status_code=400,
+        )
+    try:
+        result_id = safe_id(result_id_raw)
+        audio_id = str(body.get("audio_id") or "take-1")
+        meta = _load_result_meta(result_id)
+        extra = _result_extra_cache.get(result_id)
+        if not extra:
+            return JSONResponse(
+                {"success": False, "error": "LRC cache expired; regenerate with Auto LRC enabled"},
+                status_code=400,
+            )
+        index = max(0, int(audio_id.split("-")[-1]) - 1) if "-" in audio_id else 0
+        params = meta.get("params", {})
+        seed = int((meta.get("audios", [{}])[index].get("seed") or 42))
+        lrc = _calculate_lrc(
+            _extra_for_index(extra, index),
+            float(params.get("duration") or 60),
+            str(params.get("vocal_language") or "unknown"),
+            int(params.get("inference_steps") or 8),
+            seed,
+        )
+        _update_result_item(result_id, audio_id, "lrc", lrc)
+        return JSONResponse(lrc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/score")
 async def api_score(request: Request):
-    body = await request.json()
-    result_id = safe_id(str(body.get("result_id") or ""))
-    audio_id = str(body.get("audio_id") or "take-1")
-    meta = _load_result_meta(result_id)
-    extra = _result_extra_cache.get(result_id)
-    if not extra:
-        return JSONResponse({"success": False, "error": "Score cache expired; regenerate with Auto Score enabled"}, status_code=400)
-    index = max(0, int(audio_id.split("-")[-1]) - 1) if "-" in audio_id else 0
-    params = meta.get("params", {})
-    seed = int((meta.get("audios", [{}])[index].get("seed") or 42))
-    score = _calculate_score(_extra_for_index(extra, index), str(params.get("vocal_language") or "unknown"), int(params.get("inference_steps") or 8), seed)
-    _update_result_item(result_id, audio_id, "score", score)
-    return JSONResponse(score)
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:
+        body = {}
+    result_id_raw = str(body.get("result_id") or "").strip()
+    if not result_id_raw:
+        return JSONResponse(
+            {"success": False, "error": "result_id is required"},
+            status_code=400,
+        )
+    try:
+        result_id = safe_id(result_id_raw)
+        audio_id = str(body.get("audio_id") or "take-1")
+        meta = _load_result_meta(result_id)
+        extra = _result_extra_cache.get(result_id)
+        if not extra:
+            return JSONResponse(
+                {"success": False, "error": "Score cache expired; regenerate with Auto Score enabled"},
+                status_code=400,
+            )
+        index = max(0, int(audio_id.split("-")[-1]) - 1) if "-" in audio_id else 0
+        params = meta.get("params", {})
+        seed = int((meta.get("audios", [{}])[index].get("seed") or 42))
+        score = _calculate_score(
+            _extra_for_index(extra, index),
+            str(params.get("vocal_language") or "unknown"),
+            int(params.get("inference_steps") or 8),
+            seed,
+        )
+        _update_result_item(result_id, audio_id, "score", score)
+        return JSONResponse(score)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.get("/api/lora/status")

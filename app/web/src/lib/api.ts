@@ -258,12 +258,13 @@ export const getAlbumPlanJob = (jobId: string) =>
   api.get<{
     success: boolean;
     job?: {
-      status: string;
+      status?: string;
+      state?: string;
       progress?: number;
       result?: Record<string, unknown>;
       error?: string;
     };
-  }>(`/api/album/plan/jobs/${encodeURIComponent(jobId)}`);
+  }>(`/api/album/jobs/${encodeURIComponent(jobId)}`);
 
 // ---- Artwork ----
 

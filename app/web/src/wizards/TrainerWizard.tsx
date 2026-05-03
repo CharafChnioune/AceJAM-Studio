@@ -1,8 +1,10 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
-import { Loader2, Music4, Upload, GraduationCap, FolderOpen } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Loader2, Music4, Upload, GraduationCap, X, FileMusic,
+} from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { Button } from "@/components/ui/button";
@@ -11,12 +13,13 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
+import { cn } from "@/lib/utils";
 
 interface TrainerForm {
-  dataset_name: string;
+  dataset_id: string;
   trigger_tag: string;
   default_language: string;
   default_bpm: number;
@@ -27,27 +30,35 @@ interface TrainerForm {
 }
 
 interface DatasetState {
-  dataset_id?: string;
-  files?: number;
-  status?: string;
+  dataset_id: string;
+  files: number;
+  copied_files?: string[];
+  skipped_files?: string[];
+  status: string;
+  health?: Record<string, unknown>;
 }
 
 interface TrainJobState {
-  job_id?: string;
+  id: string;
+  state?: string;
   status?: string;
   progress?: number;
   step?: number;
   total_steps?: number;
 }
 
+const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
+
 export function TrainerWizard() {
   const navigate = useNavigate();
   const [step, setStep] = React.useState(0);
-  const [folderPath, setFolderPath] = React.useState("");
+  const [files, setFiles] = React.useState<File[]>([]);
+  const [drag, setDrag] = React.useState(false);
+  const inputRef = React.useRef<HTMLInputElement>(null);
   const [dataset, setDataset] = React.useState<DatasetState | null>(null);
   const [job, setJob] = React.useState<TrainJobState | null>(null);
   const [form, setForm] = React.useState<TrainerForm>({
-    dataset_name: "",
+    dataset_id: "",
     trigger_tag: "",
     default_language: "en",
     default_bpm: 120,
@@ -57,15 +68,50 @@ export function TrainerWizard() {
     batch_size: 1,
   });
 
-  const importFolder = useMutation({
-    mutationFn: () =>
-      api.post<{ success: boolean; dataset_id?: string; files?: number; error?: string }>(
-        "/api/lora/dataset/import-folder",
-        {
-          path: folderPath,
-          dataset_name: form.dataset_name || undefined,
-        },
-      ),
+  const addJob = useJobsStore((s) => s.addJob);
+  const updateJobStore = useJobsStore((s) => s.updateJob);
+  const removeJob = useJobsStore((s) => s.removeJob);
+
+  // ---- File selection ----------------------------------------------------
+
+  const onPickFiles = (incoming: FileList | File[] | null) => {
+    if (!incoming) return;
+    const arr = Array.from(incoming).filter(
+      (f) => ALLOWED_AUDIO.test(f.name) || /\.(txt|json|csv)$/i.test(f.name),
+    );
+    if (arr.length === 0) {
+      toast.error("Geen audio-bestanden geselecteerd (wav/mp3/flac/ogg/m4a/aac)");
+      return;
+    }
+    // Dedupe by name
+    const merged = [
+      ...files,
+      ...arr.filter((f) => !files.some((p) => p.name === f.name)),
+    ];
+    setFiles(merged);
+  };
+
+  const removeFile = (idx: number) =>
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
+
+  // ---- Dataset import (multipart upload) ---------------------------------
+
+  const importMutation = useMutation({
+    mutationFn: async () => {
+      const fd = new FormData();
+      for (const f of files) fd.append("files", f);
+      if (form.dataset_id) fd.append("dataset_id", form.dataset_id);
+      if (form.trigger_tag) fd.append("trigger_tag", form.trigger_tag);
+      if (form.default_language) fd.append("language", form.default_language);
+      return api.post<{
+        success: boolean;
+        dataset_id?: string;
+        copied_files?: string[];
+        skipped_files?: string[];
+        files?: unknown[];
+        error?: string;
+      }>("/api/lora/dataset/import-folder", fd);
+    },
     onSuccess: (resp) => {
       if (!resp.success || !resp.dataset_id) {
         toast.error(resp.error || "Import mislukt");
@@ -73,100 +119,114 @@ export function TrainerWizard() {
       }
       setDataset({
         dataset_id: resp.dataset_id,
-        files: resp.files,
+        files: resp.copied_files?.length ?? 0,
+        copied_files: resp.copied_files,
+        skipped_files: resp.skipped_files,
         status: "imported",
       });
-      toast.success(`Dataset met ${resp.files ?? "?"} bestanden geïmporteerd.`);
+      setForm((f) => ({ ...f, dataset_id: resp.dataset_id! }));
+      toast.success(
+        `${resp.copied_files?.length ?? 0} audio-bestanden geïmporteerd & gelabeld.`,
+      );
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const autolabel = useMutation({
-    mutationFn: () =>
-      api.post<{ success: boolean; error?: string }>(
-        "/api/lora/dataset/autolabel",
-        {
-          dataset_id: dataset?.dataset_id,
-          default_language: form.default_language,
-          default_bpm: form.default_bpm,
-          default_time_signature: form.default_time_signature,
-          trigger_tag: form.trigger_tag,
-        },
-      ),
-    onSuccess: (resp) => {
-      if (!resp.success) {
-        toast.error(resp.error || "Autolabel mislukt");
-        return;
-      }
-      setDataset((d) => (d ? { ...d, status: "labeled" } : d));
-      toast.success("Autolabel klaar.");
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
+  // ---- Training job ------------------------------------------------------
 
   const startTrain = useMutation({
     mutationFn: () =>
-      api.post<{ success: boolean; job_id?: string; error?: string }>(
-        "/api/lora/one-click-train",
-        {
-          dataset_id: dataset?.dataset_id,
-          trigger_tag: form.trigger_tag,
-          training_defaults: {
-            learning_rate: form.learning_rate,
-            train_epochs: form.train_epochs,
-            batch_size: form.batch_size,
-          },
+      api.post<{
+        success: boolean;
+        job?: { id: string };
+        error?: string;
+      }>("/api/lora/one-click-train", {
+        dataset_id: dataset?.dataset_id,
+        trigger_tag: form.trigger_tag,
+        language: form.default_language,
+        training_defaults: {
+          learning_rate: form.learning_rate,
+          train_epochs: form.train_epochs,
+          batch_size: form.batch_size,
         },
-      ),
+      }),
     onSuccess: (resp) => {
-      if (!resp.success || !resp.job_id) {
+      if (!resp.success || !resp.job?.id) {
         toast.error(resp.error || "Training kon niet starten");
         return;
       }
-      setJob({ job_id: resp.job_id, status: "queued", progress: 0 });
+      const id = resp.job.id;
+      setJob({ id, state: "queued", progress: 0 });
+      addJob({
+        id,
+        kind: "lora",
+        label: form.trigger_tag || dataset?.dataset_id || "LoRA training",
+        progress: 0,
+        status: "queued",
+        startedAt: Date.now(),
+      });
       setStep(steps.length - 1);
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
-  // poll training job
   React.useEffect(() => {
-    if (!job?.job_id) return;
+    if (!job?.id) return;
     let cancelled = false;
-    const poll = async () => {
+    const tick = async () => {
       try {
         const resp = await api.get<{
           success: boolean;
-          job?: { status?: string; progress?: number; step?: number; total_steps?: number; error?: string };
-        }>(`/api/lora/train/${encodeURIComponent(job.job_id!)}`).catch(() => null);
-        if (!resp || cancelled) return;
+          job?: {
+            id?: string;
+            state?: string;
+            status?: string;
+            progress?: number;
+            step?: number;
+            total_steps?: number;
+            error?: string;
+          };
+        }>(`/api/lora/jobs/${encodeURIComponent(job.id)}`);
+        if (cancelled) return;
         const j = resp.job;
         if (!j) return;
-        setJob((prev) => prev && {
-          ...prev,
-          status: j.status,
-          progress: j.progress ?? prev.progress,
+        const state = (j.state ?? "running").toLowerCase();
+        const description = j.status ?? state;
+        const p = typeof j.progress === "number" ? j.progress : 0;
+        setJob({
+          id: job.id,
+          state,
+          status: description,
+          progress: p,
           step: j.step,
           total_steps: j.total_steps,
         });
-        if (j.status === "complete") {
+        updateJobStore(job.id, { progress: p, status: description });
+        if (state === "complete" || state === "succeeded") {
           toast.success("LoRA training klaar.");
+          updateJobStore(job.id, { status: "complete", progress: 100 });
+          setTimeout(() => removeJob(job.id), 4000);
           return;
         }
-        if (j.status === "error") {
-          toast.error(j.error || "Training mislukt");
+        if (state === "error" || state === "failed") {
+          toast.error(j.error ?? "Training mislukt");
+          updateJobStore(job.id, { status: "error" });
+          setTimeout(() => removeJob(job.id), 6000);
           return;
         }
-        setTimeout(poll, 4000);
+        setTimeout(tick, 4000);
       } catch (e) {
-        toast.error(`Poll fout: ${(e as Error).message}`);
+        if (!cancelled) toast.error(`Poll-fout: ${(e as Error).message}`);
       }
     };
-    poll();
+    tick();
     return () => {
       cancelled = true;
     };
-  }, [job?.job_id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+
+  // ---- Steps -------------------------------------------------------------
 
   const steps: WizardStepDef[] = [
     {
@@ -178,77 +238,44 @@ export function TrainerWizard() {
       render: () => (
         <div className="rounded-xl border bg-card/40 p-5 text-sm text-muted-foreground">
           <ul className="list-inside list-disc space-y-1">
-            <li>Wijs een trigger-tag aan (bv. <code className="rounded bg-background/40 px-1">char_aurora</code>) zodat je hem later kunt activeren.</li>
-            <li>Verzamel ~20–100 audio-bestanden in één map met dezelfde stijl/stem.</li>
-            <li>De AI labelt elke clip; je hoeft dat niet handmatig te doen.</li>
+            <li>
+              Wijs een trigger-tag aan (bv.{" "}
+              <code className="rounded bg-background/40 px-1">char_aurora</code>)
+              zodat je hem later kunt activeren.
+            </li>
+            <li>Verzamel ~20–100 audio-bestanden in dezelfde stijl/stem.</li>
+            <li>De server labelt elke clip automatisch — geen handwerk nodig.</li>
             <li>Training duurt ~10–60 min, afhankelijk van GPU en epoch-aantal.</li>
           </ul>
         </div>
       ),
     },
     {
-      key: "dataset",
-      title: "Dataset importeren",
-      description: "Wijs een map aan met audio-bestanden (wav/mp3/flac).",
+      key: "files",
+      title: "Audio-bestanden uploaden",
+      description:
+        "Sleep je audio hierheen of klik om te bladeren. Optioneel: voeg .txt/.json/.csv sidecar-files toe voor handmatige labels.",
       isValid: !!dataset?.dataset_id,
       render: () => (
         <div className="space-y-4">
-          <FieldGroup title="Dataset">
-            <div className="space-y-1.5">
-              <Label>Naam</Label>
-              <Input
-                value={form.dataset_name}
-                onChange={(e) => setForm({ ...form, dataset_name: e.target.value })}
-                placeholder="bv. aurora-songbook"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="flex items-center gap-1.5">
-                <FolderOpen className="size-3.5" /> Pad naar de audio-map
-              </Label>
-              <Input
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                placeholder="/Users/.../mijn-tracks"
-              />
-            </div>
-            <Button
-              onClick={() => importFolder.mutate()}
-              disabled={!folderPath || importFolder.isPending}
-              className="w-full gap-2"
-            >
-              <Upload className="size-4" />
-              {importFolder.isPending ? "Importeren…" : "Importeer map"}
-            </Button>
-            {dataset?.dataset_id && (
-              <motion.div
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex items-center gap-2 text-xs text-muted-foreground"
-              >
-                <Badge variant="muted">id: {dataset.dataset_id.slice(0, 12)}…</Badge>
-                <Badge variant="muted">{dataset.files ?? "?"} bestanden</Badge>
-                <Badge variant="muted">status: {dataset.status}</Badge>
-              </motion.div>
-            )}
-          </FieldGroup>
-        </div>
-      ),
-    },
-    {
-      key: "label",
-      title: "Auto-label",
-      description: "AI verzint per audio-bestand een caption, tags, lyrics-fragment en metadata.",
-      isValid: dataset?.status === "labeled",
-      render: () => (
-        <div className="space-y-4">
-          <FieldGroup title="Defaults">
-            <div className="grid gap-3 sm:grid-cols-3">
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.txt,.json,.csv,audio/*"
+            className="hidden"
+            onChange={(e) => onPickFiles(e.target.files)}
+          />
+
+          <FieldGroup>
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>Trigger tag</Label>
                 <Input
                   value={form.trigger_tag}
-                  onChange={(e) => setForm({ ...form, trigger_tag: e.target.value })}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, trigger_tag: e.target.value }))
+                  }
                   placeholder="char_aurora"
                 />
               </div>
@@ -256,48 +283,140 @@ export function TrainerWizard() {
                 <Label>Default taal</Label>
                 <Input
                   value={form.default_language}
-                  onChange={(e) => setForm({ ...form, default_language: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Default bpm</Label>
-                <Input
-                  type="number"
-                  value={form.default_bpm}
-                  onChange={(e) => setForm({ ...form, default_bpm: Number(e.target.value) })}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, default_language: e.target.value }))
+                  }
                 />
               </div>
             </div>
-            <Button
-              onClick={() => autolabel.mutate()}
-              disabled={!dataset?.dataset_id || !form.trigger_tag || autolabel.isPending}
-              className="w-full gap-2"
-            >
-              {autolabel.isPending ? <Loader2 className="size-4 animate-spin" /> : <GraduationCap className="size-4" />}
-              {autolabel.isPending ? "Labelen…" : "Start auto-label"}
-            </Button>
           </FieldGroup>
+
+          <motion.div
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDrag(true);
+            }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDrag(false);
+              onPickFiles(e.dataTransfer.files);
+            }}
+            onClick={() => inputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            className={cn(
+              "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed bg-card/30 p-10 text-center transition-colors hover:border-primary/40 hover:bg-card/50",
+              drag && "border-primary bg-primary/5",
+            )}
+          >
+            <div className="flex size-12 items-center justify-center rounded-full bg-primary/15 text-primary">
+              <Upload className="size-5" />
+            </div>
+            <div className="space-y-1">
+              <p className="font-medium">Sleep audio hierheen</p>
+              <p className="text-xs text-muted-foreground">
+                of klik om te bladeren — wav, mp3, flac, ogg, m4a, aac
+              </p>
+            </div>
+          </motion.div>
+
+          {files.length > 0 && (
+            <FieldGroup
+              title={`${files.length} bestand${files.length === 1 ? "" : "en"} geselecteerd`}
+            >
+              <div className="max-h-48 space-y-1 overflow-y-auto pr-1">
+                <AnimatePresence initial={false}>
+                  {files.map((f, idx) => (
+                    <motion.div
+                      key={f.name + idx}
+                      initial={{ opacity: 0, x: -4 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -4 }}
+                      className="flex items-center gap-2 rounded-md border bg-background/40 px-2 py-1.5 text-xs"
+                    >
+                      <FileMusic className="size-3.5 shrink-0 text-primary" />
+                      <span className="flex-1 truncate font-mono">{f.name}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {(f.size / 1024 / 1024).toFixed(1)} MB
+                      </span>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFile(idx);
+                        }}
+                      >
+                        <X className="size-3" />
+                      </Button>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+              <Button
+                onClick={() => importMutation.mutate()}
+                disabled={
+                  files.length === 0 || !form.trigger_tag || importMutation.isPending
+                }
+                className="w-full gap-2"
+              >
+                {importMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                {importMutation.isPending
+                  ? "Uploaden + auto-labelen…"
+                  : "Importeer + label dataset"}
+              </Button>
+            </FieldGroup>
+          )}
+
+          {dataset?.dataset_id && (
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+            >
+              <Badge variant="muted">id: {dataset.dataset_id.slice(0, 14)}…</Badge>
+              <Badge variant="muted">{dataset.files} files</Badge>
+              {dataset.skipped_files && dataset.skipped_files.length > 0 && (
+                <Badge variant="muted">{dataset.skipped_files.length} skipped</Badge>
+              )}
+              <Badge>status: {dataset.status}</Badge>
+            </motion.div>
+          )}
         </div>
       ),
     },
     {
       key: "train",
       title: "Training-instellingen",
-      isValid: true,
+      isValid: !!dataset?.dataset_id,
       render: () => (
         <FieldGroup title="Hyperparameters">
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-3">
               <div className="flex items-baseline justify-between">
                 <Label>Learning rate</Label>
-                <span className="font-mono text-xs">{form.learning_rate.toExponential(1)}</span>
+                <span className="font-mono text-xs">
+                  {form.learning_rate.toExponential(1)}
+                </span>
               </div>
               <Slider
                 value={[Math.log10(form.learning_rate * 1e6)]}
                 min={0}
                 max={4}
                 step={0.5}
-                onValueChange={(v) => setForm({ ...form, learning_rate: Math.pow(10, (v[0] ?? 2) - 6) })}
+                onValueChange={(v) =>
+                  setForm((f) => ({
+                    ...f,
+                    learning_rate: Math.pow(10, (v[0] ?? 2) - 6),
+                  }))
+                }
               />
             </div>
             <div className="space-y-3">
@@ -310,7 +429,9 @@ export function TrainerWizard() {
                 min={1}
                 max={50}
                 step={1}
-                onValueChange={(v) => setForm({ ...form, train_epochs: v[0] ?? 10 })}
+                onValueChange={(v) =>
+                  setForm((f) => ({ ...f, train_epochs: v[0] ?? 10 }))
+                }
               />
             </div>
             <div className="space-y-3">
@@ -323,7 +444,9 @@ export function TrainerWizard() {
                 min={1}
                 max={8}
                 step={1}
-                onValueChange={(v) => setForm({ ...form, batch_size: v[0] ?? 1 })}
+                onValueChange={(v) =>
+                  setForm((f) => ({ ...f, batch_size: v[0] ?? 1 }))
+                }
               />
             </div>
           </div>
@@ -334,31 +457,35 @@ export function TrainerWizard() {
       key: "training",
       title: "Training-job",
       description: "Hou deze tab open totdat de status 'complete' is.",
-      isValid: !job || job.status === "complete",
+      isValid: !job || job.state === "complete",
       hidden: !job,
       render: () => (
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-5 text-sm">
           <div className="flex items-center gap-3">
             <Loader2
               className={
-                job?.status === "running"
-                  ? "size-5 animate-spin text-primary"
-                  : "size-5 text-primary"
+                job?.state === "complete" || job?.state === "error"
+                  ? "size-5 text-primary"
+                  : "size-5 animate-spin text-primary"
               }
             />
             <div className="flex-1">
-              <p className="font-medium">{job?.status ?? "—"}</p>
+              <p className="font-medium">{job?.status ?? job?.state ?? "—"}</p>
               <p className="text-xs text-muted-foreground">
                 {job?.step != null && job?.total_steps != null
                   ? `step ${job.step}/${job.total_steps}`
-                  : "—"}
+                  : `job ${job?.id ?? ""}`}
               </p>
             </div>
             <span className="font-mono text-sm">{job?.progress ?? 0}%</span>
           </div>
           <Progress value={job?.progress ?? 0} className="mt-3" />
-          <div className="mt-4">
-            <Button variant="outline" onClick={() => navigate("/settings")} className="gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={() => navigate("/settings")}
+              className="gap-2"
+            >
               <Music4 className="size-4" /> Bekijk LoRA in Settings
             </Button>
           </div>
@@ -375,9 +502,16 @@ export function TrainerWizard() {
       step={step}
       onStepChange={setStep}
       onFinish={() => startTrain.mutate()}
-      isFinishing={startTrain.isPending || (job ? job.status !== "complete" && job.status !== "error" : false)}
+      isFinishing={
+        startTrain.isPending ||
+        (job ? job.state !== "complete" && job.state !== "error" : false)
+      }
       finishLabel={
-        job ? "Training loopt…" : startTrain.isPending ? "Job start…" : "Start training"
+        job
+          ? "Training loopt…"
+          : startTrain.isPending
+            ? "Job start…"
+            : "Start training"
       }
     />
   );

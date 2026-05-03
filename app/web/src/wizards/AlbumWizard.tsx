@@ -213,11 +213,13 @@ export function AlbumWizard() {
         if (cancelled) return;
         const j = resp.job;
         if (!j) return;
-        setJobStatus(j.status || "running");
+        const state = (j.state || "running").toLowerCase();
+        const description = j.status || state;
+        setJobStatus(description);
         const p = typeof j.progress === "number" ? j.progress : 0;
         setJobProgress(p);
-        updateJob(jobId, { progress: p, status: j.status });
-        if (j.status === "complete" && j.result) {
+        updateJob(jobId, { progress: p, status: description });
+        if (state === "complete" && j.result) {
           setResult(MODE, j.result);
           toast.success("Album klaar.");
           updateJob(jobId, { status: "complete", progress: 100 });
@@ -225,7 +227,7 @@ export function AlbumWizard() {
           setJobId(null);
           return;
         }
-        if (j.status === "error") {
+        if (state === "error" || state === "failed") {
           toast.error(j.error || "Album-job mislukt");
           updateJob(jobId, { status: "error" });
           setTimeout(() => removeJob(jobId), 6000);
