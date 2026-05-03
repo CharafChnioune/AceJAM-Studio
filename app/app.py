@@ -98,6 +98,19 @@ ACEJAM_PRINT_ACE_PAYLOAD = _env_flag(
 )
 ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS = max(0, _env_int("ACEJAM_PRINT_ACE_PAYLOAD_MAX_CHARS", 0))
 ACEJAM_REDACT_OFFICIAL_LOG_TEXT = _env_flag("ACEJAM_REDACT_OFFICIAL_LOG_TEXT", default=False)
+ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS = max(3600, _env_int("ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS", 10800))
+ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS = max(
+    ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS,
+    _env_int("ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS", 21600),
+)
+ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS = max(
+    ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS,
+    _env_int("ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS", 10800),
+)
+ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS = max(
+    ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS,
+    _env_int("ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS", 21600),
+)
 
 _ALBUM_QUALITY_REQUIRED_EXPORTS = (
     "build_lyrical_craft_contract",
@@ -6932,7 +6945,23 @@ def _redact_official_runner_stream_line(line: str, state: dict[str, Any]) -> str
     return _redact_official_runner_log_line(line)
 
 
-def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path, timeout: int = 3600) -> dict[str, Any]:
+def _official_runner_timeout_seconds(request_payload: dict[str, Any], requested_timeout: int | None = None) -> int:
+    floor = max(60, int(requested_timeout or ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS))
+    params = request_payload.get("params") if isinstance(request_payload.get("params"), dict) else {}
+    config = request_payload.get("config") if isinstance(request_payload.get("config"), dict) else {}
+    steps = clamp_int(params.get("inference_steps") or params.get("infer_steps"), 32, 1, 200)
+    duration = clamp_float(params.get("duration") or params.get("audio_duration"), 180.0, DURATION_MIN, DURATION_MAX)
+    batch_size = clamp_int(config.get("batch_size"), 1, 1, 16)
+    backend = str(request_payload.get("lm_backend") or "").strip().lower()
+    is_mlx = backend == "mlx" or (_IS_APPLE_SILICON and backend in {"", "auto"})
+
+    seconds_per_step_per_minute = 18.0 if is_mlx else 8.0
+    batch_factor = 1.0 + max(0, batch_size - 1) * (0.35 if is_mlx else 0.2)
+    estimated = int(900 + steps * max(duration, 30.0) / 60.0 * seconds_per_step_per_minute * batch_factor)
+    return min(max(floor, estimated), ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS)
+
+
+def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path, timeout: int | None = None) -> dict[str, Any]:
     if not OFFICIAL_ACE_STEP_DIR.exists():
         raise RuntimeError("Official ACE-Step runner requires app/vendor/ACE-Step-1.5. Run Install/Update first.")
     if not OFFICIAL_RUNNER_SCRIPT.exists():
@@ -6953,7 +6982,12 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
 
     stdout_path = work_dir / "official_stdout.log"
     stderr_path = work_dir / "official_stderr.log"
-    print(f"[official_runner] starting action={request_payload.get('action') or 'generate'} work_dir={work_dir}", flush=True)
+    runner_timeout = _official_runner_timeout_seconds(request_payload, timeout)
+    print(
+        f"[official_runner] starting action={request_payload.get('action') or 'generate'} "
+        f"timeout={runner_timeout}s work_dir={work_dir}",
+        flush=True,
+    )
 
     def stream_pipe(pipe: Any, log_path: Path) -> None:
         redaction_state: dict[str, Any] = {}
@@ -6988,11 +7022,11 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
     for reader in readers:
         reader.start()
     try:
-        returncode = process.wait(timeout=timeout)
+        returncode = process.wait(timeout=runner_timeout)
     except subprocess.TimeoutExpired as exc:
         process.kill()
         returncode = process.wait(timeout=30)
-        raise RuntimeError(f"Official ACE-Step runner timed out after {timeout}s") from exc
+        raise RuntimeError(f"Official ACE-Step runner timed out after {runner_timeout}s") from exc
     finally:
         for pipe in [process.stdout, process.stderr]:
             if pipe:
@@ -8261,7 +8295,7 @@ def ollama_models() -> str:
     return json.dumps(_ollama_model_catalog())
 
 
-@app.api(name="generate_album", concurrency_limit=1, time_limit=3600)
+@app.api(name="generate_album", concurrency_limit=1, time_limit=ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS)
 def generate_album(
     concept: str,
     num_tracks: int = 5,
@@ -9180,7 +9214,7 @@ def generate_album(
         return json.dumps({"tracks": [], "logs": logs, "success": False, "error": str(exc), "album_debug_dir": debug_dir})
 
 
-@app.api(name="generate_advanced", concurrency_limit=1, time_limit=3600)
+@app.api(name="generate_advanced", concurrency_limit=1, time_limit=ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS)
 def generate_advanced(request_json: str) -> str:
     payload: dict[str, Any] = {}
     try:

@@ -509,6 +509,19 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('setIntentGroupValues("timbre_texture", [intent.texture_space, intent.production_tags]);', html)
         self.assertIn('setIntentGroupValues("negative_control", [intent.negative_tags, payload.negative_tags]);', html)
 
+    def test_official_runner_timeout_expands_for_long_mlx_generations(self):
+        request_payload = {
+            "lm_backend": "mlx",
+            "params": {"duration": 365, "inference_steps": 64},
+            "config": {"batch_size": 3},
+        }
+
+        timeout = acejam_app._official_runner_timeout_seconds(request_payload, requested_timeout=3600)
+
+        self.assertGreater(timeout, 7200)
+        self.assertLessEqual(timeout, acejam_app.ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS)
+        self.assertGreaterEqual(acejam_app.ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS, acejam_app.ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS)
+
     def test_official_api_key_accepts_body_token(self):
         client = TestClient(acejam_app.app)
         previous = os.environ.get("ACESTEP_API_KEY")
