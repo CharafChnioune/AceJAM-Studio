@@ -994,6 +994,7 @@ class AppParityTest(unittest.TestCase):
 
         self.assertEqual(params["lm_repetition_penalty"], 1.4)
         self.assertNotIn("repetition_penalty", request["params"])
+        self.assertIs(request["acejam_skip_lora_base_backup"], True)
 
     def test_official_generation_payload_fits_overlong_lyrics_before_runner(self):
         long_lyrics = "<think>draft</think>\nI will now write it.\n[Verse]\n" + "\n".join(
@@ -1198,6 +1199,7 @@ class AppParityTest(unittest.TestCase):
         class StubHandler:
             def __init__(self):
                 self.calls = []
+                self._base_decoder = None
 
             def add_lora(self, path, adapter_name=None):
                 self.calls.append(("add_lora", path, adapter_name))
@@ -1224,6 +1226,7 @@ class AppParityTest(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["adapter_name"], "epoch_1_loss_0_9130")
+        self.assertEqual(handler._base_decoder, {})
         self.assertEqual(handler.calls[0], ("add_lora", "/tmp/checkpoints/epoch_1_loss_0.9130", "epoch_1_loss_0_9130"))
 
     def test_lora_resume_endpoint_delegates_to_training_manager(self):

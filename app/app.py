@@ -5868,6 +5868,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "lora_adapter_name": params.get("lora_adapter_name", ""),
         "lora_scale": params.get("lora_scale", 1.0),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
+        "acejam_skip_lora_base_backup": True,
         "device": params["device"],
         "dtype": params["dtype"],
         "use_flash_attention": params["use_flash_attention"],

@@ -338,6 +338,12 @@ def _apply_lora_request(dit_handler: Any, request: dict[str, Any]) -> dict[str, 
         raise RuntimeError("Official runner received use_lora=true without lora_adapter_path")
     scale = float(request.get("lora_scale") or 1.0)
     adapter_name = safe_peft_adapter_name(request.get("lora_adapter_name") or Path(adapter_path).name)
+    if bool(request.get("acejam_skip_lora_base_backup", True)) and getattr(dit_handler, "_base_decoder", None) is None:
+        # The official runner is a one-shot subprocess. Avoid cloning the full
+        # XL decoder to CPU before loading an audition LoRA; the process exits
+        # after generation, so an unload restore is unnecessary here.
+        setattr(dit_handler, "_base_decoder", {})
+        print("[official_runner] skipping LoRA base decoder CPU backup for one-shot runner")
     add_lora = getattr(dit_handler, "add_lora", None)
     if callable(add_lora):
         status = add_lora(adapter_path, adapter_name=adapter_name)
