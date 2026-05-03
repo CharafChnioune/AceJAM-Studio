@@ -12604,6 +12604,26 @@ async def api_lora_autolabel_create_job(request: Request):
     dataset_id = str(body.get("dataset_id") or "").strip()
     if not dataset_id:
         return JSONResponse({"success": False, "error": "dataset_id is required"}, status_code=400)
+    # Dedup: if an active job already exists for this dataset, hand back
+    # that job's id instead of spawning a parallel one. Without this guard
+    # a stray re-render or double click in the wizard creates duplicate
+    # workers that fight over `handler_lock` and the official-runner
+    # subprocess, doubling the work for zero benefit.
+    with _lora_autolabel_jobs_lock:
+        for existing_id, existing in _lora_autolabel_jobs.items():
+            if str(existing.get("dataset_id") or "") != dataset_id:
+                continue
+            existing_state = str(existing.get("state") or "").lower()
+            if existing_state in {"queued", "running"}:
+                snapshot = _jsonable(dict(existing))
+                return JSONResponse(
+                    {
+                        "success": True,
+                        "job_id": existing_id,
+                        "job": snapshot,
+                        "reused": True,
+                    }
+                )
     job_id = uuid.uuid4().hex[:12]
     snapshot = _set_lora_autolabel_job(job_id, dataset_id=dataset_id, state="queued", status="Queued auto-label job")
     threading.Thread(target=_lora_autolabel_worker, args=(job_id, dict(body)), daemon=True).start()
