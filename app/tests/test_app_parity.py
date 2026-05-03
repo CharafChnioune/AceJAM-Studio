@@ -1162,6 +1162,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("song_model: selectedTrainerSongModel()", html)
         self.assertIn("epoch_audition_duration: 20", html)
         self.assertIn("full-quality 64-step WAV", html)
+        self.assertIn("genre-default lyrics", html)
+        self.assertIn("trigger tag is added automatically", html)
         self.assertIn("...epochAuditionPayload()", html)
         self.assertIn("renderLoraAuditions(job)", html)
 

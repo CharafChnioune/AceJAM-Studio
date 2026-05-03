@@ -209,7 +209,14 @@ from acestep.constants import (
     VALID_TIME_SIGNATURES,
 )
 from acestep.handler import AceStepHandler
-from lora_trainer import AceTrainingManager, fit_epoch_audition_lyrics, model_from_variant, model_to_variant, normalize_training_song_model
+from lora_trainer import (
+    EPOCH_AUDITION_CLARITY_CAPTION,
+    AceTrainingManager,
+    fit_epoch_audition_lyrics,
+    model_from_variant,
+    model_to_variant,
+    normalize_training_song_model,
+)
 from local_composer import LocalComposer
 from album_quality_gate import (
     ALBUM_PAYLOAD_GATE_VERSION,
@@ -2218,11 +2225,11 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     inference_steps = max(1, min(64, inference_steps))
     song_model = _lora_epoch_audition_song_model(request)
     raw_caption = str(request.get("caption") or trigger).strip()
-    clarity_caption = (
-        "20-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
-        "sparse arrangement, steady rhythm, no noisy vocal artifacts"
-    )
-    caption = f"{raw_caption}, {clarity_caption}" if raw_caption else clarity_caption
+    clarity_caption = EPOCH_AUDITION_CLARITY_CAPTION
+    if "clear intelligible vocal" in raw_caption.lower():
+        caption = raw_caption
+    else:
+        caption = f"{raw_caption}, {clarity_caption}" if raw_caption else clarity_caption
     raw_payload = {
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",

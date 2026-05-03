@@ -32,6 +32,10 @@ EPOCH_AUDITION_CHARS_PER_SECOND = 8
 EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 2
 EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 5.0
 EPOCH_AUDITION_SECTION_STYLE = "clear dry lead vocal, intelligible delivery"
+EPOCH_AUDITION_CLARITY_CAPTION = (
+    "20-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
+    "sparse arrangement, steady rhythm, no noisy vocal artifacts"
+)
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
@@ -43,6 +47,52 @@ VARIANT_TO_SONG_MODEL = {
     "xl_sft": "acestep-v15-xl-sft",
 }
 SONG_MODEL_TO_VARIANT = {model: variant for variant, model in VARIANT_TO_SONG_MODEL.items()}
+
+EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
+    {
+        "key": "rap",
+        "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster"),
+        "caption_tags": "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
+        "lyrics": "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+    },
+    {
+        "key": "pop",
+        "terms": ("pop", "radio", "dance pop", "synth pop", "electropop"),
+        "caption_tags": "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
+        "lyrics": "[Verse]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+    },
+    {
+        "key": "rnb",
+        "terms": ("r&b", "rnb", "soul", "neo soul", "smooth", "slow jam"),
+        "caption_tags": "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
+        "lyrics": "[Verse]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+    },
+    {
+        "key": "rock",
+        "terms": ("rock", "guitar", "punk", "metal", "alt rock", "indie rock"),
+        "caption_tags": "driving rock drums, electric guitars, clear lead vocal, strong chorus",
+        "lyrics": "[Verse]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+    },
+    {
+        "key": "edm",
+        "terms": ("edm", "house", "techno", "trance", "club", "dance", "electronic"),
+        "caption_tags": "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
+        "lyrics": "[Verse]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+    },
+    {
+        "key": "cinematic",
+        "terms": ("cinematic", "orchestral", "score", "trailer", "choir", "epic"),
+        "caption_tags": "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
+        "lyrics": "[Verse]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+    },
+    {
+        "key": "country",
+        "terms": ("country", "folk", "americana", "acoustic", "banjo"),
+        "caption_tags": "warm acoustic guitars, steady country drums, clear heartfelt vocal",
+        "lyrics": "[Verse]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+    },
+)
+EPOCH_AUDITION_DEFAULT_PROFILE_KEY = "pop"
 
 
 def utc_now() -> str:
@@ -148,6 +198,69 @@ def _format_epoch_audition_time(seconds: float | int) -> str:
 def _epoch_audition_timed_section(section: str, start: float, end: float) -> str:
     section_name = str(section or "[Verse]").strip().strip("[]") or "Verse"
     return f"[{section_name} - seconds {int(round(start))}-{int(round(end))}, {EPOCH_AUDITION_SECTION_STYLE}]"
+
+
+def _epoch_audition_search_text(*values: str | None) -> str:
+    text = " ".join(str(value or "") for value in values)
+    text = text.replace("-", " ")
+    return re.sub(r"[^a-z0-9&]+", " ", text.lower()).strip()
+
+
+def epoch_audition_genre_profile(caption: str | None = "", lyrics_hint: str | None = "") -> dict[str, Any]:
+    search_text = _epoch_audition_search_text(caption, lyrics_hint)
+    for profile in EPOCH_AUDITION_GENRE_PROFILES:
+        for term in profile.get("terms", ()):
+            if _epoch_audition_search_text(str(term)) in search_text:
+                return dict(profile)
+    for profile in EPOCH_AUDITION_GENRE_PROFILES:
+        if profile.get("key") == EPOCH_AUDITION_DEFAULT_PROFILE_KEY:
+            return dict(profile)
+    return dict(EPOCH_AUDITION_GENRE_PROFILES[0])
+
+
+def _append_caption_parts(parts: list[str], value: str | None, seen: set[str]) -> None:
+    for part in str(value or "").split(","):
+        cleaned = re.sub(r"\s+", " ", part).strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(cleaned)
+
+
+def build_epoch_audition_caption(
+    caption: str | None = "",
+    *,
+    trigger_tag: str | None = "",
+    genre_profile: dict[str, Any] | None = None,
+) -> str:
+    profile = dict(genre_profile or epoch_audition_genre_profile(caption))
+    parts: list[str] = []
+    seen: set[str] = set()
+    _append_caption_parts(parts, trigger_tag, seen)
+    _append_caption_parts(parts, caption, seen)
+    _append_caption_parts(parts, str(profile.get("caption_tags") or ""), seen)
+    _append_caption_parts(parts, EPOCH_AUDITION_CLARITY_CAPTION, seen)
+    return ", ".join(parts)
+
+
+def default_epoch_audition_lyrics(
+    caption: str | None = "",
+    *,
+    trigger_tag: str | None = "",
+    lyrics_hint: str | None = "",
+) -> tuple[str, dict[str, Any]]:
+    profile = epoch_audition_genre_profile(caption, lyrics_hint)
+    lyrics = str(profile.get("lyrics") or "").strip()
+    meta = {
+        "lyrics_source": "genre_default",
+        "genre_profile": str(profile.get("key") or EPOCH_AUDITION_DEFAULT_PROFILE_KEY),
+        "trigger_in_lyrics": bool(trigger_tag and re.search(re.escape(str(trigger_tag).strip()), lyrics, flags=re.IGNORECASE)),
+        "user_lyrics_chars": len(str(lyrics_hint or "").strip()),
+    }
+    return lyrics, meta
 
 
 def _add_epoch_audition_timing(blocks: list[dict[str, Any]], *, duration: int) -> tuple[str, list[dict[str, Any]]]:
@@ -632,18 +745,23 @@ class AceTrainingManager:
         trigger_tag: str = "",
         training_seed: int = 42,
     ) -> dict[str, Any]:
-        caption = str(payload.get("epoch_audition_caption") or "").strip()
-        lyrics = str(payload.get("epoch_audition_lyrics") or "").strip()
-        enabled = parse_bool(payload.get("epoch_audition_enabled"), False) or bool(caption or lyrics)
-        if enabled and not lyrics:
-            raise ValueError("Epoch audition lyrics are required when epoch auditions are enabled")
-        if enabled and not caption:
-            caption = f"{trigger_tag}, LoRA epoch audition" if trigger_tag else "LoRA epoch audition"
+        user_caption = str(payload.get("epoch_audition_caption") or "").strip()
+        user_lyrics = str(payload.get("epoch_audition_lyrics") or "").strip()
+        enabled = parse_bool(payload.get("epoch_audition_enabled"), False) or bool(user_caption or user_lyrics)
+        profile = epoch_audition_genre_profile(user_caption, user_lyrics)
+        lyrics, lyrics_meta = default_epoch_audition_lyrics(user_caption, trigger_tag=trigger_tag, lyrics_hint=user_lyrics)
+        if not enabled:
+            lyrics = ""
+        caption = build_epoch_audition_caption(user_caption, trigger_tag=trigger_tag, genre_profile=profile) if enabled else ""
         vocal_language = str(payload.get("vocal_language") or payload.get("language") or "unknown").strip() or "unknown"
         return {
             "enabled": enabled,
             "caption": caption,
             "lyrics": lyrics,
+            "user_caption": user_caption,
+            "user_lyrics": user_lyrics,
+            "lyrics_source": lyrics_meta["lyrics_source"],
+            "genre_profile": lyrics_meta["genre_profile"],
             "duration": EPOCH_AUDITION_DURATION_SECONDS,
             "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),
             "scale": parse_float(payload.get("epoch_audition_scale"), parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
@@ -1832,6 +1950,8 @@ class AceTrainingManager:
             "source_lyrics_chars": lyrics_fit["source_lyrics_chars"],
             "runtime_lyrics_chars": lyrics_fit["runtime_lyrics_chars"],
             "lyrics_fit_action": lyrics_fit["action"],
+            "lyrics_source": str(config.get("lyrics_source") or "custom"),
+            "genre_profile": str(config.get("genre_profile") or ""),
             "vocal_language": vocal_language,
         }
         self._record_epoch_audition(job_id, base_record)
@@ -1856,6 +1976,9 @@ class AceTrainingManager:
             "vocal_language": vocal_language,
             "language": vocal_language,
             "lyrics_fit": lyrics_fit,
+            "lyrics_source": str(config.get("lyrics_source") or "custom"),
+            "genre_profile": str(config.get("genre_profile") or ""),
+            "user_lyrics": str(config.get("user_lyrics") or ""),
             "trigger_tag": str(params.get("trigger_tag") or ""),
             "song_model": song_model,
             "model_variant": variant,

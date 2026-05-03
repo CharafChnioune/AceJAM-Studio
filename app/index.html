@@ -2639,16 +2639,16 @@
         </div>
         <div class="row" style="margin-top:10px;">
           <label class="check"><input type="checkbox" id="epoch-audition-enabled" /> Epoch audition</label>
-          <span class="tiny">20 seconds, full-quality 64-step WAV, saved on the LoRA job only.</span>
+          <span class="tiny">20 seconds, full-quality 64-step WAV with genre-default lyrics. Your trigger tag is added to the caption only.</span>
         </div>
         <div class="grid-2" style="margin-top:10px;">
           <div>
-            <label for="epoch-audition-caption">Audition caption/tags</label>
-            <textarea id="epoch-audition-caption" placeholder="genre, instruments, mood, trigger tag"></textarea>
+            <label for="epoch-audition-caption">Audition genre/tags</label>
+            <textarea id="epoch-audition-caption" placeholder="genre, instruments, mood; trigger tag is added automatically"></textarea>
           </div>
           <div>
-            <label for="epoch-audition-lyrics">Audition lyrics</label>
-            <textarea id="epoch-audition-lyrics" placeholder="[Verse]&#10;...&#10;&#10;[Chorus]&#10;..."></textarea>
+            <label for="epoch-audition-lyrics">Lyric notes</label>
+            <textarea id="epoch-audition-lyrics" placeholder="Optional genre hint only. AceJAM uses clean standard test lyrics."></textarea>
           </div>
         </div>
         <div class="grid-3" style="margin-top:10px;">

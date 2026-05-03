@@ -7,7 +7,9 @@ from unittest.mock import patch
 from lora_trainer import (
     AceTrainingManager,
     TrainingJob,
+    build_epoch_audition_caption,
     default_training_device,
+    default_epoch_audition_lyrics,
     fit_epoch_audition_lyrics,
     model_from_variant,
     model_to_variant,
@@ -375,8 +377,8 @@ class LoraTrainerTest(unittest.TestCase):
                     "language": "en",
                     "train_epochs": 2,
                     "epoch_audition_enabled": True,
-                    "epoch_audition_caption": "charaf hook, bright pop",
-                    "epoch_audition_lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "epoch_audition_caption": "bright pop",
+                    "epoch_audition_lyrics": "[Verse]\nUser draft line should stay out of the generated test",
                     "epoch_audition_seed": 123,
                     "epoch_audition_scale": 0.75,
                 }
@@ -385,11 +387,58 @@ class LoraTrainerTest(unittest.TestCase):
             audition = job["params"]["epoch_audition"]
             self.assertTrue(audition["enabled"])
             self.assertEqual(audition["duration"], 20)
-            self.assertEqual(audition["caption"], "charaf hook, bright pop")
-            self.assertEqual(audition["lyrics"], "[Verse]\nLine one\n\n[Chorus]\nHook line")
+            self.assertIn("charaf hook", audition["caption"])
+            self.assertIn("bright pop", audition["caption"])
+            self.assertIn("clear intelligible vocal", audition["caption"])
+            self.assertEqual(audition["lyrics_source"], "genre_default")
+            self.assertEqual(audition["genre_profile"], "pop")
+            self.assertIn("City lights", audition["lyrics"])
+            self.assertNotIn("charaf hook", audition["lyrics"])
+            self.assertNotIn("User draft line", audition["lyrics"])
+            self.assertEqual(audition["user_lyrics"], "[Verse]\nUser draft line should stay out of the generated test")
             self.assertEqual(audition["seed"], 123)
             self.assertEqual(audition["scale"], 0.75)
             self.assertEqual(audition["vocal_language"], "en")
+
+    def test_epoch_audition_defaults_do_not_require_user_lyrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tensor_dir = root / "tensors"
+            tensor_dir.mkdir()
+            manager = self.make_manager(root)
+            job = manager.start_train(
+                {
+                    "tensor_dir": str(tensor_dir),
+                    "song_model": "acestep-v15-turbo",
+                    "trigger_tag": "Pac",
+                    "language": "en",
+                    "train_epochs": 2,
+                    "epoch_audition_enabled": True,
+                    "epoch_audition_caption": "west coast rap, hip hop",
+                }
+            )
+
+            audition = job["params"]["epoch_audition"]
+            self.assertTrue(audition["enabled"])
+            self.assertEqual(audition["genre_profile"], "rap")
+            self.assertEqual(audition["lyrics_source"], "genre_default")
+            self.assertIn("Pac", audition["caption"])
+            self.assertIn("west coast rap", audition["caption"])
+            self.assertIn("hip hop drums", audition["caption"])
+            self.assertIn("Every bar lands clean", audition["lyrics"])
+            self.assertNotIn("Pac", audition["lyrics"])
+
+    def test_default_epoch_audition_lyrics_keep_trigger_out_of_song_text(self):
+        lyrics, meta = default_epoch_audition_lyrics("drill rap, dark piano", trigger_tag="Pac", lyrics_hint="Pac forever")
+        caption = build_epoch_audition_caption("drill rap, dark piano", trigger_tag="Pac")
+
+        self.assertEqual(meta["lyrics_source"], "genre_default")
+        self.assertEqual(meta["genre_profile"], "rap")
+        self.assertFalse(meta["trigger_in_lyrics"])
+        self.assertIn("Pac", caption)
+        self.assertIn("drill rap", caption)
+        self.assertIn("clear intelligible vocal", caption)
+        self.assertNotIn("Pac", lyrics)
 
     def test_epoch_audition_lyrics_are_fitted_for_twenty_seconds(self):
         lyrics = "\n".join(
