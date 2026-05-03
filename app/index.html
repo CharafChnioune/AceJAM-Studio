@@ -6657,7 +6657,7 @@
           : (data.error || `Portfolio incomplete: ${data.audios.length} take(s) generated.`);
         setStatus(statusMsg, data.success ? "ok" : "error");
         toast(statusMsg, data.success ? "ok" : "error");
-        if (payload.save_to_library) loadLibrary();
+        if (payload.save_to_library) await loadLibrary();
       } catch (err) {
         if (err.data?.validation && state.lastPayload) {
           renderPayloadReview(mode, state.lastPayload, err.data.validation);
@@ -6708,6 +6708,7 @@
           ${createPlayerHtml(audio.audio_url)}
           <div class="row">
             <a class="secondary" style="display:inline-flex;align-items:center;text-decoration:none;height:34px;padding:0 13px;border-radius:6px;font-weight:650;font-size:inherit;border:1px solid var(--line);background:var(--panel-2);color:var(--text);transition:all var(--transition);" href="${esc(audio.download_url)}" download="${esc(audio.filename || "")}">Download</a>
+            ${audio.library_url ? `<a class="primary" style="display:inline-flex;align-items:center;text-decoration:none;height:34px;padding:0 13px;border-radius:6px;font-weight:650;font-size:inherit;" href="${esc(audio.library_url)}" download="${esc(audio.filename || "")}">Library</a>` : ""}
             <button class="secondary" data-source>Source</button>
             <button class="secondary" data-reference>Reference</button>
             <button class="secondary" data-codes>Codes</button>

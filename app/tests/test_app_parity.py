@@ -522,6 +522,45 @@ class AppParityTest(unittest.TestCase):
         self.assertLessEqual(timeout, acejam_app.ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS)
         self.assertGreaterEqual(acejam_app.ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS, acejam_app.ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS)
 
+    def test_community_endpoint_refreshes_library_from_disk(self):
+        client = TestClient(acejam_app.app)
+        original_feed = list(acejam_app._feed_songs)
+        with tempfile.TemporaryDirectory() as tmp:
+            songs_dir = Path(tmp) / "songs"
+            song_dir = songs_dir / "song123"
+            song_dir.mkdir(parents=True)
+            (song_dir / "take.wav").write_bytes(b"RIFF0000WAVE")
+            (song_dir / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "id": "song123",
+                        "title": "Disk Refresh",
+                        "artist_name": "AceJAM",
+                        "audio_file": "take.wav",
+                        "created_at": "2026-05-03T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                acejam_app._feed_songs.clear()
+                with patch.object(acejam_app, "SONGS_DIR", songs_dir):
+                    response = client.get("/api/community")
+            finally:
+                acejam_app._feed_songs[:] = original_feed
+
+        self.assertEqual(response.status_code, 200)
+        songs = response.json()
+        self.assertEqual(songs[0]["id"], "song123")
+        self.assertEqual(songs[0]["audio_url"], "/media/songs/song123/take.wav")
+
+    def test_results_show_saved_library_link(self):
+        html = (acejam_app.BASE_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("audio.library_url", html)
+        self.assertIn(">Library</a>", html)
+        self.assertIn("if (payload.save_to_library) await loadLibrary();", html)
+
     def test_official_api_key_accepts_body_token(self):
         client = TestClient(acejam_app.app)
         previous = os.environ.get("ACESTEP_API_KEY")

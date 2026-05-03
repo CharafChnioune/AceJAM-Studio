@@ -2944,6 +2944,13 @@ _api_generation_tasks: dict[str, dict[str, Any]] = {}
 _api_generation_tasks_lock = threading.Lock()
 
 
+def _community_feed(limit: int = 100, *, refresh_disk: bool = True) -> list[dict[str, Any]]:
+    if refresh_disk:
+        disk_songs = _load_feed_from_disk()
+        _feed_songs[:] = disk_songs
+    return _feed_songs[: max(1, int(limit or 100))]
+
+
 class ModelDownloadStarted(RuntimeError):
     def __init__(self, model_name: str, job: dict[str, Any], message: str):
         super().__init__(message)
@@ -8204,7 +8211,7 @@ def delete_song(song_id: str) -> str:
 
 @app.api(name="community", concurrency_limit=4)
 def community() -> str:
-    return json.dumps(_feed_songs[:50])
+    return json.dumps(_community_feed(50))
 
 
 @app.api(name="config", concurrency_limit=8)
@@ -10513,7 +10520,7 @@ async def api_create_album_plan_job(request: Request):
 
 @app.get("/api/community")
 async def api_community():
-    return JSONResponse(_feed_songs[:100])
+    return JSONResponse(_community_feed(100))
 
 
 @app.get("/api/ollama_models")
