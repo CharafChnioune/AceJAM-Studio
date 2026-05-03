@@ -19,8 +19,8 @@ PLANNER_LLM_DEFAULTS: dict[str, Any] = {
     "planner_top_k": 40,
     "planner_repeat_penalty": 1.1,
     "planner_seed": "",
-    "planner_max_tokens": 2048,
-    "planner_context_length": 8192,
+    "planner_max_tokens": 8192,
+    "planner_context_length": 32768,
     "planner_timeout": 600.0,
 }
 PLANNER_LLM_PRESETS: dict[str, dict[str, Any]] = {
@@ -320,13 +320,60 @@ def _is_embedding_name(name: str) -> bool:
     return bool(re.search(r"(embed|embedding|bge|e5|gte|nomic|jina|snowflake|mxbai|arctic)", name or "", re.I))
 
 
+def _is_image_generation_name(name: str) -> bool:
+    return bool(re.search(r"(^x/(?:z-image|flux)|\b(?:z-image|flux|imagegen|image-gen|text-to-image|txt2img|sdxl|stable-diffusion|qwen-image)\b)", name or "", re.I))
+
+
+def _is_vision_name(name: str) -> bool:
+    return bool(re.search(r"(vision|vl\b|llava|bakllava|moondream|minicpm-v|gemma3)", name or "", re.I))
+
+
 def _ollama_client():
     import ollama
 
     return ollama.Client(host=ollama_host())
 
 
-def ollama_model_catalog() -> dict[str, Any]:
+def _ollama_show_details(client: Any, name: str) -> dict[str, Any]:
+    try:
+        shown = client.show(name)
+        return _llm_debug_jsonable(shown) if isinstance(_llm_debug_jsonable(shown), dict) else {}
+    except Exception:
+        return {}
+
+
+def _model_capability_list(name: str, raw: dict[str, Any] | None = None) -> list[str]:
+    raw = raw if isinstance(raw, dict) else {}
+    caps: set[str] = set()
+    raw_caps = raw.get("capabilities")
+    if isinstance(raw_caps, list):
+        caps.update(str(item).strip().lower() for item in raw_caps if str(item).strip())
+    elif isinstance(raw_caps, dict):
+        caps.update(str(key).strip().lower() for key, value in raw_caps.items() if value)
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+    families = details.get("families") if isinstance(details.get("families"), list) else []
+    haystack = " ".join([name, str(details.get("family") or ""), " ".join(str(item) for item in families)]).lower()
+    if _is_embedding_name(name):
+        caps.add("embedding")
+    if _is_image_generation_name(name):
+        caps.add("image_generation")
+    if _is_vision_name(name) or "vision" in haystack or "vl" in haystack:
+        caps.add("vision")
+    if "embedding" not in caps and "image_generation" not in caps:
+        caps.add("chat")
+    return sorted(caps)
+
+
+def _model_kind_from_capabilities(name: str, capabilities: list[str]) -> str:
+    caps = set(capabilities or [])
+    if "embedding" in caps or _is_embedding_name(name):
+        return "embedding"
+    if "image_generation" in caps or _is_image_generation_name(name):
+        return "image_generation"
+    return "chat"
+
+
+def ollama_model_catalog(*, enrich: bool = False) -> dict[str, Any]:
     host = ollama_host()
     try:
         client = _ollama_client()
@@ -339,14 +386,17 @@ def ollama_model_catalog() -> dict[str, Any]:
                 continue
             model_details = _attr(item, "details", {}) or {}
             size = int(_attr(item, "size", 0) or 0)
-            kind = "embedding" if _is_embedding_name(name) else "chat"
+            shown = _ollama_show_details(client, name) if enrich else {}
+            raw_for_caps = shown if shown else _llm_debug_jsonable(item)
+            capabilities = _model_capability_list(name, raw_for_caps if isinstance(raw_for_caps, dict) else {})
+            kind = _model_kind_from_capabilities(name, capabilities)
             details.append(
                 {
                     "name": name,
                     "model": name,
                     "provider": "ollama",
                     "kind": kind,
-                    "type": "embedding" if kind == "embedding" else "llm",
+                    "type": "embedding" if kind == "embedding" else ("image_generation" if kind == "image_generation" else "llm"),
                     "size": size,
                     "size_gb": round(size / 1e9, 2) if size else 0,
                     "modified_at": str(_attr(item, "modified_at", "") or ""),
@@ -354,7 +404,12 @@ def ollama_model_catalog() -> dict[str, Any]:
                     "family": str(_attr(model_details, "family", "") or (model_details.get("family", "") if isinstance(model_details, dict) else "")),
                     "parameter_size": str(_attr(model_details, "parameter_size", "") or (model_details.get("parameter_size", "") if isinstance(model_details, dict) else "")),
                     "quantization_level": str(_attr(model_details, "quantization_level", "") or (model_details.get("quantization_level", "") if isinstance(model_details, dict) else "")),
+                    "format": str(_attr(model_details, "format", "") or (model_details.get("format", "") if isinstance(model_details, dict) else "")),
+                    "capabilities": capabilities,
+                    "vision": "vision" in capabilities,
+                    "image_generation": "image_generation" in capabilities,
                     "loaded": False,
+                    "raw_show": shown if enrich else {},
                 }
             )
         running_models: list[str] = []
@@ -369,7 +424,8 @@ def ollama_model_catalog() -> dict[str, Any]:
             item["loaded"] = item["name"] in running_set
         models = [item["name"] for item in details]
         embedding_models = [item["name"] for item in details if item["kind"] == "embedding"]
-        chat_models = [item["name"] for item in details if item["kind"] != "embedding"]
+        image_models = [item["name"] for item in details if item["kind"] == "image_generation"]
+        chat_models = [item["name"] for item in details if item["kind"] == "chat"]
         return {
             "success": True,
             "ready": True,
@@ -380,6 +436,7 @@ def ollama_model_catalog() -> dict[str, Any]:
             "models": models,
             "chat_models": chat_models,
             "embedding_models": embedding_models,
+            "image_models": image_models,
             "details": details,
             "loaded_models": running_models,
             "running_models": running_models,
@@ -396,6 +453,7 @@ def ollama_model_catalog() -> dict[str, Any]:
             "models": [],
             "chat_models": [],
             "embedding_models": [],
+            "image_models": [],
             "details": [],
             "loaded_models": [],
             "running_models": [],
@@ -432,6 +490,22 @@ def _lmstudio_loaded_names(item: dict[str, Any]) -> list[str]:
     elif isinstance(loaded, dict):
         names.append(str(loaded.get("identifier") or loaded.get("id") or loaded.get("name") or "").strip())
     return [name for name in names if name]
+
+
+def _lmstudio_quantization_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("level") or value.get("quantization") or "")
+    return str(value or "")
+
+
+def _lmstudio_capabilities(raw: dict[str, Any], name: str) -> dict[str, Any]:
+    caps = raw.get("capabilities") if isinstance(raw.get("capabilities"), dict) else {}
+    reasoning = caps.get("reasoning") if isinstance(caps.get("reasoning"), dict) else raw.get("reasoning")
+    return {
+        "vision": bool(caps.get("vision") or raw.get("vision") or _is_vision_name(name)),
+        "trained_for_tool_use": bool(caps.get("trained_for_tool_use") or caps.get("tool_use") or raw.get("trained_for_tool_use") or raw.get("tool_use")),
+        "reasoning": reasoning if isinstance(reasoning, dict) else ({"default": "on"} if reasoning else {}),
+    }
 
 
 def _lmstudio_loaded_context_length(item: dict[str, Any]) -> int:
@@ -474,7 +548,8 @@ def lmstudio_model_catalog() -> dict[str, Any]:
                 loaded_instances = [name]
             loaded_models.extend(loaded_instances)
             quant = raw.get("quantization") or raw.get("quantization_level") or raw.get("quantizationLevel") or ""
-            fmt = raw.get("format") or raw.get("format_type") or raw.get("architecture") or ""
+            fmt = raw.get("format") or raw.get("format_type") or ""
+            capabilities = _lmstudio_capabilities(raw, name)
             details.append(
                 {
                     "name": name,
@@ -485,11 +560,19 @@ def lmstudio_model_catalog() -> dict[str, Any]:
                     "path": str(raw.get("path") or ""),
                     "display_name": str(raw.get("display_name") or raw.get("displayName") or raw.get("name") or name),
                     "format": str(fmt or ""),
-                    "quantization_level": str(quant or ""),
+                    "quantization_level": _lmstudio_quantization_name(quant),
+                    "quantization": quant if isinstance(quant, dict) else {"name": str(quant or "")},
+                    "size": int(raw.get("size_bytes") or raw.get("size") or 0),
+                    "size_gb": round(int(raw.get("size_bytes") or raw.get("size") or 0) / 1e9, 2) if int(raw.get("size_bytes") or raw.get("size") or 0) else 0,
+                    "params_string": str(raw.get("params_string") or ""),
                     "architecture": str(raw.get("architecture") or raw.get("arch") or ""),
                     "context_length": raw.get("context_length") or raw.get("contextLength") or raw.get("max_context_length") or "",
+                    "max_context_length": raw.get("max_context_length") or raw.get("maxContextLength") or raw.get("context_length") or raw.get("contextLength") or "",
                     "loaded_context_length": loaded_context_length,
-                    "reasoning": bool(raw.get("reasoning") or raw.get("is_reasoning_model") or False),
+                    "capabilities": capabilities,
+                    "vision": bool(capabilities.get("vision")),
+                    "reasoning": bool(capabilities.get("reasoning") or raw.get("is_reasoning_model") or False),
+                    "mlx_preferred": str(fmt or "").lower() == "mlx",
                     "loaded": loaded,
                     "loaded_instances": loaded_instances,
                     "raw": raw,
@@ -508,6 +591,7 @@ def lmstudio_model_catalog() -> dict[str, Any]:
             "models": models,
             "chat_models": [item["name"] for item in details if item["kind"] != "embedding"],
             "embedding_models": [item["name"] for item in details if item["kind"] == "embedding"],
+            "image_models": [],
             "details": details,
             "loaded_models": sorted(set(loaded_models)),
             "running_models": sorted(set(loaded_models)),
@@ -526,6 +610,7 @@ def lmstudio_model_catalog() -> dict[str, Any]:
             "models": [],
             "chat_models": [],
             "embedding_models": [],
+            "image_models": [],
             "details": [],
             "loaded_models": [],
             "running_models": [],
@@ -543,6 +628,7 @@ def model_catalog(provider: Any) -> dict[str, Any]:
             "models": [],
             "chat_models": [],
             "embedding_models": [],
+            "image_models": [],
             "details": [],
             "error": "ACE-Step 5Hz LM is exposed through AceJAM writer helper routes, not the generic local chat/embedding API.",
         }
@@ -608,11 +694,8 @@ def lmstudio_unload_model(model_name: str) -> dict[str, Any]:
     model = str(model_name or "").strip()
     if not model:
         raise LocalLLMError("LM Studio model name is required.")
-    payload = {"model": model, "model_key": model}
-    try:
-        data = _http_json("POST", f"{lmstudio_native_base_url()}/models/unload", payload, timeout=60)
-    except LocalLLMError:
-        data = _http_json("POST", f"{lmstudio_native_base_url()}/models/{urllib.parse.quote(model, safe='')}/unload", payload, timeout=60)
+    payload = {"instance_id": model}
+    data = _http_json("POST", f"{lmstudio_native_base_url()}/models/unload", payload, timeout=60)
     return {"success": True, "provider": "lmstudio", "model": model, "response": data}
 
 
@@ -638,7 +721,7 @@ def lmstudio_download_status(job_id: str) -> dict[str, Any]:
     if not job:
         raise LocalLLMError("LM Studio download job id is required.")
     quoted = urllib.parse.quote(job, safe="")
-    for path in (f"/models/download/{quoted}", f"/download/{quoted}"):
+    for path in (f"/models/download/status/{quoted}", f"/models/download/{quoted}", f"/download/{quoted}"):
         try:
             data = _http_json("GET", f"{lmstudio_native_base_url()}{path}", timeout=20)
             return {"success": True, "provider": "lmstudio", "job_id": job, "job": data}
@@ -647,7 +730,28 @@ def lmstudio_download_status(job_id: str) -> dict[str, Any]:
     raise LocalLLMError(f"LM Studio download job {job} was not found.")
 
 
-def ollama_chat(model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
+def _ollama_response_content(data: Any) -> str:
+    return str(_attr(_attr(data, "message", {}), "content", "") or _attr(data, "response", "") or "")
+
+
+def _lmstudio_response_content(data: Any) -> str:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        return str(choices[0].get("text") or "")
+    return str(data.get("raw") if isinstance(data, dict) else data or "")
+
+
+def ollama_chat_response(
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any] | None = None,
+    json_format: bool = False,
+    json_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     request_timeout = float(os.environ.get("ACEJAM_OLLAMA_CHAT_TIMEOUT", "600"))
     kwargs: dict[str, Any] = {"model": model_name, "messages": messages, "think": False, "stream": False}
     if options:
@@ -656,17 +760,62 @@ def ollama_chat(model_name: str, messages: list[dict[str, str]], *, options: dic
         if "max_tokens" in ollama_options and "num_predict" not in ollama_options:
             ollama_options["num_predict"] = ollama_options.pop("max_tokens")
         kwargs["options"] = ollama_options
-    if json_format:
+    if json_schema:
+        kwargs["format"] = json_schema
+    elif json_format:
         kwargs["format"] = "json"
     _print_llm_io("ollama_chat_request_json", {"url": f"{ollama_host().rstrip('/')}/api/chat", "payload": kwargs})
     data = _http_json("POST", f"{ollama_host().rstrip('/')}/api/chat", kwargs, timeout=request_timeout)
     _print_llm_io("ollama_chat_response_json", data)
-    content = str(_attr(_attr(data, "message", {}), "content", "") or "")
+    content = _ollama_response_content(data)
     _print_llm_io("ollama_chat_content", content)
+    return {
+        "content": content,
+        "provider": "ollama",
+        "model": model_name,
+        "raw": data,
+        "done_reason": str(data.get("done_reason") or "") if isinstance(data, dict) else "",
+        "truncated": str(data.get("done_reason") or "").lower() == "length" if isinstance(data, dict) else False,
+    }
+
+
+def ollama_chat(
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any] | None = None,
+    json_format: bool = False,
+    json_schema: dict[str, Any] | None = None,
+) -> str:
+    content = ollama_chat_response(
+        model_name,
+        messages,
+        options=options,
+        json_format=json_format,
+        json_schema=json_schema,
+    )["content"]
     return content
 
 
-def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
+def _lmstudio_json_schema_response_format(schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "acejam_structured_result",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
+def lmstudio_chat_response(
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any] | None = None,
+    json_format: bool = False,
+    json_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     request_timeout = float((options or {}).get("timeout") or 600)
     payload: dict[str, Any] = {
         "model": model_name,
@@ -674,34 +823,127 @@ def lmstudio_chat(model_name: str, messages: list[dict[str, str]], *, options: d
         "stream": False,
     }
     payload.update(_lmstudio_openai_chat_options(options))
-    if json_format:
+    if json_schema:
+        payload["response_format"] = _lmstudio_json_schema_response_format(json_schema)
+    elif json_format:
         payload.setdefault("response_format", {"type": "json_object"})
     _print_llm_io("lmstudio_chat_request_json", {"url": f"{lmstudio_api_base_url()}/chat/completions", "payload": payload})
     data = _http_json("POST", f"{lmstudio_api_base_url()}/chat/completions", payload, timeout=request_timeout)
     _print_llm_io("lmstudio_chat_response_json", data)
-    choices = data.get("choices") if isinstance(data, dict) else None
-    if isinstance(choices, list) and choices:
-        message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        if isinstance(message, dict):
-            content = str(message.get("content") or "")
-            _print_llm_io("lmstudio_chat_content", content)
-            return content
-        content = str(choices[0].get("text") or "")
-        _print_llm_io("lmstudio_chat_content", content)
-        return content
-    content = str(data.get("raw") if isinstance(data, dict) else data or "")
+    content = _lmstudio_response_content(data)
     _print_llm_io("lmstudio_chat_content", content)
+    finish_reason = ""
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        finish_reason = str(choices[0].get("finish_reason") or choices[0].get("native_finish_reason") or "")
+    return {
+        "content": content,
+        "provider": "lmstudio",
+        "model": model_name,
+        "raw": data,
+        "done_reason": finish_reason,
+        "truncated": finish_reason.lower() in {"length", "max_tokens", "content_filter_length"},
+    }
+
+
+def lmstudio_chat(
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any] | None = None,
+    json_format: bool = False,
+    json_schema: dict[str, Any] | None = None,
+) -> str:
+    content = lmstudio_chat_response(
+        model_name,
+        messages,
+        options=options,
+        json_format=json_format,
+        json_schema=json_schema,
+    )["content"]
     return content
 
 
-def chat_completion(provider: Any, model_name: str, messages: list[dict[str, str]], *, options: dict[str, Any] | None = None, json_format: bool = False) -> str:
+def chat_completion_response(
+    provider: Any,
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any] | None = None,
+    json_format: bool = False,
+    json_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     provider_name = normalize_provider(provider)
     if provider_name == "ace_step_lm":
         raise LocalLLMError("ACE-Step 5Hz LM is not a generic chat backend; use the official ACE-Step writer helper route.")
     model = resolve_model(provider_name, model_name, "chat")
     if provider_name == "lmstudio":
-        return lmstudio_chat(model, messages, options=options, json_format=json_format)
-    return ollama_chat(model, messages, options=options, json_format=json_format)
+        return lmstudio_chat_response(model, messages, options=options, json_format=json_format, json_schema=json_schema)
+    return ollama_chat_response(model, messages, options=options, json_format=json_format, json_schema=json_schema)
+
+
+def chat_completion(
+    provider: Any,
+    model_name: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any] | None = None,
+    json_format: bool = False,
+    json_schema: dict[str, Any] | None = None,
+) -> str:
+    return chat_completion_response(
+        provider,
+        model_name,
+        messages,
+        options=options,
+        json_format=json_format,
+        json_schema=json_schema,
+    )["content"]
+
+
+def ollama_generate_image(
+    model_name: str,
+    prompt: str,
+    *,
+    width: int = 1024,
+    height: int = 1024,
+    steps: int | None = None,
+    seed: int | None = None,
+    negative_prompt: str = "",
+    timeout: float = 1800.0,
+) -> dict[str, Any]:
+    model = str(model_name or "").strip()
+    if not model:
+        raise LocalLLMError("Ollama image model is required.")
+    full_prompt = str(prompt or "").strip()
+    if negative_prompt:
+        full_prompt = f"{full_prompt}\n\nNegative prompt: {negative_prompt.strip()}"
+    payload: dict[str, Any] = {
+        "model": model,
+        "prompt": full_prompt,
+        "stream": False,
+        "width": int(width),
+        "height": int(height),
+    }
+    if steps:
+        payload["steps"] = int(steps)
+    if seed is not None:
+        payload["options"] = {"seed": int(seed)}
+    _print_llm_io("ollama_image_request_json", {"url": f"{ollama_host().rstrip('/')}/api/generate", "payload": payload})
+    data = _http_json("POST", f"{ollama_host().rstrip('/')}/api/generate", payload, timeout=timeout)
+    _print_llm_io("ollama_image_response_json", {k: ("[base64 image]" if k == "image" else v) for k, v in (data.items() if isinstance(data, dict) else [])})
+    image_value = ""
+    if isinstance(data, dict):
+        image_value = str(data.get("image") or "")
+        if not image_value and isinstance(data.get("images"), list) and data["images"]:
+            image_value = str(data["images"][0] or "")
+        if not image_value and str(data.get("response") or "").startswith("data:image/"):
+            image_value = str(data.get("response") or "")
+            data["image"] = image_value
+    if not isinstance(data, dict) or not image_value:
+        raise LocalLLMError("Ollama image generation did not return an image.")
+    data.setdefault("image", image_value)
+    return data
 
 
 def embed(provider: Any, model_name: str, text: str) -> list[float]:

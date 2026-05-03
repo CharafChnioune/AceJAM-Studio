@@ -499,6 +499,16 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("cover-nofsq", schema["capabilities"]["all_task_modes"])
             self.assertIn("acestep-v15-xl-base", schema["capabilities"]["model_support"]["complete"])
 
+    def test_ai_fill_hydrates_song_intent_builder_chip_groups(self):
+        html = (acejam_app.BASE_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("resolveIntentKnownOptionValue", html)
+        self.assertIn('setIntentGroupValues("genre_style", [intent.subgenre, intent.style_tags, payload.tags]);', html)
+        self.assertIn('setIntentGroupValues("speed_rhythm", [intent.energy, intent.rhythm_tags]);', html)
+        self.assertIn('setIntentGroupValues("instruments", [intent.instrument_tags]);', html)
+        self.assertIn('setIntentGroupValues("timbre_texture", [intent.texture_space, intent.production_tags]);', html)
+        self.assertIn('setIntentGroupValues("negative_control", [intent.negative_tags, payload.negative_tags]);', html)
+
     def test_official_api_key_accepts_body_token(self):
         client = TestClient(acejam_app.app)
         previous = os.environ.get("ACESTEP_API_KEY")
@@ -1082,8 +1092,14 @@ class AppParityTest(unittest.TestCase):
         html = (Path(acejam_app.BASE_DIR) / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("Local AI Writer/Planner", html)
+        self.assertIn('id="settings-local-ai-slot"', html)
         self.assertIn('id="planner-provider"', html)
         self.assertIn('id="ollama-model"', html)
+        self.assertIn('id="embedding-provider"', html)
+        self.assertIn('id="embedding-model"', html)
+        self.assertIn('id="art-model"', html)
+        self.assertIn('id="ollama-test-art-btn"', html)
+        self.assertIn("body:not(.mode-settings) #local-ai-panel", html)
         self.assertIn("ACE-Step Audio Model", html)
         self.assertIn('id="album-agent-engine"', html)
         self.assertIn("AceJAM Direct (recommended)", html)

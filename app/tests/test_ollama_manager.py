@@ -1,6 +1,9 @@
 import importlib
+import base64
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -29,6 +32,13 @@ class FakeOllamaClient:
                     modified_at="2026-04-25T00:00:00Z",
                     digest="def",
                     details=SimpleNamespace(family="nomic", parameter_size="", quantization_level=""),
+                ),
+                SimpleNamespace(
+                    model="x/flux2-klein:4b",
+                    size=4_000_000_000,
+                    modified_at="2026-04-25T00:00:00Z",
+                    digest="ghi",
+                    details=SimpleNamespace(family="flux", parameter_size="4B", quantization_level="Q4"),
                 ),
             ]
         )
@@ -62,6 +72,7 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertTrue(data["ready"])
         self.assertEqual(data["chat_models"], ["qwen3:4b"])
         self.assertEqual(data["embedding_models"], ["nomic-embed-text:latest"])
+        self.assertEqual(data["image_models"], ["x/flux2-klein:4b"])
         self.assertEqual(data["running_models"], ["qwen3:4b"])
 
     def test_pull_worker_records_streaming_progress(self):
@@ -236,6 +247,87 @@ class OllamaManagerTest(unittest.TestCase):
         data = response.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["dimensions"], 4)
+
+    def test_structured_outputs_are_sent_to_ollama_and_lmstudio(self):
+        schema = {"type": "object", "properties": {"payload": {"type": "object"}}, "required": ["payload"]}
+        seen = []
+
+        def fake_http(method, url, payload=None, timeout=30.0):
+            seen.append((url, payload))
+            if "/api/chat" in url:
+                return {"message": {"content": "{\"payload\": {}}"}, "done_reason": "stop"}
+            return {"choices": [{"message": {"content": "{\"payload\": {}}"}, "finish_reason": "stop"}]}
+
+        with patch.object(local_llm, "_http_json", side_effect=fake_http), \
+            patch.object(local_llm, "resolve_model", side_effect=lambda provider, model, kind="chat": model):
+            ollama = local_llm.chat_completion_response(
+                "ollama",
+                "qwen",
+                [{"role": "user", "content": "json"}],
+                json_schema=schema,
+            )
+            lmstudio = local_llm.chat_completion_response(
+                "lmstudio",
+                "qwen-local",
+                [{"role": "user", "content": "json"}],
+                json_schema=schema,
+            )
+
+        self.assertFalse(ollama["truncated"])
+        self.assertFalse(lmstudio["truncated"])
+        self.assertEqual(seen[0][1]["format"], schema)
+        self.assertEqual(seen[1][1]["response_format"]["type"], "json_schema")
+        self.assertEqual(seen[1][1]["response_format"]["json_schema"]["schema"], schema)
+
+    def test_local_llm_settings_and_catalog_endpoints_include_image_models(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / "local_llm_settings.json"
+            with patch.object(acejam_app, "LOCAL_LLM_SETTINGS_PATH", settings_path), \
+                patch.object(acejam_app, "_ollama_client", return_value=FakeOllamaClient()), \
+                patch.object(acejam_app, "lmstudio_model_catalog", return_value={"ready": True, "provider": "lmstudio", "host": "http://localhost:1234", "models": ["mlx-chat"], "chat_models": ["mlx-chat"], "embedding_models": [], "image_models": [], "details": [{"name": "mlx-chat", "provider": "lmstudio", "kind": "chat", "format": "mlx"}], "loaded_models": []}):
+                saved = client.post(
+                    "/api/local-llm/settings",
+                    json={
+                        "provider": "lmstudio",
+                        "chat_model": "mlx-chat",
+                        "embedding_provider": "ollama",
+                        "embedding_model": "nomic-embed-text:latest",
+                        "art_model": "x/flux2-klein:4b",
+                        "planner_max_tokens": 99999,
+                    },
+                )
+                catalog = client.get("/api/local-llm/catalog")
+
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["settings"]["planner_max_tokens"], 8192)
+        data = catalog.json()
+        self.assertTrue(data["success"])
+        self.assertIn("ollama:x/flux2-klein:4b", data["image_models"])
+        self.assertEqual(data["settings"]["provider"], "lmstudio")
+
+    def test_art_generation_stores_and_serves_file(self):
+        client = TestClient(acejam_app.app)
+        png = base64.b64encode(b"fakepng").decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            art_root = Path(tmp) / "art"
+            settings_path = Path(tmp) / "local_llm_settings.json"
+            with patch.object(acejam_app, "ART_DIR", art_root), \
+                patch.object(acejam_app, "LOCAL_LLM_SETTINGS_PATH", settings_path), \
+                patch.object(acejam_app, "_ensure_ollama_model_or_start_pull", return_value=None), \
+                patch.object(acejam_app, "ollama_generate_image", return_value={"image": png}):
+                response = client.post(
+                    "/api/art/generate",
+                    json={"scope": "single", "model": "x/flux2-klein:4b", "prompt": "cover art"},
+                )
+                data = response.json()
+                media = client.get(data["art"]["url"])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["art"]["model"], "x/flux2-klein:4b")
+        self.assertEqual(media.status_code, 200)
+        self.assertEqual(media.content, b"fakepng")
 
 
 if __name__ == "__main__":

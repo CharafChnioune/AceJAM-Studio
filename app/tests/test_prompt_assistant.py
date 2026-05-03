@@ -148,6 +148,101 @@ ACEJAM_PAYLOAD_JSON
         self.assertEqual(settings["planner_timeout"], 90.0)
         self.assertEqual(response.json()["payload"]["planner_temperature"], 0.77)
 
+    def test_prompt_assistant_uses_staged_calls_and_carries_previous_payload(self):
+        stage_intent = """
+{"payload":{"caption":"glitch rap, off-beat drums, dark synths, 808 bass, male rap vocal, crisp modern mix","song_intent":{"genre_family":"rap","subgenre":"glitch rap","mood":"dark","energy":"mid-tempo","vocal_type":"male rap vocal","language":"en","drum_groove":"off-beat drums","bass_low_end":"808 bass","melodic_identity":"dark synths","mix_master":"crisp modern mix","genre_modules":["rap"],"style_tags":["glitch rap"],"rhythm_tags":["off-beat drums"],"instrument_tags":["808 bass","dark synths"],"vocal_tags":["male rap vocal"],"production_tags":["crisp modern mix"],"negative_tags":["muddy mix"]}}}
+"""
+        stage_writing = """
+{"payload":{"title":"Consistent Signal","artist_name":"Neon Harbor","lyrics":"[Verse]\\nDark synths keep the signal steady\\n\\n[Chorus]\\nConsistent signal, never let it go","duration":60,"bpm":92,"key_scale":"D minor","time_signature":"4","song_intent":{"genre_family":"rap","style_tags":["glitch rap"],"instrument_tags":["808 bass","dark synths"]}}}
+"""
+        stage_render = """
+{"payload":{"task_type":"text2music","song_model":"acestep-v15-xl-sft","quality_profile":"chart_master","song_intent":{"task_mode":"text2music","model_strategy":"chart_master","rhythm_tags":["off-beat drums"],"production_tags":["crisp modern mix"]}}}
+"""
+        client = TestClient(acejam_app.app)
+        with patch.object(acejam_app, "_run_prompt_assistant_local", side_effect=[stage_intent, stage_writing, stage_render]) as runner:
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={"mode": "custom", "user_prompt": "make a coherent glitch rap song", "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(runner.call_count, 3)
+        second_stage_payload = runner.call_args_list[1].args[4]
+        self.assertEqual(second_stage_payload["ai_fill_stage"], "song_writing")
+        self.assertEqual(second_stage_payload["previous_ai_payload"]["song_intent"]["genre_family"], "rap")
+        data = response.json()["payload"]
+        self.assertEqual(data["title"], "Consistent Signal")
+        self.assertEqual(data["song_intent"]["genre_family"], "rap")
+        self.assertIn("glitch rap", data["song_intent"]["style_tags"])
+        self.assertIn("808 bass", data["song_intent"]["instrument_tags"])
+        self.assertIn("off-beat drums", data["song_intent"]["rhythm_tags"])
+
+    def test_prompt_assistant_derives_song_intent_when_model_omits_it(self):
+        raw = """
+{"payload":{"title":"Derived Intent","artist_name":"Neon Harbor","caption":"melodic rap, crisp trap drums, 808 bass, piano, male rap vocal, polished mix","lyrics":"[Verse]\\nLine one\\n\\n[Chorus]\\nHook","duration":60}}
+"""
+        client = TestClient(acejam_app.app)
+        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={"mode": "custom", "user_prompt": "make a melodic rap song", "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        intent = response.json()["payload"]["song_intent"]
+        self.assertEqual(intent["caption"], "melodic rap, crisp trap drums, 808 bass, piano, male rap vocal, polished mix")
+        self.assertNotIn(None, intent["genre_modules"])
+        self.assertTrue(intent["genre_modules"])
+        self.assertIn("808 bass", intent["instrument_tags"])
+        self.assertTrue(intent["vocal_tags"])
+
+    def test_prompt_assistant_local_retries_truncated_structured_json(self):
+        calls = []
+
+        def fake_chat(provider, model, messages, options=None, json_schema=None, **kwargs):
+            calls.append({"provider": provider, "model": model, "options": options, "schema": json_schema})
+            if len(calls) == 1:
+                return {"content": "{\"payload\":{\"title\":\"Cut", "done_reason": "length", "truncated": True}
+            return {
+                "content": '{"payload":{"title":"Closed JSON","caption":"rap drums, 808 bass, clear vocal","lyrics":"[Verse]\\nLine one","duration":60}}',
+                "done_reason": "stop",
+                "truncated": False,
+            }
+
+        with patch.object(acejam_app, "_ensure_ollama_model_or_start_pull", return_value=None), \
+            patch.object(acejam_app, "local_llm_chat_completion_response", side_effect=fake_chat):
+            raw = acejam_app._run_prompt_assistant_local(
+                "System prompt",
+                "Make a song",
+                "ollama",
+                "qwen3:4b",
+                {"lyrics": "long lyrics " * 400, "title": "Draft"},
+                {"planner_max_tokens": 2048, "planner_context_length": 8192},
+                mode="custom",
+            )
+
+        self.assertIn("Closed JSON", raw)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["schema"]["required"], ["payload"])
+        self.assertEqual(calls[1]["options"]["num_predict"], 8192)
+        self.assertEqual(calls[1]["options"]["num_ctx"], 32768)
+
+    def test_prompt_assistant_truncated_json_error_is_user_friendly(self):
+        client = TestClient(acejam_app.app)
+        raw = 'ACEJAM_PAYLOAD_JSON\n{"title":"Cut off"'
+
+        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={"mode": "custom", "user_prompt": "make a song", "planner_lm_provider": "ollama", "planner_model": "qwen3:4b"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        data = response.json()
+        self.assertFalse(data["success"])
+        self.assertIn("AI Fill response was truncated", data["error"])
+        self.assertNotIn("JSON object was not closed", data["error"])
+
     def test_prompt_assistant_ace_step_writer_routes_to_official_lm(self):
         client = TestClient(acejam_app.app)
         official_payload = {

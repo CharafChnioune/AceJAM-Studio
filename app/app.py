@@ -19,6 +19,7 @@ import traceback
 import uuid
 import zipfile
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -58,9 +59,11 @@ SONGS_DIR = DATA_DIR / "songs"
 UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
 ALBUMS_DIR = DATA_DIR / "albums"
+ART_DIR = DATA_DIR / "art"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
 LORA_IMPORTS_DIR = DATA_DIR / "lora_imports"
+LOCAL_LLM_SETTINGS_PATH = DATA_DIR / "local_llm_settings.json"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
@@ -163,6 +166,7 @@ SONGS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
+ART_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -181,12 +185,14 @@ from gradio import Server
 
 from local_llm import (
     chat_completion as local_llm_chat_completion,
+    chat_completion_response as local_llm_chat_completion_response,
     lmstudio_download_model,
     lmstudio_download_status,
     lmstudio_load_model,
     lmstudio_model_catalog,
     lmstudio_unload_model,
     normalize_provider,
+    ollama_generate_image,
     planner_llm_options_for_provider,
     planner_llm_settings_from_payload,
     provider_label,
@@ -442,7 +448,13 @@ def _requested_ace_lm_model(payload: dict[str, Any]) -> str:
 
 def _writer_provider_from_payload(payload: dict[str, Any] | None, default: str = "ollama") -> str:
     source = payload if isinstance(payload, dict) else {}
-    return normalize_provider(source.get("planner_lm_provider") or source.get("planner_provider") or default)
+    global_default = default
+    if "planner_lm_provider" not in source and "planner_provider" not in source:
+        try:
+            global_default = str(_load_local_llm_settings().get("provider") or default)
+        except Exception:
+            global_default = default
+    return normalize_provider(source.get("planner_lm_provider") or source.get("planner_provider") or global_default)
 
 
 def _album_planner_provider_from_payload(payload: dict[str, Any] | None, default: str = "ollama") -> str:
@@ -452,7 +464,13 @@ def _album_planner_provider_from_payload(payload: dict[str, Any] | None, default
 
 def _embedding_provider_from_payload(payload: dict[str, Any] | None, default: str = "ollama") -> str:
     source = payload if isinstance(payload, dict) else {}
-    provider = normalize_provider(source.get("embedding_lm_provider") or source.get("embedding_provider") or default)
+    global_default = default
+    if "embedding_lm_provider" not in source and "embedding_provider" not in source:
+        try:
+            global_default = str(_load_local_llm_settings().get("embedding_provider") or default)
+        except Exception:
+            global_default = default
+    provider = normalize_provider(source.get("embedding_lm_provider") or source.get("embedding_provider") or global_default)
     return "ollama" if provider == "ace_step_lm" else provider
 
 
@@ -764,6 +782,12 @@ PROMPT_ASSISTANT_ALIASES = {
 }
 
 
+class PromptAssistantStageError(RuntimeError):
+    def __init__(self, message: str, raw_text: str = ""):
+        super().__init__(message)
+        self.raw_text = raw_text
+
+
 def _prompt_assistant_mode(value: str) -> str:
     mode = str(value or "custom").strip().lower().replace("-", "_")
     mode = PROMPT_ASSISTANT_ALIASES.get(mode, mode)
@@ -883,6 +907,508 @@ def _extract_prompt_assistant_json(raw: str, mode: str) -> tuple[dict[str, Any],
             payload = _balanced_json_object(text, pos + len(marker))
             return payload, text[:pos].strip()
     return _balanced_json_object(text), text
+
+
+def _prompt_assistant_structured_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "payload": {"type": "object", "additionalProperties": True},
+            "paste_blocks": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "string"},
+                    {"type": "null"},
+                ]
+            },
+            "warnings": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["payload"],
+    }
+
+
+def _unwrap_prompt_assistant_structured_payload(parsed: dict[str, Any]) -> tuple[dict[str, Any], list[str], Any]:
+    if isinstance(parsed.get("payload"), dict):
+        warnings = [str(item) for item in parsed.get("warnings") or [] if str(item).strip()]
+        return dict(parsed["payload"]), warnings, parsed.get("paste_blocks")
+    return parsed, [], None
+
+
+def _server_paste_blocks_from_payload(payload: dict[str, Any], mode: str) -> str:
+    title = str(payload.get("title") or payload.get("album_title") or "Untitled").strip()
+    caption = str(payload.get("caption") or payload.get("tags") or payload.get("concept") or "").strip()
+    negative = str(payload.get("negative_tags") or "").strip()
+    lyrics = str(payload.get("lyrics") or "").strip()
+    lines = [
+        f"Title: {title}",
+        f"Caption / Tags: {caption}",
+    ]
+    if negative:
+        lines.append(f"Negative Tags: {negative}")
+    if lyrics:
+        lines.append(f"Lyrics: {lyrics}")
+    for label, key in [("BPM", "bpm"), ("Key", "key_scale"), ("Time Signature", "time_signature"), ("Duration", "duration")]:
+        if payload.get(key) not in [None, ""]:
+            lines.append(f"{label}: {payload.get(key)}")
+    if payload.get("song_model"):
+        lines.append(f"Model / Settings: {payload.get('song_model')}")
+    if mode == "album" and isinstance(payload.get("tracks"), list):
+        lines.append(f"Album tracks: {len(payload.get('tracks') or [])}")
+    return "\n".join(lines).strip()
+
+
+def _compact_text_for_prompt(value: Any, limit: int = 1400) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    head = text[: max(200, limit // 2)].rstrip()
+    tail = text[-max(200, limit // 3) :].lstrip()
+    return f"{head}\n...[truncated {len(text) - len(head) - len(tail)} chars already present in the UI]...\n{tail}"
+
+
+def _compact_prompt_assistant_current_payload(payload: dict[str, Any], mode: str) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    keys = [
+        "ai_fill_stage",
+        "previous_ai_payload",
+        "ui_mode",
+        "task_type",
+        "artist_name",
+        "title",
+        "caption",
+        "tags",
+        "negative_tags",
+        "duration",
+        "bpm",
+        "key_scale",
+        "time_signature",
+        "vocal_language",
+        "language",
+        "instrumental",
+        "song_model",
+        "quality_profile",
+        "song_intent",
+        "ace_lm_model",
+        "planner_lm_provider",
+        "planner_model",
+        "lyrics",
+        "concept",
+        "num_tracks",
+        "track_duration",
+        "album_agent_genre_prompt",
+        "album_agent_mood_vibe",
+        "album_agent_vocal_type",
+        "agent_engine",
+    ]
+    compact: dict[str, Any] = {}
+    for key in keys:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if key == "lyrics":
+            compact[key] = _compact_text_for_prompt(value, 1600)
+        elif isinstance(value, (dict, list)):
+            text = json.dumps(_jsonable(value), ensure_ascii=False)
+            compact[key] = _jsonable(value) if len(text) <= 2400 else _compact_text_for_prompt(text, 2400)
+        else:
+            compact[key] = value
+    compact["assistant_mode"] = mode
+    return compact
+
+
+def _prompt_assistant_structured_system_prompt(system_prompt: str, mode: str) -> str:
+    schema = json.dumps(_prompt_assistant_structured_schema(), ensure_ascii=False)
+    return (
+        f"{system_prompt}\n\n"
+        "STRICT STRUCTURED OUTPUT OVERRIDE:\n"
+        "Return one valid JSON object only. Do not return ACEJAM_PASTE_BLOCKS markers, markdown, or prose.\n"
+        "The top-level object must match this schema and place the AceJAM payload inside `payload`.\n"
+        "Use `warnings` only for short user-facing caveats. AceJAM will build paste blocks server-side.\n"
+        f"JSON schema:\n{schema}\n"
+    )
+
+
+def _prompt_assistant_user_content(user_prompt: str, current_payload: dict[str, Any], mode: str) -> str:
+    compact_payload = _compact_prompt_assistant_current_payload(current_payload, mode)
+    return (
+        f"USER REQUEST:\n{str(user_prompt or '').strip()}\n\n"
+        "CURRENT ACEJAM UI PAYLOAD JSON, compacted:\n"
+        f"{json.dumps(_jsonable(compact_payload), ensure_ascii=False, separators=(',', ':'))}\n\n"
+        "Return JSON only with top-level key `payload`. Keep lyrics complete when the user supplied lyrics. "
+        "When making or changing a song, include `song_intent` so the Song Intent Builder UI can show the filled "
+        "genres, subgenres, style tags, rhythm, instruments, vocals, arrangement, production, negatives, task mode, "
+        "model strategy, and personalization choices."
+    )
+
+
+def _prompt_assistant_stage_specs(mode: str) -> list[tuple[str, str]]:
+    mode = _prompt_assistant_mode(mode)
+    if mode == "album":
+        return [
+            (
+                "album_intent",
+                "Plan the album-level sonic identity only. Return a compact payload with concept, album_title when known, "
+                "global style/caption/tags, and a reusable song_intent palette. Do not write full track lyrics yet.",
+            ),
+            (
+                "album_tracks",
+                "Use previous_ai_payload as fixed creative direction. Return tracks with title, artist_name, caption, "
+                "lyrics or lyric direction, bpm/key/time metadata, and keep the album palette consistent.",
+            ),
+            (
+                "album_render",
+                "Finalize the album payload for AceJAM. Preserve previous tracks and palette; add only model strategy, "
+                "quality, language, and generation defaults needed by the UI.",
+            ),
+        ]
+    if mode in PROMPT_KIT_SOURCE_AUDIO_MODES:
+        return [
+            (
+                "source_intent",
+                "Choose the source-audio task intent and visible Song Intent Builder fields. Return song_intent with "
+                "genre/style/rhythm/instrument/vocal/structure/production/negative arrays plus source_audio_mode, "
+                "track_name or track_classes when relevant.",
+            ),
+            (
+                "source_render",
+                "Finalize the source-audio payload. Preserve previous_ai_payload, add task_type, song_model, source "
+                "strength/range/stem settings, caption, negative_tags, and warnings if source audio is required.",
+            ),
+        ]
+    return [
+        (
+            "song_intent",
+            "Choose every visible Song Intent Builder field first. Return payload.song_intent with scalar fields "
+            "genre_family, subgenre, mood, energy, vocal_type, language, drum_groove, bass_low_end, melodic_identity, "
+            "texture_space, mix_master, task_mode, model_strategy, source_audio_mode, plus arrays genre_modules, "
+            "style_tags, rhythm_tags, instrument_tags, vocal_tags, structure_tags, production_tags, negative_tags. "
+            "Also return top-level caption/tags/negative_tags. Do not write full lyrics yet.",
+        ),
+        (
+            "song_writing",
+            "Use previous_ai_payload as locked sonic direction. Return title, artist_name, complete lyrics, duration, "
+            "bpm, key_scale, time_signature, vocal_language, and repeat the same song_intent so the song stays coherent.",
+        ),
+        (
+            "song_render",
+            "Finalize the AceJAM payload. Preserve previous lyrics and song_intent; add task_type, song_model, "
+            "quality_profile/model_strategy, inference-safe defaults, seed if useful, and any source or personalization "
+            "fields requested by the user.",
+        ),
+    ]
+
+
+def _prompt_assistant_stage_system_prompt(system_prompt: str, mode: str, stage_id: str, instruction: str, index: int, total: int) -> str:
+    return (
+        f"{system_prompt}\n\n"
+        f"MULTI-PASS AI FILL STAGE {index + 1}/{total}: {stage_id}\n"
+        f"{instruction}\n"
+        "The compact current payload may contain `previous_ai_payload`; treat it as the canonical prior decision set. "
+        "Do not contradict earlier genre, mood, instrumentation, language, title, or lyric choices unless the user asked for a change. "
+        "Return only the fields this stage can improve, but include enough repeated context that later stages remain consistent."
+    )
+
+
+def _merge_prompt_stage_payload(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in (update or {}).items():
+        if key in {"previous_ai_payload", "ai_fill_stage"}:
+            continue
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, list):
+            if not value:
+                continue
+            existing = merged.get(key)
+            if isinstance(existing, list):
+                merged[key] = _dedupe_prompt_values(existing + value, limit=200)
+            else:
+                merged[key] = value
+            continue
+        if isinstance(value, dict):
+            if not value:
+                continue
+            existing = merged.get(key)
+            merged[key] = _merge_prompt_stage_payload(existing if isinstance(existing, dict) else {}, value)
+            continue
+        merged[key] = value
+    return merged
+
+
+def _dedupe_prompt_values(values: Any, limit: int = 32) -> list[Any]:
+    result: list[Any] = []
+    seen: set[str] = set()
+    for value in values if isinstance(values, list) else [values]:
+        if value is None:
+            continue
+        if isinstance(value, list):
+            for item in _dedupe_prompt_values(value, limit=limit):
+                key = json.dumps(_jsonable(item), ensure_ascii=False, sort_keys=True) if isinstance(item, (dict, list)) else str(item).strip().lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    result.append(item)
+            continue
+        if not isinstance(value, (dict, list)) and not str(value).strip():
+            continue
+        key = json.dumps(_jsonable(value), ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list)) else str(value).strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(value)
+        if len(result) >= limit:
+            break
+    return result
+
+
+@lru_cache(maxsize=1)
+def _intent_schema_groups() -> dict[str, list[Any]]:
+    try:
+        groups = toolkit_payload().get("song_intent_schema", {}).get("groups", {})
+    except Exception:
+        groups = {}
+    return groups if isinstance(groups, dict) else {}
+
+
+def _intent_option_value(option: Any) -> str:
+    if isinstance(option, dict):
+        return str(option.get("value") or "").strip()
+    return str(option or "").strip()
+
+
+def _intent_option_terms(option: Any) -> list[str]:
+    if isinstance(option, dict):
+        terms: list[Any] = [
+            option.get("value"),
+            option.get("label"),
+            option.get("description"),
+            option.get("aliases"),
+            option.get("tags"),
+        ]
+    else:
+        terms = [option]
+    flat: list[str] = []
+    for term in terms:
+        if isinstance(term, list):
+            flat.extend(str(item).strip() for item in term if str(item).strip())
+        elif str(term or "").strip():
+            flat.append(str(term).strip())
+    return _dedupe_prompt_values(flat, limit=40)
+
+
+def _intent_match_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _match_intent_group_terms(text: str, group: str, *, limit: int = 8) -> list[str]:
+    haystack = f" {_intent_match_key(text)} "
+    if not haystack.strip():
+        return []
+    matches: list[str] = []
+    for option in _intent_schema_groups().get(group, []) or []:
+        option_value = _intent_option_value(option)
+        if not option_value:
+            continue
+        for term in _intent_option_terms(option):
+            key = _intent_match_key(term)
+            if key and (f" {key} " in haystack or (len(key) > 5 and key in haystack)):
+                matches.append(option_value)
+                break
+        if len(matches) >= limit:
+            break
+    return _dedupe_prompt_values(matches, limit=limit)
+
+
+def _prompt_values_from_any(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return _dedupe_prompt_values([item for entry in value for item in _prompt_values_from_any(entry)], limit=200)
+    if isinstance(value, dict):
+        return _dedupe_prompt_values([item for entry in value.values() for item in _prompt_values_from_any(entry)], limit=200)
+    return split_terms(value)
+
+
+def _first_prompt_value(*values: Any) -> str:
+    for value in values:
+        for item in _prompt_values_from_any(value):
+            text = str(item or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _prompt_hint_text(payload: dict[str, Any], song_intent: dict[str, Any] | None = None) -> str:
+    parts: list[Any] = [
+        payload.get("caption"),
+        payload.get("tags"),
+        payload.get("negative_tags"),
+        payload.get("genre_profile"),
+        payload.get("genre_modules"),
+        payload.get("description"),
+        payload.get("concept"),
+        payload.get("title"),
+    ]
+    if isinstance(song_intent, dict):
+        parts.append(song_intent)
+    text_parts: list[str] = []
+    for part in parts:
+        if isinstance(part, (dict, list)):
+            text_parts.append(json.dumps(_jsonable(part), ensure_ascii=False))
+        elif str(part or "").strip():
+            text_parts.append(str(part).strip())
+    return " ".join(text_parts)
+
+
+def _ensure_song_intent_payload(payload: dict[str, Any], mode: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    existing = payload.get("song_intent") if isinstance(payload.get("song_intent"), dict) else {}
+    song_intent = dict(existing or {})
+    hint = _prompt_hint_text(payload, song_intent)
+    caption = str(song_intent.get("caption") or payload.get("caption") or payload.get("tags") or "").strip()
+    inferred_modules = [module.get("slug") for module in infer_genre_modules(hint or caption, max_modules=3)]
+    genre_modules = _dedupe_prompt_values(
+        [
+            song_intent.get("genre_modules"),
+            payload.get("genre_modules"),
+            song_intent.get("genre_family"),
+            payload.get("genre_family"),
+            inferred_modules,
+        ],
+        limit=8,
+    )
+    style_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("style_tags"),
+            song_intent.get("subgenre"),
+            payload.get("subgenre"),
+            _match_intent_group_terms(hint, "genre_style", limit=8),
+            _match_intent_group_terms(hint, "era_reference", limit=4),
+        ],
+        limit=20,
+    )
+    rhythm_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("rhythm_tags"),
+            song_intent.get("energy"),
+            song_intent.get("drum_groove"),
+            payload.get("energy"),
+            payload.get("drum_groove"),
+            payload.get("drums"),
+            _match_intent_group_terms(hint, "speed_rhythm", limit=6),
+            _match_intent_group_terms(hint, "drums_groove", limit=8),
+        ],
+        limit=20,
+    )
+    instrument_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("instrument_tags"),
+            song_intent.get("bass_low_end"),
+            song_intent.get("melodic_identity"),
+            payload.get("bass_low_end"),
+            payload.get("bass"),
+            payload.get("melodic_identity"),
+            payload.get("melodic_element"),
+            _match_intent_group_terms(hint, "bass_low_end", limit=6),
+            _match_intent_group_terms(hint, "melodic_identity", limit=8),
+            _match_intent_group_terms(hint, "instruments", limit=10),
+            _match_intent_group_terms(hint, "stems", limit=6),
+        ],
+        limit=28,
+    )
+    vocal_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("vocal_tags"),
+            song_intent.get("vocal_type"),
+            payload.get("vocal_type"),
+            payload.get("vocal_delivery"),
+            _match_intent_group_terms(hint, "vocal_character", limit=8),
+        ],
+        limit=16,
+    )
+    structure_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("structure_tags"),
+            payload.get("structure_tags"),
+            _match_intent_group_terms(hint, "structure_hints", limit=8),
+            _match_intent_group_terms(hint, "lyric_meta_tags", limit=8),
+        ],
+        limit=20,
+    )
+    production_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("production_tags"),
+            song_intent.get("texture_space"),
+            song_intent.get("mix_master"),
+            payload.get("texture_space"),
+            payload.get("texture"),
+            payload.get("mix_master"),
+            payload.get("mix"),
+            _match_intent_group_terms(hint, "timbre_texture", limit=8),
+            _match_intent_group_terms(hint, "production_style", limit=8),
+        ],
+        limit=20,
+    )
+    negative_tags = _dedupe_prompt_values(
+        [
+            song_intent.get("negative_tags"),
+            payload.get("negative_tags"),
+            _match_intent_group_terms(str(payload.get("negative_tags") or ""), "negative_control", limit=12),
+        ],
+        limit=24,
+    )
+    custom_tags = _dedupe_prompt_values([song_intent.get("custom_tags"), payload.get("custom_tags")], limit=24)
+    song_intent.update(
+        {
+            "genre_family": _first_prompt_value(song_intent.get("genre_family"), payload.get("genre_family"), genre_modules),
+            "subgenre": _first_prompt_value(song_intent.get("subgenre"), payload.get("subgenre"), style_tags),
+            "mood": _first_prompt_value(song_intent.get("mood"), payload.get("mood"), _match_intent_group_terms(hint, "mood_atmosphere", limit=4)),
+            "energy": _first_prompt_value(song_intent.get("energy"), payload.get("energy"), rhythm_tags),
+            "vocal_type": _first_prompt_value(song_intent.get("vocal_type"), payload.get("vocal_type"), payload.get("vocal_delivery"), vocal_tags),
+            "language": _first_prompt_value(song_intent.get("language"), payload.get("vocal_language"), payload.get("language")) or "en",
+            "drum_groove": _first_prompt_value(song_intent.get("drum_groove"), payload.get("drum_groove"), payload.get("drums"), rhythm_tags),
+            "bass_low_end": _first_prompt_value(song_intent.get("bass_low_end"), payload.get("bass_low_end"), payload.get("bass"), instrument_tags),
+            "melodic_identity": _first_prompt_value(song_intent.get("melodic_identity"), payload.get("melodic_identity"), payload.get("melodic_element"), instrument_tags),
+            "texture_space": _first_prompt_value(song_intent.get("texture_space"), payload.get("texture_space"), payload.get("texture"), production_tags),
+            "mix_master": _first_prompt_value(song_intent.get("mix_master"), payload.get("mix_master"), payload.get("mix"), production_tags),
+            "custom_tags": custom_tags,
+            "genre_modules": genre_modules,
+            "style_tags": style_tags,
+            "rhythm_tags": rhythm_tags,
+            "instrument_tags": instrument_tags,
+            "vocal_tags": vocal_tags,
+            "structure_tags": structure_tags,
+            "production_tags": production_tags,
+            "negative_tags": negative_tags,
+            "task_mode": _first_prompt_value(song_intent.get("task_mode"), payload.get("task_type")) or _prompt_mode_task_type(mode),
+            "model_strategy": _first_prompt_value(song_intent.get("model_strategy"), payload.get("quality_profile")) or "auto",
+            "source_audio_mode": _first_prompt_value(song_intent.get("source_audio_mode"), payload.get("source_audio_mode")) or ("src_audio" if mode in PROMPT_KIT_SOURCE_AUDIO_MODES else "none"),
+            "track_name": _first_prompt_value(song_intent.get("track_name"), payload.get("track_name")),
+            "track_classes": _dedupe_prompt_values([song_intent.get("track_classes"), payload.get("track_classes"), payload.get("track_names")], limit=12),
+            "caption": caption,
+        }
+    )
+    if isinstance(song_intent.get("ace_step_controls"), dict):
+        ace_controls = dict(song_intent["ace_step_controls"])
+    else:
+        ace_controls = {}
+    if payload.get("song_model"):
+        ace_controls.setdefault("render_model", payload.get("song_model"))
+    if payload.get("ace_lm_model"):
+        ace_controls.setdefault("lm_model", payload.get("ace_lm_model"))
+    if ace_controls:
+        song_intent["ace_step_controls"] = ace_controls
+    if not caption:
+        caption = ", ".join(_dedupe_prompt_values([style_tags, rhythm_tags, instrument_tags, vocal_tags, production_tags], limit=18))
+        song_intent["caption"] = caption
+    if caption:
+        payload.setdefault("caption", caption)
+        payload.setdefault("tags", caption)
+    payload["song_intent"] = song_intent
+    return payload
 
 
 def _prompt_mode_task_type(mode: str) -> str:
@@ -1175,6 +1701,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     normalized["use_format"] = False
     normalized["use_cot_lyrics"] = False
     _apply_prompt_kit_metadata(mode, normalized)
+    _ensure_song_intent_payload(normalized, mode)
     normalized.setdefault("save_to_library", True)
     if mode in {"cover", "repaint", "extract", "lego", "complete"} and not (
         normalized.get("src_audio_id") or normalized.get("src_result_id") or normalized.get("audio_code_string")
@@ -1190,9 +1717,16 @@ def _run_prompt_assistant_local(
     planner_model: str,
     current_payload: dict[str, Any],
     planner_llm_settings: dict[str, Any] | None = None,
+    *,
+    mode: str = "custom",
 ) -> str:
     provider = normalize_provider(planner_provider)
     model = str(planner_model or "").strip()
+    settings = dict(planner_llm_settings or {})
+    if not settings:
+        settings = _load_local_llm_settings()
+    if not model:
+        model = str(settings.get("chat_model") or "").strip()
     if provider == "ollama":
         if not model:
             listed = json.loads(ollama_models())
@@ -1205,27 +1739,73 @@ def _run_prompt_assistant_local(
         _ensure_ollama_model_or_start_pull(model, context="AI Fill", kind="chat")
     else:
         model = _resolve_local_llm_model_selection(provider, model, "chat", "AI Fill")
-    user_content = (
-        f"USER REQUEST:\n{str(user_prompt or '').strip()}\n\n"
-        "CURRENT ACEJAM UI PAYLOAD JSON:\n"
-        f"{json.dumps(_jsonable(current_payload or {}), ensure_ascii=False, indent=2)}\n\n"
-        "Return the exact sections requested by the system prompt. Keep JSON valid."
-    )
+    schema = _prompt_assistant_structured_schema()
+    structured_system = _prompt_assistant_structured_system_prompt(system_prompt, mode)
+    user_content = _prompt_assistant_user_content(user_prompt, current_payload or {}, mode)
+    messages = [
+        {"role": "system", "content": structured_system},
+        {"role": "user", "content": user_content},
+    ]
+    last_raw = ""
+    last_error = ""
     try:
-        return local_llm_chat_completion(
-            provider,
-            model,
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            options=planner_llm_options_for_provider(
+        for attempt in range(2):
+            option_payload = {**settings, **(planner_llm_settings or {})}
+            if attempt > 0:
+                option_payload.update(
+                    {
+                        "planner_creativity_preset": "stable",
+                        "planner_temperature": min(clamp_float(option_payload.get("planner_temperature"), 0.45, 0.0, 2.0), 0.2),
+                        "planner_top_p": min(clamp_float(option_payload.get("planner_top_p"), 0.92, 0.0, 1.0), 0.85),
+                        "planner_top_k": min(clamp_int(option_payload.get("planner_top_k"), 40, 0, 200), 20),
+                        "planner_repeat_penalty": max(clamp_float(option_payload.get("planner_repeat_penalty"), 1.1, 0.8, 2.0), 1.15),
+                        "planner_max_tokens": 8192,
+                        "planner_context_length": 32768,
+                    }
+                )
+                compact_current = _compact_prompt_assistant_current_payload(current_payload or {}, mode)
+                compact_current.pop("lyrics", None)
+                messages = [
+                    {"role": "system", "content": structured_system},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"USER REQUEST:\n{_compact_text_for_prompt(user_prompt, 1800)}\n\n"
+                            "CURRENT ACEJAM UI PAYLOAD JSON, extra-short retry context:\n"
+                            f"{json.dumps(_jsonable(compact_current), ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            "Return one closed JSON object only with top-level key `payload`."
+                        ),
+                    },
+                ]
+            response = local_llm_chat_completion_response(
                 provider,
-                planner_llm_settings or current_payload or {},
-                default_max_tokens=2048,
-                default_timeout=600.0,
-            ),
-        )
+                model,
+                messages,
+                options=planner_llm_options_for_provider(
+                    provider,
+                    option_payload,
+                    default_max_tokens=8192,
+                    default_timeout=600.0,
+                ),
+                json_schema=schema,
+            )
+            last_raw = str(response.get("content") or "")
+            if response.get("truncated") or str(response.get("done_reason") or "").lower() == "length":
+                last_error = "AI Fill response was truncated by the local LLM."
+                continue
+            try:
+                parsed, _ = _extract_prompt_assistant_json(last_raw, mode)
+                payload, _, _ = _unwrap_prompt_assistant_structured_payload(parsed)
+                if isinstance(payload, dict) and payload:
+                    return last_raw
+                last_error = "AI Fill returned an empty structured payload."
+            except Exception as parse_exc:
+                last_error = str(parse_exc)
+                continue
+        if "truncated" in last_error.lower() or "not closed" in last_error.lower() or "length" in last_error.lower():
+            raise RuntimeError("AI Fill response was truncated; increase Settings > Max output or shorten lyrics.") from None
+        preview = last_raw[:600].replace("\n", " ")
+        raise RuntimeError(f"AI Fill returned invalid JSON after structured retry: {last_error or 'unknown parse error'}. Preview: {preview}")
     except Exception as exc:
         if provider == "ollama" and _ollama_error_is_missing_model(exc):
             job = _start_ollama_pull(model, reason="AI Fill", kind="chat")
@@ -1235,6 +1815,67 @@ def _run_prompt_assistant_local(
 
 def _run_prompt_assistant_ollama(system_prompt: str, user_prompt: str, ollama_model: str, current_payload: dict[str, Any]) -> str:
     return _run_prompt_assistant_local(system_prompt, user_prompt, "ollama", ollama_model, current_payload)
+
+
+def _run_prompt_assistant_local_staged(
+    system_prompt: str,
+    user_prompt: str,
+    planner_provider: str,
+    planner_model: str,
+    current_payload: dict[str, Any],
+    planner_llm_settings: dict[str, Any] | None = None,
+    *,
+    mode: str = "custom",
+) -> str:
+    stages = _prompt_assistant_stage_specs(mode)
+    if not stages:
+        return _run_prompt_assistant_local(
+            system_prompt,
+            user_prompt,
+            planner_provider,
+            planner_model,
+            current_payload,
+            planner_llm_settings,
+            mode=mode,
+        )
+    combined_payload = dict(current_payload or {})
+    warnings: list[str] = []
+    stage_payloads: dict[str, Any] = {}
+    total = len(stages)
+    for index, (stage_id, instruction) in enumerate(stages):
+        stage_current = dict(current_payload or {})
+        stage_current["ai_fill_stage"] = stage_id
+        stage_current["previous_ai_payload"] = _compact_prompt_assistant_current_payload(combined_payload, mode)
+        raw = _run_prompt_assistant_local(
+            _prompt_assistant_stage_system_prompt(system_prompt, mode, stage_id, instruction, index, total),
+            user_prompt,
+            planner_provider,
+            planner_model,
+            stage_current,
+            planner_llm_settings,
+            mode=mode,
+        )
+        try:
+            parsed, _ = _extract_prompt_assistant_json(raw, mode)
+            stage_payload, stage_warnings, _ = _unwrap_prompt_assistant_structured_payload(parsed)
+        except Exception as exc:
+            raise PromptAssistantStageError(f"AI Fill stage `{stage_id}` returned invalid JSON: {exc}", raw) from exc
+        if not isinstance(stage_payload, dict) or not stage_payload:
+            raise PromptAssistantStageError(f"AI Fill stage `{stage_id}` returned an empty payload.", raw)
+        combined_payload = _merge_prompt_stage_payload(combined_payload, stage_payload)
+        if mode != "album":
+            _ensure_song_intent_payload(combined_payload, mode)
+        warnings.extend(stage_warnings)
+        stage_payloads[stage_id] = _compact_prompt_assistant_current_payload(combined_payload, mode)
+    return json.dumps(
+        {
+            "payload": combined_payload,
+            "warnings": _dedupe_prompt_values(warnings, limit=20),
+            "stage_payloads": stage_payloads,
+            "multi_pass": True,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _prompt_assistant_payload_from_official_writer(
@@ -1997,6 +2638,10 @@ def _song_public_url(song_id: str, filename: str) -> str:
 
 def _result_public_url(result_id: str, filename: str) -> str:
     return f"/media/results/{result_id}/{filename}"
+
+
+def _art_public_url(art_id: str, filename: str) -> str:
+    return f"/media/art/{safe_id(art_id)}/{filename}"
 
 
 def _model_slug(model_name: str) -> str:
@@ -2833,6 +3478,56 @@ def _is_embedding_model_name(name: str) -> bool:
     return bool(re.search(r"(embed|embedding|bge|e5|gte|nomic|jina|snowflake|mxbai|arctic)", name or "", re.IGNORECASE))
 
 
+def _is_image_generation_model_name(name: str) -> bool:
+    return bool(re.search(r"(^x/(?:z-image|flux)|\b(?:z-image|flux|imagegen|image-gen|text-to-image|txt2img|sdxl|stable-diffusion|qwen-image)\b)", name or "", re.IGNORECASE))
+
+
+def _is_vision_model_name(name: str) -> bool:
+    return bool(re.search(r"(vision|vl\b|llava|bakllava|moondream|minicpm-v|gemma3)", name or "", re.IGNORECASE))
+
+
+def _ollama_show_details_for_catalog(client: Any, name: str) -> dict[str, Any]:
+    try:
+        return _jsonable(client.show(name))
+    except Exception:
+        return {}
+
+
+def _ollama_capabilities_for_model(name: str, raw: dict[str, Any] | None = None) -> list[str]:
+    raw = raw if isinstance(raw, dict) else {}
+    caps: set[str] = set()
+    raw_caps = raw.get("capabilities")
+    if isinstance(raw_caps, list):
+        caps.update(str(item).strip().lower() for item in raw_caps if str(item).strip())
+    elif isinstance(raw_caps, dict):
+        caps.update(str(key).strip().lower() for key, value in raw_caps.items() if value)
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+    families = details.get("families") if isinstance(details.get("families"), list) else []
+    haystack = " ".join([name, str(details.get("family") or ""), " ".join(str(item) for item in families)]).lower()
+    if _is_embedding_model_name(name):
+        caps.add("embedding")
+    if _is_image_generation_model_name(name):
+        caps.add("image_generation")
+    if _is_vision_model_name(name) or "vision" in haystack or "vl" in haystack:
+        caps.add("vision")
+    if "embedding" not in caps and "image_generation" not in caps:
+        caps.add("chat")
+    return sorted(caps)
+
+
+def _ollama_kind_from_capabilities(name: str, capabilities: list[str]) -> str:
+    caps = set(capabilities or [])
+    if "embedding" in caps:
+        return "embedding"
+    if "image_generation" in caps:
+        return "image_generation"
+    if _is_embedding_model_name(name):
+        return "embedding"
+    if _is_image_generation_model_name(name):
+        return "image_generation"
+    return "chat"
+
+
 def _ollama_job_snapshot(job: dict[str, Any] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
     if job is not None:
         return _jsonable(dict(job))
@@ -2853,7 +3548,7 @@ def _ollama_pull_job(job_id_or_model: str) -> dict[str, Any] | None:
     return None
 
 
-def _ollama_model_catalog() -> dict[str, Any]:
+def _ollama_model_catalog(enrich: bool = False) -> dict[str, Any]:
     host = _ollama_host()
     try:
         client = _ollama_client()
@@ -2868,10 +3563,15 @@ def _ollama_model_catalog() -> dict[str, Any]:
             modified_at = _ollama_attr(item, "modified_at", "")
             digest = _ollama_attr(item, "digest", "")
             model_details = _ollama_attr(item, "details", {}) or {}
+            shown = _ollama_show_details_for_catalog(client, name) if enrich else {}
+            raw_caps = shown if shown else _jsonable(item)
+            capabilities = _ollama_capabilities_for_model(name, raw_caps if isinstance(raw_caps, dict) else {})
+            kind = _ollama_kind_from_capabilities(name, capabilities)
             details.append(
                 {
                     "name": name,
                     "model": name,
+                    "provider": "ollama",
                     "size": size,
                     "size_gb": round(size / 1e9, 2) if size else 0,
                     "modified_at": str(modified_at or ""),
@@ -2879,12 +3579,19 @@ def _ollama_model_catalog() -> dict[str, Any]:
                     "family": str(_ollama_attr(model_details, "family", "") or (model_details.get("family", "") if isinstance(model_details, dict) else "")),
                     "parameter_size": str(_ollama_attr(model_details, "parameter_size", "") or (model_details.get("parameter_size", "") if isinstance(model_details, dict) else "")),
                     "quantization_level": str(_ollama_attr(model_details, "quantization_level", "") or (model_details.get("quantization_level", "") if isinstance(model_details, dict) else "")),
-                    "kind": "embedding" if _is_embedding_model_name(name) else "chat",
+                    "format": str(_ollama_attr(model_details, "format", "") or (model_details.get("format", "") if isinstance(model_details, dict) else "")),
+                    "kind": kind,
+                    "type": "embedding" if kind == "embedding" else ("image_generation" if kind == "image_generation" else "llm"),
+                    "capabilities": capabilities,
+                    "vision": "vision" in capabilities,
+                    "image_generation": "image_generation" in capabilities,
+                    "raw_show": shown if enrich else {},
                 }
             )
         model_names = [item["name"] for item in details]
         embedding_models = [item["name"] for item in details if item["kind"] == "embedding"]
-        chat_models = [name for name in model_names if name not in set(embedding_models)]
+        image_models = [item["name"] for item in details if item["kind"] == "image_generation"]
+        chat_models = [item["name"] for item in details if item["kind"] == "chat"]
         running_models: list[str] = []
         if hasattr(client, "ps"):
             try:
@@ -2904,6 +3611,7 @@ def _ollama_model_catalog() -> dict[str, Any]:
             "models": model_names,
             "chat_models": chat_models,
             "embedding_models": embedding_models,
+            "image_models": image_models,
             "details": details,
             "running_models": running_models,
             "pull_jobs": _ollama_job_snapshot(),
@@ -2920,6 +3628,7 @@ def _ollama_model_catalog() -> dict[str, Any]:
             "models": [],
             "chat_models": [],
             "embedding_models": [],
+            "image_models": [],
             "details": [],
             "running_models": [],
             "pull_jobs": _ollama_job_snapshot(),
@@ -2940,6 +3649,115 @@ def _ollama_error_is_missing_model(exc: Exception) -> bool:
     status_code = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
     text = str(exc).lower()
     return status_code == 404 or "model" in text and ("not found" in text or "try pulling" in text or "pull model" in text)
+
+
+def _first_available_model(catalog: dict[str, Any], key: str, preferred: list[str] | None = None) -> str:
+    models = [str(item) for item in (catalog.get(key) or []) if str(item).strip()]
+    installed = set(models)
+    for item in preferred or []:
+        if item in installed:
+            return item
+    if key == "chat_models":
+        ranked = sorted(
+            models,
+            key=lambda name: (
+                0 if re.search(r"(charaf|mlx|qwen|gpt-oss|llama|gemma)", name, re.I) else 1,
+                len(name),
+                name,
+            ),
+        )
+        return ranked[0] if ranked else ""
+    return models[0] if models else ""
+
+
+def _local_llm_default_settings() -> dict[str, Any]:
+    try:
+        ollama_catalog = _ollama_model_catalog()
+    except Exception:
+        ollama_catalog = {"chat_models": [], "embedding_models": [], "image_models": []}
+    chat_model = _first_available_model(
+        ollama_catalog,
+        "chat_models",
+        [DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL],
+    )
+    embedding_model = _first_available_model(
+        ollama_catalog,
+        "embedding_models",
+        ALBUM_EMBEDDING_FALLBACK_MODELS,
+    )
+    art_model = _first_available_model(
+        ollama_catalog,
+        "image_models",
+        ["x/flux2-klein:4b", "x/flux2-klein", "x/z-image-turbo:latest", "x/z-image-turbo"],
+    )
+    planner = planner_llm_settings_from_payload({}, default_max_tokens=8192, default_timeout=600.0)
+    return {
+        "provider": "ollama",
+        "chat_model": chat_model,
+        "embedding_provider": "ollama",
+        "embedding_model": embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL,
+        "art_provider": "ollama",
+        "art_model": art_model,
+        "art_width": 1024,
+        "art_height": 1024,
+        "art_steps": 0,
+        "art_seed": "",
+        "art_negative_prompt": "low quality, blurry, distorted text, watermark, extra fingers",
+        "auto_single_art": False,
+        "auto_album_art": False,
+        "mlx_policy": "full_mlx" if _IS_APPLE_SILICON else "auto",
+        **planner,
+    }
+
+
+def _normalize_local_llm_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
+    defaults = _local_llm_default_settings()
+    source = payload if isinstance(payload, dict) else {}
+    merged = {**defaults, **{key: value for key, value in source.items() if value is not None}}
+    provider = normalize_provider(merged.get("provider") or defaults["provider"])
+    if provider not in {"ollama", "lmstudio", "ace_step_lm"}:
+        provider = "ollama"
+    embedding_provider = normalize_provider(merged.get("embedding_provider") or provider)
+    if embedding_provider == "ace_step_lm":
+        embedding_provider = "ollama"
+    planner = planner_llm_settings_from_payload(merged, default_max_tokens=8192, default_timeout=600.0)
+    normalized = {
+        **defaults,
+        **planner,
+        "provider": provider,
+        "chat_model": str(merged.get("chat_model") or merged.get("planner_model") or merged.get("ollama_model") or defaults["chat_model"] or "").strip(),
+        "embedding_provider": embedding_provider,
+        "embedding_model": str(merged.get("embedding_model") or defaults["embedding_model"] or "").strip(),
+        "art_provider": "ollama",
+        "art_model": str(merged.get("art_model") or defaults["art_model"] or "").strip(),
+        "art_width": clamp_int(merged.get("art_width"), defaults["art_width"], 256, 2048),
+        "art_height": clamp_int(merged.get("art_height"), defaults["art_height"], 256, 2048),
+        "art_steps": clamp_int(merged.get("art_steps"), defaults["art_steps"], 0, 100),
+        "art_seed": str(merged.get("art_seed") or "").strip(),
+        "art_negative_prompt": str(merged.get("art_negative_prompt") or defaults["art_negative_prompt"] or "").strip(),
+        "auto_single_art": parse_bool(merged.get("auto_single_art"), False),
+        "auto_album_art": parse_bool(merged.get("auto_album_art"), False),
+        "mlx_policy": "full_mlx" if _IS_APPLE_SILICON else str(merged.get("mlx_policy") or "auto"),
+    }
+    return _jsonable(normalized)
+
+
+def _load_local_llm_settings() -> dict[str, Any]:
+    try:
+        if LOCAL_LLM_SETTINGS_PATH.is_file():
+            raw = json.loads(LOCAL_LLM_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return _normalize_local_llm_settings(raw)
+    except Exception as exc:
+        print(f"[local_llm_settings] load failed: {exc}", flush=True)
+    return _normalize_local_llm_settings({})
+
+
+def _save_local_llm_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_local_llm_settings(payload)
+    LOCAL_LLM_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_LLM_SETTINGS_PATH.write_text(json.dumps(_jsonable(normalized), indent=2), encoding="utf-8")
+    return normalized
 
 
 def _set_ollama_pull_job(job_id: str, **updates: Any) -> dict[str, Any]:
@@ -3095,9 +3913,13 @@ def _resolve_ollama_model_selection(model_name: str, kind: str, context: str) ->
     catalog = _ollama_model_catalog()
     if not catalog.get("ready"):
         raise RuntimeError(catalog.get("error") or "Ollama is not running.")
-    key = "embedding_models" if kind == "embedding" else "chat_models"
+    key = "image_models" if kind == "image_generation" else ("embedding_models" if kind == "embedding" else "chat_models")
     models = [str(item) for item in (catalog.get(key) or []) if str(item).strip()]
-    preferred_models = ALBUM_EMBEDDING_FALLBACK_MODELS if kind == "embedding" else [DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL]
+    preferred_models = (
+        ["x/flux2-klein:4b", "x/flux2-klein", "x/z-image-turbo:latest", "x/z-image-turbo"]
+        if kind == "image_generation"
+        else (ALBUM_EMBEDDING_FALLBACK_MODELS if kind == "embedding" else [DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL])
+    )
     installed = set(models)
     for preferred in preferred_models:
         if preferred in installed:
@@ -3699,6 +4521,211 @@ def _merge_song_album_metadata(song_id: str, extra: dict[str, Any]) -> None:
         if song.get("id") == song_id:
             _feed_songs[index] = _decorate_song(meta)
             break
+
+
+def _decode_art_image_bytes(raw: dict[str, Any]) -> tuple[bytes, str]:
+    value = ""
+    if isinstance(raw, dict):
+        if raw.get("image"):
+            value = str(raw.get("image") or "")
+        elif isinstance(raw.get("images"), list) and raw["images"]:
+            value = str(raw["images"][0] or "")
+        elif raw.get("response") and str(raw.get("response")).startswith("data:image/"):
+            value = str(raw.get("response") or "")
+    if not value:
+        raise RuntimeError("Ollama did not return image bytes.")
+    ext = "png"
+    if value.startswith("data:image/"):
+        header, value = value.split(",", 1)
+        mime = header.split(";", 1)[0].split(":", 1)[-1]
+        if "jpeg" in mime or "jpg" in mime:
+            ext = "jpg"
+        elif "webp" in mime:
+            ext = "webp"
+    return base64.b64decode(value), ext
+
+
+def _art_prompt_from_body(body: dict[str, Any], settings: dict[str, Any]) -> str:
+    prompt = str(body.get("prompt") or "").strip()
+    if prompt:
+        return prompt
+    title = str(body.get("title") or body.get("album_title") or body.get("scope") or "AceJAM release").strip()
+    caption = str(body.get("caption") or body.get("tags") or body.get("album_concept") or "").strip()
+    scope = str(body.get("scope") or "single").strip().lower()
+    release_kind = "album cover" if scope == "album" else "single cover"
+    parts = [
+        f"Professional square {release_kind} for {title}",
+        caption,
+        "cinematic, music-industry cover art, high detail, no typography, no watermark",
+    ]
+    return ", ".join(part for part in parts if part)
+
+
+def _write_art_metadata(art_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    art_dir = _resolve_child(ART_DIR, safe_id(art_id))
+    art_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **_jsonable(metadata),
+        "art_id": safe_id(art_id),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (art_dir / "art.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
+def _attach_art_to_result(result_id: str, art: dict[str, Any]) -> None:
+    result_id = safe_id(str(result_id or ""))
+    if not result_id:
+        return
+    meta_path = _result_meta_path(result_id)
+    if not meta_path.is_file():
+        raise HTTPException(status_code=404, detail="Result not found")
+    meta = _load_result_meta(result_id)
+    meta["art"] = _jsonable(art)
+    meta["single_art"] = _jsonable(art)
+    for audio in meta.get("audios") or []:
+        if isinstance(audio, dict):
+            audio["art"] = _jsonable(art)
+            if audio.get("song_id"):
+                _merge_song_album_metadata(str(audio["song_id"]), {"art": art, "single_art": art})
+    meta_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
+
+
+def _attach_art_to_album_family(family_id: str, art: dict[str, Any]) -> None:
+    family_id = safe_id(str(family_id or ""))
+    if not family_id:
+        return
+    family_manifest = _load_album_manifest(family_id)
+    family_manifest["album_art"] = _jsonable(art)
+    for model_album in family_manifest.get("model_albums") or []:
+        if isinstance(model_album, dict):
+            model_album["album_art"] = _jsonable(art)
+            album_id = str(model_album.get("album_id") or "")
+            if not album_id:
+                continue
+            try:
+                album_manifest = _load_album_manifest(album_id)
+                album_manifest["album_art"] = _jsonable(art)
+                for track in album_manifest.get("tracks") or []:
+                    if isinstance(track, dict):
+                        track.setdefault("album_art", _jsonable(art))
+                _write_album_manifest(album_id, album_manifest)
+            except Exception as exc:
+                print(f"[art] album art attach skipped for {album_id}: {exc}", flush=True)
+    _write_album_manifest(family_id, family_manifest)
+
+
+def _generate_art_asset(body: dict[str, Any]) -> dict[str, Any]:
+    settings = _load_local_llm_settings()
+    scope = str(body.get("scope") or "single").strip().lower()
+    if scope not in {"single", "album", "test"}:
+        scope = "single"
+    model = str(body.get("model") or settings.get("art_model") or "").strip()
+    if not model:
+        raise RuntimeError("No Ollama image model selected. Install or choose one in Settings > Local AI Models & Settings.")
+    _ensure_ollama_model_or_start_pull(model, context=f"{scope} art generation", kind="image_generation")
+    prompt = _art_prompt_from_body(body, settings)
+    negative = str(body.get("negative_prompt") or settings.get("art_negative_prompt") or "").strip()
+    width = clamp_int(body.get("width"), int(settings.get("art_width") or 1024), 256, 2048)
+    height = clamp_int(body.get("height"), int(settings.get("art_height") or 1024), 256, 2048)
+    steps = clamp_int(body.get("steps"), int(settings.get("art_steps") or 0), 0, 100)
+    seed_text = str(body.get("seed") if body.get("seed") not in [None, ""] else settings.get("art_seed") or "").strip()
+    seed_value: int | None = None
+    if seed_text and seed_text.lower() not in {"random", "-1"}:
+        seed_value = clamp_int(seed_text, 0, 0, 2**31 - 1)
+    raw = ollama_generate_image(
+        model,
+        prompt,
+        width=width,
+        height=height,
+        steps=steps or None,
+        seed=seed_value,
+        negative_prompt=negative,
+    )
+    image_bytes, ext = _decode_art_image_bytes(raw)
+    art_id = uuid.uuid4().hex[:12]
+    filename = f"cover.{ext}"
+    art_dir = _resolve_child(ART_DIR, art_id)
+    art_dir.mkdir(parents=True, exist_ok=True)
+    (art_dir / filename).write_bytes(image_bytes)
+    metadata = _write_art_metadata(
+        art_id,
+        {
+            "scope": scope,
+            "model": model,
+            "prompt": prompt,
+            "negative_prompt": negative,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "seed": seed_value if seed_value is not None else "",
+            "filename": filename,
+            "url": _art_public_url(art_id, filename),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    if body.get("attach_to_result_id") or body.get("result_id"):
+        _attach_art_to_result(str(body.get("attach_to_result_id") or body.get("result_id")), metadata)
+    if body.get("attach_to_album_family_id") or body.get("album_family_id"):
+        _attach_art_to_album_family(str(body.get("attach_to_album_family_id") or body.get("album_family_id")), metadata)
+    return metadata
+
+
+def _maybe_auto_generate_single_art(result: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | None:
+    settings = _load_local_llm_settings()
+    if not parse_bool(settings.get("auto_single_art"), False):
+        return None
+    if isinstance(params.get("album_metadata"), dict) and params["album_metadata"].get("album_family_id"):
+        return None
+    result_id = str(result.get("result_id") or result.get("id") or "")
+    if not result_id:
+        return None
+    try:
+        return _generate_art_asset(
+            {
+                "scope": "single",
+                "title": params.get("title") or result.get("title") or "AceJAM single",
+                "caption": params.get("caption") or result.get("tags") or result.get("caption") or "",
+                "prompt": params.get("single_art_prompt") or "",
+                "attach_to_result_id": result_id,
+            }
+        )
+    except OllamaPullStarted as exc:
+        result.setdefault("payload_warnings", []).append(
+            f"Single art model {exc.model_name} was missing; pull started in Settings."
+        )
+    except Exception as exc:
+        result.setdefault("payload_warnings", []).append(f"Auto single art skipped: {exc}")
+    return None
+
+
+def _maybe_auto_generate_album_art(
+    family_id: str,
+    concept: str,
+    album_options: dict[str, Any],
+    logs: list[str],
+) -> dict[str, Any] | None:
+    settings = _load_local_llm_settings()
+    if not parse_bool(settings.get("auto_album_art"), False):
+        return None
+    try:
+        art = _generate_art_asset(
+            {
+                "scope": "album",
+                "album_title": safe_filename(str(concept or "AceJAM album")[:80], "AceJAM album"),
+                "album_concept": concept,
+                "caption": album_options.get("genre_prompt") or album_options.get("mood_vibe") or concept,
+                "prompt": album_options.get("album_art_prompt") or "",
+                "attach_to_album_family_id": family_id,
+            }
+        )
+        logs.append(f"Album art generated: {art.get('url')}")
+        return art
+    except OllamaPullStarted as exc:
+        logs.append(f"Album art model {exc.model_name} missing; pull started in Settings.")
+    except Exception as exc:
+        logs.append(f"Album art skipped: {exc}")
+    return None
 
 
 def _album_manifest_path(album_id: str) -> Path:
@@ -6259,6 +7286,19 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "audios": audios,
     }
     (result_dir / "result.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    auto_art_context = {
+        "result_id": result_id,
+        "title": params["title"],
+        "tags": params["caption"],
+        "payload_warnings": params["payload_warnings"],
+    }
+    single_art = _maybe_auto_generate_single_art(auto_art_context, params)
+    if single_art:
+        meta["single_art"] = _jsonable(single_art)
+        meta["art"] = _jsonable(single_art)
+        for audio in audios:
+            audio["art"] = _jsonable(single_art)
+        (result_dir / "result.json").write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
     return {
         "success": True,
         "result_id": result_id,
@@ -6295,6 +7335,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "recommended_take": recommended_take,
         "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
+        "single_art": _jsonable(single_art),
         "ace_step_text_budget": meta["ace_step_text_budget"],
         "use_lora": params["use_lora"],
         "lora_adapter_path": params["lora_adapter_path"],
@@ -6510,6 +7551,19 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "audios": audios,
     }
     (result_dir / "result.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    auto_art_context = {
+        "result_id": result_id,
+        "title": params["title"],
+        "tags": params["caption"],
+        "payload_warnings": params["payload_warnings"],
+    }
+    single_art = _maybe_auto_generate_single_art(auto_art_context, params)
+    if single_art:
+        meta["single_art"] = _jsonable(single_art)
+        meta["art"] = _jsonable(single_art)
+        for audio in audios:
+            audio["art"] = _jsonable(single_art)
+        (result_dir / "result.json").write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
     _result_extra_cache[result_id] = extra
     while len(_result_extra_cache) > 8:
         _result_extra_cache.pop(next(iter(_result_extra_cache)))
@@ -6548,6 +7602,7 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "recommended_take": recommended_take,
         "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
+        "single_art": _jsonable(single_art),
         "ace_step_text_budget": meta["ace_step_text_budget"],
         "time_costs": meta["time_costs"],
     }
@@ -7114,6 +8169,8 @@ def config() -> str:
                     "status": "installed" if lm_name in installed_lms else "download_required",
                 }
             )
+    local_llm_settings = _load_local_llm_settings()
+    lmstudio_catalog = lmstudio_model_catalog()
     return json.dumps(
         {
             "app_version": APP_UI_VERSION,
@@ -7127,15 +8184,18 @@ def config() -> str:
             "default_bpm": DEFAULT_BPM,
             "default_key_scale": DEFAULT_KEY_SCALE,
             "valid_keyscales": VALID_KEY_SCALES,
-            "default_planner_lm_provider": "ollama",
-            "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
-            "default_album_embedding_model": DEFAULT_ALBUM_EMBEDDING_MODEL,
-            "default_album_planner_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
-            "default_album_embedding_provider": "ollama",
+            "default_planner_lm_provider": local_llm_settings["provider"],
+            "default_album_planner_ollama_model": local_llm_settings["chat_model"] or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
+            "default_album_embedding_model": local_llm_settings["embedding_model"] or DEFAULT_ALBUM_EMBEDDING_MODEL,
+            "default_album_planner_model": local_llm_settings["chat_model"] or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
+            "default_album_embedding_provider": local_llm_settings["embedding_provider"],
             "local_llm": {
-                "default_provider": "ollama",
+                "default_provider": local_llm_settings["provider"],
                 "ollama_host": _ollama_host(),
-                "lmstudio_host": lmstudio_model_catalog().get("host", ""),
+                "lmstudio_host": lmstudio_catalog.get("host", ""),
+                "settings": local_llm_settings,
+                "mlx_policy": local_llm_settings.get("mlx_policy", "auto"),
+                "full_mlx": bool(_IS_APPLE_SILICON and str(local_llm_settings.get("mlx_policy")) == "full_mlx"),
             },
             "recommended_song_model": recommended_song_model(installed_models),
             "preferred_lm_model": ACE_LM_PREFERRED_MODEL,
@@ -7203,6 +8263,7 @@ def generate_album(
             concept = recovered_concept
             request_payload["concept"] = recovered_concept
             request_payload.setdefault("user_prompt", recovered_concept)
+        global_llm_settings = _load_local_llm_settings()
         request_payload = _album_ace_lm_disabled_payload(request_payload)
         ace_lm_model = "none"
         request_payload["ace_lm_model"] = "none"
@@ -7234,9 +8295,9 @@ def generate_album(
         embedding_lm_provider = _embedding_provider_from_payload(request_payload, embedding_lm_provider or "ollama")
         request_payload["embedding_lm_provider"] = embedding_lm_provider
         if not ollama_model:
-            ollama_model = DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_lm_provider == "ollama" else ""
+            ollama_model = str(global_llm_settings.get("chat_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_lm_provider == "ollama" else ""))
         if not embedding_model:
-            embedding_model = DEFAULT_ALBUM_EMBEDDING_MODEL
+            embedding_model = str(global_llm_settings.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
         track_duration = parse_duration_seconds(request_payload.get("track_duration") or request_payload.get("duration") or track_duration, track_duration)
         album_options = _album_options_from_payload(request_payload, song_model=song_model)
         planning_engine = str(album_options.get("agent_engine") or "acejam_agents")
@@ -8010,6 +9071,11 @@ def generate_album(
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        album_art = _maybe_auto_generate_album_art(album_family_id, concept, album_options, logs)
+        if album_art:
+            family_manifest["album_art"] = _jsonable(album_art)
+            for model_album in model_albums:
+                model_album["album_art"] = _jsonable(album_art)
         logs.append("---")
         logs.append(f"Album family {album_status}: {generated_count}/{expected_count} track/model renders generated.")
         if failed_summary:
@@ -8046,6 +9112,7 @@ def generate_album(
             "final_song_model": "all_models_album" if strategy == "all_models_album" else (album_models[0]["model"] if album_models else ALBUM_FINAL_MODEL),
             "family_download_url": f"/api/album-families/{album_family_id}/download",
             "manifest": family_manifest,
+            "album_art": _jsonable(album_art),
             "toolkit": result.get("toolkit", _songwriting_toolkit_payload()),
             "toolkit_report": result.get("toolkit_report", {}),
             "planner_model": ollama_model,
@@ -9328,17 +10395,18 @@ async def api_album_plan(request: Request):
 async def api_create_album_plan_job(request: Request):
     try:
         body = _album_ace_lm_disabled_payload(await request.json())
+        global_llm_settings = _load_local_llm_settings()
         planner_provider = _album_planner_provider_from_payload(body)
         embedding_provider = _embedding_provider_from_payload(body)
         planner_model = _resolve_local_llm_model_selection(
             planner_provider,
-            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
+            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or ""),
             "chat",
             "album planning",
         )
         embedding_model = _resolve_local_llm_model_selection(
             embedding_provider,
-            str(body.get("embedding_model") or ""),
+            str(body.get("embedding_model") or global_llm_settings.get("embedding_model") or ""),
             "embedding",
             "album embeddings",
         )
@@ -9417,42 +10485,129 @@ async def api_ollama_models_rich():
     return JSONResponse(_ollama_model_catalog())
 
 
+def _ace_step_lm_catalog() -> dict[str, Any]:
+    lm_models = sorted(_installed_lm_models())
+    writer_models = [name for name in lm_models if name not in {"auto", "none"}]
+    details = []
+    for name in writer_models:
+        profile = lm_model_profiles_for_models([name], set(lm_models)).get(name, {})
+        details.append(
+            {
+                "name": name,
+                "model": name,
+                "provider": "ace_step_lm",
+                "kind": "chat",
+                "type": "official_ace_step_5hz_lm",
+                "format": "mlx" if _IS_APPLE_SILICON else "pt",
+                "capabilities": ["audio_understanding", "composition", "metadata", "caption", "language"],
+                "mlx_preferred": _IS_APPLE_SILICON,
+                "loaded": False,
+                "status": profile.get("status") or ("installed" if name in lm_models else "download_required"),
+                "profile": _jsonable(profile),
+            }
+        )
+    return {
+        "success": True,
+        "ready": bool(writer_models),
+        "provider": "ace_step_lm",
+        "provider_label": "ACE-Step 5Hz LM",
+        "host": "local official runner",
+        "models": writer_models,
+        "chat_models": writer_models,
+        "embedding_models": [],
+        "image_models": [],
+        "details": details,
+        "loaded_models": [],
+        "running_models": [],
+        "error": "" if writer_models else "No ACE-Step 5Hz LM model is installed.",
+    }
+
+
+def _combined_local_llm_catalog(enrich: bool = False) -> dict[str, Any]:
+    settings = _load_local_llm_settings()
+    ollama = _ollama_model_catalog(enrich=enrich)
+    lmstudio = lmstudio_model_catalog()
+    ace_writer = _ace_step_lm_catalog()
+    catalogs = {
+        "ollama": ollama,
+        "lmstudio": lmstudio,
+        "ace_step_lm": ace_writer,
+    }
+    all_details: list[dict[str, Any]] = []
+    for provider, catalog in catalogs.items():
+        for item in catalog.get("details") or []:
+            row = dict(item)
+            row.setdefault("provider", provider)
+            row["key"] = f"{provider}:{row.get('name') or row.get('model')}"
+            row.setdefault("display_name", row.get("name") or row.get("model") or row["key"])
+            if provider == "lmstudio" and str(row.get("format") or "").lower() == "mlx":
+                row["mlx_preferred"] = True
+            if provider == "ollama" and _IS_APPLE_SILICON:
+                row.setdefault("mlx_hint", "Ollama uses Apple GPU acceleration when the installed model/backend supports it.")
+            all_details.append(row)
+    return {
+        "success": True,
+        "settings": settings,
+        "mlx": {
+            "apple_silicon": _IS_APPLE_SILICON,
+            "ace_step_lm_backend": ACE_LM_BACKEND_DEFAULT,
+            "policy": settings.get("mlx_policy", "auto"),
+            "label": "Full MLX" if _IS_APPLE_SILICON else "Auto",
+        },
+        "providers": [
+            {"id": "ollama", "label": "Ollama", "host": ollama.get("ollama_host") or _ollama_host(), "ready": bool(ollama.get("ready"))},
+            {"id": "lmstudio", "label": "LM Studio", "host": lmstudio.get("host", ""), "ready": bool(lmstudio.get("ready"))},
+            {"id": "ace_step_lm", "label": "ACE-Step 5Hz LM", "host": "local official runner", "ready": bool(ace_writer.get("ready"))},
+        ],
+        "catalogs": catalogs,
+        "details": all_details,
+        "models": [item["key"] for item in all_details],
+        "chat_models": [item["key"] for item in all_details if item.get("kind") == "chat"],
+        "embedding_models": [item["key"] for item in all_details if item.get("kind") == "embedding"],
+        "image_models": [item["key"] for item in all_details if item.get("kind") == "image_generation"],
+    }
+
+
+@app.get("/api/local-llm/settings")
+async def api_local_llm_settings():
+    return JSONResponse({"success": True, "settings": _load_local_llm_settings()})
+
+
+@app.post("/api/local-llm/settings")
+async def api_save_local_llm_settings(request: Request):
+    try:
+        body = await request.json()
+        settings = _save_local_llm_settings(body if isinstance(body, dict) else {})
+        return JSONResponse({"success": True, "settings": settings})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/local-llm/catalog")
+async def api_local_llm_catalog(enrich: bool = False):
+    return JSONResponse(_combined_local_llm_catalog(enrich=enrich))
+
+
 @app.get("/api/local-llm/providers")
 async def api_local_llm_providers():
+    catalog = _combined_local_llm_catalog(enrich=False)
     return JSONResponse(
         {
             "success": True,
-            "default_provider": "ollama",
-            "providers": [
-                {"id": "ollama", "label": "Ollama", "host": _ollama_host(), "ready": _ollama_model_catalog().get("ready", False)},
-                {"id": "lmstudio", "label": "LM Studio", "host": lmstudio_model_catalog().get("host", ""), "ready": lmstudio_model_catalog().get("ready", False)},
-                {"id": "ace_step_lm", "label": "ACE-Step 5Hz LM", "host": "local official runner", "ready": bool(_installed_lm_models() - {"none", "auto"})},
-            ],
+            "default_provider": catalog.get("settings", {}).get("provider") or "ollama",
+            "settings": catalog.get("settings", {}),
+            "providers": catalog.get("providers", []),
         }
     )
 
 
 @app.get("/api/local-llm/models")
-async def api_local_llm_models(provider: str = "ollama"):
+async def api_local_llm_models(provider: str = "ollama", enrich: bool = False):
     provider_name = normalize_provider(provider)
     if provider_name == "ace_step_lm":
-        lm_models = sorted(_installed_lm_models())
-        writer_models = [name for name in lm_models if name not in {"auto", "none"}]
-        return JSONResponse(
-            {
-                "ready": bool(writer_models),
-                "provider": "ace_step_lm",
-                "provider_label": "ACE-Step 5Hz LM",
-                "host": "local official runner",
-                "models": writer_models,
-                "chat_models": writer_models,
-                "embedding_models": [],
-                "details": [{"name": name, "type": "official_ace_step_5hz_lm", "loaded": False} for name in writer_models],
-                "error": "" if writer_models else "No ACE-Step 5Hz LM model is installed.",
-            }
-        )
+        return JSONResponse(_ace_step_lm_catalog())
     if provider_name == "ollama":
-        data = _ollama_model_catalog()
+        data = _ollama_model_catalog(enrich=enrich)
         data["provider"] = "ollama"
         data["provider_label"] = "Ollama"
         data["host"] = data.get("ollama_host") or _ollama_host()
@@ -9545,6 +10700,20 @@ async def api_local_llm_download_status(job_id: str, provider: str = "lmstudio")
                 return JSONResponse({"success": False, "error": "Ollama pull job not found."}, status_code=404)
             return JSONResponse({"success": True, "provider": "ollama", "job": job})
         return JSONResponse(lmstudio_download_status(job_id))
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/art/generate")
+async def api_generate_art(request: Request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        art = _generate_art_asset(body)
+        return JSONResponse({"success": True, "art": _jsonable(art)})
+    except OllamaPullStarted as exc:
+        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "art generation"))
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
@@ -9673,8 +10842,19 @@ async def api_prompt_assistant_run(request: Request):
             return JSONResponse({"success": False, "error": "Prompt is empty.", "raw_text": ""}, status_code=400)
         current_payload = body.get("current_payload") if isinstance(body.get("current_payload"), dict) else {}
         planner_provider = _writer_provider_from_payload(body)
-        planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
-        planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0)
+        global_llm_settings = _load_local_llm_settings()
+        planner_model = str(
+            body.get("planner_model")
+            or body.get("planner_ollama_model")
+            or body.get("ollama_model")
+            or global_llm_settings.get("chat_model")
+            or ""
+        ).strip()
+        planner_settings = planner_llm_settings_from_payload(
+            {**global_llm_settings, **body},
+            default_max_tokens=8192,
+            default_timeout=600.0,
+        )
         if planner_provider == "ace_step_lm":
             if mode == "album":
                 return JSONResponse(
@@ -9684,22 +10864,31 @@ async def api_prompt_assistant_run(request: Request):
                         "raw_text": "",
                         "warnings": [],
                     },
-                    status_code=400,
-                )
+                status_code=400,
+            )
             parsed_payload, raw_text = _prompt_assistant_payload_from_official_writer(mode, user_prompt, current_payload, body)
             paste_blocks = []
+            structured_warnings: list[str] = []
         else:
             system_prompt = _prompt_assistant_system_prompt(mode)
-            raw_text = _run_prompt_assistant_local(
+            raw_text = _run_prompt_assistant_local_staged(
                 system_prompt,
                 user_prompt,
                 planner_provider,
                 planner_model,
                 current_payload,
                 planner_settings,
+                mode=mode,
             )
             parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
+            parsed_payload, structured_warnings, structured_paste_blocks = _unwrap_prompt_assistant_structured_payload(parsed_payload)
+            if structured_paste_blocks:
+                paste_blocks = structured_paste_blocks
         payload, warnings = _normalize_prompt_assistant_payload(mode, parsed_payload, body)
+        if structured_warnings:
+            warnings.extend(structured_warnings)
+        if not paste_blocks:
+            paste_blocks = _server_paste_blocks_from_payload(payload, mode)
         validation = None
         if mode not in {"album", "trainer"}:
             try:
@@ -9722,7 +10911,21 @@ async def api_prompt_assistant_run(request: Request):
     except OllamaPullStarted as exc:
         return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "AI Fill", raw_text=raw_text, warnings=[]))
     except Exception as exc:
-        return JSONResponse({"success": False, "error": str(exc), "raw_text": raw_text, "warnings": []}, status_code=400)
+        if isinstance(exc, PromptAssistantStageError) and not raw_text:
+            raw_text = exc.raw_text
+        error_text = str(exc)
+        if "JSON object was not closed" in error_text or "Expecting" in error_text and raw_text:
+            error_text = "AI Fill response was truncated; increase Settings > Max output or shorten lyrics."
+        return JSONResponse(
+            {
+                "success": False,
+                "error": error_text,
+                "raw_text": raw_text,
+                "raw_preview": raw_text[:1200],
+                "warnings": [],
+            },
+            status_code=400,
+        )
 
 
 @app.post("/api/delete_song")
@@ -9770,8 +10973,9 @@ async def api_compose(request: Request):
                 }
             )
             return JSONResponse(_run_official_lm_aux("create_sample", official_body))
-        planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or "").strip()
-        planner_settings = planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0)
+        global_llm_settings = _load_local_llm_settings()
+        planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or "").strip()
+        planner_settings = planner_llm_settings_from_payload({**global_llm_settings, **body}, default_max_tokens=8192, default_timeout=600.0)
         raw = compose(
             description=str(body.get("description") or ""),
             audio_duration=float(body.get("audio_duration") or body.get("duration") or 60.0),
@@ -9796,22 +11000,25 @@ async def api_create_sample(request: Request):
         use_official = parse_bool(body.get("use_official_lm"), _requested_ace_lm_model(body) != "none")
         if use_official:
             return JSONResponse(_run_official_lm_aux("create_sample", body))
+        global_llm_settings = _load_local_llm_settings()
+        provider = _writer_provider_from_payload(body)
+        planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or "").strip()
         raw = compose(
             description=str(body.get("query") or body.get("description") or body.get("caption") or ""),
             audio_duration=float(body.get("duration") or 60.0),
             composer_profile="auto",
             instrumental=parse_bool(body.get("instrumental"), False),
             ollama_model=str(body.get("ollama_model") or ""),
-            planner_lm_provider=str(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama"),
-            planner_model=str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
-            planner_llm_settings=planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0),
+            planner_lm_provider=provider,
+            planner_model=planner_model,
+            planner_llm_settings=planner_llm_settings_from_payload({**global_llm_settings, **body}, default_max_tokens=8192, default_timeout=600.0),
         )
         data = json.loads(raw)
         data["artist_name"] = normalize_artist_name(
             body.get("artist_name") or data.get("artist_name"),
             derive_artist_name(data.get("title") or "", body.get("description") or body.get("caption") or "", data.get("tags") or ""),
         )
-        return JSONResponse({"success": True, "engine": normalize_provider(body.get("planner_lm_provider") or "ollama"), **data})
+        return JSONResponse({"success": True, "engine": provider, **data})
     except ModelDownloadStarted as exc:
         return JSONResponse(_download_started_payload(exc.model_name, exc.job))
     except OllamaPullStarted as exc:
@@ -10926,6 +12133,14 @@ async def media(song_id: str, filename: str):
 @app.get("/media/results/{result_id}/{filename}")
 async def result_media(result_id: str, filename: str):
     target = _resolve_child(RESULTS_DIR, safe_id(result_id), filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target, filename=target.name)
+
+
+@app.get("/media/art/{art_id}/{filename}")
+async def art_media(art_id: str, filename: str):
+    target = _resolve_child(ART_DIR, safe_id(art_id), filename)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(target, filename=target.name)

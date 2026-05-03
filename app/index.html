@@ -259,7 +259,8 @@
     body.mode-library #ai-fill-panel,
     body.mode-settings #ai-fill-panel,
     body.mode-lora #local-ai-panel,
-    body.mode-library #local-ai-panel { display: none; }
+    body.mode-library #local-ai-panel,
+    body:not(.mode-settings) #local-ai-panel { display: none; }
     body.mode-album #song-intent-builder,
     body.mode-lora #song-intent-builder,
     body.mode-library #song-intent-builder,
@@ -1286,7 +1287,7 @@
       <details class="section-block disclosure assistant-panel local-ai-panel" id="local-ai-panel" open>
         <summary>
           <span class="disclosure-title">
-            <strong>Local AI Writer/Planner</strong>
+            <strong>Global Local AI Settings</strong>
             <small id="planner-settings-summary">Balanced planner settings</small>
           </span>
         </summary>
@@ -1303,6 +1304,21 @@
             <div>
               <label for="ollama-model">Writer / planner model</label>
               <select id="ollama-model"></select>
+            </div>
+            <div>
+              <label for="embedding-provider">Embedding engine</label>
+              <select id="embedding-provider">
+                <option value="ollama" selected>Ollama</option>
+                <option value="lmstudio">LM Studio</option>
+              </select>
+            </div>
+            <div>
+              <label for="embedding-model">Embedding model</label>
+              <select id="embedding-model"></select>
+            </div>
+            <div>
+              <label for="art-model">Ollama art model</label>
+              <select id="art-model"></select>
             </div>
             <div>
               <label for="planner-creativity-preset">Preset</label>
@@ -1345,16 +1361,38 @@
                 </div>
                 <div>
                   <label for="planner-max-tokens">Max output</label>
-                  <input id="planner-max-tokens" type="number" min="128" max="8192" step="128" value="2048" />
+                  <input id="planner-max-tokens" type="number" min="128" max="8192" step="128" value="8192" />
                 </div>
                 <div>
                   <label for="planner-context-length">Context</label>
-                  <input id="planner-context-length" type="number" min="2048" max="32768" step="1024" value="8192" />
+                  <input id="planner-context-length" type="number" min="2048" max="32768" step="1024" value="32768" />
                 </div>
                 <div>
                   <label for="planner-timeout">Timeout sec</label>
                   <input id="planner-timeout" type="number" min="30" max="1800" step="30" value="600" />
                 </div>
+                <div>
+                  <label for="art-width">Art width</label>
+                  <input id="art-width" type="number" min="256" max="2048" step="64" value="1024" />
+                </div>
+                <div>
+                  <label for="art-height">Art height</label>
+                  <input id="art-height" type="number" min="256" max="2048" step="64" value="1024" />
+                </div>
+                <div>
+                  <label for="art-steps">Art steps</label>
+                  <input id="art-steps" type="number" min="0" max="100" step="1" value="0" />
+                </div>
+                <div>
+                  <label for="art-seed">Art seed</label>
+                  <input id="art-seed" type="text" placeholder="random" />
+                </div>
+                <div class="span-2">
+                  <label for="art-negative-prompt">Art negative prompt</label>
+                  <input id="art-negative-prompt" type="text" placeholder="low quality, blurry, watermark" />
+                </div>
+                <label class="check"><input id="auto-single-art" type="checkbox" /> Auto single art</label>
+                <label class="check"><input id="auto-album-art" type="checkbox" /> Auto album art</label>
               </div>
             </div>
           </details>
@@ -2719,6 +2757,7 @@
               <span class="badge" id="ollama-manager-badge">Checking</span>
             </div>
             <div class="muted-line" id="ollama-manager-summary">Loading local LLM models...</div>
+            <div id="settings-local-ai-slot"></div>
             <div class="mini-grid" style="margin-top:10px;">
               <div class="control-note" id="local-llm-provider-summary">Model manager uses the Local AI provider selected above.</div>
               <div>
@@ -2730,6 +2769,7 @@
                 <select id="ollama-pull-kind">
                   <option value="chat">Chat / writer</option>
                   <option value="embedding">Embedding</option>
+                  <option value="image_generation">Image generation</option>
                 </select>
               </div>
             </div>
@@ -2750,6 +2790,7 @@
               <button class="secondary" id="local-llm-unload-btn">Unload</button>
               <button class="secondary" id="ollama-test-chat-btn">Test writer</button>
               <button class="secondary" id="ollama-test-embed-btn">Test embedding</button>
+              <button class="secondary" id="ollama-test-art-btn">Test art</button>
             </div>
             <div class="control-note" id="ollama-manager-help">Selectors use local Ollama or LM Studio models. LM Studio requires the local server running at localhost:1234.</div>
             <pre id="ollama-manager-log" style="max-height:220px; overflow:auto;">Local LLM status appears here.</pre>
@@ -2951,6 +2992,10 @@
       modelDownloadTimers: {},
       ollama: null,
       lmstudio: null,
+      aceStepWriter: null,
+      localLlmCatalog: null,
+      localLlmSettings: null,
+      localLlmSettingsTimer: null,
       localLlmProvider: "ollama",
       localLlmDownloadJobs: {},
       localLlmDownloadTimers: {},
@@ -3008,21 +3053,66 @@
       if (normalized === "ace_step_lm") return "ACE-Step 5Hz LM";
       return normalized === "lmstudio" ? "LM Studio" : "Ollama";
     };
+    function mountLocalAiSettingsPanel() {
+      const slot = $("settings-local-ai-slot");
+      const panel = $("local-ai-panel");
+      if (slot && panel && panel.parentElement !== slot) slot.appendChild(panel);
+    }
+    function collectLocalLlmSettings() {
+      return {
+        provider: normalizeProvider($("planner-provider")?.value || state.localLlmSettings?.provider || state.config?.local_llm?.default_provider || "ollama"),
+        chat_model: $("ollama-model")?.value || state.localLlmSettings?.chat_model || "",
+        embedding_provider: normalizeProvider($("embedding-provider")?.value || state.localLlmSettings?.embedding_provider || "ollama"),
+        embedding_model: $("embedding-model")?.value || state.localLlmSettings?.embedding_model || "",
+        art_model: $("art-model")?.value || state.localLlmSettings?.art_model || "",
+        art_width: Math.round(clampNumber($("art-width")?.value, 1024, 256, 2048)),
+        art_height: Math.round(clampNumber($("art-height")?.value, 1024, 256, 2048)),
+        art_steps: Math.round(clampNumber($("art-steps")?.value, 0, 0, 100)),
+        art_seed: String($("art-seed")?.value || "").trim(),
+        art_negative_prompt: String($("art-negative-prompt")?.value || "").trim(),
+        auto_single_art: Boolean($("auto-single-art")?.checked),
+        auto_album_art: Boolean($("auto-album-art")?.checked),
+        ...plannerSettingsForMode(state.mode)
+      };
+    }
+    function applyLocalLlmSettings(settings = {}) {
+      state.localLlmSettings = { ...(state.localLlmSettings || {}), ...(settings || {}) };
+      const saved = state.localLlmSettings;
+      if ($("planner-provider")) $("planner-provider").value = normalizeProvider(saved.provider || "ollama");
+      if ($("embedding-provider")) $("embedding-provider").value = normalizeProvider(saved.embedding_provider || "ollama");
+      if ($("planner-creativity-preset")) $("planner-creativity-preset").value = PLANNER_LLM_PRESETS[saved.planner_creativity_preset] ? saved.planner_creativity_preset : "balanced";
+      if ($("planner-temperature")) $("planner-temperature").value = saved.planner_temperature ?? 0.45;
+      if ($("planner-top-p")) $("planner-top-p").value = saved.planner_top_p ?? 0.92;
+      if ($("planner-top-k")) $("planner-top-k").value = saved.planner_top_k ?? 40;
+      if ($("planner-repeat-penalty")) $("planner-repeat-penalty").value = saved.planner_repeat_penalty ?? 1.1;
+      if ($("planner-seed")) $("planner-seed").value = saved.planner_seed ?? "";
+      if ($("planner-max-tokens")) $("planner-max-tokens").value = saved.planner_max_tokens ?? 8192;
+      if ($("planner-context-length")) $("planner-context-length").value = saved.planner_context_length ?? 32768;
+      if ($("planner-timeout")) $("planner-timeout").value = saved.planner_timeout ?? 600;
+      if ($("art-width")) $("art-width").value = saved.art_width ?? 1024;
+      if ($("art-height")) $("art-height").value = saved.art_height ?? 1024;
+      if ($("art-steps")) $("art-steps").value = saved.art_steps ?? 0;
+      if ($("art-seed")) $("art-seed").value = saved.art_seed ?? "";
+      if ($("art-negative-prompt")) $("art-negative-prompt").value = saved.art_negative_prompt ?? "low quality, blurry, distorted text, watermark";
+      if ($("auto-single-art")) $("auto-single-art").checked = Boolean(saved.auto_single_art);
+      if ($("auto-album-art")) $("auto-album-art").checked = Boolean(saved.auto_album_art);
+      updatePlannerSettingsSummary();
+    }
     const plannerProviderForMode = (mode = state.mode) => {
-      const provider = normalizeProvider($("planner-provider")?.value || state.config?.local_llm?.default_provider || "ollama");
+      const provider = normalizeProvider($("planner-provider")?.value || state.localLlmSettings?.provider || state.config?.local_llm?.default_provider || "ollama");
       return mode === "album" && provider === "ace_step_lm" ? "ollama" : provider;
     };
-    const embeddingProviderForAlbum = () => "ollama";
+    const embeddingProviderForAlbum = () => normalizeProvider($("embedding-provider")?.value || state.localLlmSettings?.embedding_provider || "ollama") === "ace_step_lm" ? "ollama" : normalizeProvider($("embedding-provider")?.value || state.localLlmSettings?.embedding_provider || "ollama");
     const selectedPlannerModelForMode = (mode = state.mode) => {
       if (mode === "album" && normalizeProvider($("planner-provider")?.value) === "ace_step_lm") {
-        return state.config?.default_album_planner_ollama_model || "";
+        return state.localLlmSettings?.chat_model || state.config?.default_album_planner_ollama_model || "";
       }
       const provider = plannerProviderForMode(mode);
-      if (provider === "ace_step_lm") return $("ollama-model")?.value || state.config?.preferred_lm_model || DEFAULT_ACE_LM_MODEL;
-      return $("ollama-model")?.value || "";
+      if (provider === "ace_step_lm") return $("ollama-model")?.value || state.localLlmSettings?.chat_model || state.config?.preferred_lm_model || DEFAULT_ACE_LM_MODEL;
+      return $("ollama-model")?.value || state.localLlmSettings?.chat_model || "";
     };
     const selectedAlbumEmbeddingModel = () => {
-      return state.config?.default_album_embedding_model || "nomic-embed-text:latest";
+      return $("embedding-model")?.value || state.localLlmSettings?.embedding_model || state.config?.default_album_embedding_model || "nomic-embed-text:latest";
     };
     const PLANNER_LLM_PRESETS = {
       stable: { planner_temperature: 0.2, planner_top_p: 0.85, planner_top_k: 20, planner_repeat_penalty: 1.15 },
@@ -3056,8 +3146,8 @@
         planner_top_k: Math.round(clampNumber($("planner-top-k")?.value, 40, 0, 200)),
         planner_repeat_penalty: clampNumber($("planner-repeat-penalty")?.value, 1.1, 0.8, 2),
         planner_seed: String($("planner-seed")?.value || "").trim(),
-        planner_max_tokens: Math.round(clampNumber($("planner-max-tokens")?.value, 2048, 128, 8192)),
-        planner_context_length: Math.round(clampNumber($("planner-context-length")?.value, 8192, 2048, 32768)),
+        planner_max_tokens: Math.round(clampNumber($("planner-max-tokens")?.value, 8192, 128, 8192)),
+        planner_context_length: Math.round(clampNumber($("planner-context-length")?.value, 32768, 2048, 32768)),
         planner_timeout: clampNumber($("planner-timeout")?.value, 600, 30, 1800)
       };
     }
@@ -3082,9 +3172,15 @@
       if ($("local-llm-provider-summary")) $("local-llm-provider-summary").textContent = `Model manager uses the same Local AI provider: ${provider}.`;
     }
     function persistPlannerSettings() {
+      const settings = collectLocalLlmSettings();
+      state.localLlmSettings = settings;
       try {
-        localStorage.setItem(PLANNER_SETTINGS_STORAGE_KEY, JSON.stringify(plannerSettingsForMode()));
+        localStorage.setItem(PLANNER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
       } catch {}
+      clearTimeout(state.localLlmSettingsTimer);
+      state.localLlmSettingsTimer = setTimeout(() => {
+        api("/api/local-llm/settings", settings).catch((err) => setStatus(err.message, "error"));
+      }, 250);
       updatePlannerSettingsSummary();
       renderAlbumPayloadReview();
     }
@@ -3098,9 +3194,10 @@
         if ($("planner-top-k")) $("planner-top-k").value = saved.planner_top_k ?? 40;
         if ($("planner-repeat-penalty")) $("planner-repeat-penalty").value = saved.planner_repeat_penalty ?? 1.1;
         if ($("planner-seed")) $("planner-seed").value = saved.planner_seed ?? "";
-        if ($("planner-max-tokens")) $("planner-max-tokens").value = saved.planner_max_tokens ?? 2048;
-        if ($("planner-context-length")) $("planner-context-length").value = saved.planner_context_length ?? 8192;
+        if ($("planner-max-tokens")) $("planner-max-tokens").value = saved.planner_max_tokens ?? 8192;
+        if ($("planner-context-length")) $("planner-context-length").value = saved.planner_context_length ?? 32768;
         if ($("planner-timeout")) $("planner-timeout").value = saved.planner_timeout ?? 600;
+        applyLocalLlmSettings(saved);
       }
       updatePlannerSettingsSummary();
     }
@@ -3242,6 +3339,16 @@
       if (fallback && options.some((option) => intentOptionValue(option) === fallback)) return fallback;
       const fallbackFound = fallback ? findIntentOption(group, fallback) : null;
       return fallbackFound ? intentOptionValue(fallbackFound) : intentOptionValue(options[0]);
+    }
+
+    function resolveIntentKnownOptionValue(group, value) {
+      const direct = String(value || "").trim();
+      const options = intentOptionsForGroup(group);
+      if (!direct) return "";
+      if (!options.length) return direct;
+      if (options.some((option) => intentOptionValue(option) === direct)) return direct;
+      const found = findIntentOption(group, direct);
+      return found ? intentOptionValue(found) : "";
     }
 
     function collectIntentRenderSnapshot() {
@@ -3522,13 +3629,18 @@
     function setIntentSelectValue(id, value, group) {
       const select = $(id);
       if (!select || value === undefined || value === null || value === "") return;
-      const resolved = resolveIntentOptionValue(group || select.dataset.intentControl || "", value, value);
+      const resolved = resolveIntentKnownOptionValue(group || select.dataset.intentControl || "", value);
       if ([...select.options].some((option) => option.value === resolved)) select.value = resolved;
     }
 
     function setIntentGroupValues(group, values) {
-      const wanted = uniqueIntentTags(Array.isArray(values) ? values : splitIntentTags(values), 1000)
-        .map((value) => resolveIntentOptionValue(group, value, value).toLowerCase());
+      const flattenValues = (items) => (Array.isArray(items) ? items : [items]).flatMap((item) => {
+        if (Array.isArray(item)) return flattenValues(item);
+        return splitIntentTags(item);
+      });
+      const wanted = uniqueIntentTags(flattenValues(values), 1000)
+        .map((value) => resolveIntentKnownOptionValue(group, value).toLowerCase())
+        .filter(Boolean);
       if (!wanted.length) return;
       document.querySelectorAll(`[data-intent-chip][data-intent-group="${CSS.escape(group)}"]`).forEach((button) => {
         button.classList.toggle("selected", wanted.includes((button.dataset.intentValue || "").toLowerCase()));
@@ -4218,9 +4330,10 @@
       badge.textContent = ready ? `${providerLabel(provider)} ready` : `${providerLabel(provider)} offline`;
       const chat = data?.chat_models || [];
       const embed = data?.embedding_models || [];
+      const image = data?.image_models || [];
       const running = data?.running_models || data?.loaded_models || [];
       summary.textContent = ready
-        ? `${chat.length} writer chat model(s), ${embed.length} memory embedding option(s). Host: ${data.host || data.ollama_host || data.lmstudio_host || ""}.${embed.length ? "" : " Add an embedding option for album memory."}`
+        ? `${chat.length} writer chat model(s), ${embed.length} memory embedding option(s), ${image.length} image model(s). Host: ${data.host || data.ollama_host || data.lmstudio_host || ""}.${embed.length ? "" : " Add an embedding option for album memory."}`
         : (data?.error || `${providerLabel(provider)} is not reachable. Start it, then refresh.`);
       const jobs = Object.values(state.ollamaPullJobs || {});
       const localJobs = Object.values(state.localLlmDownloadJobs || {});
@@ -4229,6 +4342,8 @@
         `Host: ${data?.host || data?.ollama_host || data?.lmstudio_host || ""}`,
         `Writer chat choices: ${chat.join(", ") || "none available"}`,
         `Memory embedding options: ${embed.join(", ") || "none available"}`,
+        `Image generation options: ${image.join(", ") || "none available"}`,
+        `MLX/GPU: ${state.localLlmCatalog?.mlx?.label || state.config?.local_llm?.mlx_policy || "auto"}`,
         `${provider === "lmstudio" ? "Loaded" : "Running"}: ${running.join(", ") || "none"}`,
       ];
       const shownJobs = provider === "lmstudio" ? localJobs : jobs;
@@ -4240,7 +4355,8 @@
         });
       }
       (data?.details || []).slice(0, 40).forEach((item) => {
-        const meta = [item.format, item.quantization_level, item.context_length ? `${item.context_length} ctx` : "", item.loaded ? "loaded" : ""].filter(Boolean).join(", ");
+        const caps = Array.isArray(item.capabilities) ? item.capabilities.join("/") : Object.keys(item.capabilities || {}).filter((key) => item.capabilities[key]).join("/");
+        const meta = [item.kind, item.format, item.quantization_level, item.context_length ? `${item.context_length} ctx` : "", item.max_context_length ? `${item.max_context_length} max ctx` : "", caps, item.mlx_preferred ? "MLX" : "", item.loaded ? "loaded" : ""].filter(Boolean).join(", ");
         lines.push(`- ${item.name}${meta ? ` (${meta})` : ""}`);
       });
       log.textContent = lines.join("\n");
@@ -5125,6 +5241,7 @@
       }
       if (mode === "lora") loadLoraStatus();
       if (mode === "settings") {
+        mountLocalAiSettingsPanel();
         loadOutputStatus();
         loadAceLmStatus();
       }
@@ -5180,6 +5297,8 @@
       state.uiHash = incomingConfig.ui_hash || previousUiHash;
       state.backendHash = incomingConfig.backend_hash || previousBackendHash;
       state.modelDownloads = { ...(state.modelDownloads || {}), ...(state.config.model_downloads || {}) };
+      mountLocalAiSettingsPanel();
+      applyLocalLlmSettings(state.config.local_llm?.settings || {});
       const modelSelect = $("song-model");
       modelSelect.innerHTML = `<option value="auto">Auto (${esc(modelOptionLabel(state.config.default_song_model))})</option>` +
         state.config.available_song_models.map((name) => `<option value="${esc(name)}">${esc(modelOptionLabel(name))}</option>`).join("");
@@ -5281,31 +5400,38 @@
     async function loadOllama() {
       try {
         const current = $("ollama-model")?.value || "";
-        const [ollamaResult, lmstudioResult, aceWriterResult] = await Promise.all([
-          api("/api/local-llm/models?provider=ollama"),
-          api("/api/local-llm/models?provider=lmstudio").catch((err) => ({ ready: false, provider: "lmstudio", error: err.message, chat_models: [], embedding_models: [], models: [], details: [] })),
-          api("/api/local-llm/models?provider=ace_step_lm").catch((err) => ({ ready: false, provider: "ace_step_lm", error: err.message, chat_models: [], embedding_models: [], models: [], details: [] }))
-        ]);
-        state.ollama = ollamaResult;
-        state.lmstudio = lmstudioResult;
-        state.aceStepWriter = aceWriterResult;
-        (ollamaResult.pull_jobs || []).forEach((job) => { if (job?.id) state.ollamaPullJobs[job.id] = job; });
+        const currentEmbedding = $("embedding-model")?.value || "";
+        const currentArt = $("art-model")?.value || "";
+        const combined = await api("/api/local-llm/catalog");
+        state.localLlmCatalog = combined;
+        state.localLlmSettings = combined.settings || state.localLlmSettings || {};
+        state.ollama = combined.catalogs?.ollama || { ready: false, provider: "ollama", chat_models: [], embedding_models: [], image_models: [], details: [] };
+        state.lmstudio = combined.catalogs?.lmstudio || { ready: false, provider: "lmstudio", chat_models: [], embedding_models: [], image_models: [], details: [] };
+        state.aceStepWriter = combined.catalogs?.ace_step_lm || { ready: false, provider: "ace_step_lm", chat_models: [], embedding_models: [], image_models: [], details: [] };
+        (state.ollama.pull_jobs || []).forEach((job) => { if (job?.id) state.ollamaPullJobs[job.id] = job; });
+        applyLocalLlmSettings(state.localLlmSettings || {});
         const plannerProvider = plannerProviderForMode();
+        const embeddingProvider = embeddingProviderForAlbum();
         const catalogFor = (provider) => {
           const normalized = normalizeProvider(provider);
           if (normalized === "ace_step_lm") return state.aceStepWriter || {};
           return normalized === "lmstudio" ? (state.lmstudio || {}) : (state.ollama || {});
         };
         const writerModels = catalogFor(plannerProvider).chat_models || [];
+        const embeddingModels = catalogFor(embeddingProvider).embedding_models || [];
+        const artModels = state.ollama?.image_models || [];
         const fillSelect = (id, options, previous, emptyLabel) => {
           const select = $(id);
           if (!select) return;
           select.innerHTML = options.length
             ? options.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("")
             : `<option value="">${esc(emptyLabel)}</option>`;
-          if (previous && [...select.options].some((option) => option.value === previous)) select.value = previous;
+          const wanted = previous || (id === "ollama-model" ? state.localLlmSettings?.chat_model : id === "embedding-model" ? state.localLlmSettings?.embedding_model : state.localLlmSettings?.art_model);
+          if (wanted && [...select.options].some((option) => option.value === wanted)) select.value = wanted;
         };
         fillSelect("ollama-model", writerModels, current, `No ${providerLabel(plannerProvider)} chat models`);
+        fillSelect("embedding-model", embeddingModels, currentEmbedding, `No ${providerLabel(embeddingProvider)} embedding models`);
+        fillSelect("art-model", artModels, currentArt, "No Ollama image models");
         if ($("custom-ace-lm-model") && plannerProvider === "ace_step_lm") $("custom-ace-lm-model").value = $("ollama-model")?.value || $("custom-ace-lm-model").value;
         renderOllamaManager(catalogFor(plannerProvider));
         updateLmModeNote();
@@ -5315,7 +5441,7 @@
         state.ollama = { ready: false, error: err.message, chat_models: [], embedding_models: [], models: [] };
         state.lmstudio = { ready: false, error: err.message, chat_models: [], embedding_models: [], models: [] };
         state.aceStepWriter = { ready: false, error: err.message, chat_models: [], embedding_models: [], models: [] };
-        ["ollama-model"].forEach((id) => {
+        ["ollama-model", "embedding-model", "art-model"].forEach((id) => {
           const select = $(id);
           if (select) select.innerHTML = `<option value="">No chat models installed</option>`;
         });
@@ -5330,12 +5456,13 @@
         setStatus("Type a model name first.", "error");
         return;
       }
-      const provider = plannerProviderForMode();
+      const isImageModelName = (name) => /(^x\/(?:z-image|flux)|\b(?:z-image|flux|imagegen|image-gen|text-to-image|txt2img|sdxl|stable-diffusion|qwen-image)\b)/i.test(name || "");
+      const kind = $("ollama-pull-kind")?.value || (/embed|embedding|bge|e5|gte|nomic/i.test(model) ? "embedding" : (isImageModelName(model) ? "image_generation" : "chat"));
+      const provider = kind === "image_generation" ? "ollama" : (kind === "embedding" ? embeddingProviderForAlbum() : plannerProviderForMode());
       if (provider === "ace_step_lm") {
         startModelDownload(model, "ACE-Step 5Hz writer");
         return;
       }
-      const kind = $("ollama-pull-kind")?.value || (/embed|embedding|bge|e5|gte|nomic/i.test(model) ? "embedding" : "chat");
       const data = await api("/api/local-llm/download", { provider, model, kind, reason: "settings", quantization: $("lmstudio-quantization")?.value || "" });
       if (!data.success) throw new Error(data.error || "Ollama pull failed to start");
       if (provider === "ollama" && data.job?.id) state.ollamaPullJobs[data.job.id] = data.job;
@@ -5350,7 +5477,26 @@
     }
 
     async function testOllamaSelection(kind) {
-      const provider = plannerProviderForMode();
+      if (kind === "image_generation") {
+        const model = $("art-model")?.value || $("ollama-pull-input")?.value.trim();
+        if (!model) return setStatus("No Ollama art model selected.", "error");
+        const data = await api("/api/art/generate", {
+          scope: "test",
+          model,
+          prompt: "Square music cover art for an AceJAM single, cinematic, high detail, no text",
+          width: Number($("art-width")?.value || 1024),
+          height: Number($("art-height")?.value || 1024),
+          steps: Number($("art-steps")?.value || 0),
+          seed: $("art-seed")?.value || "",
+          negative_prompt: $("art-negative-prompt")?.value || ""
+        });
+        if (handleOllamaPullStarted(data, "art generation", () => testOllamaSelection("image_generation"))) return;
+        if (!data.success) throw new Error(data.error || "Art generation failed");
+        setStatus(`Generated test art with ${model}.`, "ok");
+        if ($("ollama-manager-log")) $("ollama-manager-log").textContent += `\n\nArt test:\n${JSON.stringify(data.art, null, 2)}`;
+        return;
+      }
+      const provider = kind === "embedding" ? embeddingProviderForAlbum() : plannerProviderForMode();
       const model = kind === "embedding"
         ? (selectedAlbumEmbeddingModel() || $("ollama-pull-input")?.value.trim())
         : ($("ollama-model")?.value || $("ollama-pull-input")?.value.trim());
@@ -5397,10 +5543,10 @@
     }
 
     async function loadSelectedLocalModel() {
-      const provider = plannerProviderForMode();
-      const model = $("ollama-pull-input")?.value.trim() || (provider === "lmstudio" ? ($("ollama-model")?.value || "") : "");
-      if (!model) return setStatus("Select or type a model first.", "error");
       const kind = $("ollama-pull-kind")?.value || "chat";
+      const provider = kind === "embedding" ? embeddingProviderForAlbum() : plannerProviderForMode();
+      const model = $("ollama-pull-input")?.value.trim() || (provider === "lmstudio" ? (kind === "embedding" ? ($("embedding-model")?.value || "") : ($("ollama-model")?.value || "")) : "");
+      if (!model) return setStatus("Select or type a model first.", "error");
       const data = await api("/api/local-llm/load", { provider, model, kind, context_length: $("lmstudio-context")?.value || plannerSettingsForMode(state.mode).planner_context_length || "" });
       if (!data.success) throw new Error(data.error || "Load failed");
       await loadOllama();
@@ -5408,8 +5554,9 @@
     }
 
     async function unloadSelectedLocalModel() {
-      const provider = plannerProviderForMode();
-      const model = $("ollama-pull-input")?.value.trim() || (provider === "lmstudio" ? ($("ollama-model")?.value || "") : "");
+      const kind = $("ollama-pull-kind")?.value || "chat";
+      const provider = kind === "embedding" ? embeddingProviderForAlbum() : plannerProviderForMode();
+      const model = $("ollama-pull-input")?.value.trim() || (provider === "lmstudio" ? (kind === "embedding" ? ($("embedding-model")?.value || "") : ($("ollama-model")?.value || "")) : "");
       if (!model) return setStatus("Select or type a model first.", "error");
       const data = await api("/api/local-llm/unload", { provider, model });
       if (!data.success) throw new Error(data.error || "Unload failed");
@@ -5496,15 +5643,28 @@
       setIntentSelectValue("intent-lm-model", intent.ace_step_controls?.lm_model || payload.ace_lm_model, "lm_models");
       setIntentSelectValue("intent-personalization", intent.personalization?.mode, "personalization");
       setIntentGroupValues("genre_modules", intent.genre_modules || []);
-      setIntentGroupValues("genre_style", intent.style_tags || payload.tags || []);
-      setIntentGroupValues("drums_groove", intent.rhythm_tags || []);
-      setIntentGroupValues("bass_low_end", intent.instrument_tags || []);
-      setIntentGroupValues("instruments", intent.instrument_tags || []);
-      setIntentGroupValues("vocal_character", intent.vocal_tags || []);
-      setIntentGroupValues("structure_hints", intent.structure_tags || []);
-      setIntentGroupValues("lyric_meta_tags", intent.structure_tags || []);
-      setIntentGroupValues("production_style", intent.production_tags || []);
-      setIntentGroupValues("negative_control", intent.negative_tags || payload.negative_tags || []);
+      setIntentGroupValues("genre_style", [intent.subgenre, intent.style_tags, payload.tags]);
+      setIntentGroupValues("mood_atmosphere", [intent.mood, intent.mood_tags]);
+      setIntentGroupValues("era_reference", [intent.style_tags, intent.era_tags]);
+      setIntentGroupValues("speed_rhythm", [intent.energy, intent.rhythm_tags]);
+      setIntentGroupValues("drums_groove", [intent.drum_groove, intent.rhythm_tags]);
+      setIntentGroupValues("bass_low_end", [intent.bass_low_end, intent.instrument_tags]);
+      setIntentGroupValues("melodic_identity", [intent.melodic_identity, intent.instrument_tags]);
+      setIntentGroupValues("instruments", [intent.instrument_tags]);
+      setIntentGroupValues("stems", [intent.track_classes, intent.track_name, payload.track_classes, payload.track_names, payload.track_name]);
+      setIntentGroupValues("vocal_character", [intent.vocal_type, intent.vocal_tags]);
+      setIntentGroupValues("languages", [intent.language, payload.vocal_language, payload.language]);
+      setIntentGroupValues("structure_hints", [intent.structure_tags]);
+      setIntentGroupValues("lyric_meta_tags", [intent.structure_tags, intent.lyric_meta_tags]);
+      setIntentGroupValues("timbre_texture", [intent.texture_space, intent.production_tags]);
+      setIntentGroupValues("production_style", [intent.mix_master, intent.production_tags]);
+      setIntentGroupValues("negative_control", [intent.negative_tags, payload.negative_tags]);
+      setIntentGroupValues("task_modes", [intent.task_mode, payload.task_type]);
+      setIntentGroupValues("source_audio_modes", [intent.source_audio_mode]);
+      setIntentGroupValues("model_strategies", [intent.model_strategy, payload.quality_profile]);
+      setIntentGroupValues("render_models", [intent.ace_step_controls?.render_model, payload.song_model]);
+      setIntentGroupValues("lm_models", [intent.ace_step_controls?.lm_model, payload.ace_lm_model]);
+      setIntentGroupValues("personalization", [intent.personalization?.mode]);
       persistIntentGroupSelections();
       const customTags = Array.isArray(intent.custom_tags) ? intent.custom_tags.join(", ") : intent.custom_tags;
       setFieldValue("intent-custom-tags", customTags);
@@ -8121,7 +8281,7 @@
         applyPlannerPreset($("planner-creativity-preset").value);
         persistPlannerSettings();
       });
-      ["planner-temperature", "planner-top-p", "planner-top-k", "planner-repeat-penalty", "planner-seed", "planner-max-tokens", "planner-context-length", "planner-timeout"].forEach((id) => {
+      ["planner-temperature", "planner-top-p", "planner-top-k", "planner-repeat-penalty", "planner-seed", "planner-max-tokens", "planner-context-length", "planner-timeout", "art-width", "art-height", "art-steps", "art-seed", "art-negative-prompt", "auto-single-art", "auto-album-art"].forEach((id) => {
         $(id)?.addEventListener("input", persistPlannerSettings);
         $(id)?.addEventListener("change", persistPlannerSettings);
       });
@@ -8180,17 +8340,26 @@
       $("local-llm-unload-btn")?.addEventListener("click", () => unloadSelectedLocalModel().catch((err) => setStatus(err.message, "error")));
       $("ollama-test-chat-btn")?.addEventListener("click", () => testOllamaSelection("chat").catch((err) => setStatus(err.message, "error")));
       $("ollama-test-embed-btn")?.addEventListener("click", () => testOllamaSelection("embedding").catch((err) => setStatus(err.message, "error")));
+      $("ollama-test-art-btn")?.addEventListener("click", () => testOllamaSelection("image_generation").catch((err) => setStatus(err.message, "error")));
       $("ollama-model")?.addEventListener("change", () => {
         if (plannerProviderForMode() === "ace_step_lm") {
           if ($("custom-ace-lm-model")) $("custom-ace-lm-model").value = $("ollama-model").value;
           startModelDownload($("ollama-model").value, "ACE-Step 5Hz writer selection");
           updateAllLmAdvice();
         }
+        persistPlannerSettings();
         updatePlannerSettingsSummary();
         renderAlbumPayloadReview();
       });
+      ["embedding-provider", "embedding-model", "art-model"].forEach((id) => {
+        $(id)?.addEventListener("change", () => {
+          persistPlannerSettings();
+          if (id === "embedding-provider") loadOllama().catch((err) => setStatus(err.message, "error"));
+        });
+      });
       ["planner-provider"].forEach((id) => {
         $(id)?.addEventListener("change", () => {
+          persistPlannerSettings();
           updateLmModeNote();
           updatePlannerSettingsSummary();
           loadOllama().catch((err) => setStatus(err.message, "error"));
@@ -8391,6 +8560,7 @@
 
     buildNav();
     mountSharedExpertDrawer();
+    mountLocalAiSettingsPanel();
     loadPlannerSettings();
     if (applyFileUrlGuard()) {
       setMode("simple");
