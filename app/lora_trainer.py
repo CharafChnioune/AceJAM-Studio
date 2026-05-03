@@ -32,6 +32,16 @@ EPOCH_AUDITION_CHARS_PER_SECOND = 21
 EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 4
 EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 2.5
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
+DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
+VARIANT_TO_SONG_MODEL = {
+    "turbo": "acestep-v15-turbo",
+    "base": "acestep-v15-base",
+    "sft": "acestep-v15-sft",
+    "xl_turbo": "acestep-v15-xl-turbo",
+    "xl_base": "acestep-v15-xl-base",
+    "xl_sft": "acestep-v15-xl-sft",
+}
+SONG_MODEL_TO_VARIANT = {model: variant for variant, model in VARIANT_TO_SONG_MODEL.items()}
 
 
 def utc_now() -> str:
@@ -206,17 +216,25 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
 
 
 def model_to_variant(model_name: str | None) -> str:
-    name = (model_name or "acestep-v15-turbo").strip()
-    aliases = {
-        "auto": "turbo",
-        "acestep-v15-turbo": "turbo",
-        "acestep-v15-base": "base",
-        "acestep-v15-sft": "sft",
-        "acestep-v15-xl-turbo": "xl_turbo",
-        "acestep-v15-xl-base": "xl_base",
-        "acestep-v15-xl-sft": "xl_sft",
-    }
+    name = (model_name or DEFAULT_LORA_TRAINING_SONG_MODEL).strip()
+    aliases = {"auto": "xl_sft", **SONG_MODEL_TO_VARIANT}
     return aliases.get(name, name)
+
+
+def model_from_variant(variant: str | None, fallback: str | None = None) -> str:
+    normalized = model_to_variant(variant)
+    if normalized in VARIANT_TO_SONG_MODEL:
+        return VARIANT_TO_SONG_MODEL[normalized]
+    return normalize_training_song_model(fallback)
+
+
+def normalize_training_song_model(song_model: str | None) -> str:
+    value = (song_model or "").strip()
+    if not value or value == "auto":
+        return DEFAULT_LORA_TRAINING_SONG_MODEL
+    if value in SONG_MODEL_TO_VARIANT:
+        return value
+    return DEFAULT_LORA_TRAINING_SONG_MODEL
 
 
 def _torch_mps_available() -> bool:
@@ -669,7 +687,9 @@ class AceTrainingManager:
 
         job_id = uuid.uuid4().hex[:12]
         tensor_output = Path(str(payload.get("tensor_output") or "")).expanduser() if payload.get("tensor_output") else self.tensor_dir / job_id
-        variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
+        requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
+        variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
+        song_model = model_from_variant(variant, requested_song_model)
         device = default_training_device(payload.get("device"))
         precision = training_precision_for_device(device, payload.get("precision"))
         command = [
@@ -699,7 +719,14 @@ class AceTrainingManager:
         return self._start_job(
             kind="preprocess",
             command=command,
-            params={"model_variant": variant, "dataset_json": dataset_json, "audio_dir": audio_dir, "device": device, "precision": precision},
+            params={
+                "model_variant": variant,
+                "song_model": song_model,
+                "dataset_json": dataset_json,
+                "audio_dir": audio_dir,
+                "device": device,
+                "precision": precision,
+            },
             paths={"tensor_output": str(tensor_output), "dataset_json": dataset_json, "audio_dir": audio_dir},
         )
 
@@ -712,8 +739,9 @@ class AceTrainingManager:
         adapter_type = str(payload.get("adapter_type") or "lora").lower()
         if adapter_type not in {"lora", "lokr"}:
             raise ValueError("adapter_type must be lora or lokr")
-        song_model = str(payload.get("song_model") or "acestep-v15-turbo").strip()
-        variant = model_to_variant(str(payload.get("model_variant") or song_model))
+        requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
+        variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
+        song_model = model_from_variant(variant, requested_song_model)
         trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
         epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
@@ -850,7 +878,8 @@ class AceTrainingManager:
         if not dataset_dir.is_dir():
             raise FileNotFoundError(f"Tensor dataset directory not found: {dataset_dir}")
         job_id = uuid.uuid4().hex[:12]
-        variant = model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-turbo"))
+        requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
+        variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
         output = self.training_dir / f"estimate-{job_id}.json"
         device = default_training_device(payload.get("device"))
         precision = training_precision_for_device(device, payload.get("precision"))
@@ -1164,6 +1193,9 @@ class AceTrainingManager:
         trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         device = default_training_device(payload.get("device"))
+        requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
+        variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
+        song_model = model_from_variant(variant, requested_song_model)
         return {
             "dataset_id": dataset_id,
             "import_root": str(import_root),
@@ -1172,8 +1204,8 @@ class AceTrainingManager:
             "adapter_type": str(payload.get("adapter_type") or "lora").strip().lower(),
             "tag_position": str(payload.get("tag_position") or "prepend").strip().lower(),
             "genre_ratio": parse_int(payload.get("genre_ratio"), 0, 0, 100),
-            "song_model": str(payload.get("song_model") or "acestep-v15-sft").strip(),
-            "model_variant": model_to_variant(str(payload.get("model_variant") or payload.get("song_model") or "acestep-v15-sft")),
+            "song_model": song_model,
+            "model_variant": variant,
             "train_batch_size": parse_int(payload.get("train_batch_size", payload.get("batch_size")), 1, 1, 64),
             "gradient_accumulation": parse_int(payload.get("gradient_accumulation"), 4, 1, 128),
             "rank": parse_int(payload.get("rank"), 64, 1, 512),
@@ -1618,10 +1650,12 @@ class AceTrainingManager:
         existing = list(job.command or [])
         if "--dataset-dir" in existing and "--output-dir" in existing:
             command = existing
+            variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
             command = self._command_with_arg(command, "--dataset-dir", str(dataset_dir))
             command = self._command_with_arg(command, "--output-dir", str(output_dir))
             command = self._command_with_arg(command, "--log-dir", str(log_dir))
             command = self._command_with_arg(command, "--epochs", str(total_epochs))
+            command = self._command_with_arg(command, "--model-variant", variant)
             command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
             command = self._command_with_arg(
                 command,
@@ -1639,7 +1673,7 @@ class AceTrainingManager:
             "--checkpoint-dir",
             str(self.checkpoint_dir),
             "--model-variant",
-            str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or "acestep-v15-sft"))),
+            str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))),
             "--dataset-dir",
             str(dataset_dir),
             "--output-dir",
@@ -1758,6 +1792,8 @@ class AceTrainingManager:
             self._append_log(log_path, f"[audition epoch {epoch}] skipped: no audition runner configured\n")
             return
 
+        variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
+        song_model = model_from_variant(variant, normalize_training_song_model(str(params.get("song_model") or "")))
         request = {
             "job_id": job_id,
             "epoch": int(epoch),
@@ -1772,8 +1808,8 @@ class AceTrainingManager:
             "language": vocal_language,
             "lyrics_fit": lyrics_fit,
             "trigger_tag": str(params.get("trigger_tag") or ""),
-            "song_model": str(params.get("song_model") or "acestep-v15-turbo"),
-            "model_variant": str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or ""))),
+            "song_model": song_model,
+            "model_variant": variant,
             "adapter_type": str(params.get("adapter_type") or "lora"),
         }
         if lyrics_fit["action"] != "none":

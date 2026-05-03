@@ -209,7 +209,7 @@ from acestep.constants import (
     VALID_TIME_SIGNATURES,
 )
 from acestep.handler import AceStepHandler
-from lora_trainer import AceTrainingManager, fit_epoch_audition_lyrics
+from lora_trainer import AceTrainingManager, fit_epoch_audition_lyrics, model_from_variant, model_to_variant, normalize_training_song_model
 from local_composer import LocalComposer
 from album_quality_gate import (
     ALBUM_PAYLOAD_GATE_VERSION,
@@ -2193,6 +2193,11 @@ def _unload_llm_models_for_generation() -> None:
 EPOCH_AUDITION_INFERENCE_STEPS = 64
 
 
+def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
+    variant = model_to_variant(str(request.get("model_variant") or request.get("song_model") or ""))
+    return model_from_variant(variant, normalize_training_song_model(str(request.get("song_model") or "")))
+
+
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     epoch = int(request.get("epoch") or 0)
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
@@ -2206,6 +2211,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         inference_steps = EPOCH_AUDITION_INFERENCE_STEPS
     inference_steps = max(1, min(64, inference_steps))
+    song_model = _lora_epoch_audition_song_model(request)
     raw_payload = {
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",
@@ -2217,7 +2223,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "vocal_language": vocal_language,
         "lyric_duration_fit": lyrics_fit,
         "duration": 20,
-        "song_model": str(request.get("song_model") or "acestep-v15-turbo"),
+        "song_model": song_model,
         "seed": str(seed_value),
         "use_random_seed": False,
         "inference_steps": inference_steps,

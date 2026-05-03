@@ -6041,6 +6041,11 @@
       return payload.song_model === "auto" ? (state.config?.default_song_model || "auto") : payload.song_model;
     }
 
+    function selectedTrainerSongModel() {
+      const value = $("song-model")?.value || "auto";
+      return value === "auto" ? "acestep-v15-xl-sft" : value;
+    }
+
     function validationSummary(mode, payload, validation = null) {
       const normalized = validation?.normalized_payload || payload;
       const fieldErrors = validation?.field_errors || {};
@@ -8024,7 +8029,7 @@
         import_root: state.datasetImportRoot,
         trigger_tag: trigger,
         language,
-        song_model: $("song-model").value,
+        song_model: selectedTrainerSongModel(),
         adapter_type: $("adapter-type").value || "lora",
         tag_position: $("dataset-tag-position").value || "prepend",
         genre_ratio: Number($("dataset-genre-ratio").value || 0),
@@ -8057,7 +8062,7 @@
         mode: mode,
         use_official_lm: mode === "official",
         ...lmQualityRequestFields("custom"),
-        song_model: $("song-model").value,
+        song_model: selectedTrainerSongModel(),
         custom_tag: $("dataset-tag").value,
         tag_position: $("dataset-tag-position").value
       });
@@ -8093,7 +8098,7 @@
         dataset_json: $("lora-dataset-json").value,
         dataset_id: state.datasetId,
         audio_dir: $("dataset-path").value,
-        song_model: $("song-model").value,
+        song_model: selectedTrainerSongModel(),
         device: $("train-device")?.value || "auto",
         max_duration: 240
       });
@@ -8107,7 +8112,7 @@
     function loraTrainPayload() {
       return {
         tensor_dir: $("tensor-dir").value,
-        song_model: $("song-model").value,
+        song_model: selectedTrainerSongModel(),
         trigger_tag: $("dataset-tag").value.trim(),
         language: $("dataset-language").value || "en",
         adapter_type: $("adapter-type").value,
@@ -8146,7 +8151,7 @@
     async function estimateLora() {
       const data = await api("/api/lora/estimate", {
         tensor_dir: $("tensor-dir").value,
-        song_model: $("song-model").value,
+        song_model: selectedTrainerSongModel(),
         batch_size: Number($("train-batch").value),
         estimate_batches: 5,
         top_k: 16,

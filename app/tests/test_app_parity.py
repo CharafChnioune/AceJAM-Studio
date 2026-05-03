@@ -1156,6 +1156,9 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('id="train-device-note"', html)
         self.assertIn("renderTrainerDevicePolicy", html)
         self.assertIn('device: $("train-device")?.value || "auto"', html)
+        self.assertIn("function selectedTrainerSongModel()", html)
+        self.assertIn('return value === "auto" ? "acestep-v15-xl-sft" : value;', html)
+        self.assertIn("song_model: selectedTrainerSongModel()", html)
         self.assertIn("epoch_audition_duration: 20", html)
         self.assertIn("full-quality 64-step WAV", html)
         self.assertIn("...epochAuditionPayload()", html)
@@ -1324,6 +1327,36 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(captured["lora_adapter_path"], "/tmp/checkpoints/epoch_2_loss_0.1")
         self.assertEqual(captured["lora_scale"], 0.7)
         self.assertEqual(result["lyrics_fit"]["action"], "none")
+
+    def test_lora_epoch_audition_auto_model_matches_checkpoint_variant(self):
+        captured = {}
+
+        def fake_generation(params):
+            captured.update(params)
+            return {
+                "success": True,
+                "result_id": "audition-result",
+                "audios": [{"result_id": "audition-result", "audio_url": "/media/results/audition-result/take-1.wav"}],
+            }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo", "acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
+            patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_generation):
+            result = acejam_app._run_lora_epoch_audition(
+                {
+                    "epoch": 1,
+                    "trigger_tag": "pac",
+                    "checkpoint_path": "/tmp/checkpoints/epoch_1_loss_1.3433",
+                    "caption": "pac",
+                    "lyrics": "[Verse]\nLine one",
+                    "song_model": "auto",
+                    "model_variant": "turbo",
+                }
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(captured["song_model"], "acestep-v15-turbo")
+        self.assertEqual(captured["adapter_model_variant"], "turbo")
 
     def test_lora_epoch_audition_fits_long_lyrics_and_language_for_wav_test(self):
         captured = {}

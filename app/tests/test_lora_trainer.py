@@ -9,7 +9,9 @@ from lora_trainer import (
     TrainingJob,
     default_training_device,
     fit_epoch_audition_lyrics,
+    model_from_variant,
     model_to_variant,
+    normalize_training_song_model,
     training_device_policy,
     training_precision_for_device,
     utc_now,
@@ -95,9 +97,13 @@ class LoraTrainerTest(unittest.TestCase):
         return path
 
     def test_model_variant_mapping(self):
+        self.assertEqual(model_to_variant("auto"), "xl_sft")
         self.assertEqual(model_to_variant("acestep-v15-turbo"), "turbo")
         self.assertEqual(model_to_variant("acestep-v15-xl-base"), "xl_base")
         self.assertEqual(model_to_variant("my-finetune"), "my-finetune")
+        self.assertEqual(normalize_training_song_model("auto"), "acestep-v15-xl-sft")
+        self.assertEqual(model_from_variant("turbo"), "acestep-v15-turbo")
+        self.assertEqual(model_from_variant("xl_sft"), "acestep-v15-xl-sft")
 
     def test_default_training_device_prefers_mps_on_darwin_auto(self):
         with patch("lora_trainer.sys.platform", "darwin"), \
@@ -219,6 +225,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["training_seed"], 42)
             self.assertIsNone(params["train_epochs"])
             self.assertEqual(params["save_every_n_epochs"], 1)
+            self.assertEqual(params["song_model"], "acestep-v15-xl-sft")
+            self.assertEqual(params["model_variant"], "xl_sft")
             self.assertFalse(params["epoch_audition"]["enabled"])
             self.assertEqual(params["device"], "mps")
             self.assertEqual(params["precision"], "fp32")
@@ -248,6 +256,45 @@ class LoraTrainerTest(unittest.TestCase):
 
             self.assertEqual(params["device"], "cpu")
             self.assertEqual(params["precision"], "auto")
+
+    def test_one_click_auto_song_model_uses_xl_sft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            with patch("lora_trainer.default_training_device", return_value="mps"):
+                params = manager._one_click_params(
+                    {
+                        "dataset_id": "unit",
+                        "import_root": str(root),
+                        "trigger_tag": "voicehook",
+                        "song_model": "auto",
+                    },
+                    dataset_id="unit",
+                    import_root=root,
+                )
+
+        self.assertEqual(params["song_model"], "acestep-v15-xl-sft")
+        self.assertEqual(params["model_variant"], "xl_sft")
+
+    def test_one_click_explicit_variant_keeps_audition_model_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            with patch("lora_trainer.default_training_device", return_value="mps"):
+                params = manager._one_click_params(
+                    {
+                        "dataset_id": "unit",
+                        "import_root": str(root),
+                        "trigger_tag": "voicehook",
+                        "song_model": "auto",
+                        "model_variant": "turbo",
+                    },
+                    dataset_id="unit",
+                    import_root=root,
+                )
+
+        self.assertEqual(params["song_model"], "acestep-v15-turbo")
+        self.assertEqual(params["model_variant"], "turbo")
 
     def test_preprocess_command_uses_vendor_module(self):
         with tempfile.TemporaryDirectory() as tmp:
