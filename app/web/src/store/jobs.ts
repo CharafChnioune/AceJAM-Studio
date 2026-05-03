@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 export type JobKind =
+  | "generation"
   | "album"
   | "lora"
   | "ollama-pull"
@@ -26,13 +27,17 @@ export interface JobEntry {
 
 interface JobsSlice {
   jobs: Record<string, JobEntry>;
+  selectedJobId: string | null;
   addJob: (entry: JobEntry) => void;
   updateJob: (id: string, patch: Partial<JobEntry>) => void;
   removeJob: (id: string) => void;
+  openJob: (id: string) => void;
+  closeJob: () => void;
 }
 
 export const useJobsStore = create<JobsSlice>((set) => ({
   jobs: {},
+  selectedJobId: null,
   addJob: (entry) =>
     set((s) => ({
       jobs: {
@@ -54,6 +59,8 @@ export const useJobsStore = create<JobsSlice>((set) => ({
     set((s) => {
       const next = { ...s.jobs };
       delete next[id];
-      return { jobs: next };
+      return { jobs: next, selectedJobId: s.selectedJobId === id ? null : s.selectedJobId };
     }),
+  openJob: (id) => set({ selectedJobId: id }),
+  closeJob: () => set({ selectedJobId: null }),
 }));

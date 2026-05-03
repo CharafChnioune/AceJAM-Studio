@@ -80,6 +80,7 @@ ALBUM_EMBEDDING_FALLBACK_MODELS = [
     "charaf/qwen3-vl-embedding-8b:latest",
 ]
 ALBUM_JOB_KEEP_LIMIT = 50
+GENERATION_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
 ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=True)
@@ -9926,38 +9927,250 @@ def _set_api_generation_task(task_id: str, **updates: Any) -> dict[str, Any]:
         task = _api_generation_tasks.setdefault(
             task_id,
             {
+                "id": task_id,
                 "task_id": task_id,
+                "kind": "generation",
                 "status": 0,
                 "state": "queued",
+                "stage": "Queued",
+                "progress": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
                 "payload": {},
+                "payload_summary": {},
                 "result": None,
                 "error": "",
+                "logs": [],
+                "errors": [],
             },
         )
+        if "logs" in updates:
+            old_logs = list(task.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                task["logs"] = (old_logs + [str(item) for item in new_logs])[-500:]
+            elif new_logs:
+                task["logs"] = (old_logs + [str(new_logs)])[-500:]
+        if "errors" in updates:
+            old_errors = list(task.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                task["errors"] = (old_errors + [str(item) for item in new_errors])[-100:]
+            elif new_errors:
+                task["errors"] = (old_errors + [str(new_errors)])[-100:]
         task.update(_jsonable(updates))
         task["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if len(_api_generation_tasks) > GENERATION_JOB_KEEP_LIMIT:
+            removable = sorted(
+                _api_generation_tasks.values(),
+                key=lambda item: str(item.get("finished_at") or item.get("created_at") or ""),
+            )
+            for old in removable[: max(0, len(_api_generation_tasks) - GENERATION_JOB_KEEP_LIMIT)]:
+                if old.get("state") not in {"queued", "running"}:
+                    _api_generation_tasks.pop(str(old.get("task_id") or old.get("id")), None)
         return dict(task)
 
 
+def _generation_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    lyrics = str(payload.get("lyrics") or "")
+    caption = str(payload.get("caption") or payload.get("song_description") or payload.get("simple_description") or "")
+    task_type = str(payload.get("task_type") or "text2music").strip() or "text2music"
+    return _jsonable(
+        {
+            "task_type": task_type,
+            "title": str(payload.get("title") or "").strip(),
+            "artist_name": str(payload.get("artist_name") or "").strip(),
+            "caption": caption.strip(),
+            "tags": str(payload.get("tags") or "").strip(),
+            "duration": payload.get("duration") or payload.get("audio_duration"),
+            "song_model": str(payload.get("song_model") or "").strip(),
+            "quality_profile": str(payload.get("quality_profile") or "").strip(),
+            "seed": payload.get("seed"),
+            "bpm": payload.get("bpm"),
+            "key_scale": str(payload.get("key_scale") or "").strip(),
+            "time_signature": str(payload.get("time_signature") or "").strip(),
+            "vocal_language": str(payload.get("vocal_language") or "").strip(),
+            "instrumental": parse_bool(payload.get("instrumental"), lyrics.strip() == "[Instrumental]"),
+            "lyrics_word_count": len(re.findall(r"\b\w+\b", lyrics)) if lyrics and lyrics != "[Instrumental]" else 0,
+            "has_lyrics": bool(lyrics.strip() and lyrics.strip() != "[Instrumental]"),
+            "has_source_audio": bool(payload.get("src_audio_id") or payload.get("src_result_id") or payload.get("audio_code_string")),
+            "has_reference_audio": bool(payload.get("reference_audio_id") or payload.get("reference_result_id")),
+        }
+    )
+
+
+def _generation_result_summary(result: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    audios = result.get("audios") or []
+    first_audio = audios[0] if isinstance(audios, list) and audios and isinstance(audios[0], dict) else {}
+    return _jsonable(
+        {
+            "success": bool(result.get("success", True)),
+            "result_id": result.get("result_id") or first_audio.get("result_id"),
+            "audio_url": result.get("audio_url") or first_audio.get("audio_url") or first_audio.get("download_url"),
+            "title": result.get("title"),
+            "artist_name": result.get("artist_name"),
+            "caption": result.get("caption"),
+            "lyrics": result.get("lyrics"),
+            "duration": result.get("duration"),
+            "bpm": result.get("bpm"),
+            "key_scale": result.get("key_scale"),
+            "payload_warnings": list(result.get("payload_warnings") or []),
+            "vocal_intelligibility_gate": result.get("vocal_intelligibility_gate"),
+            "recommended_take": result.get("recommended_take"),
+            "audio_count": len(audios) if isinstance(audios, list) else 0,
+        }
+    )
+
+
+def _generation_status_label(task: dict[str, Any]) -> str:
+    state = str(task.get("state") or "queued").lower()
+    if task.get("stage"):
+        return str(task["stage"])
+    if state == "succeeded":
+        return "Complete"
+    if state == "failed":
+        return "Failed"
+    if state == "running":
+        return "Rendering"
+    return "Queued"
+
+
+def _generation_job_view(task: dict[str, Any]) -> dict[str, Any]:
+    result = task.get("result") if isinstance(task.get("result"), dict) else None
+    summary = dict(task.get("payload_summary") or _generation_payload_summary(dict(task.get("payload") or {})))
+    warnings = []
+    if isinstance(result, dict):
+        warnings = [str(item) for item in result.get("payload_warnings") or [] if str(item)]
+    error = str(task.get("error") or "")
+    errors = [str(item) for item in task.get("errors") or [] if str(item)]
+    if error and error not in errors:
+        errors.append(error)
+    return _jsonable(
+        {
+            "id": str(task.get("task_id") or task.get("id") or ""),
+            "task_id": str(task.get("task_id") or task.get("id") or ""),
+            "kind": "generation",
+            "state": str(task.get("state") or "queued"),
+            "status": _generation_status_label(task),
+            "status_code": int(task.get("status") or 0),
+            "stage": str(task.get("stage") or ""),
+            "progress": clamp_int(task.get("progress"), 0, 0, 100),
+            "created_at": task.get("created_at"),
+            "updated_at": task.get("updated_at"),
+            "finished_at": task.get("finished_at"),
+            "payload": task.get("payload") or {},
+            "payload_summary": summary,
+            "result": result,
+            "result_summary": _generation_result_summary(result),
+            "warnings": warnings,
+            "logs": list(task.get("logs") or [])[-500:],
+            "errors": errors[-100:],
+            "error": error,
+        }
+    )
+
+
+def _generation_job_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _api_generation_tasks_lock:
+        if job_id:
+            task = dict(_api_generation_tasks.get(job_id) or {})
+            return _generation_job_view(task) if task else {}
+        tasks = [dict(task) for task in _api_generation_tasks.values()]
+    return [
+        _generation_job_view(task)
+        for task in sorted(tasks, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    ]
+
+
+def _generation_job_log(job_id: str, line: str, **updates: Any) -> None:
+    if not job_id:
+        return
+    _set_api_generation_task(job_id, logs=[line], **updates)
+
+
 def _generation_task_worker(task_id: str, payload: dict[str, Any]) -> None:
-    _set_api_generation_task(task_id, state="running", status=0)
+    summary = _generation_payload_summary(payload)
+    _set_api_generation_task(
+        task_id,
+        state="running",
+        status=0,
+        stage="Preparing render",
+        progress=5,
+        payload_summary=summary,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        logs=[
+            f"Song job {task_id} started.",
+            f"Mode: {summary.get('task_type')}; model: {summary.get('song_model') or 'auto'}; duration: {summary.get('duration') or 'auto'}s.",
+        ],
+    )
     try:
+        _generation_job_log(task_id, "ACE-Step render running.", stage="Rendering", progress=25)
         result = _run_advanced_generation_with_download_retry(payload)
-        _set_api_generation_task(task_id, state="succeeded", status=1, result=result, error="")
+        success = bool(result.get("success", True)) if isinstance(result, dict) else True
+        warnings = [str(item) for item in (result.get("payload_warnings") or [])] if isinstance(result, dict) else []
+        if success:
+            _set_api_generation_task(
+                task_id,
+                state="succeeded",
+                status=1,
+                stage="Complete",
+                progress=100,
+                result=result,
+                error="",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                logs=[
+                    f"Render complete: {result.get('title') or summary.get('title') or 'track'}",
+                    *([f"Warning: {item}" for item in warnings] if warnings else []),
+                ],
+            )
+        else:
+            error = str(result.get("error") or "Generation failed")
+            _set_api_generation_task(
+                task_id,
+                state="failed",
+                status=2,
+                stage="Failed",
+                progress=100,
+                result=result,
+                error=error,
+                errors=[error],
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                logs=[f"ERROR: {error}"],
+            )
     except Exception as exc:
-        _set_api_generation_task(task_id, state="failed", status=2, result=None, error=str(exc))
+        _set_api_generation_task(
+            task_id,
+            state="failed",
+            status=2,
+            stage="Failed",
+            progress=100,
+            result=None,
+            error=str(exc),
+            errors=[str(exc)],
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            logs=[f"ERROR: {exc}"],
+        )
     finally:
         _cleanup_accelerator_memory()
 
 
 def _submit_api_generation_task(payload: dict[str, Any]) -> dict[str, Any]:
     task_id = uuid.uuid4().hex
-    _set_api_generation_task(task_id, payload=payload)
+    summary = _generation_payload_summary(payload)
+    _set_api_generation_task(
+        task_id,
+        payload=payload,
+        payload_summary=summary,
+        stage="Queued",
+        progress=0,
+        logs=[f"Song job {task_id} queued."],
+    )
     thread = threading.Thread(target=_generation_task_worker, args=(task_id, payload), daemon=True)
     thread.start()
-    return {"task_id": task_id, "status": 0}
+    return {"task_id": task_id, "job_id": task_id, "status": 0, "job": _generation_job_snapshot(task_id)}
 
 
 def _official_query_item(task_id: str) -> dict[str, Any]:
@@ -10053,6 +10266,11 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "active_training_job": training_manager.active_job(),
         "active_album_jobs": [
             job for job in _album_job_snapshot() if isinstance(job, dict) and job.get("state") in {"queued", "running"}
+        ],
+        "active_generation_jobs": [
+            job
+            for job in _generation_job_snapshot()
+            if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
         ],
         "ollama": json.loads(ollama_models()),
         "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
@@ -11377,6 +11595,40 @@ async def query_result(request: Request):
     body = await _request_payload(request)
     task_ids = _task_ids_from_payload(body)
     return JSONResponse(_official_api_response([_official_query_item(task_id) for task_id in task_ids]))
+
+
+@app.get("/api/generation/jobs")
+async def api_generation_jobs_list():
+    return JSONResponse({"success": True, "jobs": _generation_job_snapshot()})
+
+
+@app.post("/api/generation/jobs")
+async def api_generation_jobs_start(request: Request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Generation payload must be an object")
+        task = _submit_api_generation_task(payload)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "task_id": task["task_id"], "job": task["job"]})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/generation/jobs/{job_id}")
+async def api_generation_job_detail(job_id: str):
+    job = _generation_job_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/generation/jobs/{job_id}/log")
+async def api_generation_job_log(job_id: str):
+    job = _generation_job_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    logs = [str(item) for item in (job.get("logs") or []) if str(item)]
+    return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
 
 
 @app.post("/api/generate_advanced")

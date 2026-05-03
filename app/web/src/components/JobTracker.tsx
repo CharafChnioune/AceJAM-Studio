@@ -10,6 +10,7 @@ import {
   ExternalLink,
   GraduationCap,
   Loader2,
+  Music4,
   PauseCircle,
   PlayCircle,
   RefreshCw,
@@ -28,11 +29,13 @@ import {
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/components/ui/sonner";
+import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useJobsStore, type JobEntry, type JobKind } from "@/store/jobs";
 
 const ICONS: Record<JobKind, React.ComponentType<{ className?: string }>> = {
+  generation: Music4,
   album: Disc3,
   lora: GraduationCap,
   "ollama-pull": Brain,
@@ -113,6 +116,7 @@ function formatTime(value: unknown): string {
 }
 
 function kindLabel(kind: JobKind): string {
+  if (kind === "generation") return "Song render";
   if (kind === "lora") return "LoRA training";
   if (kind === "album") return "Album job";
   if (kind === "ollama-pull") return "Ollama pull";
@@ -135,6 +139,28 @@ function jobPatchFromLora(job: JsonRecord): JobEntry {
     kindLabel: "LoRA training",
     detailsPath: `/api/lora/jobs/${encodeURIComponent(text(job.id))}`,
     logPath: `/api/lora/jobs/${encodeURIComponent(text(job.id))}/log`,
+    updatedAt: text(job.updated_at, ""),
+    metadata: job,
+    error: text(job.error, ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+  };
+}
+
+function jobPatchFromGeneration(job: JsonRecord): JobEntry {
+  const summary = asRecord(job.payload_summary);
+  const result = asRecord(job.result_summary);
+  const title = text(result.title || summary.title || summary.caption || job.id, "Song render");
+  return {
+    id: text(job.id || job.task_id, "generation-job"),
+    kind: "generation",
+    label: title,
+    progress: progressOf({ id: text(job.id), kind: "generation", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id: text(job.id), kind: "generation", label: "", startedAt: Date.now() }, job) || stateOf({ id: text(job.id), kind: "generation", label: "", startedAt: Date.now() }, job),
+    state: text(job.state, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "Song render",
+    detailsPath: `/api/generation/jobs/${encodeURIComponent(text(job.id || job.task_id))}`,
+    logPath: `/api/generation/jobs/${encodeURIComponent(text(job.id || job.task_id))}/log`,
     updatedAt: text(job.updated_at, ""),
     metadata: job,
     error: text(job.error, ""),
@@ -267,6 +293,99 @@ function LoraDetails({
   );
 }
 
+function GenerationDetails({
+  job,
+  log,
+}: {
+  job: JsonRecord;
+  log: string;
+}) {
+  const summary = asRecord(job.payload_summary);
+  const resultSummary = asRecord(job.result_summary);
+  const result = asRecord(job.result);
+  const warnings = [
+    ...asArray(job.warnings).map((item) => text(item, "")).filter(Boolean),
+    ...asArray(result.payload_warnings).map((item) => text(item, "")).filter(Boolean),
+  ];
+  const audioUrl = text(resultSummary.audio_url || result.audio_url, "");
+  const title = text(resultSummary.title || result.title || summary.title || summary.caption, "Song render");
+  const artist = text(resultSummary.artist_name || result.artist_name || summary.artist_name, "");
+  const gate = asRecord(result.vocal_intelligibility_gate || resultSummary.vocal_intelligibility_gate);
+
+  return (
+    <div className="space-y-4">
+      {audioUrl && (
+        <WaveformPlayer
+          src={audioUrl}
+          title={title}
+          artist={artist}
+          metadata={{
+            model: summary.song_model,
+            quality: summary.quality_profile,
+            duration: resultSummary.duration || summary.duration,
+            bpm: resultSummary.bpm || summary.bpm,
+            key: resultSummary.key_scale || summary.key_scale,
+            seed: summary.seed,
+            resultId: resultSummary.result_id,
+          }}
+        />
+      )}
+
+      <Section title="Render setup" icon={Music4}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <InfoRow label="Task" value={summary.task_type} />
+          <InfoRow label="Model" value={summary.song_model || "auto"} />
+          <InfoRow label="Quality" value={summary.quality_profile || "auto"} />
+          <InfoRow label="Duration" value={summary.duration ? `${text(summary.duration)}s` : "auto"} />
+          <InfoRow label="Instrumental" value={summary.instrumental} />
+          <InfoRow label="Lyrics words" value={summary.lyrics_word_count} />
+          <InfoRow label="Seed" value={summary.seed} />
+          <InfoRow label="BPM / key" value={`${text(summary.bpm, "auto")} / ${text(summary.key_scale, "auto")}`} />
+          <InfoRow label="Source audio" value={summary.has_source_audio} />
+        </div>
+      </Section>
+
+      <Section title="Prompt">
+        <div className="space-y-2 text-xs">
+          <p className="rounded-md border bg-background/35 p-3 leading-relaxed">
+            {text(summary.caption || result.caption, "Geen caption beschikbaar.")}
+          </p>
+          {Boolean(summary.tags) && (
+            <p className="text-muted-foreground">
+              Tags: {text(summary.tags)}
+            </p>
+          )}
+        </div>
+      </Section>
+
+      {(warnings.length > 0 || Object.keys(gate).length > 0) && (
+        <Section title="Warnings & vocal check" icon={AlertTriangle}>
+          <div className="space-y-2 text-xs">
+            {warnings.map((item, index) => (
+              <p key={`${item}-${index}`} className="rounded-md bg-destructive/10 p-2 text-destructive">
+                {item}
+              </p>
+            ))}
+            {Object.keys(gate).length > 0 && (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <InfoRow label="Vocal gate" value={gate.status} />
+                <InfoRow label="Passed" value={gate.passed} />
+                <InfoRow label="Attempt" value={`${text(gate.attempt)} / ${text(gate.max_attempts)}`} />
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {log || asArray(job.logs).join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -315,6 +434,23 @@ function JobDetailsDialog({
         const [jobResp, logResp] = await Promise.all([
           api.get<{ success: boolean; job?: JsonRecord }>(job.detailsPath || `/api/lora/jobs/${encodeURIComponent(job.id)}`),
           api.get<{ success: boolean; log?: string }>(job.logPath || `/api/lora/jobs/${encodeURIComponent(job.id)}/log`),
+        ]);
+        const next = asRecord(jobResp.job);
+        setRemoteJob(next);
+        setLog(text(logResp.log, ""));
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
+          metadata: next,
+          error: text(next.error, ""),
+        });
+      } else if (job.kind === "generation") {
+        const [jobResp, logResp] = await Promise.all([
+          api.get<{ success: boolean; job?: JsonRecord }>(job.detailsPath || `/api/generation/jobs/${encodeURIComponent(job.id)}`),
+          api.get<{ success: boolean; log?: string }>(job.logPath || `/api/generation/jobs/${encodeURIComponent(job.id)}/log`),
         ]);
         const next = asRecord(jobResp.job);
         setRemoteJob(next);
@@ -474,7 +610,13 @@ function JobDetailsDialog({
             </div>
           </Section>
 
-          {job.kind === "lora" ? <LoraDetails job={remote} log={log} /> : <GenericDetails job={remote} />}
+          {job.kind === "lora" ? (
+            <LoraDetails job={remote} log={log} />
+          ) : job.kind === "generation" ? (
+            <GenerationDetails job={remote} log={log} />
+          ) : (
+            <GenericDetails job={remote} />
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -485,29 +627,42 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
   const jobs = useJobsStore((s) => s.jobs);
   const addJob = useJobsStore((s) => s.addJob);
   const removeJob = useJobsStore((s) => s.removeJob);
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const selectedId = useJobsStore((s) => s.selectedJobId);
+  const openJob = useJobsStore((s) => s.openJob);
+  const closeJob = useJobsStore((s) => s.closeJob);
   const list = Object.values(jobs).sort((a, b) => b.startedAt - a.startedAt);
   const selected = selectedId ? jobs[selectedId] ?? null : null;
 
   React.useEffect(() => {
     let cancelled = false;
-    const hydrateLoraJobs = async () => {
+    const hydrateRemoteJobs = async () => {
       try {
-        const resp = await api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs");
+        const [loraResult, generationResult] = await Promise.allSettled([
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
+        ]);
         if (cancelled) return;
         const current = useJobsStore.getState().jobs;
-        for (const rawJob of resp.jobs || []) {
+        const loraJobs = loraResult.status === "fulfilled" ? loraResult.value.jobs || [] : [];
+        const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
+        for (const rawJob of loraJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
           if (!isActiveJob(rawJob) && !current[id]) continue;
           addJob(jobPatchFromLora(rawJob));
         }
+        for (const [index, rawJob] of generationJobs.entries()) {
+          const id = text(rawJob.id || rawJob.task_id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromGeneration(rawJob));
+        }
       } catch {
         // The tracker should never make the whole app noisy when startup APIs are still warming.
       }
     };
-    void hydrateLoraJobs();
-    const timer = window.setInterval(hydrateLoraJobs, 7000);
+    void hydrateRemoteJobs();
+    const timer = window.setInterval(hydrateRemoteJobs, 7000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -515,8 +670,8 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
   }, [addJob]);
 
   React.useEffect(() => {
-    if (selectedId && !jobs[selectedId]) setSelectedId(null);
-  }, [jobs, selectedId]);
+    if (selectedId && !jobs[selectedId]) closeJob();
+  }, [closeJob, jobs, selectedId]);
 
   if (list.length === 0) return null;
 
@@ -525,7 +680,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
       <div className={cn("space-y-1.5 px-2 pb-2", compact && "rounded-lg border bg-card/95 p-2 shadow-lg backdrop-blur")}>
         <button
           className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1 text-left text-[10px] uppercase tracking-widest text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          onClick={() => setSelectedId(list[0]?.id ?? null)}
+          onClick={() => list[0]?.id && openJob(list[0].id)}
         >
           <span>Achtergrond-jobs</span>
           <Badge variant="outline">{list.length}</Badge>
@@ -544,7 +699,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, x: -8 }}
                 transition={{ duration: 0.16 }}
-                onClick={() => setSelectedId(job.id)}
+                onClick={() => openJob(job.id)}
                 className={cn(
                   "group flex w-full items-center gap-2 rounded-md border bg-card/50 px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/60",
                   state === "failed" || state === "error" ? "border-destructive/40" : "",
@@ -587,7 +742,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         job={selected}
         open={Boolean(selected)}
         onOpenChange={(nextOpen) => {
-          if (!nextOpen) setSelectedId(null);
+          if (!nextOpen) closeJob();
         }}
       />
     </>

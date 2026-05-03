@@ -2,13 +2,14 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Music4, Sparkles, ImagePlus } from "lucide-react";
+import { Music4, ImagePlus } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { QualityPresets } from "@/components/wizard/QualityPresets";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { LyricSync } from "@/components/audio/LyricSync";
@@ -28,9 +29,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { simpleSchema, simpleDefaults, type SimpleFormValues, defaultTrackArtPrompt } from "@/lib/schemas";
-import { createSample } from "@/lib/api";
+import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
-import { toast } from "@/components/ui/sonner";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "simple" as const;
@@ -70,17 +70,19 @@ function ResultPlayback({
   artist,
   resultId,
   staticLyrics,
+  metadata,
 }: {
   src: string;
   title?: string;
   artist?: string;
   resultId?: string;
   staticLyrics?: string;
+  metadata?: React.ComponentProps<typeof WaveformPlayer>["metadata"];
 }) {
   const [t, setT] = React.useState(0);
   return (
     <div className="space-y-3">
-      <WaveformPlayer src={src} title={title} artist={artist} onTimeUpdate={setT} />
+      <WaveformPlayer src={src} title={title} artist={artist} metadata={metadata} onTimeUpdate={setT} />
       <LyricSync resultId={resultId} audioCurrentTime={t} staticLyrics={staticLyrics} />
     </div>
   );
@@ -110,18 +112,13 @@ export function SimpleWizard() {
     }
   }, [storePrompt, form]);
 
-  const generate = useMutation({
-    mutationFn: (payload: Record<string, unknown>) => createSample(payload),
-    onSuccess: (resp) => {
-      if (!resp.success) {
-        toast.error(resp.error || "Generatie mislukte");
-        return;
-      }
+  const generation = useGenerationJobRunner({
+    mode: MODE,
+    label: "track",
+    onComplete: (resp) => {
       setResult(MODE, resp as unknown as Record<string, unknown>);
-      toast.success(`"${resp.title || "track"}" is klaar.`);
       setStep(4);
     },
-    onError: (err: Error) => toast.error(err.message),
   });
 
   const hydrate = (payload: Record<string, unknown>) => {
@@ -135,9 +132,9 @@ export function SimpleWizard() {
     form.reset({ ...form.getValues(), ...next });
   };
 
-  const handleFinish = () => {
+  const buildPayload = () => {
     const v = form.getValues();
-    const payload: Record<string, unknown> = {
+    return {
       task_type: "text2music",
       simple_description: v.simple_description,
       song_description: v.simple_description,
@@ -158,7 +155,10 @@ export function SimpleWizard() {
       quality_profile: v.quality_profile,
       seed: v.seed,
     };
-    generate.mutate(payload);
+  };
+
+  const handleFinish = () => {
+    void generation.start(buildPayload());
   };
 
   const audioUrl =
@@ -380,7 +380,7 @@ export function SimpleWizard() {
       render: () => (
         <div className="space-y-4">
           <ReviewStep
-            payload={form.getValues()}
+            payload={buildPayload()}
             warnings={warnings}
             primaryFields={[
               { key: "title", label: "Titel" },
@@ -393,11 +393,13 @@ export function SimpleWizard() {
               { key: "bpm", label: "BPM" },
             ]}
           />
-          {generate.isPending && (
-            <div className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm">
-              <Sparkles className="size-4 animate-pulse text-primary" />
-              <span>ACE-Step is je track aan het renderen…</span>
-            </div>
+          <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
+          {(generation.jobId || generation.isSubmitting) && (
+            <GenerationJobStatus
+              job={generation.activeJob}
+              jobId={generation.jobId}
+              onOpen={generation.openActiveJob}
+            />
           )}
         </div>
       ),
@@ -425,6 +427,15 @@ export function SimpleWizard() {
                 artist={artist}
                 resultId={resultId}
                 staticLyrics={(lastResult.lyrics as string | undefined) ?? values.lyrics}
+                metadata={{
+                  model: lastResult.song_model ?? values.song_model,
+                  quality: values.quality_profile,
+                  duration: lastResult.duration ?? values.duration,
+                  bpm: lastResult.bpm ?? values.bpm,
+                  key: lastResult.key_scale ?? values.key_scale,
+                  seed: lastResult.seed ?? values.seed,
+                  resultId,
+                }}
               />
             )}
             <ArtGenerator
@@ -473,8 +484,8 @@ export function SimpleWizard() {
       step={step}
       onStepChange={setStep}
       onFinish={handleFinish}
-      isFinishing={generate.isPending}
-      finishLabel={generate.isPending ? "Genereert…" : "Genereer track"}
+      isFinishing={generation.isSubmitting || generation.isRunning}
+      finishLabel={generation.isSubmitting || generation.isRunning ? "Rendert…" : "Genereer track"}
     />
   );
 }
