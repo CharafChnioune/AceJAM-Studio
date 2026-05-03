@@ -820,6 +820,7 @@ class AceTrainingManager:
         log_dir = Path(str(paths.get("log_dir") or output_dir / "runs")).expanduser()
         command = self._resume_train_command(job, params, dataset_dir, output_dir, log_dir, total_epochs)
         command = self._command_with_arg(command, "--device", params["device"])
+        command = self._command_with_arg(command, "--precision", params["precision"])
         command = self._command_with_arg(command, "--save-every", "1")
         command = self._command_with_arg(command, "--scheduler-epochs", str(total_epochs))
         command = self._command_without_arg(command, "--resume-from")
@@ -1447,6 +1448,12 @@ class AceTrainingManager:
             command = self._command_with_arg(command, "--output-dir", str(output_dir))
             command = self._command_with_arg(command, "--log-dir", str(log_dir))
             command = self._command_with_arg(command, "--epochs", str(total_epochs))
+            command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
+            command = self._command_with_arg(
+                command,
+                "--precision",
+                training_precision_for_device(params.get("device") or "auto", params.get("precision")),
+            )
             return command
 
         adapter_type = str(params.get("adapter_type") or "lora").lower()
@@ -1614,6 +1621,12 @@ class AceTrainingManager:
         initial_checkpoint: Path | None = None,
     ) -> None:
         command = self._command_with_arg(train_command, "--save-every", "1")
+        command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
+        command = self._command_with_arg(
+            command,
+            "--precision",
+            training_precision_for_device(params.get("device") or "auto", params.get("precision")),
+        )
         audition_enabled = self._epoch_audition_enabled(params)
         adapter_type = str(params.get("adapter_type") or "lora").lower()
         if not audition_enabled:
