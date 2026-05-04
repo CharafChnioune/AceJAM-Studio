@@ -7,6 +7,7 @@ numpy==1.26.4; sys_platform == "darwin" and platform_machine == "x86_64"
 numpy>=1.26.0; sys_platform != "darwin" or platform_machine != "x86_64"
 scipy>=1.10.1
 soundfile>=0.13.1
+mutagen>=1.47.0
 loguru>=0.7.3
 einops>=0.8.1
 accelerate>=1.12.0

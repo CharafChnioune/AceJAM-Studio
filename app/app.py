@@ -17,8 +17,10 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.request
 import uuid
 import zipfile
+from urllib.parse import quote
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -2338,11 +2340,251 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _training_understand_music(audio_path: Path, body: dict[str, Any]) -> dict[str, Any]:
-    """Run ACE-Step understand_music on a single audio file (called from training thread)."""
+    """Run ACE-Step understand_music on a single audio file (called from training thread).
+
+    Kept for legacy callers; the LoRA training pipeline now prefers the much
+    cheaper online-lyrics path (`_training_lookup_online_lyrics`) because the
+    LM transcribes incorrectly on dense music + adds minutes per file due to
+    subprocess + model load.
+    """
     with handler_lock:
         _ensure_song_model(body.get("song_model"))
         codes = handler.convert_src_audio_to_codes(str(audio_path))
     return _run_official_lm_aux("understand_music", body, audio_codes=codes)
+
+
+# ---------------------------------------------------------------------------
+# Online lyrics lookup (replaces transcribe-based labeling for LoRA training)
+#
+# Strategy:
+#   1. Read ID3 tags via mutagen for {artist, title} (TPE1/TIT2) — most
+#      reliable signal when present.
+#   2. Fallback: parse the filename. Patterns supported:
+#        "Artist - Title.ext"
+#        "Artist - 01 - Title.ext"
+#        "Artist - Album - 01 - Title.ext"
+#      Numeric tokens are treated as track numbers and stripped.
+#   3. Query https://api.lyrics.ovh/v1/{artist}/{title} (free, no key, no rate
+#      limit issues for occasional batches). 404 → instrumental fallback.
+#   4. Convert "Section: Author" / "Verse One" / etc into ACE-Step section
+#      tags `[Verse 1]`, `[Chorus]`, `[Bridge]`. If no section markers exist
+#      anywhere, paragraph-split and synthesize basic tags.
+# ---------------------------------------------------------------------------
+
+_LYRICS_OVH_BASE = "https://api.lyrics.ovh/v1"
+_LYRICS_OVH_TIMEOUT = 12.0
+_FILENAME_NUM_RE = re.compile(r"^\d{1,3}$")
+_SECTION_HEADER_RE = re.compile(
+    r"^\s*\[?(?P<kind>Intro|Verse|Chorus|Pre[-\s]?Chorus|Bridge|Hook|Refrain|Outro|Interlude|Breakdown|Drop|Build|Coda|Tag)"
+    r"(?:\s*(?P<num>One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|\d+))?"
+    r"\s*\]?\s*(?::\s*(?P<author>[^\n]+))?\s*$",
+    re.IGNORECASE,
+)
+_WORD_TO_INT = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+
+def _extract_artist_title_from_id3(audio_path: Path) -> tuple[str, str]:
+    try:
+        from mutagen import File as MutagenFile  # type: ignore[import-not-found]
+    except Exception:
+        return ("", "")
+    try:
+        mf = MutagenFile(str(audio_path), easy=True)
+        if mf is None:
+            return ("", "")
+        artist = ""
+        title = ""
+        try:
+            artist = " / ".join(str(v) for v in (mf.get("artist") or [])).strip()
+        except Exception:
+            artist = ""
+        try:
+            title = " / ".join(str(v) for v in (mf.get("title") or [])).strip()
+        except Exception:
+            title = ""
+        return (artist, title)
+    except Exception:
+        return ("", "")
+
+
+def _extract_artist_title_from_filename(audio_path: Path) -> tuple[str, str]:
+    stem = audio_path.stem
+    parts = [p.strip() for p in stem.split(" - ")]
+    parts = [p for p in parts if p]
+    if not parts:
+        return ("", stem)
+    if len(parts) == 1:
+        return ("", parts[0])
+    artist = parts[0]
+    rest = [p for p in parts[1:] if not _FILENAME_NUM_RE.match(p)]
+    title = rest[-1] if rest else parts[-1]
+    return (artist, title)
+
+
+def _resolve_audio_artist_title(audio_path: Path) -> tuple[str, str]:
+    artist, title = _extract_artist_title_from_id3(audio_path)
+    if artist and title:
+        return (artist, title)
+    fa, ft = _extract_artist_title_from_filename(audio_path)
+    return (artist or fa, title or ft)
+
+
+def _strip_paren_suffix(title: str) -> str:
+    return re.sub(r"\s*[\(\[][^\)\]]*[\)\]]\s*$", "", title or "").strip()
+
+
+def _fetch_lyrics_ovh(artist: str, title: str) -> str:
+    if not artist or not title:
+        return ""
+    candidates: list[tuple[str, str]] = [(artist, title)]
+    bare_title = _strip_paren_suffix(title)
+    if bare_title and bare_title != title:
+        candidates.append((artist, bare_title))
+    for artist_q, title_q in candidates:
+        try:
+            url = f"{_LYRICS_OVH_BASE}/{quote(artist_q, safe='')}/{quote(title_q, safe='')}"
+            req = urllib.request.Request(url, headers={"User-Agent": "AceJAM/1.0"})
+            with urllib.request.urlopen(req, timeout=_LYRICS_OVH_TIMEOUT) as response:
+                if response.status >= 400:
+                    continue
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+            lyrics = str(data.get("lyrics") or "").strip()
+            if lyrics:
+                return lyrics
+        except Exception:
+            continue
+    return ""
+
+
+def _normalize_section_kind(kind: str) -> str:
+    k = re.sub(r"[\s-]+", "", kind or "").lower()
+    mapping = {
+        "intro": "Intro",
+        "verse": "Verse",
+        "chorus": "Chorus",
+        "prechorus": "Pre-Chorus",
+        "bridge": "Bridge",
+        "hook": "Hook",
+        "refrain": "Refrain",
+        "outro": "Outro",
+        "interlude": "Interlude",
+        "breakdown": "Breakdown",
+        "drop": "Drop",
+        "build": "Build",
+        "coda": "Coda",
+        "tag": "Tag",
+    }
+    return mapping.get(k, kind.title() if kind else "Verse")
+
+
+def _apply_acestep_section_tags(raw_lyrics: str) -> str:
+    """Convert lyric sources (Genius/lyrics.ovh style) into ACE-Step section tags.
+
+    Recognises headers like "Verse One: Author", "[Chorus]", "Intro:", etc.
+    If no section header is present anywhere, we synthesize tags by treating
+    the first stanza as `[Intro]`, alternating `[Verse N]`/`[Chorus]` for the
+    middle stanzas, and the last stanza as `[Outro]` so the trainer at least
+    sees the canonical bracket structure.
+    """
+    lyrics = (raw_lyrics or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not lyrics:
+        return ""
+
+    paragraphs = [p.strip("\n") for p in re.split(r"\n\s*\n", lyrics) if p.strip()]
+    has_header = any(_SECTION_HEADER_RE.match(p.split("\n", 1)[0] or "") for p in paragraphs)
+
+    counters: dict[str, int] = {}
+
+    # ACE-Step convention (per prompt_kit MASTER_RULES): Verse is numbered,
+    # everything else is unnumbered. Multiple [Chorus] occurrences keep the
+    # same tag.
+    UNNUMBERED = {
+        "Intro", "Outro", "Chorus", "Pre-Chorus", "Bridge", "Hook",
+        "Refrain", "Interlude", "Breakdown", "Drop", "Build", "Coda", "Tag",
+    }
+
+    def next_tag(kind: str, explicit_num: str = "") -> str:
+        normalized = _normalize_section_kind(kind)
+        if normalized in UNNUMBERED:
+            return f"[{normalized}]"
+        num: int | None = None
+        if explicit_num:
+            stripped = explicit_num.strip().lower()
+            if stripped.isdigit():
+                num = int(stripped)
+            elif stripped in _WORD_TO_INT:
+                num = _WORD_TO_INT[stripped]
+        if num is None:
+            counters[normalized] = counters.get(normalized, 0) + 1
+            num = counters[normalized]
+        return f"[{normalized} {num}]"
+
+    if has_header:
+        out_parts: list[str] = []
+        for paragraph in paragraphs:
+            lines = paragraph.split("\n")
+            head = lines[0]
+            match = _SECTION_HEADER_RE.match(head)
+            if match:
+                tag = next_tag(match.group("kind") or "Verse", match.group("num") or "")
+                body = "\n".join(lines[1:]).strip()
+                out_parts.append(f"{tag}\n{body}".rstrip())
+            else:
+                out_parts.append(paragraph.rstrip())
+        return "\n\n".join(part for part in out_parts if part).strip()
+
+    if len(paragraphs) == 1:
+        return f"[Verse 1]\n{paragraphs[0]}".strip()
+    out_parts2: list[str] = []
+    last_idx = len(paragraphs) - 1
+    for idx, paragraph in enumerate(paragraphs):
+        if idx == 0:
+            tag = "[Intro]"
+        elif idx == last_idx:
+            tag = "[Outro]"
+        else:
+            # Alternate Verse → Chorus → Verse → Chorus
+            tag = next_tag("Chorus") if idx % 2 == 0 else next_tag("Verse")
+        out_parts2.append(f"{tag}\n{paragraph}".strip())
+    return "\n\n".join(out_parts2).strip()
+
+
+def _training_lookup_online_lyrics(audio_path: Path, body: dict[str, Any]) -> dict[str, Any]:
+    """Look up lyrics for an audio file online and return an understand_music
+    -shaped dict that `write_label_sidecars` can consume.
+
+    No LM, no audio-codes extraction — just ID3 + HTTP. Returns:
+        caption       — "{artist} – {title}" derived from tags/filename
+        lyrics        — section-tagged lyrics (or "[Instrumental]" if not found)
+        bpm           — None (let ACE-Step auto-detect at training time)
+        key_scale     — "" (auto)
+        time_signature— "" (auto)
+        language      — "" (let preprocessing infer)
+        is_instrumental — true when lyrics lookup failed
+        label_source  — "online_lyrics_ovh" or "online_lyrics_missing"
+    """
+    artist, title = _resolve_audio_artist_title(audio_path)
+    online = _fetch_lyrics_ovh(artist, title) if (artist and title) else ""
+    tagged = _apply_acestep_section_tags(online) if online else ""
+    has_lyrics = bool(tagged.strip())
+    caption_bits = [bit for bit in [artist, title] if bit]
+    caption = " – ".join(caption_bits).strip() or audio_path.stem
+    return {
+        "caption": caption,
+        "lyrics": tagged or "[Instrumental]",
+        "bpm": None,
+        "key_scale": "",
+        "time_signature": "",
+        "language": "",
+        "is_instrumental": not has_lyrics,
+        "label_source": "online_lyrics_ovh" if has_lyrics else "online_lyrics_missing",
+        "ace_lm_model": "",
+        "online_artist": artist,
+        "online_title": title,
+    }
 
 
 def _training_write_label_sidecars(audio_path: Path, payload: dict[str, Any]) -> dict[str, str]:
@@ -2374,7 +2616,7 @@ training_manager = AceTrainingManager(
     release_models=_release_models_for_training,
     adapter_ready=_activate_trained_adapter,
     audition_runner=_run_lora_epoch_audition,
-    understand_music=_training_understand_music,
+    understand_music=_training_lookup_online_lyrics,
     write_label_sidecars=_training_write_label_sidecars,
 )
 
@@ -12525,7 +12767,7 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                 succeeded += 1
                 continue
             try:
-                understood = _training_understand_music(audio_path, request_body)
+                understood = _training_lookup_online_lyrics(audio_path, request_body)
                 paths = _training_write_label_sidecars(audio_path, understood)
                 labels.append(
                     {

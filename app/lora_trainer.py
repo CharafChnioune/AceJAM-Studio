@@ -1551,7 +1551,7 @@ class AceTrainingManager:
                     )
                     self._append_log(
                         log_path,
-                        f"[transcribe] running understand_music on {len(missing)} file(s) without sidecars\n",
+                        f"[transcribe] looking up online lyrics for {len(missing)} file(s) without sidecars\n",
                     )
                     request_body = {
                         "vocal_language": language,

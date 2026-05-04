@@ -69,6 +69,10 @@ function labelSourceBadge(source?: string) {
   if (!source) return { variant: "muted" as const, label: "—" };
   if (source === "existing_sidecar")
     return { variant: "muted" as const, label: "bestaande sidecar" };
+  if (source === "online_lyrics_ovh")
+    return { variant: "default" as const, label: "online lyrics" };
+  if (source === "online_lyrics_missing")
+    return { variant: "muted" as const, label: "geen match" };
   if (source === "official_ace_step_understand_music")
     return { variant: "default" as const, label: "AI gelabeld" };
   if (source === "understand_music_failed")
@@ -732,7 +736,7 @@ export function TrainerWizard() {
       key: "content",
       title: "Genre, content & auto-transcribe",
       description:
-        "Vertel de trainer om welk genre het gaat en of we voor het trainen automatisch via ACE-Step understand_music lyrics + caption per clip moeten ophalen.",
+        "Vertel de trainer welk genre het is en of we vlak voor de training online lyrics moeten ophalen + ACE-Step section-tags moeten toevoegen voor elke clip die nog geen sidecars heeft.",
       isValid: !!dataset?.dataset_id,
       hidden: !dataset?.dataset_id,
       render: () => (
@@ -772,19 +776,24 @@ export function TrainerWizard() {
           </FieldGroup>
 
           <FieldGroup
-            title="Auto-transcribe vóór training"
-            description="De training-thread roept ACE-Step's understand_music aan voor élk audio-bestand zonder .lyrics.txt + .json sidecars en schrijft die ter plekke. Dit voorkomt de '[Instrumental]'-fallback waar dataset-health voor waarschuwt."
+            title="Auto-label vóór training"
+            description="Bij Start training leest de trainer de ID3-tags van elke clip, zoekt de echte lyrics op via lyrics.ovh en plakt er ACE-Step section-tags ([Verse N]/[Chorus]/[Bridge]) op. Snel (geen LM, alleen HTTP), en geen kapotte transcribe-output. Sidecars die al bestaan worden overgeslagen."
           >
             <div className="flex items-start justify-between gap-3 rounded-md border bg-card/40 p-3">
               <div className="min-w-0 flex-1 space-y-1">
                 <Label className="flex items-center gap-1.5">
-                  <Mic2 className="size-3.5" /> AI auto-transcribe vocals + caption
+                  <Mic2 className="size-3.5" /> Online lyrics + ACE-Step section-tags
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  Aan = vocal LoRA's krijgen echte lyric-conditioning. Uit = alle
-                  samples blijven <code className="rounded bg-background/40 px-1">[Instrumental]</code>
-                  (alleen voor pure instrumentale datasets). Per ACE-Step docs:
-                  transcribed lyrics moeten achteraf gereviewed worden op fouten.
+                  Aan = vocal LoRA's krijgen echte lyric-conditioning, opgehaald
+                  van lyrics.ovh op basis van ID3 artist/title (of filename als
+                  fallback) met automatische{" "}
+                  <code className="rounded bg-background/40 px-1">[Verse N]</code>
+                  /<code className="rounded bg-background/40 px-1">[Chorus]</code>
+                  /<code className="rounded bg-background/40 px-1">[Bridge]</code>{" "}
+                  tagging. Uit = alle samples blijven{" "}
+                  <code className="rounded bg-background/40 px-1">[Instrumental]</code>
+                  (voor pure instrumentale datasets).
                 </p>
               </div>
               <Button
@@ -811,49 +820,10 @@ export function TrainerWizard() {
             </div>
             {!form.auto_understand_music && (
               <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-2.5 text-xs text-yellow-200">
-                Auto-transcribe staat uit. Bij vocal-tracks zonder bestaande
-                sidecars valt training terug op{" "}
+                Auto-label staat uit. Alle samples blijven{" "}
                 <code className="rounded bg-background/40 px-1">[Instrumental]</code>{" "}
-                en mist lyric-conditioning.
+                — alleen kiezen voor pure-instrumentale datasets.
               </div>
-            )}
-          </FieldGroup>
-
-          <FieldGroup
-            title="Optioneel: alleen labelen zonder trainen"
-            description="Schrijf nu de sidecars zonder direct te starten met trainen, zodat je ze handmatig kunt reviewen voordat je doorgaat."
-          >
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => startAutolabel.mutate(dataset?.dataset_id)}
-                disabled={startAutolabel.isPending || !!autolabelJob}
-                className="gap-1.5"
-              >
-                {startAutolabel.isPending ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Mic2 className="size-3.5" />
-                )}
-                Run autolabel-job nu
-              </Button>
-              {autolabelJob && (
-                <Badge variant="muted" className="gap-1">
-                  <Loader2
-                    className={cn(
-                      "size-3",
-                      (autolabelJob.state ?? "") !== "complete" &&
-                        (autolabelJob.state ?? "") !== "error" &&
-                        "animate-spin",
-                    )}
-                  />
-                  {autolabelJob.status} · {autolabelJob.progress ?? 0}%
-                </Badge>
-              )}
-            </div>
-            {autolabelJob && (
-              <Progress value={autolabelJob.progress ?? 0} className="mt-2" />
             )}
           </FieldGroup>
         </div>
