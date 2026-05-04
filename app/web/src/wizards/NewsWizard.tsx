@@ -8,6 +8,7 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { TagInput } from "@/components/wizard/TagInput";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
@@ -28,6 +29,7 @@ import {
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
 import { defaultTrackArtPrompt } from "@/lib/schemas";
+import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "news" as const;
@@ -55,6 +57,11 @@ interface NewsForm {
   key_scale?: string;
   vocal_language: string;
   song_model: string;
+  use_lora: boolean;
+  lora_adapter_path: string;
+  lora_adapter_name: string;
+  lora_scale: number;
+  adapter_model_variant: string;
   social_post_caption?: string;
   social_hook_line?: string;
   social_hashtags?: string;
@@ -81,6 +88,11 @@ export function NewsWizard() {
       duration: 90,
       vocal_language: "nl",
       song_model: "acestep-v15-xl-sft",
+      use_lora: false,
+      lora_adapter_path: "",
+      lora_adapter_name: "",
+      lora_scale: DEFAULT_LORA_SCALE,
+      adapter_model_variant: "",
       social_post_caption: "",
       social_hook_line: "",
       social_hashtags: "",
@@ -89,6 +101,7 @@ export function NewsWizard() {
   });
 
   const [step, setStep] = React.useState(0);
+  const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const values = form.watch();
 
   React.useEffect(() => {
@@ -105,6 +118,14 @@ export function NewsWizard() {
       setStep(999);
     },
   });
+
+  const setLoraSelection = (selection: LoraSelection) => {
+    form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
+    form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
+    form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
+    form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
+    form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+  };
 
   const buildPayload = () => {
     const v = form.getValues();
@@ -125,12 +146,13 @@ export function NewsWizard() {
       key_scale: v.key_scale,
       vocal_language: v.vocal_language || "nl",
       song_model: v.song_model,
+      ...normalizeLoraSelection(v),
       social_pack: {
         post_caption: v.social_post_caption,
         hook_line: v.social_hook_line,
-        hashtags: v.social_hashtags
-          ? v.social_hashtags.split(/[ ,]+/).filter(Boolean)
-          : [],
+        hashtags: Array.isArray(v.social_hashtags)
+          ? v.social_hashtags.map((item) => String(item ?? "").trim()).filter(Boolean)
+          : String(v.social_hashtags || "").split(/[ ,]+/).filter(Boolean),
       },
     };
   };
@@ -162,7 +184,7 @@ export function NewsWizard() {
       title: "Nieuws-prompt",
       description:
         "Plak een kop, link of beschrijving van het nieuws en de hoek die je wilt nemen. AI plant een satirische track in NL.",
-      isValid: (values.user_prompt ?? "").trim().length >= 10,
+      isValid: (values.user_prompt ?? "").trim().length >= 10 && !aiPromptPending,
       render: () => (
         <AIPromptStep
           mode="news"
@@ -172,6 +194,7 @@ export function NewsWizard() {
             "Energieprijzen stijgen weer — pop story met cynische ondertoon",
             "Nieuwe AI-wet wordt aangenomen — club banger 130 bpm",
           ]}
+          onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             hydrate(payload);
             const t =
@@ -321,6 +344,9 @@ export function NewsWizard() {
               )}
             />
           </FieldGroup>
+          <FieldGroup title="LoRA" description="Optioneel: kies een getrainde PEFT LoRA voor deze track.">
+            <LoraSelector value={values} onChange={setLoraSelection} />
+          </FieldGroup>
         </div>
       ),
     },
@@ -338,6 +364,7 @@ export function NewsWizard() {
               { key: "satire_mode", label: "Satire-modus" },
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
+              { key: "lora_adapter_name", label: "LoRA" },
               { key: "vocal_language", label: "Taal" },
               { key: "social_hook_line", label: "Hook" },
               { key: "tags", label: "Tags" },

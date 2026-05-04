@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_LORA_SCALE } from "@/lib/lora";
 
 /**
  * Zod schemas per wizard step. Kept loose enough that AI-fill can hydrate
@@ -48,6 +49,11 @@ export const simpleSchema = z.object({
   song_model: z.string().default("acestep-v15-xl-sft"),
   quality_profile: z.enum(["draft", "standard", "chart_master"]).default("standard"),
   seed: optionalNumber,
+  use_lora: z.boolean().default(false),
+  lora_adapter_path: z.string().default(""),
+  lora_adapter_name: z.string().default(""),
+  lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
+  adapter_model_variant: z.string().default(""),
 });
 
 export type SimpleFormValues = z.infer<typeof simpleSchema>;
@@ -69,6 +75,11 @@ export const simpleDefaults: SimpleFormValues = {
   song_model: "acestep-v15-xl-sft",
   quality_profile: "standard",
   seed: undefined,
+  use_lora: false,
+  lora_adapter_path: "",
+  lora_adapter_name: "",
+  lora_scale: DEFAULT_LORA_SCALE,
+  adapter_model_variant: "",
 };
 
 // ---- Custom ----
@@ -77,8 +88,8 @@ export const customSchema = simpleSchema.extend({
   task_type: z.enum(["text2music", "cover", "repaint", "extract", "lego", "complete"]).default(
     "text2music",
   ),
-  inference_steps: z.number().int().min(4).max(100).default(32),
-  guidance_scale: z.number().min(1).max(15).default(8.0),
+  inference_steps: z.number().int().min(4).max(100).default(8),
+  guidance_scale: z.number().min(1).max(15).default(7.0),
   shift: z.number().min(0).max(10).default(3.0),
   audio_format: z.enum(["wav32", "wav16", "mp3", "flac"]).default("wav32"),
   batch_size: z.number().int().min(1).max(8).default(1),
@@ -105,6 +116,11 @@ export const albumSchema = z.object({
   genre_prompt: optionalString,
   custom_tags: tagsField,
   negative_tags: tagsField,
+  use_lora: z.boolean().default(false),
+  lora_adapter_path: z.string().default(""),
+  lora_adapter_name: z.string().default(""),
+  lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
+  adapter_model_variant: z.string().default(""),
 });
 
 export type AlbumFormValues = z.infer<typeof albumSchema>;

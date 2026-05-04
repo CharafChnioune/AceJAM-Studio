@@ -14,6 +14,7 @@ from lora_trainer import (
     model_from_variant,
     model_to_variant,
     normalize_training_song_model,
+    safe_generation_trigger_tag,
     training_device_policy,
     training_precision_for_device,
     utc_now,
@@ -224,12 +225,14 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["alpha"], 128)
             self.assertEqual(params["dropout"], 0.1)
             self.assertEqual(params["training_shift"], 3.0)
+            self.assertEqual(params["num_inference_steps"], 8)
             self.assertEqual(params["training_seed"], 42)
             self.assertIsNone(params["train_epochs"])
             self.assertEqual(params["save_every_n_epochs"], 1)
             self.assertEqual(params["song_model"], "acestep-v15-xl-sft")
             self.assertEqual(params["model_variant"], "xl_sft")
-            self.assertFalse(params["epoch_audition"]["enabled"])
+            self.assertTrue(params["epoch_audition"]["enabled"])
+            self.assertEqual(params["epoch_audition"]["scale"], 0.45)
             self.assertEqual(params["device"], "mps")
             self.assertEqual(params["precision"], "fp32")
             self.assertEqual(manager.auto_epochs(20), 800)
@@ -442,6 +445,13 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertIn("drill rap", caption)
         self.assertIn("clear intelligible vocal", caption)
         self.assertNotIn("Pac", lyrics)
+
+    def test_epoch_audition_caption_uses_generation_safe_numeric_trigger(self):
+        caption = build_epoch_audition_caption("west coast rap", trigger_tag="2pac", genre_key="rap")
+
+        self.assertEqual(safe_generation_trigger_tag("2pac"), "pac")
+        self.assertIn("pac", caption.lower())
+        self.assertNotIn("2pac", caption.lower())
 
     def test_epoch_audition_lyrics_are_fitted_for_twenty_seconds(self):
         lyrics = "\n".join(
@@ -934,6 +944,22 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(adapters[0]["display_name"], "LoKr Style")
             self.assertEqual(adapters[0]["adapter_type"], "lokr")
             self.assertFalse(adapters[0]["is_loadable"])
+
+    def test_lora_registry_infers_xl_sft_metadata_from_adapter_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            adapter_dir = self.make_peft_adapter(root / "data" / "loras" / "copied-xl-sft")
+            (adapter_dir / "adapter_config.json").write_text(
+                json.dumps({"base_model_name_or_path": "/models/acestep-v15-xl-sft"}),
+                encoding="utf-8",
+            )
+
+            adapters = manager.list_adapters()
+
+            self.assertEqual(adapters[0]["model_variant"], "xl_sft")
+            self.assertEqual(adapters[0]["song_model"], "acestep-v15-xl-sft")
+            self.assertTrue((adapter_dir / "acejam_adapter.json").is_file())
 
     def test_job_result_registers_manual_training_output(self):
         with tempfile.TemporaryDirectory() as tmp:

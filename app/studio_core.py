@@ -560,12 +560,12 @@ OFFICIAL_TRAINING_FEATURES: dict[str, dict[str, Any]] = {
     "tensorboard_runs": {"status": "guarded", "endpoint": "/api/lora/status"},
 }
 
-DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-docs-defaults-2026-05-03"
+DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-runtime-verified-defaults-2026-05-04"
 DOCS_BEST_AUDIO_FORMAT = "wav32"
 DOCS_BEST_TURBO_STEPS = 8
 DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20
-BALANCED_PRO_STANDARD_STEPS = 50
-CHART_MASTER_STANDARD_STEPS = 64
+BALANCED_PRO_STANDARD_STEPS = 8
+CHART_MASTER_STANDARD_STEPS = 8
 DOCS_BEST_STANDARD_STEPS = CHART_MASTER_STANDARD_STEPS
 DOCS_BEST_MODEL_STEPS = {
     "acestep-v15-turbo": 8,
@@ -593,9 +593,9 @@ BALANCED_PRO_MODEL_STEPS = {
     }.items()
 }
 DOCS_BEST_TURBO_GUIDANCE = 7.0
-DOCS_BEST_STANDARD_GUIDANCE = 8.0
+DOCS_BEST_STANDARD_GUIDANCE = 7.0
 DOCS_BEST_TURBO_SHIFT = 3.0
-BALANCED_PRO_STANDARD_SHIFT = 1.0
+BALANCED_PRO_STANDARD_SHIFT = 3.0
 CHART_MASTER_STANDARD_SHIFT = 3.0
 DOCS_BEST_STANDARD_SHIFT = CHART_MASTER_STANDARD_SHIFT
 DOCS_DAILY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
@@ -721,7 +721,7 @@ def _quality_profile_base_settings(profile: str) -> dict[str, Any]:
             "quality_preset": "official-raw-ace-step",
             "inference_steps": 8,
             "guidance_scale": 7.0,
-            "shift": 1.0,
+            "shift": 3.0,
             "infer_method": "ode",
             "sampler_mode": "euler",
             "audio_format": "flac",
@@ -840,7 +840,7 @@ def quality_profiles_payload() -> dict[str, Any]:
         },
         QUALITY_PROFILE_BALANCED_PRO: {
             "label": "Balanced pro",
-            "summary": "Previous AceJAM quality profile: 50-step SFT/Base renders.",
+            "summary": "Runtime-verified profile: official 8-step, shift-3 SFT/Base vocal renders.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_BALANCED_PRO) for model in KNOWN_ACE_STEP_MODELS},
             "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": 1,
@@ -848,7 +848,7 @@ def quality_profiles_payload() -> dict[str, Any]:
         },
         QUALITY_PROFILE_CHART_MASTER: {
             "label": "Max Quality",
-            "summary": "Default final-render profile: XL/SFT preference, 64 steps, shift 3, wav32 studio output.",
+            "summary": "Default final-render profile: XL/SFT preference with runtime-verified 8-step, shift-3 vocal stability.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_CHART_MASTER) for model in KNOWN_ACE_STEP_MODELS},
             "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": CHART_MASTER_SINGLE_TAKES,
@@ -1522,7 +1522,7 @@ ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
     "use_adg": False,
     "cfg_interval_start": 0.0,
     "cfg_interval_end": 1.0,
-    "shift": 1.0,
+    "shift": 3.0,
     "infer_method": "ode",
     "sampler_mode": "euler",
     "velocity_norm_threshold": 0.0,
@@ -1815,9 +1815,9 @@ def _field_note(field: str) -> str:
         "lyrics": f"Official request budget: less than {ACE_STEP_LYRICS_CHAR_LIMIT} characters.",
         "duration": "Official range is 10-600 seconds; source-audio tasks lock duration to the source where ACE-Step does that internally.",
         "quality_profile": "AceJAM profile selector: docs_daily for Simple, chart_master/Max Quality for final renders, plus preview_fast, balanced_pro, and official_raw.",
-        "inference_steps": "Docs: Turbo recommended 8; Base/SFT 32-64 for quality. Max Quality uses 64 for Base/SFT/XL SFT/Base; Balanced Pro keeps the previous 50-step preset.",
+        "inference_steps": "Runtime-verified ACE-Step/MLX default: 8 steps keeps XL SFT vocals intelligible; higher SFT step counts can collapse vocals.",
         "guidance_scale": "Only effective for non-turbo models.",
-        "shift": "Official default is 1.0. Chart Master uses 3.0 for final renders. Custom timesteps override shift.",
+        "shift": "Runtime-verified ACE-Step/MLX default: shift 3.0 for Turbo and XL SFT vocal renders. Custom timesteps override shift.",
         "timesteps": "Overrides inference_steps and shift when present.",
         "audio_format": "Official runner supports flac/mp3/opus/aac/wav/wav32; fast in-process runner supports a smaller subset.",
         "audio_cover_strength": "Higher values keep more source structure; lower values transform more freely.",

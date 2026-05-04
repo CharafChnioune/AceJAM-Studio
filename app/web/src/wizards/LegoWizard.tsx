@@ -9,7 +9,7 @@ export function LegoWizard() {
         title: "Lego wizard",
         subtitle:
           "Reconstrueer een track per stem-laag — herbouw het stuk per puzzelstuk.",
-        defaultModel: "acestep-v15-xl-base",
+        defaultModel: "acestep-v15-xl-sft",
         examples: [
           "bouw vocals + drums + bass terug, voeg pad toe",
           "houd alle stems behalve drums; vervang die met trap",

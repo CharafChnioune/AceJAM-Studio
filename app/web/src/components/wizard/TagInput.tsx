@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 
 interface TagInputProps {
-  value: string;
+  value: unknown;
   onChange: (value: string) => void;
   placeholder?: string;
   suggestions?: string[];
@@ -12,9 +12,14 @@ interface TagInputProps {
   variant?: "default" | "negative";
 }
 
-function parse(value: string): string[] {
-  if (!value) return [];
-  return value
+function parse(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+  }
+  if (value === null || value === undefined) return [];
+  const raw = String(value);
+  if (!raw) return [];
+  return raw
     .split(/[,\n]/)
     .map((t) => t.trim())
     .filter(Boolean);

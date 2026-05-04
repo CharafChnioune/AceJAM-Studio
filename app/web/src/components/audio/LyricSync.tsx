@@ -19,10 +19,12 @@ interface LRCLine {
   text: string;
 }
 
-function parseLRC(raw: string): LRCLine[] {
+function parseLRC(raw: unknown): LRCLine[] {
   const out: LRCLine[] = [];
-  if (!raw) return out;
-  const lines = raw.split(/\r?\n/);
+  if (raw === null || raw === undefined) return out;
+  const source = Array.isArray(raw) ? raw.join("\n") : String(raw);
+  if (!source) return out;
+  const lines = source.split(/\r?\n/);
   const re = /^\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/;
   for (const line of lines) {
     const m = line.match(re);

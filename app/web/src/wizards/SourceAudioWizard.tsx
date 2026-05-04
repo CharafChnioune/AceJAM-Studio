@@ -8,6 +8,7 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/SourceAudioStep";
 import { TagInput } from "@/components/wizard/TagInput";
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type WizardMode, api } from "@/lib/api";
+import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
 import { toast } from "@/components/ui/sonner";
@@ -54,6 +56,18 @@ const STEM_OPTIONS = [
   "fx",
 ];
 
+const SONG_MODELS = [
+  ["acestep-v15-xl-sft", "ACE-Step v1.5 XL SFT (aanbevolen)"],
+  ["acestep-v15-xl-base", "ACE-Step v1.5 XL Base"],
+  ["acestep-v15-xl-turbo", "ACE-Step v1.5 XL Turbo"],
+  ["acestep-v15-sft", "ACE-Step v1.5 SFT"],
+  ["acestep-v15-base", "ACE-Step v1.5 Base"],
+  ["acestep-v15-turbo", "ACE-Step v1.5 Turbo"],
+  ["acestep-v15-turbo-shift1", "ACE-Step v1.5 Turbo (shift 1)"],
+] as const;
+
+const BASE_ONLY_VARIANTS = new Set(["extract", "lego", "complete"]);
+
 interface BaseSourceForm {
   task_type: string;
   title: string;
@@ -77,6 +91,11 @@ interface BaseSourceForm {
   repaint_strength?: number;
   track_names?: string[];
   global_caption?: string;
+  use_lora: boolean;
+  lora_adapter_path: string;
+  lora_adapter_name: string;
+  lora_scale: number;
+  adapter_model_variant: string;
 }
 
 export interface SourceAudioWizardConfig {
@@ -107,7 +126,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       instrumental: config.variant === "extract",
       duration: 60,
       vocal_language: "en",
-      song_model: config.defaultModel ?? "acestep-v15-xl-base",
+      song_model: config.defaultModel ?? "acestep-v15-xl-sft",
       audio_cover_strength: 0.6,
       cover_noise_strength: 0.2,
       repainting_start: 0,
@@ -116,16 +135,26 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       repaint_strength: 0.6,
       track_names: ["vocals", "drums", "bass"],
       global_caption: "",
+      use_lora: false,
+      lora_adapter_path: "",
+      lora_adapter_name: "",
+      lora_scale: DEFAULT_LORA_SCALE,
+      adapter_model_variant: "",
     },
     mode: "onChange",
   });
 
   const [step, setStep] = React.useState(0);
+  const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const [source, setSource] = React.useState<SourceAudioValue | undefined>();
   const [audioCodes, setAudioCodes] = React.useState<string>("");
   const storePrompt = useWizardStore((s) => s.prompts[config.mode]);
   const aiDescription = storePrompt ?? "";
   const values = form.watch();
+  const baseOnlyModelError =
+    BASE_ONLY_VARIANTS.has(config.variant) && !String(values.song_model || "").includes("-base")
+      ? "Extract, Lego en Complete zijn ACE-Step Base-only taken. Kies ACE-Step v1.5 XL Base voordat je genereert."
+      : "";
 
   React.useEffect(() => {
     if (source?.duration && (config.variant === "cover" || config.variant === "extract")) {
@@ -177,6 +206,14 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     },
   });
 
+  const setLoraSelection = (selection: LoraSelection) => {
+    form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
+    form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
+    form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
+    form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
+    form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+  };
+
   const buildPayload = () => {
     const v = form.getValues();
     const payload: Record<string, unknown> = {
@@ -195,6 +232,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       vocal_language: v.vocal_language,
       song_model: v.song_model,
       src_audio_id: source?.uploadId,
+      ...normalizeLoraSelection(v),
     };
     if (config.variant === "cover") {
       payload.audio_cover_strength = v.audio_cover_strength;
@@ -383,12 +421,13 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       title: "AI prompt",
       description:
         "Beschrijf wat je met de bron-audio wilt doen. AI vult tags, lyrics en parameters in.",
-      isValid: aiDescription.trim().length >= 4 || !!source,
+      isValid: (aiDescription.trim().length >= 4 || !!source) && !aiPromptPending,
       render: () => (
         <AIPromptStep
           mode={config.mode}
           placeholder={config.examples[0]}
           examples={config.examples}
+          onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             hydrate(payload);
           }}
@@ -410,7 +449,42 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       title: `${config.title}-instellingen`,
       isValid: true,
       render: () => (
-        <div className="space-y-4">{renderModeStep()}</div>
+        <div className="space-y-4">
+          <FieldGroup title="Song model">
+            <div className="space-y-1.5">
+              <Label>Song model</Label>
+              <Controller
+                control={form.control}
+                name="song_model"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {SONG_MODELS.map(([id, label]) => (
+                        <SelectItem key={id} value={id}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              {baseOnlyModelError && (
+                <p className="text-xs text-amber-500">{baseOnlyModelError}</p>
+              )}
+            </div>
+          </FieldGroup>
+          {renderModeStep()}
+        </div>
+      ),
+    },
+    {
+      key: "lora",
+      title: "LoRA",
+      description: "Optioneel: kies een generation-loadable PEFT LoRA adapter.",
+      isValid: true,
+      render: () => (
+        <FieldGroup title="LoRA adapter">
+          <LoraSelector value={values} onChange={setLoraSelection} />
+        </FieldGroup>
       ),
     },
     {
@@ -492,9 +566,16 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     {
       key: "review",
       title: "Review & genereer",
-      isValid: !!source?.uploadId,
+      isValid: !!source?.uploadId && !baseOnlyModelError,
       render: () => (
         <div className="space-y-4">
+          {baseOnlyModelError && (
+            <FieldGroup title="Model blokkade" description={baseOnlyModelError}>
+              <p className="text-sm text-muted-foreground">
+                Ga terug naar de modelstap en kies ACE-Step v1.5 XL Base om deze source-audio taak te renderen.
+              </p>
+            </FieldGroup>
+          )}
           <ReviewStep
             payload={buildPayload()}
             warnings={warnings}
@@ -502,6 +583,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
               { key: "task_type", label: "Modus" },
               { key: "title", label: "Titel" },
               { key: "song_model", label: "Model" },
+              { key: "lora_adapter_name", label: "LoRA" },
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "vocal_language", label: "Taal" },
               { key: "src_audio_id", label: "Source ID" },

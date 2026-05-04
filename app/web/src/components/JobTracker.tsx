@@ -311,6 +311,7 @@ function GenerationDetails({
   const title = text(resultSummary.title || result.title || summary.title || summary.caption, "Song render");
   const artist = text(resultSummary.artist_name || result.artist_name || summary.artist_name, "");
   const gate = asRecord(result.vocal_intelligibility_gate || resultSummary.vocal_intelligibility_gate);
+  const transcriptPreview = asArray(gate.transcript_preview);
 
   return (
     <div className="space-y-4">
@@ -367,10 +368,26 @@ function GenerationDetails({
               </p>
             ))}
             {Object.keys(gate).length > 0 && (
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                <InfoRow label="Vocal gate" value={gate.status} />
-                <InfoRow label="Passed" value={gate.passed} />
-                <InfoRow label="Attempt" value={`${text(gate.attempt)} / ${text(gate.max_attempts)}`} />
+              <div className="space-y-2">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  <InfoRow label="Vocal gate" value={gate.status} />
+                  <InfoRow label="Passed" value={gate.passed} />
+                  <InfoRow label="Attempt" value={`${text(gate.attempt)} / ${text(gate.max_attempts)}`} />
+                  <InfoRow label="Needs review" value={gate.needs_review} />
+                </div>
+                {transcriptPreview.length > 0 && (
+                  <div className="space-y-1">
+                    {transcriptPreview.slice(0, 3).map((item, index) => {
+                      const row = asRecord(item);
+                      return (
+                        <p key={index} className="rounded-md border bg-background/35 p-2 leading-relaxed">
+                          {text(row.audio_id || `take ${index + 1}`)} · {text(row.status, "unknown")} —{" "}
+                          {text(row.text || row.issue, "Geen transcript beschikbaar.")}
+                        </p>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>

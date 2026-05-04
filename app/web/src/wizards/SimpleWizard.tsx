@@ -9,6 +9,7 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { QualityPresets } from "@/components/wizard/QualityPresets";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
@@ -29,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { simpleSchema, simpleDefaults, type SimpleFormValues, defaultTrackArtPrompt } from "@/lib/schemas";
+import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
 import { formatDuration } from "@/lib/utils";
@@ -60,8 +62,8 @@ const SONG_MODELS = [
 
 const QUALITY_PROFILES = [
   ["draft", "Draft (snel, ~8 stappen)"],
-  ["standard", "Standard (32 stappen)"],
-  ["chart_master", "Chart Master (64 stappen, max kwaliteit)"],
+  ["standard", "Standard (runtime-verified, 8 stappen, shift 3)"],
+  ["chart_master", "Chart Master (runtime-verified, 8 stappen, shift 3)"],
 ] as const;
 
 function ResultPlayback({
@@ -102,6 +104,7 @@ export function SimpleWizard() {
   });
 
   const [step, setStep] = React.useState(0);
+  const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const values = form.watch();
 
   // Mirror the AI-prompt textarea (stored in Zustand) into the form so
@@ -120,6 +123,14 @@ export function SimpleWizard() {
       setStep(4);
     },
   });
+
+  const setLoraSelection = (selection: LoraSelection) => {
+    form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
+    form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
+    form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
+    form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
+    form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+  };
 
   const hydrate = (payload: Record<string, unknown>) => {
     const next: Partial<SimpleFormValues> = {};
@@ -154,6 +165,7 @@ export function SimpleWizard() {
       song_model: v.song_model,
       quality_profile: v.quality_profile,
       seed: v.seed,
+      ...normalizeLoraSelection(v),
     };
   };
 
@@ -173,7 +185,7 @@ export function SimpleWizard() {
       title: "AI prompt",
       description:
         "Beschrijf je idee in eigen woorden — de AI vult de rest van de wizard alvast in.",
-      isValid: (values.simple_description ?? "").trim().length >= 4,
+      isValid: (values.simple_description ?? "").trim().length >= 4 && !aiPromptPending,
       render: () => (
         <AIPromptStep
           mode="simple"
@@ -183,6 +195,7 @@ export function SimpleWizard() {
             "lo-fi hip-hop instrumental with rain sfx, mellow",
             "cinematic orchestral hybrid, 6/8, building to drop",
           ]}
+          onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             hydrate(payload);
             // Sync AI prompt back into the form so isValid passes
@@ -339,6 +352,10 @@ export function SimpleWizard() {
             />
           </FieldGroup>
 
+          <FieldGroup title="LoRA" description="Optioneel: pas een getrainde PEFT LoRA toe op deze render.">
+            <LoraSelector value={values} onChange={setLoraSelection} />
+          </FieldGroup>
+
           <FieldGroup title="Muzikaal (optioneel)" description="Laat leeg om door het model te laten kiezen.">
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
@@ -387,6 +404,7 @@ export function SimpleWizard() {
               { key: "artist_name", label: "Artiest" },
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
+              { key: "lora_adapter_name", label: "LoRA" },
               { key: "vocal_language", label: "Taal" },
               { key: "quality_profile", label: "Kwaliteit" },
               { key: "tags", label: "Tags" },

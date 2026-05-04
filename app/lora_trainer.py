@@ -36,6 +36,11 @@ EPOCH_AUDITION_CLARITY_CAPTION = (
     "20-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
     "sparse arrangement, steady rhythm, no noisy vocal artifacts"
 )
+DEFAULT_LORA_GENERATION_SCALE = 0.45
+DEFAULT_SFT_BASE_INFERENCE_STEPS = 8
+DEFAULT_SFT_BASE_SHIFT = 3.0
+DEFAULT_TURBO_INFERENCE_STEPS = 8
+DEFAULT_TURBO_SHIFT = 3.0
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
@@ -247,6 +252,21 @@ def _caption_contains_trigger_tag(caption: str, trigger_tag: str) -> bool:
     return re.search(pattern, str(caption or ""), flags=re.IGNORECASE) is not None
 
 
+def safe_generation_trigger_tag(trigger_tag: str | None) -> str:
+    """Return a trigger text that is less likely to poison ACE-Step test prompts."""
+    trigger = re.sub(r"\s+", " ", str(trigger_tag or "").strip())
+    if not trigger:
+        return ""
+    compact = re.sub(r"[^A-Za-z0-9]+", "", trigger).lower()
+    if compact == "2pac":
+        return "pac"
+    if re.fullmatch(r"\d+[A-Za-z][A-Za-z0-9_-]*", trigger):
+        candidate = re.sub(r"^\d+", "", trigger)
+        candidate = re.sub(r"[_-]+", " ", candidate).strip()
+        return candidate or trigger
+    return trigger
+
+
 def build_epoch_audition_caption(
     caption: str | None = "",
     *,
@@ -257,7 +277,7 @@ def build_epoch_audition_caption(
     profile = dict(genre_profile or epoch_audition_genre_profile(caption, genre_key=genre_key))
     parts: list[str] = []
     seen: set[str] = set()
-    _append_caption_parts(parts, trigger_tag, seen)
+    _append_caption_parts(parts, safe_generation_trigger_tag(trigger_tag), seen)
     _append_caption_parts(parts, caption, seen)
     _append_caption_parts(parts, str(profile.get("caption_tags") or ""), seen)
     _append_caption_parts(parts, EPOCH_AUDITION_CLARITY_CAPTION, seen)
@@ -416,6 +436,73 @@ def normalize_training_song_model(song_model: str | None) -> str:
     if value in SONG_MODEL_TO_VARIANT:
         return value
     return DEFAULT_LORA_TRAINING_SONG_MODEL
+
+
+def infer_training_model_from_text(value: Any) -> tuple[str, str]:
+    text = str(value or "").strip().lower().replace("_", "-")
+    checks = (
+        ("xl-sft", "xl_sft"),
+        ("xl-base", "xl_base"),
+        ("xl-turbo", "xl_turbo"),
+        ("sft", "sft"),
+        ("base", "base"),
+        ("turbo", "turbo"),
+    )
+    for needle, variant in checks:
+        if needle in text:
+            return variant, VARIANT_TO_SONG_MODEL[variant]
+    return "", ""
+
+
+def training_inference_defaults(model_or_variant: Any) -> dict[str, Any]:
+    variant = model_to_variant(str(model_or_variant or DEFAULT_LORA_TRAINING_SONG_MODEL))
+    song_model = model_from_variant(variant, normalize_training_song_model(str(model_or_variant or "")))
+    if "turbo" in song_model:
+        return {
+            "training_shift": DEFAULT_TURBO_SHIFT,
+            "num_inference_steps": DEFAULT_TURBO_INFERENCE_STEPS,
+            "song_model": song_model,
+            "model_variant": variant,
+        }
+    return {
+        "training_shift": DEFAULT_SFT_BASE_SHIFT,
+        "num_inference_steps": DEFAULT_SFT_BASE_INFERENCE_STEPS,
+        "song_model": song_model,
+        "model_variant": variant,
+    }
+
+
+def infer_adapter_model_metadata(adapter_path: Path | str) -> dict[str, Any]:
+    path = Path(adapter_path).expanduser()
+    metadata: dict[str, Any] = {}
+    meta_path = path / "acejam_adapter.json"
+    if meta_path.is_file():
+        try:
+            metadata.update(json.loads(meta_path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    if metadata.get("song_model") or metadata.get("model_variant"):
+        variant = model_to_variant(str(metadata.get("model_variant") or metadata.get("song_model") or ""))
+        song_model = model_from_variant(variant, normalize_training_song_model(str(metadata.get("song_model") or "")))
+        return {**metadata, "model_variant": variant, "song_model": song_model}
+
+    config_path = path / "adapter_config.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            config = {}
+        base_model = str(config.get("base_model_name_or_path") or config.get("revision") or "")
+        variant, song_model = infer_training_model_from_text(base_model)
+        if variant or song_model:
+            metadata.update(
+                {
+                    "model_variant": variant,
+                    "song_model": song_model,
+                    "base_model_name_or_path": base_model,
+                }
+            )
+    return metadata
 
 
 def _torch_mps_available() -> bool:
@@ -790,22 +877,24 @@ class AceTrainingManager:
         user_caption = str(payload.get("epoch_audition_caption") or "").strip()
         user_lyrics = str(payload.get("epoch_audition_lyrics") or "").strip()
         user_genre = str(payload.get("epoch_audition_genre") or "auto").strip().lower() or "auto"
-        enabled = parse_bool(payload.get("epoch_audition_enabled"), False) or bool(user_caption or user_lyrics)
+        enabled = parse_bool(payload.get("epoch_audition_enabled"), True) or bool(user_caption or user_lyrics)
         profile = epoch_audition_genre_profile(user_caption, user_lyrics, user_genre)
+        safe_trigger = safe_generation_trigger_tag(trigger_tag)
         lyrics, lyrics_meta = default_epoch_audition_lyrics(
             user_caption,
-            trigger_tag=trigger_tag,
+            trigger_tag=safe_trigger,
             lyrics_hint=user_lyrics,
             genre_key=user_genre,
         )
         if not enabled:
             lyrics = ""
-        caption = build_epoch_audition_caption(user_caption, trigger_tag=trigger_tag, genre_key=user_genre, genre_profile=profile) if enabled else ""
+        caption = build_epoch_audition_caption(user_caption, trigger_tag=safe_trigger, genre_key=user_genre, genre_profile=profile) if enabled else ""
         vocal_language = str(payload.get("vocal_language") or payload.get("language") or "unknown").strip() or "unknown"
         return {
             "enabled": enabled,
             "caption": caption,
             "lyrics": lyrics,
+            "generation_trigger_tag": safe_trigger,
             "user_caption": user_caption,
             "user_lyrics": user_lyrics,
             "lyrics_source": lyrics_meta["lyrics_source"],
@@ -813,14 +902,19 @@ class AceTrainingManager:
             "genre_profile": lyrics_meta["genre_profile"],
             "duration": EPOCH_AUDITION_DURATION_SECONDS,
             "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),
-            "scale": parse_float(payload.get("epoch_audition_scale"), parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
+            "scale": parse_float(
+                payload.get("epoch_audition_scale"),
+                parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
+                0.0,
+                1.0,
+            ),
             "vocal_language": vocal_language,
         }
 
     def _dataset_audition_context(self, labels: list[dict[str, Any]], *, trigger_tag: str) -> str:
         parts: list[str] = []
         seen: set[str] = set()
-        _append_caption_parts(parts, trigger_tag, seen)
+        _append_caption_parts(parts, safe_generation_trigger_tag(trigger_tag), seen)
         for key in ("genre", "caption"):
             for entry in labels:
                 value = str(entry.get(key) or "").strip()
@@ -838,24 +932,38 @@ class AceTrainingManager:
 
     def _dataset_training_warnings(self, labels: list[dict[str, Any]]) -> dict[str, Any]:
         total = len(labels)
-        missing_lyrics = [
-            entry for entry in labels
-            if str(entry.get("lyrics") or "").strip().lower() == "[instrumental]"
-            and not str(entry.get("lyrics_path") or "").strip()
-            and str(entry.get("lyrics_source") or "") == "default_instrumental"
-        ]
+        missing_lyrics = []
+        missing_metadata = []
+        for entry in labels:
+            lyrics = str(entry.get("lyrics") or "").strip()
+            if not lyrics or lyrics.lower() == "[instrumental]":
+                missing_lyrics.append(entry)
+            if not entry.get("bpm") or not str(entry.get("keyscale") or entry.get("key_scale") or "").strip():
+                missing_metadata.append(entry)
         if not missing_lyrics:
-            return {"missing_lyrics_count": 0, "vocal_audition_unreliable": False, "warnings": []}
+            return {
+                "missing_lyrics_count": 0,
+                "missing_metadata_count": len(missing_metadata),
+                "sample_count": total,
+                "vocal_audition_unreliable": False,
+                "warnings": [],
+            }
+        ratio = len(missing_lyrics) / max(total, 1)
+        warnings = [
+            (
+                f"{len(missing_lyrics)}/{total} training samples have empty or [Instrumental] lyrics. "
+                "For vocal LoRAs, add lyrics sidecars or enable online lyrics before training."
+            )
+        ]
+        if missing_metadata:
+            warnings.append(f"{len(missing_metadata)}/{total} samples are missing BPM or key metadata.")
         return {
             "missing_lyrics_count": len(missing_lyrics),
+            "missing_metadata_count": len(missing_metadata),
             "sample_count": total,
             "vocal_audition_unreliable": True,
-            "warnings": [
-                (
-                    f"{len(missing_lyrics)}/{total} training samples have no lyrics sidecar, metadata, or CSV lyrics. "
-                    "ACE-Step preprocessing keeps them as [Instrumental], so vocal/lyric epoch auditions do not validate lyric conditioning."
-                )
-            ],
+            "blocking": ratio >= 0.25,
+            "warnings": warnings,
         }
 
     def _apply_one_click_dataset_context(self, params: dict[str, Any], labels: list[dict[str, Any]]) -> dict[str, Any]:
@@ -865,19 +973,21 @@ class AceTrainingManager:
         audition = dict(updated.get("epoch_audition") or {})
         if audition.get("enabled") and not str(audition.get("user_caption") or "").strip():
             trigger = str(updated.get("trigger_tag") or "").strip()
+            safe_trigger = safe_generation_trigger_tag(trigger)
             context_caption = self._dataset_audition_context(labels, trigger_tag=trigger)
             genre = str(audition.get("genre") or "auto")
             profile = epoch_audition_genre_profile(context_caption, str(audition.get("user_lyrics") or ""), genre)
             lyrics, lyrics_meta = default_epoch_audition_lyrics(
                 context_caption,
-                trigger_tag=trigger,
+                trigger_tag=safe_trigger,
                 lyrics_hint=str(audition.get("user_lyrics") or ""),
                 genre_key=genre,
             )
             audition.update(
                 {
-                    "caption": build_epoch_audition_caption(context_caption, trigger_tag=trigger, genre_key=genre, genre_profile=profile),
+                    "caption": build_epoch_audition_caption(context_caption, trigger_tag=safe_trigger, genre_key=genre, genre_profile=profile),
                     "lyrics": lyrics,
+                    "generation_trigger_tag": safe_trigger,
                     "lyrics_source": lyrics_meta["lyrics_source"],
                     "genre_profile": lyrics_meta["genre_profile"],
                     "dataset_caption_source": "labeled_dataset",
@@ -1027,6 +1137,7 @@ class AceTrainingManager:
         requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
         variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
         song_model = model_from_variant(variant, requested_song_model)
+        inference_defaults = training_inference_defaults(variant)
         trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
         epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
@@ -1063,11 +1174,11 @@ class AceTrainingManager:
             "--lr",
             str(parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0)),
             "--shift",
-            str(parse_float(payload.get("training_shift", payload.get("shift")), 3.0, 0.1, 10.0)),
+            str(parse_float(payload.get("training_shift", payload.get("shift")), inference_defaults["training_shift"], 0.1, 10.0)),
             "--seed",
             str(training_seed),
             "--num-inference-steps",
-            str(parse_int(payload.get("num_inference_steps"), 8, 1, 200)),
+            str(parse_int(payload.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200)),
             "--warmup-steps",
             str(parse_int(payload.get("warmup_steps"), 100, 0, 100000)),
             "--weight-decay",
@@ -1145,6 +1256,9 @@ class AceTrainingManager:
                 "epochs": epochs,
                 "save_every_n_epochs": 1,
                 "epoch_audition": epoch_audition,
+                "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), inference_defaults["training_shift"], 0.1, 10.0),
+                "num_inference_steps": parse_int(payload.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200),
+                "lora_scale": parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
                 "device": device,
                 "precision": precision,
             },
@@ -1329,11 +1443,33 @@ class AceTrainingManager:
                         meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     except Exception:
                         meta = {}
+                inferred_meta = infer_adapter_model_metadata(child)
+                for key, value in inferred_meta.items():
+                    meta.setdefault(key, value)
                 adapter_type = str(meta.get("adapter_type") or ("lokr" if has_lokr and not has_lora else "lora")).strip().lower()
                 display_name = str(meta.get("display_name") or meta.get("trigger_tag") or "").strip()
                 if not display_name:
                     display_name = child.parent.name if child.name == "final" and root == self.training_dir else child.name
                 loadable = bool(has_lora and adapter_type == "lora")
+                if loadable and not meta_path.is_file():
+                    generated_meta = {
+                        "display_name": display_name,
+                        "trigger_tag": str(meta.get("trigger_tag") or ""),
+                        "adapter_type": adapter_type,
+                        "model_variant": str(meta.get("model_variant") or ""),
+                        "song_model": str(meta.get("song_model") or ""),
+                        "trained_at": datetime.fromtimestamp(child.stat().st_mtime, timezone.utc).isoformat(),
+                        "source_path": str(child),
+                        "registered_path": str(child),
+                        "source_paths": {"source": str(child), "registered": str(child)},
+                    }
+                    if meta.get("base_model_name_or_path"):
+                        generated_meta["base_model_name_or_path"] = meta["base_model_name_or_path"]
+                    try:
+                        meta_path.write_text(json.dumps(generated_meta, indent=2), encoding="utf-8")
+                        meta.update(generated_meta)
+                    except Exception:
+                        pass
                 adapters.append(
                     {
                         "name": child.name,
@@ -1481,6 +1617,7 @@ class AceTrainingManager:
         requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
         variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
         song_model = model_from_variant(variant, requested_song_model)
+        inference_defaults = training_inference_defaults(variant)
         return {
             "dataset_id": dataset_id,
             "import_root": str(import_root),
@@ -1496,7 +1633,8 @@ class AceTrainingManager:
             "rank": parse_int(payload.get("rank"), 64, 1, 512),
             "alpha": parse_int(payload.get("alpha"), 128, 1, 1024),
             "dropout": parse_float(payload.get("dropout"), 0.1, 0.0, 1.0),
-            "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), 3.0, 0.1, 10.0),
+            "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), inference_defaults["training_shift"], 0.1, 10.0),
+            "num_inference_steps": parse_int(payload.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200),
             "training_seed": training_seed,
             "train_epochs": parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None,
             "save_every_n_epochs": 1,
@@ -1505,7 +1643,7 @@ class AceTrainingManager:
             "device": device,
             "precision": training_precision_for_device(device, payload.get("precision")),
             "auto_load": parse_bool(payload.get("auto_load"), True),
-            "lora_scale": parse_float(payload.get("lora_scale"), 1.0, 0.0, 1.0),
+            "lora_scale": parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
             "use_official_lm_labels": parse_bool(payload.get("use_official_lm_labels"), False),
             "epoch_audition": self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed),
         }
@@ -1718,7 +1856,7 @@ class AceTrainingManager:
                 "--seed",
                 str(params["training_seed"]),
                 "--num-inference-steps",
-                "8",
+                str(params["num_inference_steps"]),
                 "--warmup-steps",
                 "100",
                 "--weight-decay",
@@ -1811,6 +1949,9 @@ class AceTrainingManager:
                 language=language,
                 metadata={
                     "epoch_audition": params.get("epoch_audition") or {},
+                    "training_shift": params.get("training_shift"),
+                    "num_inference_steps": params.get("num_inference_steps"),
+                    "lora_scale": params.get("lora_scale"),
                     "source_paths": {
                         "import_root": str(import_root),
                         "dataset_json": dataset_json,
@@ -1825,7 +1966,11 @@ class AceTrainingManager:
             load_status: dict[str, Any] = {"requested": False}
             if params.get("auto_load") and self.adapter_ready is not None:
                 self._set_job_state(job.id, stage="load", progress=96)
-                load_status = self.adapter_ready(registered, float(params.get("lora_scale") or 1.0))
+                raw_scale = params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE)
+                load_status = self.adapter_ready(
+                    registered,
+                    float(DEFAULT_LORA_GENERATION_SCALE if raw_scale in (None, "") else raw_scale),
+                )
 
             with self._lock:
                 current = self._read_job_unlocked(job.id)
@@ -2032,14 +2177,25 @@ class AceTrainingManager:
         total_epochs: int,
     ) -> list[str]:
         existing = list(job.command or [])
+        variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
+        inference_defaults = training_inference_defaults(variant)
         if "--dataset-dir" in existing and "--output-dir" in existing:
             command = existing
-            variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
             command = self._command_with_arg(command, "--dataset-dir", str(dataset_dir))
             command = self._command_with_arg(command, "--output-dir", str(output_dir))
             command = self._command_with_arg(command, "--log-dir", str(log_dir))
             command = self._command_with_arg(command, "--epochs", str(total_epochs))
             command = self._command_with_arg(command, "--model-variant", variant)
+            command = self._command_with_arg(
+                command,
+                "--shift",
+                str(parse_float(params.get("training_shift", params.get("shift")), inference_defaults["training_shift"], 0.1, 10.0)),
+            )
+            command = self._command_with_arg(
+                command,
+                "--num-inference-steps",
+                str(parse_int(params.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200)),
+            )
             command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
             command = self._command_with_arg(
                 command,
@@ -2057,7 +2213,7 @@ class AceTrainingManager:
             "--checkpoint-dir",
             str(self.checkpoint_dir),
             "--model-variant",
-            str(params.get("model_variant") or model_to_variant(str(params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))),
+            variant,
             "--dataset-dir",
             str(dataset_dir),
             "--output-dir",
@@ -2075,11 +2231,11 @@ class AceTrainingManager:
             "--lr",
             str(parse_float(params.get("learning_rate"), 1e-4, 1e-7, 1.0)),
             "--shift",
-            str(parse_float(params.get("training_shift", params.get("shift")), 3.0, 0.1, 10.0)),
+            str(parse_float(params.get("training_shift", params.get("shift")), inference_defaults["training_shift"], 0.1, 10.0)),
             "--seed",
             str(parse_int(params.get("training_seed", params.get("seed")), 42, 0, 2**31 - 1)),
             "--num-inference-steps",
-            "8",
+            str(parse_int(params.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200)),
             "--warmup-steps",
             "100",
             "--weight-decay",
@@ -2189,7 +2345,12 @@ class AceTrainingManager:
             "lyrics": runtime_lyrics,
             "duration": duration,
             "seed": parse_int(config.get("seed"), parse_int(params.get("training_seed"), 42, 0, 2**31 - 1), 0, 2**31 - 1),
-            "lora_scale": parse_float(config.get("scale"), parse_float(params.get("lora_scale"), 1.0, 0.0, 1.0), 0.0, 1.0),
+            "lora_scale": parse_float(
+                config.get("scale"),
+                parse_float(params.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
+                0.0,
+                1.0,
+            ),
             "vocal_language": vocal_language,
             "language": vocal_language,
             "lyrics_fit": lyrics_fit,
@@ -2591,6 +2752,9 @@ class AceTrainingManager:
                     epochs=parse_int(params.get("epochs") or params.get("train_epochs") or existing_result.get("epochs"), 0, 0, None) or None,
                     metadata={
                         "epoch_audition": params.get("epoch_audition") or {},
+                        "training_shift": params.get("training_shift"),
+                        "num_inference_steps": params.get("num_inference_steps"),
+                        "lora_scale": params.get("lora_scale"),
                         "source_paths": {
                             "dataset_dir": job.paths.get("dataset_dir", ""),
                             "output_dir": job.paths.get("output_dir", ""),

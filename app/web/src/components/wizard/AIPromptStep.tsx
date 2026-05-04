@@ -25,7 +25,7 @@ import {
   type WizardMode,
 } from "@/lib/api";
 import { useSettingsStore } from "@/store/settings";
-import { useWizardStore } from "@/store/wizard";
+import { normalizePasteBlocks, normalizeWarnings, useWizardStore } from "@/store/wizard";
 import { toast } from "@/components/ui/sonner";
 
 interface AIPromptStepProps {
@@ -33,19 +33,23 @@ interface AIPromptStepProps {
   placeholder: string;
   examples?: string[];
   onHydrated?: (payload: Record<string, unknown>) => void;
+  onPendingChange?: (pending: boolean) => void;
 }
-
-const EMPTY_WARNINGS: string[] = [];
-const EMPTY_PASTE: Array<{ label?: string; content: string }> = [];
 
 function modelKey(provider: LLMProvider, name: string): string {
   return `${provider}:${name}`;
 }
 
-export function AIPromptStep({ mode, placeholder, examples, onHydrated }: AIPromptStepProps) {
+export function AIPromptStep({
+  mode,
+  placeholder,
+  examples,
+  onHydrated,
+  onPendingChange,
+}: AIPromptStepProps) {
   const prompt = useWizardStore((s) => s.prompts[mode]) ?? "";
-  const warnings = useWizardStore((s) => s.warnings[mode]) ?? EMPTY_WARNINGS;
-  const pasteBlocks = useWizardStore((s) => s.pasteBlocks[mode]) ?? EMPTY_PASTE;
+  const warnings = normalizeWarnings(useWizardStore((s) => s.warnings[mode]));
+  const pasteBlocks = normalizePasteBlocks(useWizardStore((s) => s.pasteBlocks[mode]));
   const setPrompt = useWizardStore((s) => s.setPrompt);
   const setHydration = useWizardStore((s) => s.setHydration);
 
@@ -116,6 +120,10 @@ export function AIPromptStep({ mode, placeholder, examples, onHydrated }: AIProm
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  React.useEffect(() => {
+    onPendingChange?.(aiFill.isPending);
+  }, [aiFill.isPending, onPendingChange]);
 
   const onModelChange = (key: string) => {
     if (!key) return;

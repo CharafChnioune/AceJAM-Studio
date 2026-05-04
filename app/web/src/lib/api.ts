@@ -80,8 +80,8 @@ export interface PromptAssistantRunRequest {
 export interface PromptAssistantRunResponse {
   success: boolean;
   payload?: Record<string, unknown>;
-  warnings?: string[];
-  paste_blocks?: Array<{ label?: string; content: string }>;
+  warnings?: string[] | string | null;
+  paste_blocks?: Array<{ label?: string; content?: string; text?: string }> | string | null;
   error?: string;
   raw_response?: string;
 }
@@ -268,6 +268,28 @@ export const startGenerationJob = (body: Record<string, unknown>) =>
 
 export const getGenerationJob = (jobId: string) =>
   api.get<GenerationJobResponse>(`/api/generation/jobs/${encodeURIComponent(jobId)}`);
+
+// ---- LoRA adapters -------------------------------------------------------
+
+export interface LoraAdapter {
+  name: string;
+  display_name?: string;
+  label?: string;
+  path: string;
+  adapter_type?: string;
+  trigger_tag?: string;
+  language?: string;
+  model_variant?: string;
+  song_model?: string;
+  is_loadable?: boolean;
+  generation_loadable?: boolean;
+  source?: string;
+  updated_at?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export const getLoraAdapters = () =>
+  api.get<{ success: boolean; adapters: LoraAdapter[] }>("/api/lora/adapters");
 
 // ---- Albums ----
 

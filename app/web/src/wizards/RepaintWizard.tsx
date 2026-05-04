@@ -9,7 +9,7 @@ export function RepaintWizard() {
         title: "Repaint wizard",
         subtitle:
           "Vervang een sectie van een bestaande track terwijl het skelet behouden blijft.",
-        defaultModel: "acestep-v15-xl-base",
+        defaultModel: "acestep-v15-xl-sft",
         examples: [
           "vervang de tweede chorus met een gestripte versie, alleen piano",
           "schilder de bridge over met meer drums en energie",

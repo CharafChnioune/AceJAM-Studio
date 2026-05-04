@@ -355,8 +355,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("component_status", payload["manifest"]["core_bundle"])
         self.assertIn("boot_downloads", payload["manifest"]["runtime"])
         self.assertEqual(payload["manifest"]["settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
-        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 64)
-        self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
+        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 8)
+        self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 8)
         self.assertEqual(payload["manifest"]["quality_policy"]["default_profile"], "chart_master")
         self.assertEqual(payload["manifest"]["quality_policy"]["turbo_models"]["inference_steps"], 8)
 
@@ -450,6 +450,22 @@ class AppParityTest(unittest.TestCase):
         self.assertIsNone(params["bpm"])
         self.assertEqual(params["key_scale"], "")
         self.assertEqual(params["time_signature"], "")
+
+    def test_generation_prompt_normalizes_problematic_2pac_token_for_vocal_clarity(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "caption": "2pac, west coast rap, clear male rap vocal",
+            "tags": "2Pac, hip hop",
+            "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+        }
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(payload)
+
+        self.assertIn("pac, west coast rap", params["caption"])
+        self.assertNotIn("2pac", params["caption"].lower())
+        self.assertIn("generation_prompt_token_2pac_normalized_to_pac_for_vocal_clarity", params["payload_warnings"])
 
     def test_query_result_returns_acejam_result_for_ui_rendering(self):
         task_id = "unit-query-result"
@@ -705,7 +721,7 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(normalized["thinking"])
         self.assertTrue(normalized["use_format"])
         self.assertTrue(normalized["sample_mode"] is False)
-        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["inference_steps"], 8)
         self.assertEqual(normalized["quality_profile"], "chart_master")
         self.assertEqual(normalized["runner_plan"], "official")
 
@@ -800,8 +816,8 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(normalized["use_cot_caption"])
         self.assertFalse(normalized["use_cot_lyrics"])
         self.assertFalse(normalized["use_cot_language"])
-        self.assertEqual(normalized["inference_steps"], 64)
-        self.assertEqual(normalized["guidance_scale"], 8.0)
+        self.assertEqual(normalized["inference_steps"], 8)
+        self.assertEqual(normalized["guidance_scale"], 7.0)
         self.assertEqual(normalized["shift"], 3.0)
         self.assertTrue(normalized["use_adg"])
         self.assertEqual(normalized["batch_size"], 1)
@@ -1039,7 +1055,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(validation["hit_readiness"]["version"], acejam_app.PRO_QUALITY_AUDIT_VERSION)
         self.assertEqual(validation["settings_coverage"].get("status"), "complete")
 
-    def test_xl_sft_defaults_to_chart_master_64_steps(self):
+    def test_xl_sft_defaults_to_chart_master_50_steps_shift_1(self):
         payload = {
             "task_type": "text2music",
             "song_model": "acestep-v15-xl-sft",
@@ -1052,7 +1068,7 @@ class AppParityTest(unittest.TestCase):
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
             normalized = acejam_app._parse_generation_payload(payload)
 
-        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["inference_steps"], 8)
         self.assertEqual(normalized["shift"], 3.0)
         self.assertEqual(normalized["song_model"], "acestep-v15-xl-sft")
         self.assertEqual(normalized["duration"], 180)
@@ -1257,6 +1273,91 @@ class AppParityTest(unittest.TestCase):
     # Playwright smoke tests; the live API contract is covered elsewhere in
     # this file.
 
+    def test_react_lora_selector_filters_peft_lora_and_uses_tag_labels(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        lora_lib = (web_src / "lib" / "lora.ts").read_text(encoding="utf-8")
+        selector = (web_src / "components" / "wizard" / "LoraSelector.tsx").read_text(encoding="utf-8")
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("export const getLoraAdapters", api_ts)
+        self.assertIn('adapterType === "lora"', lora_lib)
+        self.assertIn("adapter.generation_loadable === true || adapter.is_loadable === true", lora_lib)
+        for label_source in ["adapter.display_name", "adapter.trigger_tag", "adapter.label", "adapter.name"]:
+            self.assertIn(label_source, lora_lib)
+        self.assertIn('value={NONE}>Geen LoRA', selector)
+        self.assertIn("getLoraAdapters", selector)
+        self.assertIn("isGenerationLoraAdapter", selector)
+
+    def test_react_generation_wizards_send_lora_payload_fields(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        wizard_paths = [
+            web_src / "wizards" / "SimpleWizard.tsx",
+            web_src / "wizards" / "CustomWizard.tsx",
+            web_src / "wizards" / "SourceAudioWizard.tsx",
+            web_src / "wizards" / "AlbumWizard.tsx",
+            web_src / "wizards" / "NewsWizard.tsx",
+        ]
+
+        for path in wizard_paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("LoraSelector", text, path.name)
+            self.assertIn("normalizeLoraSelection", text, path.name)
+            self.assertIn("lora_adapter_name", text, path.name)
+            self.assertIn("lora_adapter_path", text, path.name)
+            self.assertIn("lora_scale", text, path.name)
+            self.assertIn("adapter_model_variant", text, path.name)
+
+        schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
+        for field in ["use_lora", "lora_adapter_path", "lora_adapter_name", "lora_scale", "adapter_model_variant"]:
+            self.assertIn(field, schemas)
+
+    def test_react_generation_wizards_default_to_xl_sft_with_base_only_guard(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
+        source = (web_src / "wizards" / "SourceAudioWizard.tsx").read_text(encoding="utf-8")
+
+        for path in [
+            web_src / "wizards" / "SimpleWizard.tsx",
+            web_src / "wizards" / "CustomWizard.tsx",
+            web_src / "wizards" / "AlbumWizard.tsx",
+            web_src / "wizards" / "NewsWizard.tsx",
+            web_src / "wizards" / "RepaintWizard.tsx",
+            web_src / "wizards" / "ExtractWizard.tsx",
+            web_src / "wizards" / "LegoWizard.tsx",
+            web_src / "wizards" / "CompleteWizard.tsx",
+        ]:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("acestep-v15-xl-sft", text, path.name)
+            self.assertNotIn('defaultModel: "acestep-v15-xl-base"', text, path.name)
+
+        self.assertIn('song_model: "acestep-v15-xl-sft"', schemas)
+        self.assertIn('song_model: config.defaultModel ?? "acestep-v15-xl-sft"', source)
+        self.assertIn('["acestep-v15-xl-sft", "ACE-Step v1.5 XL SFT (aanbevolen)"]', source)
+        self.assertIn("BASE_ONLY_VARIANTS", source)
+        self.assertIn("baseOnlyModelError", source)
+        self.assertIn("ACE-Step v1.5 XL Base", source)
+        self.assertIn("isValid: !!source?.uploadId && !baseOnlyModelError", source)
+
+    def test_react_ai_fill_blocks_next_while_pending(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        ai_step = (web_src / "components" / "wizard" / "AIPromptStep.tsx").read_text(encoding="utf-8")
+        wizard_paths = [
+            web_src / "wizards" / "SimpleWizard.tsx",
+            web_src / "wizards" / "CustomWizard.tsx",
+            web_src / "wizards" / "SourceAudioWizard.tsx",
+            web_src / "wizards" / "AlbumWizard.tsx",
+            web_src / "wizards" / "NewsWizard.tsx",
+        ]
+
+        self.assertIn("onPendingChange?: (pending: boolean) => void", ai_step)
+        self.assertIn("onPendingChange?.(aiFill.isPending)", ai_step)
+
+        for path in wizard_paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("aiPromptPending", text, path.name)
+            self.assertIn("onPendingChange={setAiPromptPending}", text, path.name)
+            self.assertIn("!aiPromptPending", text, path.name)
+
     def test_lora_status_and_adapters_expose_display_name_and_trigger(self):
         client = TestClient(acejam_app.app)
 
@@ -1320,6 +1421,31 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(result["adapter_name"], "epoch_1_loss_0_9130")
         self.assertEqual(handler._base_decoder, {})
         self.assertEqual(handler.calls[0], ("add_lora", "/tmp/checkpoints/epoch_1_loss_0.9130", "epoch_1_loss_0_9130"))
+
+    def test_xl_sft_lora_is_blocked_on_turbo_before_runner_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = Path(tmp) / "xl-sft-adapter"
+            adapter.mkdir()
+            (adapter / "adapter_config.json").write_text(
+                json.dumps({"base_model_name_or_path": "/models/acestep-v15-xl-sft"}),
+                encoding="utf-8",
+            )
+            (adapter / "adapter_model.safetensors").write_bytes(b"weights")
+            payload = {
+                "task_type": "text2music",
+                "song_model": "acestep-v15-turbo",
+                "caption": "hip hop",
+                "lyrics": "[Verse]\nClear line\n\n[Chorus]\nClear hook",
+                "use_lora": True,
+                "lora_adapter_path": str(adapter),
+            }
+
+            with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}), \
+                patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none"}):
+                with self.assertRaises(ValueError) as raised:
+                    acejam_app._parse_generation_payload(payload)
+
+            self.assertIn("trained for acestep-v15-xl-sft", str(raised.exception))
 
     def test_lora_resume_endpoint_delegates_to_training_manager(self):
         client = TestClient(acejam_app.app)
@@ -1411,7 +1537,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "123")
-        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 64)
+        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 8)
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         self.assertEqual(captured["ace_lm_model"], "none")
         self.assertFalse(captured["thinking"])
@@ -2451,9 +2577,9 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(by_model["acestep-v15-turbo"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo-shift1"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo-continuous"]["inference_steps"], 8)
-        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 64)
+        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo"]["guidance_scale"], 7.0)
-        self.assertEqual(by_model["acestep-v15-sft"]["guidance_scale"], 8.0)
+        self.assertEqual(by_model["acestep-v15-sft"]["guidance_scale"], 7.0)
         self.assertEqual(by_model["acestep-v15-turbo"]["shift"], 3.0)
         self.assertEqual(by_model["acestep-v15-sft"]["shift"], 3.0)
         self.assertEqual(data["render_strategy"], "all_models_song")
@@ -2633,10 +2759,11 @@ class AppParityTest(unittest.TestCase):
                 patch.object(acejam_app, "_transcribe_audio_paths", return_value=transcripts):
                 gate = acejam_app._apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=3)
 
-            self.assertEqual(gate["status"], "error")
+            self.assertEqual(gate["status"], "needs_review")
             self.assertFalse(gate["passed"])
             self.assertFalse(gate["blocking"])
             self.assertTrue(result["success"])
+            self.assertTrue(result["needs_review"])
             self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
 
     def test_vocal_intelligibility_generation_retries_until_pass(self):
@@ -2858,12 +2985,13 @@ class AppParityTest(unittest.TestCase):
 
             self.assertEqual(calls, ["asrerr"])
             self.assertTrue(result["success"])
-            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "error")
+            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "needs_review")
             self.assertFalse(result["vocal_intelligibility_gate"]["blocking"])
+            self.assertNotIn("recommended_take", result)
             self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
             saved = json.loads((results / "asrerr" / "result.json").read_text(encoding="utf-8"))
             self.assertTrue(saved["success"])
-            self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "error")
+            self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "needs_review")
 
     def test_vocal_intelligibility_asr_timeout_returns_advisory_error(self):
         with tempfile.TemporaryDirectory() as tmp:

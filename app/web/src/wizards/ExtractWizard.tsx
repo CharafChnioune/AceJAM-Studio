@@ -9,7 +9,7 @@ export function ExtractWizard() {
         title: "Extract wizard",
         subtitle:
           "Isoleer specifieke stems (vocals, drums, bass…) uit een track.",
-        defaultModel: "acestep-v15-xl-base",
+        defaultModel: "acestep-v15-xl-sft",
         examples: [
           "haal alleen de vocals eruit",
           "isoleer drums en bass voor een instrumentale mix",

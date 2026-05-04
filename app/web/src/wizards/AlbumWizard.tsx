@@ -10,6 +10,7 @@ import {
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
+import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { ArtGenerator } from "@/components/art/ArtGenerator";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
@@ -34,6 +35,7 @@ import {
   getAlbumPlanJob,
   type ArtMetadata,
 } from "@/lib/api";
+import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { useWizardStore } from "@/store/wizard";
 import { useSettingsStore } from "@/store/settings";
 import { useJobsStore } from "@/store/jobs";
@@ -98,11 +100,17 @@ export function AlbumWizard() {
       song_model: "acestep-v15-xl-sft",
       song_model_strategy: "single_model_album",
       quality_profile: "standard",
+      use_lora: false,
+      lora_adapter_path: "",
+      lora_adapter_name: "",
+      lora_scale: DEFAULT_LORA_SCALE,
+      adapter_model_variant: "",
     },
     mode: "onChange",
   });
 
   const [step, setStep] = React.useState(0);
+  const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const [plan, setPlan] = React.useState<AlbumPlan | null>(null);
   const [jobId, setJobId] = React.useState<string | null>(null);
   const [jobProgress, setJobProgress] = React.useState<number>(0);
@@ -132,6 +140,11 @@ export function AlbumWizard() {
       "genre_prompt",
       "custom_tags",
       "negative_tags",
+      "use_lora",
+      "lora_adapter_path",
+      "lora_adapter_name",
+      "lora_scale",
+      "adapter_model_variant",
     ] as const) {
       if (k in payload) {
         // @ts-expect-error dynamic
@@ -154,6 +167,14 @@ export function AlbumWizard() {
     }
   };
 
+  const setLoraSelection = (selection: LoraSelection) => {
+    form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
+    form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
+    form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
+    form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
+    form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+  };
+
   // ---- Async generate ----
   const startJob = useMutation({
     mutationFn: () => {
@@ -172,6 +193,7 @@ export function AlbumWizard() {
         genre_prompt: values.genre_prompt,
         custom_tags: values.custom_tags,
         negative_tags: values.negative_tags,
+        ...normalizeLoraSelection(values),
         planner_lm_provider: "ollama",
         ollama_model: plannerModel || undefined,
         planner_model: plannerModel || undefined,
@@ -286,7 +308,7 @@ export function AlbumWizard() {
       title: "Album-concept",
       description:
         "Beschrijf het album. AI plant tracks, taal, BPM-strategie en kwaliteitsprofiel.",
-      isValid: (values.concept ?? "").trim().length >= 8,
+      isValid: (values.concept ?? "").trim().length >= 8 && !aiPromptPending,
       render: () => (
         <AIPromptStep
           mode="album"
@@ -296,6 +318,7 @@ export function AlbumWizard() {
             "10-track epische orkestrale soundtrack voor een sci-fi film",
             "EP van 4 tracks afrobeat × jazz, 100-115 bpm",
           ]}
+          onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             hydrate(payload);
             const c =
@@ -572,6 +595,12 @@ export function AlbumWizard() {
               </div>
             </div>
           </FieldGroup>
+          <FieldGroup
+            title="LoRA"
+            description="Optioneel: deze PEFT LoRA wordt op elke albumtrack toegepast."
+          >
+            <LoraSelector value={values} onChange={setLoraSelection} />
+          </FieldGroup>
         </div>
       ),
     },
@@ -582,7 +611,11 @@ export function AlbumWizard() {
       render: () => (
         <div className="space-y-4">
           <ReviewStep
-            payload={{ ...form.getValues(), tracks: plan?.tracks }}
+            payload={{
+              ...form.getValues(),
+              ...normalizeLoraSelection(values),
+              tracks: plan?.tracks,
+            }}
             warnings={warnings}
             primaryFields={[
               { key: "album_title", label: "Album titel" },
@@ -590,6 +623,7 @@ export function AlbumWizard() {
               { key: "num_tracks", label: "Tracks" },
               { key: "track_duration", label: "Duur/track", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
+              { key: "lora_adapter_name", label: "LoRA" },
               { key: "song_model_strategy", label: "Strategie" },
               { key: "language", label: "Taal" },
               { key: "quality_profile", label: "Kwaliteit" },

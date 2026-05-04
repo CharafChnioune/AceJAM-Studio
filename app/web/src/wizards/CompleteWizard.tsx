@@ -9,7 +9,7 @@ export function CompleteWizard() {
         title: "Complete wizard",
         subtitle:
           "Vul ontbrekende stems aan op een bestaande arrangement.",
-        defaultModel: "acestep-v15-xl-base",
+        defaultModel: "acestep-v15-xl-sft",
         examples: [
           "voeg drums toe aan deze instrumentale piano-track",
           "completeer het arrangement met bass en strings",

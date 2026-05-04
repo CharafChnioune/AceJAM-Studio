@@ -229,9 +229,11 @@ from acestep.constants import (
 )
 from acestep.handler import AceStepHandler
 from lora_trainer import (
+    DEFAULT_LORA_GENERATION_SCALE,
     EPOCH_AUDITION_CLARITY_CAPTION,
     AceTrainingManager,
     fit_epoch_audition_lyrics,
+    infer_adapter_model_metadata,
     model_from_variant,
     model_to_variant,
     normalize_training_song_model,
@@ -290,6 +292,7 @@ from studio_core import (
     DOCS_BEST_LM_DEFAULTS,
     DOCS_BEST_SOURCE_TASK_LM_SKIPS,
     DOCS_BEST_TURBO_HIGH_CAP_STEPS,
+    DOCS_BEST_TURBO_SHIFT,
     DEFAULT_BPM,
     DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
@@ -2197,7 +2200,7 @@ def _release_models_for_training() -> None:
         _release_handler_state()
 
 
-def _activate_trained_adapter(adapter_path: Path, scale: float = 1.0) -> dict[str, Any]:
+def _activate_trained_adapter(adapter_path: Path, scale: float = DEFAULT_LORA_GENERATION_SCALE) -> dict[str, Any]:
     adapter_path = adapter_path.expanduser().resolve()
     metadata_path = adapter_path / "acejam_adapter.json"
     metadata: dict[str, Any] = {}
@@ -2256,7 +2259,7 @@ def _unload_llm_models_for_generation() -> None:
         pass
 
 
-EPOCH_AUDITION_INFERENCE_STEPS = 64
+EPOCH_AUDITION_INFERENCE_STEPS = 8
 
 
 def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
@@ -2281,7 +2284,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         inference_steps = int(request.get("inference_steps") or EPOCH_AUDITION_INFERENCE_STEPS)
     except (TypeError, ValueError):
         inference_steps = EPOCH_AUDITION_INFERENCE_STEPS
-    inference_steps = max(1, min(64, inference_steps))
+    inference_steps = max(1, min(200, inference_steps))
     song_model = _lora_epoch_audition_song_model(request)
     raw_caption = str(request.get("caption") or trigger).strip()
     clarity_caption = EPOCH_AUDITION_CLARITY_CAPTION
@@ -2308,7 +2311,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "use_lora": True,
         "lora_adapter_path": str(request.get("checkpoint_path") or ""),
         "lora_adapter_name": str(request.get("lora_adapter_name") or f"{trigger} epoch {epoch}"),
-        "lora_scale": request.get("lora_scale", 1.0),
+        "lora_scale": request.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": str(request.get("model_variant") or ""),
         "save_to_library": False,
         "ace_lm_model": "none",
@@ -2648,15 +2651,41 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
     path = str(payload.get("lora_adapter_path") or payload.get("lora_path") or payload.get("lora_name_or_path") or "").strip()
     name = str(payload.get("lora_adapter_name") or payload.get("adapter_name") or "").strip()
     use_lora = parse_bool(payload.get("use_lora"), bool(path) or parse_bool(payload.get("lora_use"), False))
-    scale = clamp_float(payload.get("lora_scale", payload.get("lora_weight")), 1.0, 0.0, 1.0)
+    scale = clamp_float(payload.get("lora_scale", payload.get("lora_weight")), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0)
     model_variant = str(payload.get("adapter_model_variant") or "").strip()
+    adapter_song_model = str(payload.get("adapter_song_model") or "").strip()
+    adapter_metadata: dict[str, Any] = {}
+    if path:
+        adapter_metadata = infer_adapter_model_metadata(Path(path))
+        model_variant = model_variant or str(adapter_metadata.get("model_variant") or "").strip()
+        adapter_song_model = adapter_song_model or str(adapter_metadata.get("song_model") or "").strip()
+        name = name or str(adapter_metadata.get("display_name") or adapter_metadata.get("trigger_tag") or "").strip()
     return {
         "use_lora": use_lora,
         "lora_adapter_path": path,
         "lora_adapter_name": name,
         "lora_scale": scale,
         "adapter_model_variant": model_variant,
+        "adapter_song_model": adapter_song_model,
+        "adapter_metadata": adapter_metadata,
     }
+
+
+def _validate_lora_request_for_song_model(lora_request: dict[str, Any], song_model: str) -> None:
+    if not lora_request.get("use_lora"):
+        return
+    requested = normalize_training_song_model(song_model)
+    adapter_song_model = str(lora_request.get("adapter_song_model") or "").strip()
+    adapter_variant = str(lora_request.get("adapter_model_variant") or "").strip()
+    if not adapter_song_model and adapter_variant:
+        adapter_song_model = model_from_variant(adapter_variant, "")
+    if adapter_song_model:
+        adapter_song_model = normalize_training_song_model(adapter_song_model)
+    if adapter_song_model and requested and adapter_song_model != requested:
+        raise ValueError(
+            f"Selected LoRA was trained for {adapter_song_model}, but this render uses {requested}. "
+            "Choose the matching ACE-Step model or select a different LoRA."
+        )
 
 
 def _apply_lora_request(params: dict[str, Any]) -> dict[str, Any]:
@@ -2672,7 +2701,8 @@ def _apply_lora_request(params: dict[str, Any]) -> dict[str, Any]:
     status_msg = handler.load_lora(adapter_path)
     if status_msg.startswith("❌"):
         raise RuntimeError(status_msg)
-    scale_msg = handler.set_lora_scale(float(params.get("lora_scale") or 1.0))
+    raw_scale = params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE)
+    scale_msg = handler.set_lora_scale(float(DEFAULT_LORA_GENERATION_SCALE if raw_scale in (None, "") else raw_scale))
     use_msg = handler.set_use_lora(True)
     if str(use_msg).startswith("❌"):
         raise RuntimeError(use_msg)
@@ -2950,7 +2980,7 @@ def _direct_ace_step_debug_request(params: dict[str, Any], save_dir: Path, activ
         "use_lora": bool(params.get("use_lora", False)),
         "lora_adapter_path": params.get("lora_adapter_path", ""),
         "lora_adapter_name": params.get("lora_adapter_name", ""),
-        "lora_scale": params.get("lora_scale", 1.0),
+        "lora_scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
         "device": params.get("device", "handler"),
         "dtype": params.get("dtype", "handler"),
@@ -5422,10 +5452,34 @@ def _delete_generated_outputs(confirm: str) -> dict[str, Any]:
     return {"success": True, "deleted": before, "remaining": _count_generated_outputs()}
 
 
+_GENERATION_PROMPT_2PAC_RE = re.compile(r"(?<![A-Za-z0-9])2\s*[-_ ]?\s*pac(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _apply_generation_safe_prompt_tokens(payload: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(payload)
+    changed = False
+    for key in ("caption", "tags", "global_caption", "custom_tags"):
+        value = updated.get(key)
+        if not isinstance(value, str) or "2" not in value:
+            continue
+        normalized = _GENERATION_PROMPT_2PAC_RE.sub("pac", value)
+        if normalized != value:
+            updated[key] = normalized
+            changed = True
+    if changed:
+        warnings = list(updated.get("payload_warnings") or [])
+        warning = "generation_prompt_token_2pac_normalized_to_pac_for_vocal_clarity"
+        if warning not in warnings:
+            warnings.append(warning)
+        updated["payload_warnings"] = warnings
+    return updated
+
+
 def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload = _merge_nested_generation_metadata(payload)
     task_type = normalize_task_type(payload.get("task_type"))
     payload = normalize_generation_text_fields(payload, task_type=task_type)
+    payload = _apply_generation_safe_prompt_tokens(payload)
     overflow_policy = str(payload.get("lyrics_overflow_policy") or "auto_fit").strip().lower() or "auto_fit"
     exact_lyrics = parse_bool(payload.get("exact_lyrics") or payload.get("locked_lyrics"), False)
     raw_lyrics_len = len(str(payload.get("lyrics") or ""))
@@ -5544,7 +5598,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lora_request = _lora_adapter_request(payload)
     if lora_request["use_lora"] and not lora_request["lora_adapter_path"]:
         raise ValueError("Use adapter is enabled but no LoRA adapter was selected")
+    _validate_lora_request_for_song_model(lora_request, song_model)
     payload_warnings = list(payload.get("payload_warnings") or [])
+    raw_shift = payload.get("shift")
+    render_shift = clamp_float(raw_shift, model_defaults["shift"], 1.0, 5.0)
     audio_code_string = str(get_param(payload, "audio_code_string", "") or "")
     src_audio = None if task_type == "text2music" else _resolve_audio_reference(payload, "src_audio_id", "src_result_id")
     if task_type == "text2music" and audio_code_string.strip() and not parse_bool(payload.get("allow_text2music_audio_codes"), False):
@@ -5610,7 +5667,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "cover_noise_strength": clamp_float(payload.get("cover_noise_strength"), 0.0, 0.0, 1.0),
         "inference_steps": inference_steps,
         "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
-        "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
+        "shift": render_shift,
         "infer_method": "sde" if str(payload.get("infer_method") or model_defaults["infer_method"]).lower() == "sde" else "ode",
         "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
         "velocity_norm_threshold": clamp_float(payload.get("velocity_norm_threshold"), 0.0, 0.0, 20.0),
@@ -6335,7 +6392,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "use_lora": params.get("use_lora", False),
         "lora_adapter_path": params.get("lora_adapter_path", ""),
         "lora_adapter_name": params.get("lora_adapter_name", ""),
-        "lora_scale": params.get("lora_scale", 1.0),
+        "lora_scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
         "acejam_skip_lora_base_backup": True,
         "device": params["device"],
@@ -7182,18 +7239,29 @@ def _apply_vocal_intelligibility_gate_to_result(
     status = (
         "pass"
         if passed_ids
-        else ("error" if verifier_error else "fail")
+        else ("needs_review" if verifier_error else "fail")
     )
+    transcript_preview = [
+        {
+            "audio_id": str(((audios[index] if index < len(audios) else {}) or {}).get("id") or ""),
+            "status": item.get("status"),
+            "text": str(item.get("text") or "")[:320],
+            "issue": item.get("issue") or item.get("error") or "",
+        }
+        for index, item in enumerate(transcripts)
+    ]
     gate = {
         "version": "acejam-vocal-intelligibility-gate-2026-05-01",
         "status": status,
         "passed": bool(passed_ids),
         "blocking": blocking,
+        "needs_review": bool(verifier_error and not passed_ids),
         "attempt": attempt,
         "max_attempts": max_attempts,
         "expected_keywords": keywords,
         "passed_audio_ids": passed_ids,
         "transcripts": transcripts,
+        "transcript_preview": transcript_preview,
     }
     result["vocal_intelligibility_gate"] = gate
     if passed_ids:
@@ -7208,21 +7276,36 @@ def _apply_vocal_intelligibility_gate_to_result(
                 "status": "pass",
                 "reasons": ["vocal_intelligibility_pass"],
             }
-    elif verifier_error:
+    else:
+        for audio in audios:
+            audio["is_recommended_take"] = False
+        result.pop("recommended_take", None)
+    if verifier_error and not passed_ids:
         result["success"] = True
+        result["needs_review"] = True
         result.pop("error", None)
         suggestions = list(result.get("rerender_suggestions") or [])
-        suggestions.append("Vocal intelligibility verifier could not complete; listen manually or rerun ASR later.")
+        suggestions.extend(
+            [
+                "Vocal intelligibility verifier could not complete; listen manually before publishing.",
+                "Retry with no LoRA, lower LoRA scale, same seed, and ACE-Step docs-correct shift/steps.",
+            ]
+        )
         result["rerender_suggestions"] = suggestions
         warnings = list(result.get("payload_warnings") or [])
         if "vocal_intelligibility_verifier_error" not in warnings:
             warnings.append("vocal_intelligibility_verifier_error")
         result["payload_warnings"] = warnings
-    else:
+    elif not passed_ids:
         result["success"] = False
         result["error"] = "Vocal intelligibility gate rejected every take."
         suggestions = list(result.get("rerender_suggestions") or [])
-        suggestions.append("Vocal intelligibility gate rejected every take; regenerate with a clearer vocal route.")
+        suggestions.extend(
+            [
+                "Vocal intelligibility gate rejected every take; regenerate with a clearer vocal route.",
+                "Retry with no LoRA, lower LoRA scale, same seed, and ACE-Step docs-correct shift/steps.",
+            ]
+        )
         result["rerender_suggestions"] = suggestions
     result_path = RESULTS_DIR / safe_id(result_id) / "result.json"
     if result_path.is_file():
@@ -7236,7 +7319,12 @@ def _apply_vocal_intelligibility_gate_to_result(
             meta["audios"] = audios
             meta["payload_warnings"] = result.get("payload_warnings") or meta.get("payload_warnings") or []
             meta["vocal_intelligibility_gate"] = gate
-            meta["recommended_take"] = result.get("recommended_take")
+            if result.get("recommended_take"):
+                meta["recommended_take"] = result.get("recommended_take")
+            else:
+                meta.pop("recommended_take", None)
+            if result.get("needs_review"):
+                meta["needs_review"] = True
             meta["rerender_suggestions"] = result.get("rerender_suggestions") or meta.get("rerender_suggestions") or []
             result_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
         except Exception as exc:
@@ -7661,7 +7749,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     official_lora_status = official.get("lora_status") or {
         "active": bool(params.get("use_lora")),
         "path": params.get("lora_adapter_path", ""),
-        "scale": params.get("lora_scale", 1.0),
+        "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
     }
 
     audios: list[dict[str, Any]] = []
@@ -7694,7 +7782,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 "use_lora": params.get("use_lora", False),
                 "path": params.get("lora_adapter_path", ""),
                 "name": params.get("lora_adapter_name", ""),
-                "scale": params.get("lora_scale", 1.0),
+                "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
                 "adapter_model_variant": params.get("adapter_model_variant", ""),
                 "status": _jsonable(official_lora_status),
             },
@@ -7722,7 +7810,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                         "use_lora": params.get("use_lora", False),
                         "path": params.get("lora_adapter_path", ""),
                         "name": params.get("lora_adapter_name", ""),
-                        "scale": params.get("lora_scale", 1.0),
+                        "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
                         "adapter_model_variant": params.get("adapter_model_variant", ""),
                         "status": _jsonable(official_lora_status),
                     },
@@ -8215,6 +8303,9 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         if gate.get("passed") and not gate.get("blocking"):
             result["vocal_intelligibility_history"] = history
             return result
+        if gate.get("needs_review") or gate.get("status") == "needs_review":
+            result["vocal_intelligibility_history"] = history
+            return result
         if gate.get("status") == "error":
             result["vocal_intelligibility_history"] = history
             return result
@@ -8421,6 +8512,21 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
 
 
 app = Server(title="AceJAM")
+
+
+@app.middleware("http")
+async def _prevent_stale_react_shell_cache(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    content_type = response.headers.get("content-type", "")
+    is_react_shell = path == "/" or (
+        (path == "/v2" or path.startswith("/v2/")) and content_type.startswith("text/html")
+    )
+    if is_react_shell:
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 # ---- React (shadcn) UI mount at /v2 ------------------------------------------------

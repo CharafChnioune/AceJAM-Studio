@@ -9,6 +9,7 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { TagInput } from "@/components/wizard/TagInput";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
@@ -27,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { customSchema, simpleDefaults, type CustomFormValues, defaultTrackArtPrompt } from "@/lib/schemas";
+import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { useWizardStore } from "@/store/wizard";
 import { formatDuration } from "@/lib/utils";
@@ -60,8 +62,8 @@ const SONG_MODELS = [
 
 const QUALITY_PROFILES = [
   ["draft", "Draft (snel, ~8 stappen)"],
-  ["standard", "Standard (32 stappen)"],
-  ["chart_master", "Chart Master (64 stappen)"],
+  ["standard", "Standard (runtime-verified, 8 stappen, shift 3)"],
+  ["chart_master", "Chart Master (runtime-verified, 8 stappen, shift 3)"],
 ] as const;
 
 const TAG_SUGGESTIONS = [
@@ -91,8 +93,8 @@ export function CustomWizard() {
     defaultValues: {
       ...simpleDefaults,
       task_type: "text2music",
-      inference_steps: 32,
-      guidance_scale: 8,
+      inference_steps: 8,
+      guidance_scale: 7,
       shift: 3,
       audio_format: "wav32",
       batch_size: 1,
@@ -101,6 +103,7 @@ export function CustomWizard() {
   });
 
   const [step, setStep] = React.useState(0);
+  const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const values = form.watch();
 
   React.useEffect(() => {
@@ -117,6 +120,14 @@ export function CustomWizard() {
       setStep(7);
     },
   });
+
+  const setLoraSelection = (selection: LoraSelection) => {
+    form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
+    form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
+    form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
+    form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
+    form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+  };
 
   const hydrate = (payload: Record<string, unknown>) => {
     const next: Partial<CustomFormValues> = {};
@@ -154,6 +165,7 @@ export function CustomWizard() {
       shift: v.shift,
       audio_format: v.audio_format,
       batch_size: v.batch_size,
+      ...normalizeLoraSelection(v),
     };
   };
 
@@ -172,7 +184,7 @@ export function CustomWizard() {
       key: "ai",
       title: "AI prompt",
       description: "Beschrijf je vibe — AI vult titel, tags, lyrics, bpm, key en alles erbij.",
-      isValid: (values.simple_description ?? "").trim().length >= 4,
+      isValid: (values.simple_description ?? "").trim().length >= 4 && !aiPromptPending,
       render: () => (
         <AIPromptStep
           mode="custom"
@@ -182,6 +194,7 @@ export function CustomWizard() {
             "dark trap drill instrumental in F# minor, 140 bpm",
             "8-bit chiptune adventure theme, 4/4, major key",
           ]}
+          onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             hydrate(payload);
             const desc =
@@ -409,6 +422,9 @@ export function CustomWizard() {
               </div>
             </div>
           </FieldGroup>
+          <FieldGroup title="LoRA" description="Optioneel: kies een getrainde PEFT LoRA voor deze render.">
+            <LoraSelector value={values} onChange={setLoraSelection} />
+          </FieldGroup>
           <FieldGroup title="Inference (geavanceerd)" description="Laat staan voor presets — overschrijf alleen als je weet wat je doet.">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-3">
@@ -506,6 +522,7 @@ export function CustomWizard() {
               { key: "artist_name", label: "Artiest" },
               { key: "task_type", label: "Modus" },
               { key: "song_model", label: "Model" },
+              { key: "lora_adapter_name", label: "LoRA" },
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "bpm", label: "BPM" },
               { key: "key_scale", label: "Key" },

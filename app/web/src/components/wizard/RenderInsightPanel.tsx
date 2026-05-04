@@ -23,9 +23,11 @@ export function RenderInsightPanel({
   const lyricsWords = wordCount(payload.lyrics);
   const instrumental = payload.instrumental === true || String(payload.lyrics || "").trim() === "[Instrumental]";
   const sourceMode = payload.src_audio_id || payload.src_result_id || payload.audio_code_string ? "source audio" : "text to music";
+  const loraName = payload.use_lora ? text(payload.lora_adapter_name || payload.lora_adapter_path, "") : "";
   const chips = [
     ["Mode", text(payload.task_type || sourceMode)],
     ["Model", text(payload.song_model || "auto")],
+    ...(loraName ? ([["LoRA", loraName]] as Array<[string, string]>) : []),
     ["Quality", text(payload.quality_profile || "auto")],
     ["Duration", duration ? formatDuration(duration) : "auto"],
     ["Lyrics", instrumental ? "instrumental" : `${lyricsWords} words`],

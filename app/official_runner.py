@@ -336,7 +336,8 @@ def _apply_lora_request(dit_handler: Any, request: dict[str, Any]) -> dict[str, 
     adapter_path = str(request.get("lora_adapter_path") or "").strip()
     if not adapter_path:
         raise RuntimeError("Official runner received use_lora=true without lora_adapter_path")
-    scale = float(request.get("lora_scale") or 1.0)
+    raw_scale = request.get("lora_scale", 1.0)
+    scale = float(1.0 if raw_scale is None or raw_scale == "" else raw_scale)
     adapter_name = safe_peft_adapter_name(request.get("lora_adapter_name") or Path(adapter_path).name)
     if bool(request.get("acejam_skip_lora_base_backup", True)) and getattr(dit_handler, "_base_decoder", None) is None:
         # The official runner is a one-shot subprocess. Avoid cloning the full
