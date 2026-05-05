@@ -560,12 +560,13 @@ OFFICIAL_TRAINING_FEATURES: dict[str, dict[str, Any]] = {
     "tensorboard_runs": {"status": "guarded", "endpoint": "/api/lora/status"},
 }
 
-DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-runtime-verified-defaults-2026-05-04"
+DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-docs-correct-defaults-2026-05-05"
 DOCS_BEST_AUDIO_FORMAT = "wav32"
 DOCS_BEST_TURBO_STEPS = 8
 DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20
-BALANCED_PRO_STANDARD_STEPS = 8
-CHART_MASTER_STANDARD_STEPS = 8
+PREVIEW_FAST_STANDARD_STEPS = 50
+BALANCED_PRO_STANDARD_STEPS = 50
+CHART_MASTER_STANDARD_STEPS = 50
 DOCS_BEST_STANDARD_STEPS = CHART_MASTER_STANDARD_STEPS
 DOCS_BEST_MODEL_STEPS = {
     "acestep-v15-turbo": 8,
@@ -595,8 +596,9 @@ BALANCED_PRO_MODEL_STEPS = {
 DOCS_BEST_TURBO_GUIDANCE = 7.0
 DOCS_BEST_STANDARD_GUIDANCE = 7.0
 DOCS_BEST_TURBO_SHIFT = 3.0
-BALANCED_PRO_STANDARD_SHIFT = 3.0
-CHART_MASTER_STANDARD_SHIFT = 3.0
+PREVIEW_FAST_STANDARD_SHIFT = 1.0
+BALANCED_PRO_STANDARD_SHIFT = 1.0
+CHART_MASTER_STANDARD_SHIFT = 1.0
 DOCS_BEST_STANDARD_SHIFT = CHART_MASTER_STANDARD_SHIFT
 DOCS_DAILY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 MAX_QUALITY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
@@ -698,11 +700,20 @@ def normalize_quality_profile(value: Any) -> str:
         "chart": QUALITY_PROFILE_CHART_MASTER,
         "chartmaster": QUALITY_PROFILE_CHART_MASTER,
         "chart_master": QUALITY_PROFILE_CHART_MASTER,
+        "high": QUALITY_PROFILE_CHART_MASTER,
+        "hoog": QUALITY_PROFILE_CHART_MASTER,
         "docs": QUALITY_PROFILE_DOCS_DAILY,
         "docs_daily": QUALITY_PROFILE_DOCS_DAILY,
         "daily": QUALITY_PROFILE_DOCS_DAILY,
+        "standard": QUALITY_PROFILE_BALANCED_PRO,
+        "middle": QUALITY_PROFILE_BALANCED_PRO,
+        "medium": QUALITY_PROFILE_BALANCED_PRO,
+        "middel": QUALITY_PROFILE_BALANCED_PRO,
         "balanced": QUALITY_PROFILE_BALANCED_PRO,
         "balanced_pro": QUALITY_PROFILE_BALANCED_PRO,
+        "draft": QUALITY_PROFILE_PREVIEW_FAST,
+        "low": QUALITY_PROFILE_PREVIEW_FAST,
+        "laag": QUALITY_PROFILE_PREVIEW_FAST,
         "fast": QUALITY_PROFILE_PREVIEW_FAST,
         "preview": QUALITY_PROFILE_PREVIEW_FAST,
         "preview_fast": QUALITY_PROFILE_PREVIEW_FAST,
@@ -733,9 +744,9 @@ def _quality_profile_base_settings(profile: str) -> dict[str, Any]:
         return {
             "quality_profile": QUALITY_PROFILE_DOCS_DAILY,
             "quality_preset": "docs-daily-ace-step",
-            "inference_steps": DOCS_BEST_TURBO_STEPS,
-            "guidance_scale": DOCS_BEST_TURBO_GUIDANCE,
-            "shift": DOCS_BEST_TURBO_SHIFT,
+            "inference_steps": DOCS_BEST_STANDARD_STEPS,
+            "guidance_scale": DOCS_BEST_STANDARD_GUIDANCE,
+            "shift": DOCS_BEST_STANDARD_SHIFT,
             "infer_method": "ode",
             "sampler_mode": "heun",
             "audio_format": "flac",
@@ -746,10 +757,10 @@ def _quality_profile_base_settings(profile: str) -> dict[str, Any]:
     if normalized == QUALITY_PROFILE_PREVIEW_FAST:
         return {
             "quality_profile": QUALITY_PROFILE_PREVIEW_FAST,
-            "quality_preset": "preview-fast-ace-step",
-            "inference_steps": DOCS_BEST_TURBO_STEPS,
-            "guidance_scale": DOCS_BEST_TURBO_GUIDANCE,
-            "shift": DOCS_BEST_TURBO_SHIFT,
+            "quality_preset": "low-docs-correct-ace-step",
+            "inference_steps": PREVIEW_FAST_STANDARD_STEPS,
+            "guidance_scale": DOCS_BEST_STANDARD_GUIDANCE,
+            "shift": PREVIEW_FAST_STANDARD_SHIFT,
             "infer_method": "ode",
             "sampler_mode": "heun",
             "audio_format": "wav",
@@ -802,8 +813,15 @@ def quality_profile_model_settings(song_model: Any, quality_profile: Any = DEFAU
             settings["audio_format"] = "flac"
     elif profile == QUALITY_PROFILE_BALANCED_PRO:
         settings["inference_steps"] = int(BALANCED_PRO_MODEL_STEPS.get(str(song_model or "").strip(), BALANCED_PRO_STANDARD_STEPS))
+        settings["shift"] = BALANCED_PRO_STANDARD_SHIFT
+    elif profile == QUALITY_PROFILE_DOCS_DAILY:
+        settings["inference_steps"] = DOCS_BEST_STANDARD_STEPS
+        settings["guidance_scale"] = DOCS_BEST_STANDARD_GUIDANCE
+        settings["shift"] = DOCS_BEST_STANDARD_SHIFT
+        settings["use_adg"] = is_base_song_model(song_model)
     elif profile == QUALITY_PROFILE_CHART_MASTER:
         settings["inference_steps"] = int(DOCS_BEST_MODEL_STEPS.get(str(song_model or "").strip(), CHART_MASTER_STANDARD_STEPS))
+        settings["shift"] = CHART_MASTER_STANDARD_SHIFT
         settings["use_adg"] = is_base_song_model(song_model)
     return settings
 
@@ -824,31 +842,31 @@ def quality_profiles_payload() -> dict[str, Any]:
         },
         QUALITY_PROFILE_DOCS_DAILY: {
             "label": "Docs Daily",
-            "summary": "Simple-mode docs default: XL Turbo/Turbo, 8 steps, shift 3, guidance 7, FLAC.",
+            "summary": "Simple-mode docs default: auto kiest XL Turbo/Turbo 8/shift 3; gekozen Base/SFT gebruikt 50/shift 1.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_DOCS_DAILY) for model in KNOWN_ACE_STEP_MODELS},
             "preferred_model_order": ["acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": 1,
             "album_takes": 1,
         },
         QUALITY_PROFILE_PREVIEW_FAST: {
-            "label": "Preview fast",
-            "summary": "Turbo-first draft profile for quick idea checks.",
+            "label": "Laag",
+            "summary": "Model-correcte preview: Turbo blijft 8/shift 3; Base/SFT gebruikt de docs-standaard 50/shift 1.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_PREVIEW_FAST) for model in KNOWN_ACE_STEP_MODELS},
-            "preferred_model_order": ["acestep-v15-xl-turbo", "acestep-v15-turbo"],
+            "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": 1,
             "album_takes": 1,
         },
         QUALITY_PROFILE_BALANCED_PRO: {
-            "label": "Balanced pro",
-            "summary": "Runtime-verified profile: official 8-step, shift-3 SFT/Base vocal renders.",
+            "label": "Middel",
+            "summary": "Docs-correcte standaard: Turbo 8/shift 3; Base/SFT 50/shift 1.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_BALANCED_PRO) for model in KNOWN_ACE_STEP_MODELS},
             "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": 1,
             "album_takes": 1,
         },
         QUALITY_PROFILE_CHART_MASTER: {
-            "label": "Max Quality",
-            "summary": "Default final-render profile: XL/SFT preference with runtime-verified 8-step, shift-3 vocal stability.",
+            "label": "Hoog",
+            "summary": "Beste standaardkwaliteit: XL/SFT voorkeur met ACE-Step docs-correcte 50 steps en shift 1.",
             "models": {model: quality_profile_model_settings(model, QUALITY_PROFILE_CHART_MASTER) for model in KNOWN_ACE_STEP_MODELS},
             "preferred_model_order": ["acestep-v15-xl-sft", "acestep-v15-sft", "acestep-v15-xl-base", "acestep-v15-base", "acestep-v15-xl-turbo", "acestep-v15-turbo"],
             "single_song_takes": CHART_MASTER_SINGLE_TAKES,
@@ -875,7 +893,7 @@ def docs_best_quality_policy() -> dict[str, Any]:
         "max_quality_profile": QUALITY_PROFILE_CHART_MASTER,
         "chart_master_alias": QUALITY_PROFILE_CHART_MASTER,
         "profiles": profiles,
-        "standard": "Simple uses Docs Daily. Custom, Album, Cover, Repaint and source tasks use Max Quality unless explicitly changed.",
+        "standard": "Kwaliteit is model-correct: Laag/Middel/Hoog gebruiken Turbo 8/shift 3 of Base/SFT 50/shift 1.",
         "settings_policy_version": ACE_STEP_SETTINGS_POLICY_VERSION,
         "audio_format": DOCS_BEST_AUDIO_FORMAT,
         "metadata_defaults": {
@@ -1814,10 +1832,10 @@ def _field_note(field: str) -> str:
         "caption": f"Official request budget: less than {ACE_STEP_CAPTION_CHAR_LIMIT} characters.",
         "lyrics": f"Official request budget: less than {ACE_STEP_LYRICS_CHAR_LIMIT} characters.",
         "duration": "Official range is 10-600 seconds; source-audio tasks lock duration to the source where ACE-Step does that internally.",
-        "quality_profile": "AceJAM profile selector: docs_daily for Simple, chart_master/Max Quality for final renders, plus preview_fast, balanced_pro, and official_raw.",
-        "inference_steps": "Runtime-verified ACE-Step/MLX default: 8 steps keeps XL SFT vocals intelligible; higher SFT step counts can collapse vocals.",
+        "quality_profile": "MLX Media profile selector: laag/preview_fast, middel/balanced_pro, hoog/chart_master, plus official_raw for parity debugging.",
+        "inference_steps": "ACE-Step docs-correct defaults: Turbo uses 8 steps; Base/SFT/XL SFT use 50 steps for normal/high quality.",
         "guidance_scale": "Only effective for non-turbo models.",
-        "shift": "Runtime-verified ACE-Step/MLX default: shift 3.0 for Turbo and XL SFT vocal renders. Custom timesteps override shift.",
+        "shift": "ACE-Step docs-correct defaults: shift 3.0 for Turbo, shift 1.0 for Base/SFT/XL SFT. Custom timesteps override shift.",
         "timesteps": "Overrides inference_steps and shift when present.",
         "audio_format": "Official runner supports flac/mp3/opus/aac/wav/wav32; fast in-process runner supports a smaller subset.",
         "audio_cover_strength": "Higher values keep more source structure; lower values transform more freely.",
@@ -1879,7 +1897,7 @@ class AceStepSettingsRegistry:
                 "effective_guidance": False,
             },
             "base_sft": {
-                "inference_steps_range": [32, 64],
+                "inference_steps_range": [50, 64],
                 "chart_master_default_steps": CHART_MASTER_STANDARD_STEPS,
                 "balanced_pro_default_steps": BALANCED_PRO_STANDARD_STEPS,
                 "guidance_scale_range": [5.0, 9.0],

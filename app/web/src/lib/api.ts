@@ -1,5 +1,5 @@
 /**
- * Thin fetch wrapper for the AceJAM REST API. All endpoints live on the same
+ * Thin fetch wrapper for the MLX Media REST API. All endpoints live on the same
  * origin as the React app (mounted at /v2 from FastAPI). In dev, Vite proxies
  * /api and /media to the Python server at 127.0.0.1:7860.
  */
@@ -66,7 +66,9 @@ export type WizardMode =
   | "extract"
   | "lego"
   | "complete"
-  | "news";
+  | "news"
+  | "image"
+  | "video";
 
 export interface PromptAssistantRunRequest {
   mode: WizardMode;
@@ -186,13 +188,6 @@ export function chatModelDetails(c: LLMCatalogResponse | undefined): LLMModelDet
       capList(d).includes("chat") ||
       // ACE-Step LMs expose capabilities like 'composition'/'metadata' etc; treat them as chat planners
       d.provider === "ace_step_lm",
-  );
-}
-
-export function imageModelDetails(c: LLMCatalogResponse | undefined): LLMModelDetail[] {
-  if (!c) return [];
-  return c.details.filter(
-    (d) => d.image_generation === true || capList(d).includes("image_generation"),
   );
 }
 
@@ -322,25 +317,6 @@ export const getAlbumPlanJob = (jobId: string) =>
     };
   }>(`/api/album/jobs/${encodeURIComponent(jobId)}`);
 
-// ---- Artwork ----
-
-export interface ArtGenerateRequest extends Record<string, unknown> {
-  scope: "single" | "album" | "test";
-  title?: string;
-  caption?: string;
-  prompt?: string;
-  album_title?: string;
-  album_concept?: string;
-  negative_prompt?: string;
-  width?: number;
-  height?: number;
-  steps?: number;
-  seed?: number | string;
-  model?: string;
-  attach_to_result_id?: string;
-  attach_to_album_family_id?: string;
-}
-
 export interface ArtMetadata {
   art_id: string;
   filename: string;
@@ -352,12 +328,6 @@ export interface ArtMetadata {
   model?: string;
   created_at?: string;
 }
-
-export const generateArt = (body: ArtGenerateRequest) =>
-  api.post<{ success: boolean; art?: ArtMetadata; error?: string }>(
-    "/api/art/generate",
-    body,
-  );
 
 // ---- Library / community ----
 
@@ -451,3 +421,286 @@ export const getLoraAutolabelJob = (jobId: string) =>
   api.get<{ success: boolean; job?: LoraAutolabelJob; error?: string }>(
     `/api/lora/dataset/autolabel/jobs/${encodeURIComponent(jobId)}`,
   );
+
+// ---- MFLUX image studio --------------------------------------------------
+
+export interface MfluxStatus {
+  success: boolean;
+  ready: boolean;
+  platform?: string;
+  arch?: string;
+  apple_silicon?: boolean;
+  mlx_available?: boolean;
+  mflux_available?: boolean;
+  cli_available?: boolean;
+  blocking_reason?: string;
+  data_dir?: string;
+  results_dir?: string;
+  uploads_dir?: string;
+  datasets_dir?: string;
+  lora_dir?: string;
+  commands?: Record<string, string | null>;
+  command_help?: Record<string, { available: boolean; help_ok: boolean; reason?: string }>;
+  action_readiness?: Record<string, {
+    label?: string;
+    ready: boolean;
+    commands?: string[];
+    available_commands?: string[];
+    missing_commands?: string[];
+    models?: string[];
+    reason?: string;
+  }>;
+}
+
+export interface MfluxModel {
+  id: string;
+  label: string;
+  preset: string;
+  family?: string;
+  family_label?: string;
+  size?: string;
+  command?: string;
+  edit_command?: string;
+  model_arg?: string;
+  quantization_default?: number;
+  default_steps?: number;
+  default_width?: number;
+  default_height?: number;
+  capabilities?: string[];
+  trainable?: boolean;
+  description?: string;
+}
+
+export interface MfluxModelsResponse {
+  success: boolean;
+  status?: MfluxStatus;
+  models: MfluxModel[];
+  presets?: Record<string, MfluxModel[]>;
+  by_action?: Record<string, MfluxModel[]>;
+  actions?: Record<string, unknown>;
+  defaults?: Record<string, string>;
+  version_range?: string;
+}
+
+export interface MfluxLoraAdapter {
+  name: string;
+  display_name?: string;
+  trigger_tag?: string;
+  path: string;
+  adapter_type?: "image_lora" | string;
+  model_id?: string;
+  family?: string;
+  base_model?: string;
+  generation_loadable?: boolean;
+  is_loadable?: boolean;
+  updated_at?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MfluxJob {
+  id: string;
+  kind?: "mflux";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  created_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+  payload?: Record<string, unknown>;
+  model?: MfluxModel;
+  result?: Record<string, unknown>;
+  result_summary?: Record<string, unknown>;
+  dataset_summary?: Record<string, unknown>;
+  logs?: string[];
+  error?: string;
+}
+
+export const getMfluxStatus = () => api.get<MfluxStatus>("/api/mflux/status");
+export const getMfluxModels = () => api.get<MfluxModelsResponse>("/api/mflux/models");
+export const startMfluxJob = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; job_id?: string; job?: MfluxJob; error?: string }>("/api/mflux/jobs", body);
+export const getMfluxJob = (jobId: string) =>
+  api.get<{ success: boolean; job?: MfluxJob; error?: string }>(`/api/mflux/jobs/${encodeURIComponent(jobId)}`);
+export const getMfluxLoras = () =>
+  api.get<{ success: boolean; adapters: MfluxLoraAdapter[] }>("/api/mflux/lora/adapters");
+export const uploadMfluxImage = (file: File) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return api.post<{
+    success: boolean;
+    id?: string;
+    upload_id?: string;
+    filename?: string;
+    path?: string;
+    url?: string;
+    error?: string;
+  }>("/api/mflux/uploads", fd);
+};
+export const startMfluxLoraTraining = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; job_id?: string; job?: MfluxJob; error?: string }>("/api/mflux/lora/train", body);
+export const attachMfluxArt = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; art?: ArtMetadata; error?: string }>("/api/mflux/art/attach", body);
+
+// ---- MLX video studio ---------------------------------------------------
+
+export interface MlxVideoStatus {
+  success: boolean;
+  ready: boolean;
+  platform?: string;
+  arch?: string;
+  apple_silicon?: boolean;
+  video_env_dir?: string;
+  video_python?: string;
+  python?: { available?: boolean; ok?: boolean; version?: string; reason?: string };
+  mlx_available?: boolean;
+  mlx?: { available?: boolean; version?: string; reason?: string };
+  mlx_video_available?: boolean;
+  mlx_video?: { available?: boolean; version?: string; reason?: string };
+  commands?: Record<string, string[]>;
+  command_help?: Record<string, {
+    available?: boolean;
+    help_ok?: boolean;
+    command?: string[];
+    reason?: string;
+    capabilities?: Record<string, boolean | string | number>;
+    output_flag?: string;
+    help_excerpt?: string;
+  }>;
+  patch_status?: Record<string, unknown>;
+  registered_model_dirs?: MlxVideoModelDir[];
+  results_dir?: string;
+  uploads_dir?: string;
+  lora_dir?: string;
+  model_dirs_dir?: string;
+  blocking_reason?: string;
+}
+
+export interface MlxVideoModel {
+  id: string;
+  label: string;
+  engine: "ltx" | "wan" | string;
+  preset?: string;
+  pipeline?: string;
+  family?: string;
+  model_repo?: string;
+  requires_model_dir?: boolean;
+  default_width?: number;
+  default_height?: number;
+  default_frames?: number;
+  default_fps?: number;
+  default_steps?: number;
+  guide_scale?: number | string;
+  shift?: number | string;
+  supports_lora?: boolean;
+  capabilities?: string[];
+  description?: string;
+  disabled?: boolean;
+}
+
+export interface MlxVideoModelDir {
+  id: string;
+  label: string;
+  path: string;
+  family?: string;
+  exists?: boolean;
+  config_path?: string;
+}
+
+export interface MlxVideoModelsResponse {
+  success: boolean;
+  status?: MlxVideoStatus;
+  models: MlxVideoModel[];
+  presets?: Record<string, MlxVideoModel[]>;
+  actions?: Record<string, { label?: string; requires_prompt?: boolean; requires_image?: boolean; requires_audio?: boolean }>;
+  by_action?: Record<string, MlxVideoModel[]>;
+  defaults?: Record<string, string>;
+  registered_model_dirs?: MlxVideoModelDir[];
+}
+
+export interface MlxVideoLoraAdapter {
+  name: string;
+  display_name?: string;
+  path: string;
+  adapter_type?: "video_lora" | string;
+  family?: string;
+  role?: "shared" | "high" | "low" | string;
+  model_id?: string;
+  generation_loadable?: boolean;
+  is_loadable?: boolean;
+  updated_at?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MlxVideoJob {
+  id: string;
+  kind?: "mlx-video";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  created_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+  payload?: Record<string, unknown>;
+  model?: MlxVideoModel;
+  result?: Record<string, unknown>;
+  result_summary?: Record<string, unknown>;
+  logs?: string[];
+  error?: string;
+}
+
+export interface MlxVideoAttachment {
+  video_id: string;
+  source?: "mlx-video" | string;
+  target_type?: string;
+  target_id?: string;
+  result_id?: string;
+  url?: string;
+  video_url?: string;
+  poster_url?: string;
+  path?: string;
+  prompt?: string;
+  model_label?: string;
+  attached_at?: string;
+}
+
+export const getMlxVideoStatus = () => api.get<MlxVideoStatus>("/api/mlx-video/status");
+export const getMlxVideoModels = () => api.get<MlxVideoModelsResponse>("/api/mlx-video/models");
+export const getMlxVideoJobs = () =>
+  api.get<{ success: boolean; jobs: MlxVideoJob[] }>("/api/mlx-video/jobs");
+export const startMlxVideoJob = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; job_id?: string; job?: MlxVideoJob; error?: string }>("/api/mlx-video/jobs", body);
+export const getMlxVideoJob = (jobId: string) =>
+  api.get<{ success: boolean; job?: MlxVideoJob; error?: string }>(`/api/mlx-video/jobs/${encodeURIComponent(jobId)}`);
+export const getMlxVideoLoras = () =>
+  api.get<{ success: boolean; adapters: MlxVideoLoraAdapter[] }>("/api/mlx-video/loras");
+export const startMlxVideoLoraTraining = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; available?: boolean; error?: string }>("/api/mlx-video/lora/train", body);
+export const uploadMlxVideoMedia = (file: File) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return api.post<{
+    success: boolean;
+    id?: string;
+    upload_id?: string;
+    filename?: string;
+    path?: string;
+    url?: string;
+    media_kind?: string;
+    error?: string;
+  }>("/api/mlx-video/uploads", fd);
+};
+export const registerMlxVideoModelDir = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; entry?: MlxVideoModelDir; model_dirs?: MlxVideoModelDir[]; error?: string }>("/api/mlx-video/model-dirs", body);
+export const attachMlxVideo = (body: Record<string, unknown>) =>
+  api.post<{ success: boolean; attachment?: MlxVideoAttachment; error?: string }>("/api/mlx-video/attach", body);
+export const getMlxVideoAttachments = (params?: { target_type?: string; target_id?: string }) => {
+  const search = new URLSearchParams();
+  if (params?.target_type) search.set("target_type", params.target_type);
+  if (params?.target_id) search.set("target_id", params.target_id);
+  const qs = search.toString();
+  return api.get<{ success: boolean; attachments: MlxVideoAttachment[] }>(
+    `/api/mlx-video/attachments${qs ? `?${qs}` : ""}`,
+  );
+};

@@ -9,12 +9,14 @@ import {
   Download,
   ExternalLink,
   GraduationCap,
+  Image as ImageIcon,
   Loader2,
   Music4,
   PauseCircle,
   PlayCircle,
   RefreshCw,
   ScrollText,
+  Video,
   X,
 } from "lucide-react";
 
@@ -37,6 +39,8 @@ import { useJobsStore, type JobEntry, type JobKind } from "@/store/jobs";
 const ICONS: Record<JobKind, React.ComponentType<{ className?: string }>> = {
   generation: Music4,
   album: Disc3,
+  mflux: ImageIcon,
+  "mlx-video": Video,
   lora: GraduationCap,
   "ollama-pull": Brain,
   "model-download": Download,
@@ -103,6 +107,55 @@ function isActiveJob(job: JsonRecord): boolean {
   return ACTIVE_STATES.has(String(job.state || "").toLowerCase());
 }
 
+function errorText(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error || "Onbekende fout");
+}
+
+function isNetworkFetchError(error: unknown): boolean {
+  const message = errorText(error).toLowerCase();
+  return (
+    message.includes("failed to fetch") ||
+    message.includes("networkerror") ||
+    message.includes("load failed") ||
+    message.includes("network request failed")
+  );
+}
+
+function userFacingFetchError(error: unknown): string {
+  if (isNetworkFetchError(error)) {
+    return "Backend tijdelijk niet bereikbaar. Ik toon de laatste bekende jobdata en probeer opnieuw.";
+  }
+  return errorText(error);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function getWithRetry<T>(path: string, attempts = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await api.get<T>(path);
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkFetchError(error) || attempt === attempts - 1) break;
+      await delay(350 + attempt * 450);
+    }
+  }
+  throw lastError;
+}
+
+async function getOptionalLog(path: string): Promise<string | null> {
+  try {
+    const response = await getWithRetry<{ success: boolean; log?: string }>(path);
+    return text(response.log, "");
+  } catch {
+    return null;
+  }
+}
+
 function formatTime(value: unknown): string {
   if (!value) return "—";
   const date = typeof value === "number" ? new Date(value) : new Date(String(value));
@@ -118,6 +171,8 @@ function formatTime(value: unknown): string {
 function kindLabel(kind: JobKind): string {
   if (kind === "generation") return "Song render";
   if (kind === "lora") return "LoRA training";
+  if (kind === "mflux") return "MFLUX image";
+  if (kind === "mlx-video") return "MLX video";
   if (kind === "album") return "Album job";
   if (kind === "ollama-pull") return "Ollama pull";
   if (kind === "model-download") return "Model download";
@@ -165,6 +220,72 @@ function jobPatchFromGeneration(job: JsonRecord): JobEntry {
     metadata: job,
     error: text(job.error, ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+  };
+}
+
+function jobPatchFromOllamaPull(job: JsonRecord): JobEntry {
+  const id = text(job.id || job.model, "ollama-pull");
+  const model = text(job.model, "Ollama model");
+  return {
+    id,
+    kind: "ollama-pull",
+    label: `pull ${model}`,
+    progress: progressOf({ id, kind: "ollama-pull", label: "", startedAt: Date.now() }, job),
+    status: text(job.status || job.state, "queued"),
+    state: text(job.state || job.status, "queued"),
+    kindLabel: "Ollama pull",
+    detailsPath: `/api/ollama/pull/${encodeURIComponent(id)}`,
+    metadata: job,
+    error: text(job.error, ""),
+    startedAt: job.started_at ? new Date(String(job.started_at)).getTime() : Date.now(),
+    updatedAt: text(job.finished_at || job.started_at, ""),
+  };
+}
+
+function jobPatchFromMflux(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const result = asRecord(job.result_summary || job.result);
+  const model = asRecord(job.model);
+  const id = text(job.id, "mflux-job");
+  const label =
+    text(payload.title || payload.prompt || result.image_url || model.label, "MFLUX image");
+  return {
+    id,
+    kind: "mflux",
+    label,
+    progress: progressOf({ id, kind: "mflux", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "mflux", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "mflux", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "MFLUX image",
+    detailsPath: `/api/mflux/jobs/${encodeURIComponent(id)}`,
+    metadata: job,
+    error: text(job.error, ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
+  };
+}
+
+function jobPatchFromMlxVideo(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const result = asRecord(job.result_summary || job.result);
+  const model = asRecord(job.model);
+  const id = text(job.id, "mlx-video-job");
+  const label = text(payload.title || payload.prompt || result.video_url || model.label, "MLX video");
+  return {
+    id,
+    kind: "mlx-video",
+    label,
+    progress: progressOf({ id, kind: "mlx-video", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "mlx-video", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "mlx-video", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "MLX video",
+    detailsPath: `/api/mlx-video/jobs/${encodeURIComponent(id)}`,
+    metadata: job,
+    error: text(job.error, ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
   };
 }
 
@@ -403,6 +524,97 @@ function GenerationDetails({
   );
 }
 
+function MfluxDetails({ job }: { job: JsonRecord }) {
+  const payload = asRecord(job.payload);
+  const result = asRecord(job.result || job.result_summary);
+  const model = asRecord(job.model);
+  const imageUrl = text(result.image_url || result.url, "");
+  const logs = asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
+  return (
+    <div className="space-y-4">
+      {imageUrl && (
+        <div className="overflow-hidden rounded-lg border bg-background/40">
+          <img src={imageUrl} alt="MFLUX result" className="max-h-[520px] w-full object-contain" />
+        </div>
+      )}
+      <Section title="Image setup" icon={ImageIcon}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <InfoRow label="Action" value={payload.action || result.action} />
+          <InfoRow label="Model" value={model.label || result.model_label || payload.model_id} />
+          <InfoRow label="Preset" value={model.preset} />
+          <InfoRow label="Size" value={`${text(payload.width || result.width, "auto")} × ${text(payload.height || result.height, "auto")}`} />
+          <InfoRow label="Steps" value={payload.steps || result.steps} />
+          <InfoRow label="Seed" value={payload.seed || result.seed} />
+          <InfoRow label="Quantize" value={payload.quantize || result.quantize} />
+          <InfoRow label="LoRAs" value={asArray(payload.lora_adapters || result.lora_adapters).length} />
+        </div>
+      </Section>
+      <Section title="Prompt">
+        <p className="rounded-md border bg-background/35 p-3 text-xs leading-relaxed">
+          {text(payload.prompt || result.prompt, "Geen prompt beschikbaar.")}
+        </p>
+      </Section>
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
+function MlxVideoDetails({ job }: { job: JsonRecord }) {
+  const payload = asRecord(job.payload);
+  const result = asRecord(job.result || job.result_summary);
+  const model = asRecord(job.model);
+  const videoUrl = text(result.video_url || result.url, "");
+  const posterUrl = text(result.poster_url, "");
+  const logs = asArray(job.logs || result.logs).map((item) => text(item, "")).filter(Boolean);
+  return (
+    <div className="space-y-4">
+      {videoUrl && (
+        <div className="overflow-hidden rounded-lg border bg-black/70">
+          <video
+            src={videoUrl}
+            poster={posterUrl || undefined}
+            controls
+            className="max-h-[560px] w-full bg-black object-contain"
+          />
+        </div>
+      )}
+      <Section title="Video setup" icon={Video}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <InfoRow label="Action" value={payload.action || result.action} />
+          <InfoRow label="Model" value={model.label || result.model_label || payload.model_id} />
+          <InfoRow label="Engine" value={model.engine || result.engine} />
+          <InfoRow label="Preset" value={model.preset || result.preset} />
+          <InfoRow label="Size" value={`${text(payload.width || result.width, "auto")} × ${text(payload.height || result.height, "auto")}`} />
+          <InfoRow label="Frames/FPS" value={`${text(payload.num_frames || result.num_frames, "auto")} / ${text(payload.fps || result.fps, "auto")}`} />
+          <InfoRow label="Steps" value={payload.steps || result.steps} />
+          <InfoRow label="Seed" value={payload.seed || result.seed} />
+          <InfoRow label="LoRAs" value={asArray(payload.lora_adapters || result.lora_adapters).length} />
+        </div>
+      </Section>
+      <Section title="Prompt">
+        <p className="rounded-md border bg-background/35 p-3 text-xs leading-relaxed">
+          {text(payload.prompt || result.prompt, "Geen prompt beschikbaar.")}
+        </p>
+      </Section>
+      <Section title="Sources">
+        <div className="grid gap-2 md:grid-cols-2">
+          <InfoRow label="Image" value={payload.image_path || payload.source_image_path || result.source_image} />
+          <InfoRow label="Audio" value={payload.audio_path || payload.source_audio_path || result.source_audio} />
+        </div>
+      </Section>
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -441,20 +653,25 @@ function JobDetailsDialog({
   const [remoteJob, setRemoteJob] = React.useState<JsonRecord>({});
   const [log, setLog] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  const [detailError, setDetailError] = React.useState("");
   const [actionBusy, setActionBusy] = React.useState("");
+  const loadingRef = React.useRef(false);
+  const failureCountRef = React.useRef(0);
+  const lastToastAtRef = React.useRef(0);
 
-  const load = React.useCallback(async () => {
-    if (!job) return;
+  const load = React.useCallback(async (options: { quiet?: boolean } = {}) => {
+    if (!job || loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       if (job.kind === "lora") {
-        const [jobResp, logResp] = await Promise.all([
-          api.get<{ success: boolean; job?: JsonRecord }>(job.detailsPath || `/api/lora/jobs/${encodeURIComponent(job.id)}`),
-          api.get<{ success: boolean; log?: string }>(job.logPath || `/api/lora/jobs/${encodeURIComponent(job.id)}/log`),
-        ]);
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/lora/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/lora/jobs/${encodeURIComponent(job.id)}/log`);
         const next = asRecord(jobResp.job);
         setRemoteJob(next);
-        setLog(text(logResp.log, ""));
+        if (nextLog !== null) setLog(nextLog);
         updateJob(job.id, {
           progress: progressOf(job, next),
           status: stageOf(job, next) || stateOf(job, next),
@@ -465,13 +682,13 @@ function JobDetailsDialog({
           error: text(next.error, ""),
         });
       } else if (job.kind === "generation") {
-        const [jobResp, logResp] = await Promise.all([
-          api.get<{ success: boolean; job?: JsonRecord }>(job.detailsPath || `/api/generation/jobs/${encodeURIComponent(job.id)}`),
-          api.get<{ success: boolean; log?: string }>(job.logPath || `/api/generation/jobs/${encodeURIComponent(job.id)}/log`),
-        ]);
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/generation/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/generation/jobs/${encodeURIComponent(job.id)}/log`);
         const next = asRecord(jobResp.job);
         setRemoteJob(next);
-        setLog(text(logResp.log, ""));
+        if (nextLog !== null) setLog(nextLog);
         updateJob(job.id, {
           progress: progressOf(job, next),
           status: stageOf(job, next) || stateOf(job, next),
@@ -482,7 +699,9 @@ function JobDetailsDialog({
           error: text(next.error, ""),
         });
       } else if (job.kind === "album") {
-        const resp = await api.get<{ success: boolean; job?: JsonRecord }>(job.detailsPath || `/api/album/jobs/${encodeURIComponent(job.id)}`);
+        const resp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/album/jobs/${encodeURIComponent(job.id)}`,
+        );
         const next = asRecord(resp.job);
         setRemoteJob(next);
         updateJob(job.id, {
@@ -493,8 +712,40 @@ function JobDetailsDialog({
           metadata: next,
           error: text(next.error, ""),
         });
+      } else if (job.kind === "mflux") {
+        const resp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/mflux/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const next = asRecord(resp.job);
+        setRemoteJob(next);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: text(next.updated_at || next.finished_at, "") || Date.now(),
+          metadata: next,
+          error: text(next.error, ""),
+        });
+      } else if (job.kind === "mlx-video") {
+        const resp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/mlx-video/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const next = asRecord(resp.job);
+        setRemoteJob(next);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: text(next.updated_at || next.finished_at, "") || Date.now(),
+          metadata: next,
+          error: text(next.error, ""),
+        });
       } else if (job.kind === "ollama-pull") {
-        const resp = await api.get<{ success: boolean; job?: JsonRecord }>(job.detailsPath || `/api/ollama/pull/${encodeURIComponent(job.id)}`);
+        const resp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/ollama/pull/${encodeURIComponent(job.id)}`,
+        );
         const next = asRecord(resp.job);
         setRemoteJob(next);
         updateJob(job.id, {
@@ -508,20 +759,33 @@ function JobDetailsDialog({
       } else {
         setRemoteJob(asRecord(job.metadata));
       }
+      failureCountRef.current = 0;
+      setDetailError("");
     } catch (error) {
-      toast.error(`Jobdetails laden mislukt: ${(error as Error).message}`);
+      failureCountRef.current += 1;
+      const message = userFacingFetchError(error);
+      setDetailError(message);
+      const shouldToast =
+        !options.quiet &&
+        Date.now() - lastToastAtRef.current > 8000;
+      if (shouldToast) {
+        lastToastAtRef.current = Date.now();
+        toast.error(`Jobdetails laden mislukt: ${message}`);
+      }
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }, [job, updateJob]);
 
   React.useEffect(() => {
     if (!open || !job) return;
-    void load();
+    void load({ quiet: true });
     const timer = window.setInterval(() => {
-      const snapshot = asRecord(useJobsStore.getState().jobs[job.id]?.metadata);
-      const state = stateOf(job, snapshot);
-      if (!TERMINAL_STATES.has(state)) void load();
+      const currentJob = useJobsStore.getState().jobs[job.id] || job;
+      const snapshot = asRecord(currentJob.metadata);
+      const state = stateOf(currentJob, snapshot);
+      if (!TERMINAL_STATES.has(state)) void load({ quiet: true });
     }, 5000);
     return () => window.clearInterval(timer);
   }, [open, job?.id, load]);
@@ -530,6 +794,8 @@ function JobDetailsDialog({
     if (!open) {
       setRemoteJob({});
       setLog("");
+      setDetailError("");
+      failureCountRef.current = 0;
     }
   }, [open]);
 
@@ -587,7 +853,7 @@ function JobDetailsDialog({
 
         <div className="max-h-[calc(88vh-150px)] space-y-4 overflow-auto p-5">
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+            <Button variant="outline" size="sm" onClick={() => void load({ quiet: false })} disabled={loading}>
               {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
               Refresh
             </Button>
@@ -618,6 +884,18 @@ function JobDetailsDialog({
             )}
           </div>
 
+          {detailError && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-100">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <div>
+                  <p className="font-medium">Jobdetails tijdelijk niet ververst</p>
+                  <p className="mt-1 text-muted-foreground">{detailError}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <Section title="Snapshot">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <InfoRow label="Created" value={formatTime(remote.created_at || job.startedAt)} />
@@ -631,6 +909,10 @@ function JobDetailsDialog({
             <LoraDetails job={remote} log={log} />
           ) : job.kind === "generation" ? (
             <GenerationDetails job={remote} log={log} />
+          ) : job.kind === "mflux" ? (
+            <MfluxDetails job={remote} />
+          ) : job.kind === "mlx-video" ? (
+            <MlxVideoDetails job={remote} />
           ) : (
             <GenericDetails job={remote} />
           )}
@@ -654,14 +936,20 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
     let cancelled = false;
     const hydrateRemoteJobs = async () => {
       try {
-        const [loraResult, generationResult] = await Promise.allSettled([
+        const [loraResult, generationResult, mfluxResult, mlxVideoResult, ollamaResult] = await Promise.allSettled([
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mflux/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mlx-video/jobs"),
+          api.get<{ success: boolean; pull_jobs?: JsonRecord[] }>("/api/ollama/status"),
         ]);
         if (cancelled) return;
         const current = useJobsStore.getState().jobs;
         const loraJobs = loraResult.status === "fulfilled" ? loraResult.value.jobs || [] : [];
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
+        const mfluxJobs = mfluxResult.status === "fulfilled" ? mfluxResult.value.jobs || [] : [];
+        const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
+        const ollamaPullJobs = ollamaResult.status === "fulfilled" ? ollamaResult.value.pull_jobs || [] : [];
         for (const rawJob of loraJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
@@ -673,6 +961,24 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           if (!id) continue;
           if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
           addJob(jobPatchFromGeneration(rawJob));
+        }
+        for (const [index, rawJob] of mfluxJobs.entries()) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromMflux(rawJob));
+        }
+        for (const [index, rawJob] of mlxVideoJobs.entries()) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromMlxVideo(rawJob));
+        }
+        for (const rawJob of ollamaPullJobs) {
+          const id = text(rawJob.id || rawJob.model, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id]) continue;
+          addJob(jobPatchFromOllamaPull(rawJob));
         }
       } catch {
         // The tracker should never make the whole app noisy when startup APIs are still warming.

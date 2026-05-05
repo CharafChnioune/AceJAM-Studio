@@ -1,6 +1,10 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import {
   Music2,
+  Image as ImageIcon,
+  Video,
+  Disc3,
+  GraduationCap,
   Library as LibraryIcon,
   Settings as SettingsIcon,
   Home as HomeIcon,
@@ -18,6 +22,9 @@ import { LegoWizard } from "@/wizards/LegoWizard";
 import { CompleteWizard } from "@/wizards/CompleteWizard";
 import { NewsWizard } from "@/wizards/NewsWizard";
 import { TrainerWizard } from "@/wizards/TrainerWizard";
+import { ImageWizard } from "@/wizards/ImageWizard";
+import { ImageTrainerWizard } from "@/wizards/ImageTrainerWizard";
+import { VideoWizard } from "@/wizards/VideoWizard";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { JobTracker } from "@/components/JobTracker";
@@ -27,6 +34,11 @@ import { cn } from "@/lib/utils";
 function Sidebar() {
   const items = [
     { to: "/", label: "Home", icon: HomeIcon },
+    { to: "/wizard/simple", label: "Music", icon: Music2 },
+    { to: "/wizard/image", label: "Images", icon: ImageIcon },
+    { to: "/wizard/video", label: "Video", icon: Video },
+    { to: "/wizard/album", label: "Albums", icon: Disc3 },
+    { to: "/wizard/trainer", label: "Training", icon: GraduationCap },
     { to: "/library", label: "Library", icon: LibraryIcon },
     { to: "/settings", label: "Settings", icon: SettingsIcon },
   ];
@@ -37,7 +49,7 @@ function Sidebar() {
           <Music2 className="size-4" />
         </div>
         <span className="hidden font-display text-base font-semibold sm:inline">
-          AceJAM
+          MLX Media
         </span>
       </div>
       <nav className="mt-2 flex flex-col gap-1">
@@ -90,6 +102,9 @@ export default function App() {
             <Route path="/wizard/complete" element={<CompleteWizard />} />
             <Route path="/wizard/news" element={<NewsWizard />} />
             <Route path="/wizard/trainer" element={<TrainerWizard />} />
+            <Route path="/wizard/image" element={<ImageWizard />} />
+            <Route path="/wizard/image-trainer" element={<ImageTrainerWizard />} />
+            <Route path="/wizard/video" element={<VideoWizard />} />
             <Route path="/library" element={<Library />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Home />} />

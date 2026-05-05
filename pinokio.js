@@ -1,7 +1,7 @@
 module.exports = {
   version: "7.0",
-  title: "AceJAM",
-  description: "Describe any song in plain English, compose it locally, and generate the audio with ACE-Step v1.5.",
+  title: "MLX Media",
+  description: "Create music, albums, artwork, image edits and LoRAs locally on Apple Silicon with MLX.",
   icon: "icon.png",
   menu: async (kernel, info) => {
     let installed = info.exists("app/env")

@@ -47,10 +47,14 @@ interface WizardSlice {
   payloads: Record<string, Record<string, unknown> | undefined>;
   warnings: Record<string, string[] | undefined>;
   pasteBlocks: Record<string, PasteBlock[] | undefined>;
+  /** Persisted form values per wizard mode. */
+  drafts: Record<string, Record<string, unknown> | undefined>;
   /** Last successful generation result per mode (audio + metadata) */
   lastResult: Record<string, Record<string, unknown> | undefined>;
 
   setPrompt: (mode: string, value: string) => void;
+  setDraft: (mode: string, value: Record<string, unknown>) => void;
+  clearDraft: (mode: string) => void;
   setHydration: (
     mode: string,
     data: {
@@ -70,9 +74,14 @@ export const useWizardStore = create<WizardSlice>()(
       payloads: {},
       warnings: {},
       pasteBlocks: {},
+      drafts: {},
       lastResult: {},
       setPrompt: (mode, value) =>
         set((s) => ({ prompts: { ...s.prompts, [mode]: value } })),
+      setDraft: (mode, value) =>
+        set((s) => ({ drafts: { ...s.drafts, [mode]: value } })),
+      clearDraft: (mode) =>
+        set((s) => ({ drafts: { ...s.drafts, [mode]: undefined } })),
       setHydration: (mode, data) =>
         set((s) => ({
           payloads: { ...s.payloads, [mode]: data.payload },
@@ -87,6 +96,7 @@ export const useWizardStore = create<WizardSlice>()(
           payloads: { ...s.payloads, [mode]: undefined },
           warnings: { ...s.warnings, [mode]: undefined },
           pasteBlocks: { ...s.pasteBlocks, [mode]: undefined },
+          drafts: { ...s.drafts, [mode]: undefined },
           lastResult: { ...s.lastResult, [mode]: undefined },
         })),
     }),
@@ -97,6 +107,7 @@ export const useWizardStore = create<WizardSlice>()(
         payloads: state.payloads,
         warnings: state.warnings,
         pasteBlocks: state.pasteBlocks,
+        drafts: state.drafts,
       }),
     },
   ),

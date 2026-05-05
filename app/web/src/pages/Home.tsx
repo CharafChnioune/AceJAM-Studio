@@ -3,6 +3,8 @@ import { motion } from "framer-motion";
 import {
   Sparkles,
   Music2,
+  Image as ImageIcon,
+  Video,
   Disc3,
   Repeat2,
   Brush,
@@ -27,6 +29,29 @@ interface ModeCard {
 
 const cards: ModeCard[] = [
   {
+    to: "/wizard/image",
+    title: "Image Studio",
+    blurb: "MFLUX generatie, edits, LoRA stacks, upscale en depth op Apple MLX.",
+    icon: ImageIcon,
+    badge: "Nieuw",
+    enabled: true,
+  },
+  {
+    to: "/wizard/video",
+    title: "Video Studio",
+    blurb: "MLX-video drafts, image/song-to-video, Wan/LTX presets en final rerenders.",
+    icon: Video,
+    badge: "Nieuw",
+    enabled: true,
+  },
+  {
+    to: "/wizard/image-trainer",
+    title: "Image LoRA Trainer",
+    blurb: "Train image-LoRAs voor album covers, artieststijl en visual identity.",
+    icon: GraduationCap,
+    enabled: true,
+  },
+  {
     to: "/wizard/simple",
     title: "Simple",
     blurb: "Eén prompt → hele track. Snelste pad van idee naar audio.",
@@ -44,7 +69,7 @@ const cards: ModeCard[] = [
   {
     to: "/wizard/album",
     title: "Album",
-    blurb: "Meerdere tracks met album-coherentie en cover artwork.",
+    blurb: "Meerdere tracks met album-coherentie en MFLUX cover artwork.",
     icon: Disc3,
     enabled: true,
   },
@@ -104,14 +129,14 @@ export function Home() {
     <div className="mx-auto w-full max-w-6xl space-y-10 px-6 py-10 sm:px-10 sm:py-14">
       <header className="space-y-3">
         <Badge variant="muted" className="rounded-full px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em]">
-          AceJAM Studio · React UI
+          MLX Media · Apple MLX studio
         </Badge>
         <h1 className="font-display text-balance text-3xl font-semibold leading-tight sm:text-5xl">
-          Welke <span className="text-primary">muziek</span> ga je vandaag maken?
+          Welke <span className="text-primary">media</span> ga je vandaag maken?
         </h1>
         <p className="max-w-2xl text-balance text-base text-muted-foreground">
-          Kies een wizard. Elke flow start met één prompt en de AI vult de rest
-          van het formulier alvast in — jij loopt erlangs en stuurt bij.
+          Maak muziek, albums, covers en beelden in één MLX-first studio. Audio blijft via ACE-Step,
+          afbeeldingen en artwork lopen via MFLUX.
         </p>
       </header>
 

@@ -2,7 +2,7 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { motion } from "framer-motion";
-import { Music4 } from "lucide-react";
+import { Music4, Video } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
@@ -13,7 +13,6 @@ import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/SourceAudioStep";
 import { TagInput } from "@/components/wizard/TagInput";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
-import { ArtGenerator } from "@/components/art/ArtGenerator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,10 +30,10 @@ import {
 import { type WizardMode, api } from "@/lib/api";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
+import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { toast } from "@/components/ui/sonner";
 import { cn, formatDuration } from "@/lib/utils";
-import { defaultTrackArtPrompt } from "@/lib/schemas";
 
 const TASK_TYPE_BY_MODE: Record<string, string> = {
   cover: "cover",
@@ -96,6 +95,7 @@ interface BaseSourceForm {
   lora_adapter_name: string;
   lora_scale: number;
   adapter_model_variant: string;
+  adapter_song_model: string;
 }
 
 export interface SourceAudioWizardConfig {
@@ -113,9 +113,9 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const setResult = useWizardStore((s) => s.setResult);
   const lastResult = useWizardStore((s) => s.lastResult[config.mode]);
   const warnings = useWizardStore((s) => s.warnings[config.mode]) ?? [];
-
-  const form = useForm<BaseSourceForm>({
-    defaultValues: {
+  const draft = useWizardStore((s) => s.drafts[config.mode]);
+  const sourceDefaults = React.useMemo<BaseSourceForm>(
+    () => ({
       task_type: TASK_TYPE_BY_MODE[config.variant] ?? "cover",
       title: "",
       artist_name: "",
@@ -140,7 +140,13 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       lora_adapter_name: "",
       lora_scale: DEFAULT_LORA_SCALE,
       adapter_model_variant: "",
-    },
+      adapter_song_model: "",
+    }),
+    [config.defaultModel, config.variant],
+  );
+
+  const form = useForm<BaseSourceForm>({
+    defaultValues: mergeWizardDraft<BaseSourceForm>(sourceDefaults, draft),
     mode: "onChange",
   });
 
@@ -151,6 +157,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const storePrompt = useWizardStore((s) => s.prompts[config.mode]);
   const aiDescription = storePrompt ?? "";
   const values = form.watch();
+  const draftState = useWizardDraft(config.mode, form);
   const baseOnlyModelError =
     BASE_ONLY_VARIANTS.has(config.variant) && !String(values.song_model || "").includes("-base")
       ? "Extract, Lego en Complete zijn ACE-Step Base-only taken. Kies ACE-Step v1.5 XL Base voordat je genereert."
@@ -195,6 +202,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     if (Array.isArray(payload.track_names)) {
       form.setValue("track_names", payload.track_names as string[]);
     }
+    draftState.saveNow(form.getValues());
   };
 
   const generation = useGenerationJobRunner({
@@ -212,6 +220,10 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
     form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
     form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+    form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
+    if (selection.use_lora && selection.adapter_song_model) {
+      form.setValue("song_model", selection.adapter_song_model, { shouldValidate: true });
+    }
   };
 
   const buildPayload = () => {
@@ -430,6 +442,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
           onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             hydrate(payload);
+            draftState.saveNow(form.getValues());
           }}
         />
       ),
@@ -631,20 +644,6 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
                 }}
               />
             )}
-            {resultId && (
-              <ArtGenerator
-                scope="single"
-                attachToResultId={resultId}
-                title={title}
-                caption={(lastResult.caption as string | undefined) ?? values.caption}
-                defaultPrompt={defaultTrackArtPrompt({
-                  title,
-                  artist_name: artist,
-                  caption: (lastResult.caption as string | undefined) ?? values.caption,
-                  tags: (lastResult.tags as string | undefined) ?? values.tags,
-                })}
-              />
-            )}
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -653,7 +652,25 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
               <Button variant="outline" onClick={() => navigate("/library")} className="gap-2">
                 <Music4 className="size-4" /> Open library
               </Button>
-              <Button variant="ghost" onClick={() => setStep(0)}>Nieuw {config.title.toLowerCase()}</Button>
+              {audioUrl && (
+                <Button
+                  variant="outline"
+                  onClick={() => navigate("/wizard/video", {
+                    state: {
+                      audio_url: audioUrl,
+                      title,
+                      artist_name: artist,
+                      prompt: String(lastResult.caption || values.caption || values.tags || title || ""),
+                      target_type: "song",
+                      target_id: resultId || title,
+                    },
+                  })}
+                  className="gap-2"
+                >
+                  <Video className="size-4" /> Create video
+                </Button>
+              )}
+              <Button variant="ghost" onClick={() => { form.reset(sourceDefaults); draftState.clear(); setStep(0); }}>Nieuw {config.title.toLowerCase()}</Button>
             </motion.div>
           </div>
         );

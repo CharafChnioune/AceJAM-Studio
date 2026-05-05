@@ -167,11 +167,11 @@ ACEJAM_VOCAL_INTELLIGIBILITY_MIN_KEYWORDS = max(0, _env_int("ACEJAM_VOCAL_INTELL
 ACEJAM_VOCAL_INTELLIGIBILITY_MIN_UNIQUE_WORDS = max(1, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_MIN_UNIQUE_WORDS", 5))
 ACEJAM_VOCAL_INTELLIGIBILITY_MAX_FILLER_RATIO = min(
     1.0,
-    max(0.0, _env_float("ACEJAM_VOCAL_INTELLIGIBILITY_MAX_FILLER_RATIO", 0.45)),
+    max(0.0, _env_float("ACEJAM_VOCAL_INTELLIGIBILITY_MAX_FILLER_RATIO", 0.30)),
 )
 ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO = min(
     1.0,
-    max(0.0, _env_float("ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO", 0.45)),
+    max(0.0, _env_float("ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO", 0.28)),
 )
 ACEJAM_VOCAL_ASR_TIMEOUT = max(30, _env_int("ACEJAM_VOCAL_ASR_TIMEOUT", 240))
 ACEJAM_VOCAL_ASR_MODEL = os.environ.get("ACEJAM_VOCAL_ASR_MODEL", "").strip()
@@ -211,7 +211,6 @@ from local_llm import (
     lmstudio_model_catalog,
     lmstudio_unload_model,
     normalize_provider,
-    ollama_generate_image,
     planner_llm_options_for_provider,
     planner_llm_settings_from_payload,
     provider_label,
@@ -234,9 +233,41 @@ from lora_trainer import (
     AceTrainingManager,
     fit_epoch_audition_lyrics,
     infer_adapter_model_metadata,
+    is_missing_vocal_lyrics,
     model_from_variant,
     model_to_variant,
     normalize_training_song_model,
+    training_inference_defaults,
+    vocal_dataset_health,
+)
+from mflux_manager import (
+    MFLUX_ALLOWED_IMAGE_EXTENSIONS,
+    MFLUX_RESULTS_DIR,
+    MFLUX_UPLOADS_DIR,
+    mflux_create_job,
+    mflux_get_job,
+    mflux_list_jobs,
+    mflux_list_lora_adapters,
+    mflux_models,
+    mflux_public_upload_url,
+    mflux_start_lora_training,
+    mflux_status,
+)
+from mlx_video_manager import (
+    MLX_VIDEO_ALLOWED_UPLOAD_EXTENSIONS,
+    MLX_VIDEO_RESULTS_DIR,
+    MLX_VIDEO_UPLOADS_DIR,
+    mlx_video_attach,
+    mlx_video_create_job,
+    mlx_video_get_job,
+    mlx_video_list_attachments,
+    mlx_video_list_jobs,
+    mlx_video_list_loras,
+    mlx_video_models,
+    mlx_video_public_upload_url,
+    mlx_video_register_model_dir,
+    mlx_video_registered_model_dirs,
+    mlx_video_status,
 )
 from local_composer import LocalComposer
 from album_quality_gate import (
@@ -292,10 +323,10 @@ from studio_core import (
     DOCS_BEST_LM_DEFAULTS,
     DOCS_BEST_SOURCE_TASK_LM_SKIPS,
     DOCS_BEST_TURBO_HIGH_CAP_STEPS,
-    DOCS_BEST_TURBO_SHIFT,
     DEFAULT_BPM,
     DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
+    QUALITY_PROFILE_OFFICIAL_RAW,
     QUALITY_PROFILE_DOCS_DAILY,
     KNOWN_ACE_STEP_MODELS,
     MAX_BATCH_SIZE,
@@ -650,7 +681,7 @@ def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
         self.mlx_dit_compiled = False
         self.mlx_vae = None
         self.use_mlx_vae = False
-        return "Disabled by AceJAM (PyTorch/MPS)", "Disabled by AceJAM (PyTorch/MPS)"
+        return "Disabled by MLX Media (PyTorch/MPS)", "Disabled by MLX Media (PyTorch/MPS)"
 
     handler_cls._initialize_mlx_backends = _disabled_mlx_backends
 
@@ -812,6 +843,59 @@ def _quality_default_steps(song_model: str, quality_profile: str | None = None) 
     return int(quality_profile_model_settings(song_model, quality_profile or DEFAULT_QUALITY_PROFILE)["inference_steps"])
 
 
+def _docs_correct_render_steps(song_model: str, quality_profile: str | None, raw_steps: Any) -> int:
+    profile = normalize_quality_profile(quality_profile)
+    model_defaults = quality_profile_model_settings(song_model, profile)
+    default_steps = int(model_defaults["inference_steps"])
+    if raw_steps in [None, "", "auto"]:
+        steps = default_steps
+    else:
+        try:
+            steps = int(raw_steps)
+        except (TypeError, ValueError):
+            steps = default_steps
+    steps = clamp_int(steps, default_steps, 1, 200)
+    if "turbo" in str(song_model or "").lower():
+        return min(steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
+    if profile != QUALITY_PROFILE_OFFICIAL_RAW and steps < default_steps:
+        return default_steps
+    return steps
+
+
+def _docs_correct_render_shift(song_model: str, quality_profile: str | None, raw_shift: Any) -> float:
+    profile = normalize_quality_profile(quality_profile)
+    model_defaults = quality_profile_model_settings(song_model, profile)
+    default_shift = float(model_defaults["shift"])
+    if "turbo" not in str(song_model or "").lower() and profile != QUALITY_PROFILE_OFFICIAL_RAW:
+        return default_shift
+    return clamp_float(raw_shift, default_shift, 1.0, 5.0)
+
+
+def _enforce_model_correct_render_settings(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Keep stale UI drafts from sending Turbo inference schedules to SFT/Base models."""
+    song_model = str(params.get("song_model") or "").strip()
+    quality_profile = normalize_quality_profile(params.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    if not song_model:
+        return params
+    before_steps = params.get("inference_steps")
+    before_shift = params.get("shift")
+    corrected_steps = _docs_correct_render_steps(song_model, quality_profile, before_steps)
+    corrected_shift = _docs_correct_render_shift(song_model, quality_profile, before_shift)
+    params["inference_steps"] = corrected_steps
+    params["shift"] = corrected_shift
+    if before_steps != corrected_steps or before_shift != corrected_shift:
+        warnings = list(params.get("payload_warnings") or [])
+        warning = (
+            "model_corrected_render_settings:"
+            f"{source}:{song_model}:steps={before_steps}->{corrected_steps},"
+            f"shift={before_shift}->{corrected_shift}"
+        )
+        if warning not in warnings:
+            warnings.append(warning)
+        params["payload_warnings"] = warnings
+    return params
+
+
 PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
     "simple": {"label": "Simple", "file": "promptsimple.md", "description": "Fast prompt-to-song fields."},
     "custom": {"label": "Custom", "file": "promptcustom.md", "description": "Full Custom Studio song payload."},
@@ -823,7 +907,9 @@ PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
     "complete": {"label": "Complete", "file": "promptcomplete.md", "description": "Finish an incomplete arrangement."},
     "album": {"label": "Album", "file": "promptalbum.md", "description": "Production-team album plan."},
     "news": {"label": "News to Song", "file": "promptnieuws.md", "description": "Turn news into a safe, postable song."},
-    "improve": {"label": "Improve Lyrics", "file": "promptverbeter.md", "description": "Improve lyrics and optionally create AceJAM fields."},
+    "image": {"label": "Image Studio", "file": "promptimage.md", "description": "MFLUX image generation/edit prompt and settings."},
+    "video": {"label": "Video Studio", "file": "promptvideo.md", "description": "MLX Video prompt, source intent and render settings."},
+    "improve": {"label": "Improve Lyrics", "file": "promptverbeter.md", "description": "Improve lyrics and optionally create MLX Media fields."},
     "trainer": {"label": "Trainer / LoRA", "file": "prompttrainer.md", "description": "Dataset labels and training metadata."},
 }
 PROMPT_ASSISTANT_DISABLED_MODES = {"trainer"}
@@ -835,6 +921,10 @@ PROMPT_ASSISTANT_ALIASES = {
     "news_to_song": "news",
     "lyrics": "improve",
     "settings": "custom",
+    "image_studio": "image",
+    "art": "image",
+    "video_studio": "video",
+    "music_video": "video",
 }
 
 
@@ -1082,8 +1172,8 @@ def _prompt_assistant_structured_system_prompt(system_prompt: str, mode: str) ->
         f"{system_prompt}\n\n"
         "STRICT STRUCTURED OUTPUT OVERRIDE:\n"
         "Return one valid JSON object only. Do not return ACEJAM_PASTE_BLOCKS markers, markdown, or prose.\n"
-        "The top-level object must match this schema and place the AceJAM payload inside `payload`.\n"
-        "Use `warnings` only for short user-facing caveats. AceJAM will build paste blocks server-side.\n"
+        "The top-level object must match this schema and place the MLX Media payload inside `payload`.\n"
+        "Use `warnings` only for short user-facing caveats. MLX Media will build paste blocks server-side.\n"
         f"JSON schema:\n{schema}\n"
     )
 
@@ -1117,7 +1207,7 @@ def _prompt_assistant_stage_specs(mode: str) -> list[tuple[str, str]]:
             ),
             (
                 "album_render",
-                "Finalize the album payload for AceJAM. Preserve previous tracks and palette; add only model strategy, "
+                "Finalize the album payload for MLX Media. Preserve previous tracks and palette; add only model strategy, "
                 "quality, language, and generation defaults needed by the UI.",
             ),
         ]
@@ -1151,7 +1241,7 @@ def _prompt_assistant_stage_specs(mode: str) -> list[tuple[str, str]]:
         ),
         (
             "song_render",
-            "Finalize the AceJAM payload. Preserve previous lyrics and song_intent; add task_type, song_model, "
+            "Finalize the MLX Media payload. Preserve previous lyrics and song_intent; add task_type, song_model, "
             "quality_profile/model_strategy, inference-safe defaults, seed if useful, and any source or personalization "
             "fields requested by the user.",
         ),
@@ -1577,6 +1667,56 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     quality_profile = _default_quality_profile_for_payload(normalized, normalized.get("task_type"))
     normalized["quality_profile"] = quality_profile
 
+    if mode == "image":
+        action = str(normalized.get("action") or "generate").strip().lower()
+        if action not in {"generate", "edit", "inpaint", "upscale", "depth"}:
+            warnings.append(f"Unsupported image action '{action}' was changed to generate.")
+            action = "generate"
+        normalized["action"] = action
+        normalized.setdefault("prompt", normalized.get("description") or normalized.get("image_prompt") or "")
+        normalized.setdefault("model_id", "qwen-image")
+        normalized["width"] = clamp_int(normalized.get("width"), 1024, 256, 2048)
+        normalized["height"] = clamp_int(normalized.get("height"), 1024, 256, 2048)
+        normalized["steps"] = clamp_int(normalized.get("steps"), 30, 1, 80)
+        normalized.setdefault("seed", -1)
+        normalized["strength"] = clamp_float(normalized.get("strength"), 0.55, 0.0, 1.0)
+        normalized["upscale_factor"] = clamp_int(normalized.get("upscale_factor"), 2, 2, 4)
+        if not isinstance(normalized.get("lora_adapters"), list):
+            normalized["lora_adapters"] = []
+        normalized.setdefault("negative_prompt", "text, watermark, logo, distorted hands, low quality")
+        normalized.setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
+        normalized.setdefault("planner_lm_provider", planner_provider)
+        normalized.setdefault("planner_model", planner_model)
+        return normalized, warnings
+
+    if mode == "video":
+        action = str(normalized.get("action") or "t2v").strip().lower()
+        if action not in {"t2v", "i2v", "a2v", "song_video", "final"}:
+            warnings.append(f"Unsupported video action '{action}' was changed to t2v.")
+            action = "t2v"
+        normalized["action"] = action
+        normalized.setdefault("prompt", normalized.get("description") or normalized.get("video_prompt") or "")
+        normalized.setdefault("model_id", "ltx2-fast-draft")
+        normalized["width"] = clamp_int(normalized.get("width"), 512, 256, 1280)
+        normalized["height"] = clamp_int(normalized.get("height"), 320, 192, 768)
+        normalized["num_frames"] = clamp_int(normalized.get("num_frames") or normalized.get("frames"), 33, 9, 161)
+        normalized["fps"] = clamp_int(normalized.get("fps"), 24, 8, 60)
+        normalized["steps"] = clamp_int(normalized.get("steps"), 8, 1, 80)
+        normalized.setdefault("seed", -1)
+        normalized.setdefault("guide_scale", "")
+        normalized.setdefault("shift", "")
+        normalized["enhance_prompt"] = parse_bool(normalized.get("enhance_prompt"), False)
+        normalized["spatial_upscaler"] = str(normalized.get("spatial_upscaler") or "").strip()
+        normalized["tiling"] = parse_bool(normalized.get("tiling"), False)
+        normalized["audio_policy"] = "replace_with_source" if action == "song_video" else str(normalized.get("audio_policy") or "none")
+        normalized["mux_audio"] = action == "song_video"
+        if not isinstance(normalized.get("lora_adapters"), list):
+            normalized["lora_adapters"] = []
+        normalized.setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
+        normalized.setdefault("planner_lm_provider", planner_provider)
+        normalized.setdefault("planner_model", planner_model)
+        return normalized, warnings
+
     if mode == "album":
         if planner_provider == "ace_step_lm":
             warnings.append("Album agents ignore ACE-Step 5Hz LM; switch Writer/Planner to Ollama or LM Studio for album planning.")
@@ -1764,7 +1904,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     if mode in {"cover", "repaint", "extract", "lego", "complete"} and not (
         normalized.get("src_audio_id") or normalized.get("src_result_id") or normalized.get("audio_code_string")
     ):
-        warnings.append(f"{mode} needs source audio selected/uploaded in AceJAM before generation.")
+        warnings.append(f"{mode} needs source audio selected/uploaded in MLX Media before generation.")
     return normalized, warnings
 
 
@@ -2259,7 +2399,7 @@ def _unload_llm_models_for_generation() -> None:
         pass
 
 
-EPOCH_AUDITION_INFERENCE_STEPS = 8
+EPOCH_AUDITION_INFERENCE_STEPS = 50
 
 
 def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
@@ -2280,12 +2420,10 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     seed_value = request.get("seed")
     if seed_value in (None, ""):
         seed_value = "42"
-    try:
-        inference_steps = int(request.get("inference_steps") or EPOCH_AUDITION_INFERENCE_STEPS)
-    except (TypeError, ValueError):
-        inference_steps = EPOCH_AUDITION_INFERENCE_STEPS
-    inference_steps = max(1, min(200, inference_steps))
     song_model = _lora_epoch_audition_song_model(request)
+    defaults = training_inference_defaults(song_model)
+    inference_steps = int(defaults["num_inference_steps"])
+    shift = float(defaults["training_shift"])
     raw_caption = str(request.get("caption") or trigger).strip()
     clarity_caption = EPOCH_AUDITION_CLARITY_CAPTION
     if "clear intelligible vocal" in raw_caption.lower():
@@ -2295,7 +2433,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     raw_payload = {
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",
-        "artist_name": "AceJAM LoRA",
+        "artist_name": "MLX Media LoRA",
         "title": f"{trigger} epoch {epoch}",
         "caption": caption,
         "lyrics": runtime_lyrics,
@@ -2307,6 +2445,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "seed": str(seed_value),
         "use_random_seed": False,
         "inference_steps": inference_steps,
+        "shift": shift,
         "batch_size": 1,
         "use_lora": True,
         "lora_adapter_path": str(request.get("checkpoint_path") or ""),
@@ -2324,7 +2463,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "use_cot_caption": False,
         "use_cot_lyrics": False,
         "use_cot_language": False,
-        "vocal_intelligibility_gate": False,
+        "vocal_intelligibility_gate": True,
         "auto_score": False,
         "auto_lrc": False,
         "audio_format": "wav",
@@ -2339,6 +2478,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "audio_url": str(first_audio.get("audio_url") or ""),
         "audios": audios,
         "lyrics_fit": lyrics_fit,
+        "vocal_intelligibility_gate": result.get("vocal_intelligibility_gate") or first_audio.get("vocal_intelligibility_gate") or {},
     }
 
 
@@ -2595,17 +2735,20 @@ def _training_write_label_sidecars(audio_path: Path, payload: dict[str, Any]) ->
     stem = audio_path.stem
     lyrics_path = audio_path.with_name(f"{stem}.lyrics.txt")
     metadata_path = audio_path.with_name(f"{stem}.json")
-    lyrics_text = str(payload.get("lyrics") or "").strip() or "[Instrumental]"
+    lyrics_text = str(payload.get("lyrics") or "").strip()
+    missing = is_missing_vocal_lyrics({**payload, "lyrics": lyrics_text})
     lyrics_path.write_text(lyrics_text + "\n", encoding="utf-8")
     metadata = {
         "caption": str(payload.get("caption") or "").strip(),
         "lyrics": lyrics_text,
+        "lyrics_status": "missing" if missing else "present",
+        "requires_review": missing,
         "bpm": payload.get("bpm"),
         "keyscale": str(payload.get("key_scale") or payload.get("keyscale") or "").strip(),
         "timesignature": str(payload.get("time_signature") or payload.get("timesignature") or "").strip(),
         "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
-        "is_instrumental": lyrics_text.strip().lower() == "[instrumental]",
-        "label_source": "official_ace_step_understand_music",
+        "is_instrumental": False if missing else lyrics_text.strip().lower() == "[instrumental]",
+        "label_source": "online_lyrics_missing" if missing else "official_ace_step_understand_music",
         "ace_lm_model": str(payload.get("ace_lm_model") or ""),
     }
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -3056,7 +3199,7 @@ def _artist_name_from_payload(payload: dict[str, Any], *, title: str = "", index
 
 
 def _artist_title_display(artist_name: str, title: str) -> str:
-    artist = normalize_artist_name(artist_name, "AceJAM")
+    artist = normalize_artist_name(artist_name, "MLX Media")
     clean_title = str(title or "Untitled").strip() or "Untitled"
     return f"{artist} - {clean_title}"
 
@@ -3079,7 +3222,7 @@ def _numbered_audio_filename(
     except (TypeError, ValueError):
         variant_no = 1
     prefix = f"{track_no:02d}-" if track_no > 0 else ""
-    artist_slug = safe_filename(normalize_artist_name(artist_name, "AceJAM"), "AceJAM")[:48]
+    artist_slug = safe_filename(normalize_artist_name(artist_name, "MLX Media"), "MLX Media")[:48]
     title_slug = safe_filename(str(title or "track"), "track")
     model_slug = _model_slug(model_name)
     ext = normalize_audio_format(audio_format or "wav")
@@ -3565,7 +3708,7 @@ def _ace_lm_private_upload(body: dict[str, Any]) -> dict[str, Any]:
         repo_id=repo_id,
         repo_type="model",
         folder_path=str(model_path),
-        commit_message="Upload private AceJAM ACE-Step LM experiment",
+        commit_message="Upload private MLX Media ACE-Step LM experiment",
     )
     return {"success": True, "repo_id": repo_id, "private": True, "model_path": str(model_path)}
 
@@ -3589,7 +3732,7 @@ def _ace_lm_mark_smoke_passed(body: dict[str, Any]) -> dict[str, Any]:
         "model_path": str(model_path),
         "marked_at": datetime.now(timezone.utc).isoformat(),
         "checks": body.get("checks") or ["create_sample", "format_sample", "understand_music"],
-        "source": "AceJAM manual smoke gate",
+        "source": "MLX Media manual smoke gate",
     }
     (model_path / "acejam_smoke_passed.json").write_text(json.dumps(_jsonable(marker), indent=2), encoding="utf-8")
     return {"success": True, "marker": marker, "status": _ace_lm_status_payload()}
@@ -3793,7 +3936,7 @@ def _start_model_download_or_raise(model_name: str, context: str = "generation")
     raise ModelDownloadStarted(
         model_name,
         job,
-        f"{model_name} is not installed yet. AceJAM started the download for {context}. "
+        f"{model_name} is not installed yet. MLX Media started the download for {context}. "
         "Wait until the model is installed, then press Generate again.",
     )
 
@@ -3844,7 +3987,7 @@ _schedule_boot_model_downloads()
 
 def _download_started_payload(model_name: str, job: dict[str, Any], logs: list[str] | None = None, **extra: Any) -> dict[str, Any]:
     message = (
-        f"{model_name} is not installed yet. AceJAM started downloading it. "
+        f"{model_name} is not installed yet. MLX Media started downloading it. "
         "Generate will be available when the download finishes."
     )
     payload = {
@@ -3871,7 +4014,7 @@ def _album_missing_download_payload(models: list[str], logs: list[str], **extra:
         {
             "download_models": unique_models,
             "download_jobs": _jsonable(jobs),
-            "message": f"AceJAM started downloading {len(unique_models)} missing album model(s). Album generation will resume after install.",
+            "message": f"MLX Media started downloading {len(unique_models)} missing album model(s). Album generation will resume after install.",
         }
     )
     payload["logs"] = list(payload.get("logs") or []) + [
@@ -3917,6 +4060,12 @@ def _is_image_generation_model_name(name: str) -> bool:
 
 def _is_vision_model_name(name: str) -> bool:
     return bool(re.search(r"(vision|vl\b|llava|bakllava|moondream|minicpm-v|gemma3)", name or "", re.IGNORECASE))
+
+
+def _ollama_kind_from_model_name(name: str) -> str:
+    if _is_embedding_model_name(name):
+        return "embedding"
+    return "chat"
 
 
 def _ollama_show_details_for_catalog(client: Any, name: str) -> dict[str, Any]:
@@ -4118,24 +4267,19 @@ def _local_llm_default_settings() -> dict[str, Any]:
         "embedding_models",
         ALBUM_EMBEDDING_FALLBACK_MODELS,
     )
-    art_model = _first_available_model(
-        ollama_catalog,
-        "image_models",
-        ["x/flux2-klein:4b", "x/flux2-klein", "x/z-image-turbo:latest", "x/z-image-turbo"],
-    )
     planner = planner_llm_settings_from_payload({}, default_max_tokens=8192, default_timeout=600.0)
     return {
         "provider": "ollama",
         "chat_model": chat_model,
         "embedding_provider": "ollama",
         "embedding_model": embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL,
-        "art_provider": "ollama",
-        "art_model": art_model,
+        "art_provider": "",
+        "art_model": "",
         "art_width": 1024,
         "art_height": 1024,
         "art_steps": 0,
         "art_seed": "",
-        "art_negative_prompt": "low quality, blurry, distorted text, watermark, extra fingers",
+        "art_negative_prompt": "",
         "auto_single_art": False,
         "auto_album_art": False,
         "mlx_policy": "full_mlx" if _IS_APPLE_SILICON else "auto",
@@ -4161,15 +4305,15 @@ def _normalize_local_llm_settings(payload: dict[str, Any] | None) -> dict[str, A
         "chat_model": str(merged.get("chat_model") or merged.get("planner_model") or merged.get("ollama_model") or defaults["chat_model"] or "").strip(),
         "embedding_provider": embedding_provider,
         "embedding_model": str(merged.get("embedding_model") or defaults["embedding_model"] or "").strip(),
-        "art_provider": "ollama",
-        "art_model": str(merged.get("art_model") or defaults["art_model"] or "").strip(),
+        "art_provider": "",
+        "art_model": "",
         "art_width": clamp_int(merged.get("art_width"), defaults["art_width"], 256, 2048),
         "art_height": clamp_int(merged.get("art_height"), defaults["art_height"], 256, 2048),
         "art_steps": clamp_int(merged.get("art_steps"), defaults["art_steps"], 0, 100),
         "art_seed": str(merged.get("art_seed") or "").strip(),
-        "art_negative_prompt": str(merged.get("art_negative_prompt") or defaults["art_negative_prompt"] or "").strip(),
-        "auto_single_art": parse_bool(merged.get("auto_single_art"), False),
-        "auto_album_art": parse_bool(merged.get("auto_album_art"), False),
+        "art_negative_prompt": "",
+        "auto_single_art": False,
+        "auto_album_art": False,
         "mlx_policy": "full_mlx" if _IS_APPLE_SILICON else str(merged.get("mlx_policy") or "auto"),
     }
     return _jsonable(normalized)
@@ -4334,11 +4478,13 @@ def _ensure_ollama_model_or_start_pull(model_name: str, context: str = "Ollama",
     raise OllamaPullStarted(
         model,
         job,
-        f"{model} is not installed in Ollama. AceJAM started pulling it for {context}.",
+        f"{model} is not installed in Ollama. MLX Media started pulling it for {context}.",
     )
 
 
 def _resolve_ollama_model_selection(model_name: str, kind: str, context: str) -> str:
+    if kind == "image_generation":
+        raise RuntimeError("Ollama image generation is disabled in MLX Media. Use MFLUX instead.")
     model = str(model_name or "").strip()
     if model:
         _ensure_ollama_model_or_start_pull(model, context=context, kind=kind)
@@ -4346,12 +4492,12 @@ def _resolve_ollama_model_selection(model_name: str, kind: str, context: str) ->
     catalog = _ollama_model_catalog()
     if not catalog.get("ready"):
         raise RuntimeError(catalog.get("error") or "Ollama is not running.")
-    key = "image_models" if kind == "image_generation" else ("embedding_models" if kind == "embedding" else "chat_models")
+    key = "embedding_models" if kind == "embedding" else "chat_models"
     models = [str(item) for item in (catalog.get(key) or []) if str(item).strip()]
     preferred_models = (
-        ["x/flux2-klein:4b", "x/flux2-klein", "x/z-image-turbo:latest", "x/z-image-turbo"]
-        if kind == "image_generation"
-        else (ALBUM_EMBEDDING_FALLBACK_MODELS if kind == "embedding" else [DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL])
+        ALBUM_EMBEDDING_FALLBACK_MODELS
+        if kind == "embedding"
+        else [DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL]
     )
     installed = set(models)
     for preferred in preferred_models:
@@ -4377,12 +4523,12 @@ def _resolve_local_llm_model_selection(provider: str, model_name: str, kind: str
             raise RuntimeError(f"{model} is not downloaded/available in LM Studio. Download or load it in Settings > Local LLM Models.")
         return model
     if not models:
-        raise RuntimeError(f"No local LM Studio {kind} model available. Download/load one in LM Studio, then refresh AceJAM.")
+        raise RuntimeError(f"No local LM Studio {kind} model available. Download/load one in LM Studio, then refresh MLX Media.")
     return models[0]
 
 
 def _ollama_pull_started_payload(model_name: str, job: dict[str, Any], context: str = "Ollama", **extra: Any) -> dict[str, Any]:
-    message = f"{model_name} is not installed in Ollama. AceJAM started pulling it for {context}."
+    message = f"{model_name} is not installed in Ollama. MLX Media started pulling it for {context}."
     payload = {
         "success": False,
         "ollama_pull_started": True,
@@ -4776,7 +4922,7 @@ def _normalize_album_agent_engine_value(value: Any) -> str:
 
 def _album_agent_engine_label_value(value: Any) -> str:
     engine = _normalize_album_agent_engine_value(value)
-    return "CrewAI Micro Tasks" if engine == "crewai_micro" else "AceJAM Direct"
+    return "CrewAI Micro Tasks" if engine == "crewai_micro" else "MLX Media Direct"
 
 
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
@@ -5041,7 +5187,7 @@ def _art_prompt_from_body(body: dict[str, Any], settings: dict[str, Any]) -> str
     prompt = str(body.get("prompt") or "").strip()
     if prompt:
         return prompt
-    title = str(body.get("title") or body.get("album_title") or body.get("scope") or "AceJAM release").strip()
+    title = str(body.get("title") or body.get("album_title") or body.get("scope") or "MLX Media release").strip()
     caption = str(body.get("caption") or body.get("tags") or body.get("album_concept") or "").strip()
     scope = str(body.get("scope") or "single").strip().lower()
     release_kind = "album cover" if scope == "album" else "single cover"
@@ -5108,86 +5254,10 @@ def _attach_art_to_album_family(family_id: str, art: dict[str, Any]) -> None:
 
 
 def _generate_art_asset(body: dict[str, Any]) -> dict[str, Any]:
-    settings = _load_local_llm_settings()
-    scope = str(body.get("scope") or "single").strip().lower()
-    if scope not in {"single", "album", "test"}:
-        scope = "single"
-    model = str(body.get("model") or settings.get("art_model") or "").strip()
-    if not model:
-        raise RuntimeError("No Ollama image model selected. Install or choose one in Settings > Local AI Models & Settings.")
-    _ensure_ollama_model_or_start_pull(model, context=f"{scope} art generation", kind="image_generation")
-    prompt = _art_prompt_from_body(body, settings)
-    negative = str(body.get("negative_prompt") or settings.get("art_negative_prompt") or "").strip()
-    width = clamp_int(body.get("width"), int(settings.get("art_width") or 1024), 256, 2048)
-    height = clamp_int(body.get("height"), int(settings.get("art_height") or 1024), 256, 2048)
-    steps = clamp_int(body.get("steps"), int(settings.get("art_steps") or 0), 0, 100)
-    seed_text = str(body.get("seed") if body.get("seed") not in [None, ""] else settings.get("art_seed") or "").strip()
-    seed_value: int | None = None
-    if seed_text and seed_text.lower() not in {"random", "-1"}:
-        seed_value = clamp_int(seed_text, 0, 0, 2**31 - 1)
-    raw = ollama_generate_image(
-        model,
-        prompt,
-        width=width,
-        height=height,
-        steps=steps or None,
-        seed=seed_value,
-        negative_prompt=negative,
-    )
-    image_bytes, ext = _decode_art_image_bytes(raw)
-    art_id = uuid.uuid4().hex[:12]
-    filename = f"cover.{ext}"
-    art_dir = _resolve_child(ART_DIR, art_id)
-    art_dir.mkdir(parents=True, exist_ok=True)
-    (art_dir / filename).write_bytes(image_bytes)
-    metadata = _write_art_metadata(
-        art_id,
-        {
-            "scope": scope,
-            "model": model,
-            "prompt": prompt,
-            "negative_prompt": negative,
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "seed": seed_value if seed_value is not None else "",
-            "filename": filename,
-            "url": _art_public_url(art_id, filename),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-    if body.get("attach_to_result_id") or body.get("result_id"):
-        _attach_art_to_result(str(body.get("attach_to_result_id") or body.get("result_id")), metadata)
-    if body.get("attach_to_album_family_id") or body.get("album_family_id"):
-        _attach_art_to_album_family(str(body.get("attach_to_album_family_id") or body.get("album_family_id")), metadata)
-    return metadata
+    raise RuntimeError("Ollama image generation is disabled in MLX Media. Use MFLUX instead.")
 
 
 def _maybe_auto_generate_single_art(result: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | None:
-    settings = _load_local_llm_settings()
-    if not parse_bool(settings.get("auto_single_art"), False):
-        return None
-    if isinstance(params.get("album_metadata"), dict) and params["album_metadata"].get("album_family_id"):
-        return None
-    result_id = str(result.get("result_id") or result.get("id") or "")
-    if not result_id:
-        return None
-    try:
-        return _generate_art_asset(
-            {
-                "scope": "single",
-                "title": params.get("title") or result.get("title") or "AceJAM single",
-                "caption": params.get("caption") or result.get("tags") or result.get("caption") or "",
-                "prompt": params.get("single_art_prompt") or "",
-                "attach_to_result_id": result_id,
-            }
-        )
-    except OllamaPullStarted as exc:
-        result.setdefault("payload_warnings", []).append(
-            f"Single art model {exc.model_name} was missing; pull started in Settings."
-        )
-    except Exception as exc:
-        result.setdefault("payload_warnings", []).append(f"Auto single art skipped: {exc}")
     return None
 
 
@@ -5197,26 +5267,6 @@ def _maybe_auto_generate_album_art(
     album_options: dict[str, Any],
     logs: list[str],
 ) -> dict[str, Any] | None:
-    settings = _load_local_llm_settings()
-    if not parse_bool(settings.get("auto_album_art"), False):
-        return None
-    try:
-        art = _generate_art_asset(
-            {
-                "scope": "album",
-                "album_title": safe_filename(str(concept or "AceJAM album")[:80], "AceJAM album"),
-                "album_concept": concept,
-                "caption": album_options.get("genre_prompt") or album_options.get("mood_vibe") or concept,
-                "prompt": album_options.get("album_art_prompt") or "",
-                "attach_to_album_family_id": family_id,
-            }
-        )
-        logs.append(f"Album art generated: {art.get('url')}")
-        return art
-    except OllamaPullStarted as exc:
-        logs.append(f"Album art model {exc.model_name} missing; pull started in Settings.")
-    except Exception as exc:
-        logs.append(f"Album art skipped: {exc}")
     return None
 
 
@@ -5267,12 +5317,116 @@ def _add_album_audio_to_zip(zipf: zipfile.ZipFile, track: dict[str, Any], audio:
     zipf.write(path, arcname)
 
 
+def _art_path_from_metadata(art: dict[str, Any] | None) -> Path | None:
+    if not isinstance(art, dict):
+        return None
+    raw_path = str(art.get("path") or "").strip()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        if path.is_file():
+            return path.resolve()
+    url = str(art.get("url") or art.get("image_url") or "").strip()
+    try:
+        if "/media/mflux/" in url:
+            parts = url.split("/media/mflux/", 1)[1].split("/")
+            if len(parts) >= 2 and parts[0] != "uploads":
+                path = _resolve_child(MFLUX_RESULTS_DIR, safe_id(parts[0]), parts[-1])
+                if path.is_file():
+                    return path
+        if "/media/art/" in url:
+            parts = url.split("/media/art/", 1)[1].split("/")
+            if len(parts) >= 2:
+                path = _resolve_child(ART_DIR, safe_id(parts[0]), parts[-1])
+                if path.is_file():
+                    return path
+    except Exception:
+        return None
+    return None
+
+
+def _add_album_art_to_zip(zipf: zipfile.ZipFile, art: dict[str, Any] | None, arc_stem: str) -> None:
+    path = _art_path_from_metadata(art)
+    if not path:
+        return
+    arc_path = Path(arc_stem)
+    folder = "/".join(safe_filename(part, "art") for part in arc_path.parts[:-1])
+    safe_stem = safe_filename(arc_path.name, "art")
+    arcname = f"{safe_stem}{path.suffix.lower() or '.png'}"
+    if folder:
+        arcname = f"{folder}/{arcname}"
+    zipf.write(path, arcname)
+
+
+def _video_path_from_attachment(video: dict[str, Any] | None) -> Path | None:
+    if not isinstance(video, dict):
+        return None
+    raw_path = str(video.get("path") or "").strip()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        if path.is_file():
+            return path.resolve()
+    url = str(video.get("url") or video.get("video_url") or "").strip()
+    try:
+        if "/media/mlx-video/" in url:
+            parts = url.split("/media/mlx-video/", 1)[1].split("/")
+            if len(parts) >= 2 and parts[0] != "uploads":
+                path = _resolve_child(MLX_VIDEO_RESULTS_DIR, safe_id(parts[0]), parts[-1])
+                if path.is_file():
+                    return path
+    except Exception:
+        return None
+    return None
+
+
+def _add_album_video_to_zip(zipf: zipfile.ZipFile, video: dict[str, Any], arc_stem: str) -> None:
+    path = _video_path_from_attachment(video)
+    if not path:
+        return
+    arc_path = Path(arc_stem)
+    folder = "/".join(safe_filename(part, "video") for part in arc_path.parts[:-1])
+    safe_stem = safe_filename(arc_path.name, "video")
+    arcname = f"{safe_stem}{path.suffix.lower() or '.mp4'}"
+    if folder:
+        arcname = f"{folder}/{arcname}"
+    zipf.write(path, arcname)
+
+
+def _album_track_video_attachments(album_id: str, track: dict[str, Any], index: int) -> list[dict[str, Any]]:
+    target_ids = {
+        str(track.get("track_id") or ""),
+        str(track.get("id") or ""),
+        str(track.get("result_id") or ""),
+        f"{album_id}:track:{index}",
+        f"{safe_id(album_id)}:track:{index}",
+    }
+    for audio in track.get("audios", []) if isinstance(track.get("audios"), list) else []:
+        if isinstance(audio, dict):
+            target_ids.add(str(audio.get("song_id") or ""))
+            target_ids.add(str(audio.get("result_id") or ""))
+    target_ids.discard("")
+    videos: list[dict[str, Any]] = []
+    for attachment in mlx_video_list_attachments():
+        if not isinstance(attachment, dict):
+            continue
+        if str(attachment.get("target_id") or "") in target_ids:
+            videos.append(attachment)
+    return videos
+
+
 def _build_album_zip(album_id: str) -> Path:
     manifest = _load_album_manifest(album_id)
     zip_path = _resolve_child(ALBUMS_DIR, safe_id(album_id), f"{safe_filename(album_id, 'album')}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
         zipf.writestr("album.json", json.dumps(_jsonable(manifest), indent=2))
-        for track in manifest.get("tracks", []):
+        _add_album_art_to_zip(zipf, manifest.get("album_art"), "art/album_art")
+        for video_index, video in enumerate(mlx_video_list_attachments(target_type="album", target_id=album_id), start=1):
+            _add_album_video_to_zip(zipf, video, f"video/album_video_{video_index:02d}")
+        for index, track in enumerate(manifest.get("tracks", []), start=1):
+            if not isinstance(track, dict):
+                continue
+            _add_album_art_to_zip(zipf, track.get("art") or track.get("single_art") or track.get("album_art"), f"art/track_{index:02d}_art")
+            for video_index, video in enumerate(_album_track_video_attachments(album_id, track, index), start=1):
+                _add_album_video_to_zip(zipf, video, f"video/track_{index:02d}_video_{video_index:02d}")
             for audio in track.get("audios", []):
                 _add_album_audio_to_zip(zipf, track, audio)
     return zip_path
@@ -5283,6 +5437,7 @@ def _build_album_family_zip(family_id: str) -> Path:
     zip_path = _resolve_child(ALBUMS_DIR, safe_id(family_id), f"{safe_filename(family_id, 'album-family')}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
         zipf.writestr("album_family.json", json.dumps(_jsonable(family_manifest), indent=2))
+        _add_album_art_to_zip(zipf, family_manifest.get("album_art"), "art/album_family_art")
         for model_album in family_manifest.get("model_albums", []):
             album_id = str(model_album.get("album_id") or "")
             if not album_id:
@@ -5293,7 +5448,15 @@ def _build_album_family_zip(family_id: str) -> Path:
                 continue
             folder = safe_filename(str(model_album.get("album_model") or album_id), "album")
             zipf.writestr(f"{folder}/album.json", json.dumps(_jsonable(manifest), indent=2))
-            for track in manifest.get("tracks", []):
+            _add_album_art_to_zip(zipf, manifest.get("album_art") or model_album.get("album_art"), f"{folder}/art/album_art")
+            for video_index, video in enumerate(mlx_video_list_attachments(target_type="album", target_id=album_id), start=1):
+                _add_album_video_to_zip(zipf, video, f"{folder}/video/album_video_{video_index:02d}")
+            for index, track in enumerate(manifest.get("tracks", []), start=1):
+                if not isinstance(track, dict):
+                    continue
+                _add_album_art_to_zip(zipf, track.get("art") or track.get("single_art") or track.get("album_art"), f"{folder}/art/track_{index:02d}_art")
+                for video_index, video in enumerate(_album_track_video_attachments(album_id, track, index), start=1):
+                    _add_album_video_to_zip(zipf, video, f"{folder}/video/track_{index:02d}_video_{video_index:02d}")
                 for audio in track.get("audios", []):
                     _add_album_audio_to_zip(zipf, track, audio, prefix=f"{folder}/")
     return zip_path
@@ -5506,18 +5669,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     planner_settings = planner_llm_settings_from_payload(payload)
     duration = _duration_from_payload(payload)
     model_defaults = quality_profile_model_settings(song_model, quality_profile)
-    is_turbo = "turbo" in song_model
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
-    if raw_steps in [None, "", "auto"]:
-        default_steps = _quality_default_steps(song_model, quality_profile)
-    else:
-        try:
-            default_steps = int(raw_steps)
-        except (TypeError, ValueError):
-            default_steps = _quality_default_steps(song_model, quality_profile)
-    inference_steps = clamp_int(default_steps, default_steps, 1, 200)
-    if is_turbo and inference_steps > DOCS_BEST_TURBO_HIGH_CAP_STEPS:
-        inference_steps = min(inference_steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
+    inference_steps = _docs_correct_render_steps(song_model, quality_profile, raw_steps)
 
     bpm = _bpm_from_payload(payload)
     time_signature = _time_signature_from_payload(payload)
@@ -5529,7 +5682,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     use_official = profile_requires_official or bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     if use_official and requested_format == "ogg":
-        raise ValueError("OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
+        raise ValueError("OGG is only available in the fast MLX Media runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
     vocal_language = _vocal_language_from_payload(payload)
     track_names = normalize_track_names(payload.get("track_names") or payload.get("track_classes") or payload.get("track_name"))
     instruction = str(payload.get("instruction") or "").strip() or build_task_instruction(task_type, track_names)
@@ -5600,8 +5753,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Use adapter is enabled but no LoRA adapter was selected")
     _validate_lora_request_for_song_model(lora_request, song_model)
     payload_warnings = list(payload.get("payload_warnings") or [])
-    raw_shift = payload.get("shift")
-    render_shift = clamp_float(raw_shift, model_defaults["shift"], 1.0, 5.0)
+    render_shift = _docs_correct_render_shift(song_model, quality_profile, payload.get("shift"))
     audio_code_string = str(get_param(payload, "audio_code_string", "") or "")
     src_audio = None if task_type == "text2music" else _resolve_audio_reference(payload, "src_audio_id", "src_result_id")
     if task_type == "text2music" and audio_code_string.strip() and not parse_bool(payload.get("allow_text2music_audio_codes"), False):
@@ -5786,6 +5938,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         parsed["tag_list"] = split_terms(parsed["caption"])
         if "vocal_clarity_recovery_caption_traits" not in parsed["payload_warnings"]:
             parsed["payload_warnings"].append("vocal_clarity_recovery_caption_traits")
+    _enforce_model_correct_render_settings(parsed, source="parse")
     settings_compliance = ace_step_settings_compliance(
         parsed,
         task_type=task_type,
@@ -6016,15 +6169,8 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     time_signature = _time_signature_from_payload(payload)
     bpm = _bpm_from_payload(payload)
-    is_turbo = "turbo" in song_model
     raw_steps = payload.get("inference_steps", payload.get("infer_step"))
-    if raw_steps in [None, "", "auto"]:
-        default_steps = _quality_default_steps(song_model, quality_profile)
-    else:
-        default_steps = int(raw_steps)
-    inference_steps = clamp_int(default_steps, default_steps, 1, 200)
-    if is_turbo and inference_steps > DOCS_BEST_TURBO_HIGH_CAP_STEPS:
-        inference_steps = DOCS_BEST_TURBO_HIGH_CAP_STEPS
+    inference_steps = _docs_correct_render_steps(song_model, quality_profile, raw_steps)
     title = str(payload.get("title") or "").strip() or "Untitled"
     artist_name = _artist_name_from_payload(payload, title=title)
     preview_warnings = list(payload.get("payload_warnings") or [])
@@ -6086,7 +6232,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "src_result_id": "" if task_type == "text2music" else str(payload.get("src_result_id") or ""),
         "inference_steps": inference_steps,
         "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
-        "shift": clamp_float(payload.get("shift"), model_defaults["shift"], 1.0, 5.0),
+        "shift": _docs_correct_render_shift(song_model, quality_profile, payload.get("shift")),
         "infer_method": "sde" if str(payload.get("infer_method") or model_defaults["infer_method"]).lower() == "sde" else "ode",
         "sampler_mode": "euler" if str(payload.get("sampler_mode") or model_defaults["sampler_mode"]).lower() == "euler" else "heun",
         "dcw_enabled": parse_bool(payload.get("dcw_enabled"), True),
@@ -6170,7 +6316,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         _set_field_error(
             field_errors,
             "audio_format",
-            "OGG is only available in the fast AceJAM runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.",
+            "OGG is only available in the fast MLX Media runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.",
         )
 
     source_status = _audio_validation_status(
@@ -6306,6 +6452,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
+    params = _enforce_model_correct_render_settings(dict(params), source="official_request")
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
     seed_text = str(params.get("seed") or "-1").strip()
@@ -6349,7 +6496,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         )
     if params["auto_lrc"] or params["auto_score"]:
         raise RuntimeError(
-            "Auto score and Auto LRC need AceJAM's in-process tensor cache. "
+            "Auto score and Auto LRC need MLX Media's in-process tensor cache. "
             "Disable official-only controls or turn off Auto score/LRC for this run."
         )
     official_api_fields = {
@@ -6906,6 +7053,26 @@ def _vocal_gate_words(text: str) -> list[str]:
     return [word.lower().strip("'") for word in re.findall(r"[A-Za-z][A-Za-z']*", str(text or ""))]
 
 
+def _vocal_phrase_loop_issue(words: list[str]) -> str:
+    if len(words) < 16:
+        return ""
+    for size in [5, 4, 3, 2]:
+        counts: dict[tuple[str, ...], int] = {}
+        for index in range(0, len(words) - size + 1):
+            phrase = tuple(words[index : index + size])
+            if len(set(phrase)) <= 1 and phrase[0] not in VOCAL_GATE_FILLER_WORDS:
+                continue
+            counts[phrase] = counts.get(phrase, 0) + 1
+        if not counts:
+            continue
+        phrase, count = max(counts.items(), key=lambda item: item[1])
+        coverage = (count * size) / max(1, len(words))
+        if count >= 6 and coverage >= 0.18:
+            label = "_".join(phrase[:4])
+            return f"asr_phrase_loop_{label}_{coverage:.2f}"
+    return ""
+
+
 def _score_vocal_transcript(text: str, expected_keywords: list[str]) -> dict[str, Any]:
     words = _vocal_gate_words(text)
     word_count = len(words)
@@ -6944,6 +7111,9 @@ def _score_vocal_transcript(text: str, expected_keywords: list[str]) -> dict[str
         issues.append(f"asr_filler_ratio_{filler_ratio:.2f}")
     if word_count and repeat_ratio > ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO:
         issues.append(f"asr_repeat_{top_word}_{repeat_ratio:.2f}")
+    phrase_loop_issue = _vocal_phrase_loop_issue(words)
+    if phrase_loop_issue:
+        issues.append(phrase_loop_issue)
     passed = not issues
     return {
         "status": "pass" if passed else "fail",
@@ -7365,10 +7535,23 @@ def _vocal_retry_params(params: dict[str, Any], *, attempt: int, last_gate: dict
     retry["use_random_seed"] = True
     retry["caption"] = _caption_with_vocal_clarity_traits(retry.get("caption") or "")
     retry["tag_list"] = split_terms(retry["caption"])
+    lora_retry_note = ""
+    if parse_bool(params.get("use_lora"), False):
+        if attempt == 2:
+            retry["use_lora"] = False
+            retry["lora_adapter_path"] = ""
+            retry["lora_adapter_name"] = ""
+            retry["lora_scale"] = 0.0
+            retry["adapter_model_variant"] = ""
+            lora_retry_note = "vocal_intelligibility_retry_no_lora"
+        else:
+            retry["lora_scale"] = min(float(params.get("lora_scale") or DEFAULT_LORA_GENERATION_SCALE), 0.25)
+            lora_retry_note = "vocal_intelligibility_retry_lower_lora_scale"
     retry["repair_actions"] = list(retry.get("repair_actions") or []) + [
         {
             "type": "vocal_intelligibility_retry",
             "attempt": attempt,
+            "lora_retry": lora_retry_note,
             "issues": [
                 item.get("issue")
                 for item in ((last_gate or {}).get("transcripts") or [])
@@ -7379,6 +7562,8 @@ def _vocal_retry_params(params: dict[str, Any], *, attempt: int, last_gate: dict
     payload_warnings = list(retry.get("payload_warnings") or [])
     if "vocal_intelligibility_retry" not in payload_warnings:
         payload_warnings.append("vocal_intelligibility_retry")
+    if lora_retry_note and lora_retry_note not in payload_warnings:
+        payload_warnings.append(lora_retry_note)
     retry["payload_warnings"] = payload_warnings
     return retry
 
@@ -7421,6 +7606,8 @@ def _vocal_rescue_model_for_attempt(params: dict[str, Any], attempt: int, rescue
         1,
         32,
     )
+    if parse_bool(params.get("use_lora"), False):
+        rescue_after += 2
     if attempt <= rescue_after:
         return original_model
     attempts_per_model = clamp_int(
@@ -7451,6 +7638,13 @@ def _with_vocal_rescue_model(params: dict[str, Any], rescue_model: str, *, attem
     rescue["vocal_intelligibility_original_model"] = original_model
     rescue["vocal_intelligibility_rescue_model"] = rescue_model
     rescue["vocal_intelligibility_rescue_attempt"] = attempt
+    disabled_rescue_lora = parse_bool(rescue.get("use_lora"), False)
+    if disabled_rescue_lora:
+        rescue["use_lora"] = False
+        rescue["lora_adapter_path"] = ""
+        rescue["lora_adapter_name"] = ""
+        rescue["lora_scale"] = 0.0
+        rescue["adapter_model_variant"] = ""
     rescue["final_model_policy"] = {
         **(rescue.get("final_model_policy") if isinstance(rescue.get("final_model_policy"), dict) else {}),
         "vocal_intelligibility_rescue": True,
@@ -7466,6 +7660,8 @@ def _with_vocal_rescue_model(params: dict[str, Any], rescue_model: str, *, attem
     warning = f"vocal_intelligibility_model_rescue:{original_model}->{rescue_model}"
     if warning not in payload_warnings:
         payload_warnings.append(warning)
+    if disabled_rescue_lora and "vocal_intelligibility_rescue_lora_disabled" not in payload_warnings:
+        payload_warnings.append("vocal_intelligibility_rescue_lora_disabled")
     rescue["payload_warnings"] = payload_warnings
     return rescue
 
@@ -7475,20 +7671,20 @@ def _redact_official_runner_log_line(line: str) -> str:
     if "formatted_prompt_with_cot=" in line:
         return re.sub(
             r"formatted_prompt_with_cot=.*",
-            "formatted_prompt_with_cot=[redacted by AceJAM: prompt/audio-code payload]",
+            "formatted_prompt_with_cot=[redacted by MLX Media: prompt/audio-code payload]",
             line,
         )
     if "Debug output text:" in line and "<|audio_code_" in line:
         return re.sub(
             r"Debug output text:.*",
-            "Debug output text: [redacted by AceJAM: audio-code payload]",
+            "Debug output text: [redacted by MLX Media: audio-code payload]",
             line,
         )
     if "<|audio_code_" in line:
         return re.sub(r"(?:<\|audio_code_\d+\|>){3,}", "<|audio_code_REDACTED|>", line)
     if len(line) > 1600:
         ending = "\n" if line.endswith("\n") else ""
-        return f"{line[:1600].rstrip()} ... [truncated by AceJAM]{ending}"
+        return f"{line[:1600].rstrip()} ... [truncated by MLX Media]{ending}"
     return line
 
 
@@ -7499,9 +7695,9 @@ def _redact_official_runner_stream_line(line: str, state: dict[str, Any]) -> str
             return _redact_official_runner_log_line(line)
         state["conditioning_block"] = True
         if "text_prompt:" in line:
-            return re.sub(r"text_prompt:.*", "text_prompt: [redacted by AceJAM: conditioning prompt]", line)
+            return re.sub(r"text_prompt:.*", "text_prompt: [redacted by MLX Media: conditioning prompt]", line)
         if "lyrics_text:" in line:
-            return re.sub(r"lyrics_text:.*", "lyrics_text: [redacted by AceJAM: conditioning lyrics]", line)
+            return re.sub(r"lyrics_text:.*", "lyrics_text: [redacted by MLX Media: conditioning lyrics]", line)
         return ""
     if state.get("conditioning_block"):
         if re.match(r"^\d{4}-\d{2}-\d{2}\s", line):
@@ -7726,6 +7922,7 @@ def _copy_official_audio(
 
 
 def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
+    params = _enforce_model_correct_render_settings(dict(params), source="official_generation")
     result_id = uuid.uuid4().hex[:12]
     result_dir = RESULTS_DIR / result_id
     official_dir = result_dir / "official"
@@ -7972,6 +8169,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
+    params = _enforce_model_correct_render_settings(dict(params), source="runner")
     if params["requires_official_runner"]:
         return _run_official_generation(params)
     use_random_seed = bool(params["use_random_seed"])
@@ -8235,7 +8433,7 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
 
 def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_training_idle()
-    params = _parse_generation_payload(raw_payload)
+    params = _enforce_model_correct_render_settings(_parse_generation_payload(raw_payload), source="generation")
     if params["instrumental"] and not params["lyrics"].strip():
         params["lyrics"] = "[Instrumental]"
     max_attempts = int(params.get("vocal_intelligibility_attempts") or ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS)
@@ -8429,7 +8627,7 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
             source_payload=_jsonable(raw_payload),
         )
         payload["message"] = (
-            f"AceJAM started downloading {len(missing)} missing model(s). "
+            f"MLX Media started downloading {len(missing)} missing model(s). "
             "The official model portfolio song render will resume after install."
         )
         return payload
@@ -8511,7 +8709,7 @@ def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, An
     }
 
 
-app = Server(title="AceJAM")
+app = Server(title="MLX Media")
 
 
 @app.middleware("http")
@@ -9954,7 +10152,8 @@ def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
     items = [item for item in (files or []) if isinstance(item, dict)]
     count = len(items)
     labeled = sum(1 for item in items if str(item.get("caption") or "").strip())
-    lyrics_ready = sum(1 for item in items if str(item.get("lyrics") or "").strip())
+    vocal_health = vocal_dataset_health(items)
+    lyrics_ready = int(vocal_health.get("real_lyrics_count") or 0)
     durations = [clamp_float(item.get("duration"), 0.0, 0.0, 600.0) for item in items]
     durations = [value for value in durations if value > 0]
     total_duration = round(sum(durations), 2)
@@ -9971,12 +10170,12 @@ def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
 
     add("sample_count", count >= 8, f"{count} audio sample(s)", 25)
     add("caption_labels", count > 0 and labeled == count, f"{labeled}/{count} captioned", 25)
-    add("lyrics_labels", count > 0 and lyrics_ready == count, f"{lyrics_ready}/{count} lyrics/instrumental labels", 15)
+    add("lyrics_labels", count > 0 and lyrics_ready >= max(1, int(count * 0.95)), f"{lyrics_ready}/{count} real vocal lyrics", 15)
     add("duration_total", total_duration >= 300, f"{total_duration}s total", 20)
     add("duration_shape", not durations or 5 <= avg_duration <= 300, f"{avg_duration}s average", 10)
-    add("language_metadata", bool(languages), ", ".join(languages[:6]) or "unknown", 5)
-    status = "ready" if score >= 85 else "usable" if score >= 65 else "needs_work"
-    return {
+    add("language_metadata", not vocal_health.get("blocking") and bool(languages), ", ".join(languages[:6]) or "unknown", 5)
+    status = "needs_work" if vocal_health.get("blocking") else ("ready" if score >= 85 else "usable" if score >= 65 else "needs_work")
+    health = {
         "version": PRO_QUALITY_AUDIT_VERSION,
         "status": status,
         "score": min(100, score),
@@ -9993,6 +10192,8 @@ def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
             "recommended_seed_count": 2,
         },
     }
+    health.update(vocal_health)
+    return health
 
 
 def _model_runtime_status(name: str) -> dict[str, Any]:
@@ -10270,7 +10471,7 @@ def _official_parity_payload(request: Request | None = None) -> dict[str, Any]:
     schema_parity = _schema_parity(manifest)
     source_status = _official_source_status()
     if schema_parity["generation_params"]["unsupported_by_vendor"]:
-        recommended_actions.append("AceJAM will drop unsupported GenerationParams fields before calling the official runner.")
+        recommended_actions.append("MLX Media will drop unsupported GenerationParams fields before calling the official runner.")
     if source_status.get("behind_main"):
         recommended_actions.append("Vendored ACE-Step source is behind official main; review/update manually before replacing local changes.")
     if source_status.get("dirty"):
@@ -10417,6 +10618,9 @@ def _generation_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "has_lyrics": bool(lyrics.strip() and lyrics.strip() != "[Instrumental]"),
             "has_source_audio": bool(payload.get("src_audio_id") or payload.get("src_result_id") or payload.get("audio_code_string")),
             "has_reference_audio": bool(payload.get("reference_audio_id") or payload.get("reference_result_id")),
+            "auto_song_art": parse_bool(payload.get("auto_song_art"), False),
+            "auto_album_art": parse_bool(payload.get("auto_album_art"), False),
+            "auto_video_clip": parse_bool(payload.get("auto_video_clip"), False),
         }
     )
 
@@ -10487,6 +10691,7 @@ def _generation_job_view(task: dict[str, Any]) -> dict[str, Any]:
             "result": result,
             "result_summary": _generation_result_summary(result),
             "warnings": warnings,
+            "automation": task.get("automation") or {},
             "logs": list(task.get("logs") or [])[-500:],
             "errors": errors[-100:],
             "error": error,
@@ -10510,6 +10715,173 @@ def _generation_job_log(job_id: str, line: str, **updates: Any) -> None:
     if not job_id:
         return
     _set_api_generation_task(job_id, logs=[line], **updates)
+
+
+def _wait_for_background_job(getter: Callable[[str], dict[str, Any] | None], job_id: str, *, timeout_seconds: float = 7200.0) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    last: dict[str, Any] = {}
+    while time.time() < deadline:
+        job = getter(job_id) or {}
+        if job:
+            last = job
+        state = str(job.get("state") or "").lower()
+        if state in {"succeeded", "complete", "completed", "success", "failed", "error"}:
+            return job
+        time.sleep(2.0)
+    raise TimeoutError(f"Background job timed out: {job_id}")
+
+
+def _automation_art_prompt(payload: dict[str, Any], result: dict[str, Any], *, album: bool = False) -> str:
+    override = str(payload.get("art_prompt") or "").strip()
+    if override:
+        return override
+    title = str(result.get("title") or payload.get("title") or ("album" if album else "song")).strip()
+    artist = str(result.get("artist_name") or payload.get("artist_name") or "").strip()
+    context = str(result.get("caption") or payload.get("caption") or payload.get("tags") or payload.get("simple_description") or "").strip()
+    kind = "album cover" if album else "song cover"
+    return f"Premium square {kind} artwork for '{title}' by {artist}. {context}. Cinematic, high detail, no text, no logo, no watermark."
+
+
+def _automation_video_prompt(payload: dict[str, Any], result: dict[str, Any]) -> str:
+    override = str(payload.get("video_prompt") or "").strip()
+    if override:
+        return override
+    title = str(result.get("title") or payload.get("title") or "song").strip()
+    artist = str(result.get("artist_name") or payload.get("artist_name") or "").strip()
+    context = str(result.get("caption") or payload.get("caption") or payload.get("tags") or payload.get("simple_description") or "").strip()
+    return f"Short real-life music video clip for '{title}' by {artist}. {context}. Natural camera motion, cinematic lighting, no text, no watermark."
+
+
+def _audio_url_from_generation_result(result: dict[str, Any]) -> str:
+    if str(result.get("audio_url") or "").strip():
+        return str(result["audio_url"])
+    audios = result.get("audios")
+    if isinstance(audios, list):
+        for item in audios:
+            if isinstance(item, dict):
+                url = str(item.get("audio_url") or item.get("download_url") or "").strip()
+                if url:
+                    return url
+    return ""
+
+
+def _attach_mflux_job_result(job: dict[str, Any], target_type: str, target_id: str) -> dict[str, Any]:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    result_id = str(result.get("result_id") or (job.get("result_summary") or {}).get("result_id") or "").strip()
+    if not result_id:
+        raise RuntimeError("MFLUX automation job did not produce a result_id.")
+    art = _mflux_art_metadata(result_id, scope=target_type or "mflux")
+    if target_type in {"result", "generation", "generation_result"} and target_id:
+        _attach_art_to_result(target_id, art)
+    elif target_type == "song" and target_id:
+        _merge_song_album_metadata(target_id, {"art": art, "single_art": art})
+    elif target_type in {"album", "album_family"} and target_id:
+        _attach_art_to_album_family(target_id, art)
+    return art
+
+
+def _run_generation_automation(task_id: str, payload: dict[str, Any], result: dict[str, Any]) -> None:
+    result_id = str(result.get("result_id") or "").strip()
+    song_id = str(result.get("song_id") or "").strip()
+    target_type = "generation_result" if result_id else "song"
+    target_id = result_id or song_id
+    automation: dict[str, Any] = {
+        "auto_song_art": parse_bool(payload.get("auto_song_art"), False),
+        "auto_album_art": parse_bool(payload.get("auto_album_art"), False),
+        "auto_video_clip": parse_bool(payload.get("auto_video_clip"), False),
+        "jobs": [],
+        "errors": [],
+    }
+    if not any([automation["auto_song_art"], automation["auto_album_art"], automation["auto_video_clip"]]):
+        return
+    _generation_job_log(task_id, "Automation started: art/video package jobs queued.", automation=automation)
+    try:
+        if automation["auto_song_art"] and target_id:
+            art_job = mflux_create_job(
+                {
+                    "action": "generate",
+                    "prompt": _automation_art_prompt(payload, result, album=False),
+                    "model_id": str(payload.get("art_model_id") or "qwen-image"),
+                    "width": 1024,
+                    "height": 1024,
+                    "steps": 30,
+                    "seed": -1,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                }
+            )
+            automation["jobs"].append({"kind": "mflux_song_art", "job_id": art_job.get("id")})
+            _generation_job_log(task_id, f"Song art job queued: {art_job.get('id')}", automation=automation)
+            done = _wait_for_background_job(mflux_get_job, str(art_job.get("id")))
+            if str(done.get("state") or "").lower() == "succeeded":
+                automation["song_art"] = _attach_mflux_job_result(done, target_type, target_id)
+                _generation_job_log(task_id, "Song art attached.", automation=automation)
+            else:
+                raise RuntimeError(str(done.get("error") or "Song art job failed"))
+        if automation["auto_album_art"]:
+            album_target = str(payload.get("album_family_id") or payload.get("album_id") or result.get("album_family_id") or result.get("album_id") or "").strip()
+            if album_target:
+                album_job = mflux_create_job(
+                    {
+                        "action": "generate",
+                        "prompt": _automation_art_prompt(payload, result, album=True),
+                        "model_id": str(payload.get("art_model_id") or "qwen-image"),
+                        "width": 1024,
+                        "height": 1024,
+                        "steps": 30,
+                        "seed": -1,
+                        "target_type": "album_family",
+                        "target_id": album_target,
+                    }
+                )
+                automation["jobs"].append({"kind": "mflux_album_art", "job_id": album_job.get("id")})
+                _generation_job_log(task_id, f"Album art job queued: {album_job.get('id')}", automation=automation)
+                done = _wait_for_background_job(mflux_get_job, str(album_job.get("id")))
+                if str(done.get("state") or "").lower() == "succeeded":
+                    automation["album_art"] = _attach_mflux_job_result(done, "album_family", album_target)
+                    _generation_job_log(task_id, "Album art attached.", automation=automation)
+                else:
+                    raise RuntimeError(str(done.get("error") or "Album art job failed"))
+            else:
+                automation["errors"].append("Album art skipped: no album target exists for this render.")
+        if automation["auto_video_clip"] and target_id:
+            audio_url = _audio_url_from_generation_result(result)
+            if not audio_url:
+                raise RuntimeError("Video automation requires a source audio URL from the completed song render.")
+            video_job = mlx_video_create_job(
+                {
+                    "action": "song_video",
+                    "prompt": _automation_video_prompt(payload, result),
+                    "model_id": str(payload.get("video_model_id") or "ltx2-fast-draft"),
+                    "width": 512,
+                    "height": 320,
+                    "num_frames": 33,
+                    "fps": 24,
+                    "steps": 8,
+                    "seed": -1,
+                    "audio_url": audio_url,
+                    "audio_policy": "replace_with_source",
+                    "mux_audio": True,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                }
+            )
+            automation["jobs"].append({"kind": "mlx_video", "job_id": video_job.get("id")})
+            _generation_job_log(task_id, f"Music-video job queued: {video_job.get('id')}", automation=automation)
+            done = _wait_for_background_job(mlx_video_get_job, str(video_job.get("id")), timeout_seconds=14400.0)
+            if str(done.get("state") or "").lower() == "succeeded":
+                video_result_id = str((done.get("result_summary") or {}).get("result_id") or (done.get("result") or {}).get("result_id") or "")
+                automation["video"] = mlx_video_attach(
+                    {"source_result_id": video_result_id, "target_type": target_type, "target_id": target_id}
+                )
+                _generation_job_log(task_id, "Muxed music video attached.", automation=automation)
+            else:
+                raise RuntimeError(str(done.get("error") or "Video automation job failed"))
+    except Exception as exc:
+        automation["errors"].append(str(exc))
+        _generation_job_log(task_id, f"Automation warning: {exc}", automation=automation)
+    finally:
+        _set_api_generation_task(task_id, automation=automation)
 
 
 def _generation_task_worker(task_id: str, payload: dict[str, Any]) -> None:
@@ -10547,6 +10919,7 @@ def _generation_task_worker(task_id: str, payload: dict[str, Any]) -> None:
                     *([f"Warning: {item}" for item in warnings] if warnings else []),
                 ],
             )
+            threading.Thread(target=_run_generation_automation, args=(task_id, payload, result), daemon=True).start()
         else:
             error = str(result.get("error") or "Generation failed")
             _set_api_generation_task(
@@ -10621,7 +10994,7 @@ def _official_query_item(task_id: str) -> dict[str, Any]:
                         "keyscale": params.get("key_scale") or "",
                         "timesignature": params.get("time_signature") or "",
                     },
-                    "generation_info": f"AceJAM {result.get('runner', 'fast')} generation",
+                    "generation_info": f"MLX Media {result.get('runner', 'fast')} generation",
                     "seed_value": audio.get("seed") or "",
                     "lm_model": params.get("ace_lm_model") or "",
                     "dit_model": result.get("active_song_model") or params.get("song_model") or "",
@@ -10677,7 +11050,7 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "server_url": base_url,
         "entrypoint": "http",
         "file_url_supported": False,
-        "message": "Open AceJAM through the Pinokio Web UI HTTP URL, not a file:// path.",
+        "message": "Open MLX Media through the Pinokio Web UI HTTP URL, not a file:// path.",
         "active_song_model": ACTIVE_ACE_STEP_MODEL,
         "installed_song_model_count": len(installed_models),
         "installed_lm_model_count": len([name for name in installed_lms if name not in {"auto", "none"}]),
@@ -10964,7 +11337,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             f"blocked_unsafe={int(user_album_contract.get('blocked_unsafe_count') or 0)}"
         )
     if crewai_output_log_file:
-        start_logs.append(f"Legacy CrewAI output log file requested; selected planner writes standard AceJAM debug JSONL: {crewai_output_log_file}")
+        start_logs.append(f"Legacy CrewAI output log file requested; selected planner writes standard MLX Media debug JSONL: {crewai_output_log_file}")
     _set_album_job(
         job_id,
         state="running",
@@ -10996,15 +11369,15 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             updates: dict[str, Any] = {}
             lower = compact.lower()
             if "planning album bible with acejam agents" in lower:
-                updates.update(status="AceJAM album bible running", progress=15)
+                updates.update(status="MLX Media album bible running", progress=15)
             elif "acejam agents planned" in lower:
-                updates.update(status="AceJAM track blueprints ready", progress=45)
+                updates.update(status="MLX Media track blueprints ready", progress=45)
             elif "writing track" in lower:
-                updates.update(status="AceJAM track writing running", progress=55)
+                updates.update(status="MLX Media track writing running", progress=55)
             elif "acejam agents produced" in lower:
-                updates.update(status="AceJAM plan ready", progress=95)
+                updates.update(status="MLX Media plan ready", progress=95)
             elif "acejam director produced" in lower:
-                updates.update(status="AceJAM direct payloads ready", progress=90)
+                updates.update(status="MLX Media direct payloads ready", progress=90)
             print(f"[album_plan_job][{job_id}] {compact}", file=sys.__stdout__, flush=True)
             _album_job_log(job_id, compact, **updates)
 
@@ -11450,7 +11823,7 @@ def _combined_local_llm_catalog(enrich: bool = False) -> dict[str, Any]:
         "models": [item["key"] for item in all_details],
         "chat_models": [item["key"] for item in all_details if item.get("kind") == "chat"],
         "embedding_models": [item["key"] for item in all_details if item.get("kind") == "embedding"],
-        "image_models": [item["key"] for item in all_details if item.get("kind") == "image_generation"],
+        "image_models": [],
     }
 
 
@@ -11564,7 +11937,7 @@ async def api_local_llm_download(request: Request):
         body = await request.json()
         provider = normalize_provider(body.get("provider") or "ollama")
         model_name = str(body.get("model") or body.get("model_name") or "").strip()
-        kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat")).strip().lower()
+        kind = str(body.get("kind") or _ollama_kind_from_model_name(model_name)).strip().lower()
         if provider == "ace_step_lm":
             job = _start_model_download(model_name or ACE_LM_PREFERRED_MODEL)
             return JSONResponse({"success": True, "provider": "ace_step_lm", "job": job})
@@ -11592,14 +11965,235 @@ async def api_local_llm_download_status(job_id: str, provider: str = "lmstudio")
 
 @app.post("/api/art/generate")
 async def api_generate_art(request: Request):
+    return JSONResponse(
+        {"success": False, "error": "Ollama image generation is disabled in MLX Media. Use the MFLUX Image Studio instead."},
+        status_code=410,
+    )
+
+
+@app.get("/api/mflux/status")
+async def api_mflux_status():
+    return JSONResponse(mflux_status())
+
+
+@app.get("/api/mflux/models")
+async def api_mflux_models():
+    payload = mflux_models()
+    payload["status"] = mflux_status()
+    return JSONResponse(payload)
+
+
+@app.get("/api/mflux/jobs")
+async def api_mflux_jobs():
+    return JSONResponse({"success": True, "jobs": mflux_list_jobs()})
+
+
+@app.post("/api/mflux/jobs")
+async def api_mflux_jobs_create(request: Request):
     try:
         body = await request.json()
-        if not isinstance(body, dict):
-            body = {}
-        art = _generate_art_asset(body)
-        return JSONResponse({"success": True, "art": _jsonable(art)})
-    except OllamaPullStarted as exc:
-        return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "art generation"))
+        job = mflux_create_job(body if isinstance(body, dict) else {})
+        return JSONResponse({"success": True, "job_id": job.get("id"), "job": job})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/mflux/jobs/{job_id}")
+async def api_mflux_job(job_id: str):
+    job = mflux_get_job(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": "MFLUX job not found."}, status_code=404)
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.post("/api/mflux/lora/train")
+async def api_mflux_lora_train(request: Request):
+    try:
+        body = await request.json()
+        job = mflux_start_lora_training(body if isinstance(body, dict) else {})
+        return JSONResponse({"success": True, "job_id": job.get("id"), "job": job})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/mflux/lora/adapters")
+async def api_mflux_lora_adapters():
+    return JSONResponse({"success": True, "adapters": mflux_list_lora_adapters()})
+
+
+@app.post("/api/mflux/uploads")
+async def api_mflux_upload_image(file: UploadFile = File(...)):
+    original_name = file.filename or "image.png"
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in MFLUX_ALLOWED_IMAGE_EXTENSIONS:
+        return JSONResponse({"success": False, "error": f"Unsupported image file: {suffix or '(none)'}"}, status_code=400)
+    upload_id = uuid.uuid4().hex[:12]
+    upload_dir = MFLUX_UPLOADS_DIR / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{safe_filename(Path(original_name).stem, 'image')}{suffix}"
+    target = upload_dir / filename
+    target.write_bytes(await file.read())
+    return JSONResponse(
+        {
+            "success": True,
+            "upload_id": upload_id,
+            "id": upload_id,
+            "filename": filename,
+            "path": str(target),
+            "url": mflux_public_upload_url(upload_id, filename),
+        }
+    )
+
+
+def _mflux_art_metadata(result_id: str, scope: str = "mflux") -> dict[str, Any]:
+    rid = safe_id(result_id)
+    meta_path = _resolve_child(MFLUX_RESULTS_DIR, rid, "mflux_result.json")
+    if not meta_path.is_file():
+        raise HTTPException(status_code=404, detail="MFLUX result not found")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    filename = str(meta.get("filename") or "")
+    if not filename:
+        raise HTTPException(status_code=404, detail="MFLUX result image missing")
+    return {
+        "art_id": f"mflux-{rid}",
+        "mflux_result_id": rid,
+        "filename": filename,
+        "path": str(_resolve_child(MFLUX_RESULTS_DIR, rid, filename)),
+        "url": str(meta.get("image_url") or meta.get("url") or f"/media/mflux/{rid}/{filename}"),
+        "scope": scope,
+        "prompt": str(meta.get("prompt") or ""),
+        "width": meta.get("width"),
+        "height": meta.get("height"),
+        "model": str(meta.get("model_label") or meta.get("model_id") or "MFLUX"),
+        "created_at": meta.get("created_at") or datetime.now(timezone.utc).isoformat(),
+        "source": "mflux",
+    }
+
+
+@app.post("/api/mflux/art/attach")
+async def api_mflux_art_attach(request: Request):
+    try:
+        body = await request.json()
+        result_id = str(body.get("source_result_id") or body.get("mflux_result_id") or body.get("result_id") or "").strip()
+        target_type = str(body.get("target_type") or body.get("scope") or "").strip().lower()
+        target_id = str(body.get("target_id") or body.get("song_id") or body.get("album_id") or body.get("album_family_id") or "").strip()
+        art = _mflux_art_metadata(result_id, scope=target_type or "mflux")
+        if target_type in {"result", "generation", "generation_result"} and target_id:
+            _attach_art_to_result(target_id, art)
+        elif target_type == "song" and target_id:
+            _merge_song_album_metadata(target_id, {"art": art, "single_art": art})
+        elif target_type in {"album", "album_family"} and target_id:
+            _attach_art_to_album_family(target_id, art)
+        return JSONResponse({"success": True, "art": art, "target_type": target_type, "target_id": target_id})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/mlx-video/status")
+async def api_mlx_video_status():
+    return JSONResponse(mlx_video_status())
+
+
+@app.get("/api/mlx-video/models")
+async def api_mlx_video_models():
+    payload = mlx_video_models()
+    payload["status"] = mlx_video_status()
+    return JSONResponse(payload)
+
+
+@app.get("/api/mlx-video/jobs")
+async def api_mlx_video_jobs():
+    return JSONResponse({"success": True, "jobs": mlx_video_list_jobs()})
+
+
+@app.post("/api/mlx-video/jobs")
+async def api_mlx_video_jobs_create(request: Request):
+    try:
+        body = await request.json()
+        job = mlx_video_create_job(body if isinstance(body, dict) else {})
+        return JSONResponse({"success": True, "job_id": job.get("id"), "job": job})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/mlx-video/jobs/{job_id}")
+async def api_mlx_video_job(job_id: str):
+    job = mlx_video_get_job(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": "MLX video job not found."}, status_code=404)
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.post("/api/mlx-video/uploads")
+async def api_mlx_video_upload(file: UploadFile = File(...)):
+    original_name = file.filename or "media.bin"
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in MLX_VIDEO_ALLOWED_UPLOAD_EXTENSIONS:
+        return JSONResponse({"success": False, "error": f"Unsupported video studio file: {suffix or '(none)'}"}, status_code=400)
+    upload_id = uuid.uuid4().hex[:12]
+    upload_dir = MLX_VIDEO_UPLOADS_DIR / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{safe_filename(Path(original_name).stem, 'media')}{suffix}"
+    target = upload_dir / filename
+    target.write_bytes(await file.read())
+    return JSONResponse(
+        {
+            "success": True,
+            "upload_id": upload_id,
+            "id": upload_id,
+            "filename": filename,
+            "path": str(target),
+            "url": mlx_video_public_upload_url(upload_id, filename),
+            "media_kind": "image" if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"} else "audio" if suffix in {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"} else "video",
+        }
+    )
+
+
+@app.get("/api/mlx-video/loras")
+async def api_mlx_video_loras():
+    return JSONResponse({"success": True, "adapters": mlx_video_list_loras()})
+
+
+@app.post("/api/mlx-video/lora/train")
+async def api_mlx_video_lora_train_unavailable():
+    return JSONResponse(
+        {
+            "success": False,
+            "available": False,
+            "error": "Video-LoRA training is not available because upstream mlx-video does not expose a stable train command yet.",
+        },
+        status_code=501,
+    )
+
+
+@app.get("/api/mlx-video/attachments")
+async def api_mlx_video_attachments(target_type: str | None = None, target_id: str | None = None):
+    return JSONResponse(
+        {
+            "success": True,
+            "attachments": mlx_video_list_attachments(target_type=target_type, target_id=target_id),
+        }
+    )
+
+
+@app.post("/api/mlx-video/model-dirs")
+async def api_mlx_video_register_model_dir(request: Request):
+    try:
+        body = await request.json()
+        entry = mlx_video_register_model_dir(body if isinstance(body, dict) else {})
+        return JSONResponse({"success": True, "entry": entry, "model_dirs": mlx_video_registered_model_dirs()})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/mlx-video/attach")
+async def api_mlx_video_attach(request: Request):
+    try:
+        body = await request.json()
+        attachment = mlx_video_attach(body if isinstance(body, dict) else {})
+        return JSONResponse({"success": True, "attachment": attachment})
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
@@ -11614,7 +12208,7 @@ async def api_ollama_pull(request: Request):
     try:
         body = await request.json()
         model_name = str(body.get("model") or body.get("model_name") or "").strip()
-        kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat"))
+        kind = str(body.get("kind") or _ollama_kind_from_model_name(model_name))
         job = _start_ollama_pull(model_name, reason=str(body.get("reason") or "manual"), kind=kind)
         return JSONResponse({"success": True, "job": job})
     except Exception as exc:
@@ -11635,7 +12229,7 @@ async def api_ollama_show(request: Request):
     try:
         body = await request.json()
         model_name = str(body.get("model") or body.get("model_name") or "").strip()
-        _ensure_ollama_model_or_start_pull(model_name, context="model inspect", kind="embedding" if _is_embedding_model_name(model_name) else "chat")
+        _ensure_ollama_model_or_start_pull(model_name, context="model inspect", kind=_ollama_kind_from_model_name(model_name))
         data = _ollama_client().show(model_name)
         return JSONResponse({"success": True, "model": model_name, "details": _jsonable(data)})
     except OllamaPullStarted as exc:
@@ -11643,7 +12237,7 @@ async def api_ollama_show(request: Request):
     except Exception as exc:
         if _ollama_error_is_missing_model(exc):
             model_name = str(body.get("model") or body.get("model_name") or "").strip()
-            job = _start_ollama_pull(model_name, reason="model inspect", kind="embedding" if _is_embedding_model_name(model_name) else "chat")
+            job = _start_ollama_pull(model_name, reason="model inspect", kind=_ollama_kind_from_model_name(model_name))
             return JSONResponse(_ollama_pull_started_payload(model_name, job, "model inspect"))
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
@@ -11654,11 +12248,11 @@ async def api_ollama_test(request: Request):
     try:
         body = await request.json()
         model_name = str(body.get("model") or body.get("model_name") or "").strip()
-        kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat"))
+        kind = str(body.get("kind") or _ollama_kind_from_model_name(model_name))
         _ensure_ollama_model_or_start_pull(model_name, context=f"{kind} test", kind=kind)
         client = _ollama_client()
         if kind == "embedding":
-            response = client.embed(model=model_name, input="AceJAM embedding test")
+            response = client.embed(model=model_name, input="MLX Media embedding test")
             embeddings = _ollama_attr(response, "embeddings", [])
             first = embeddings[0] if embeddings else []
             return JSONResponse(
@@ -11682,7 +12276,7 @@ async def api_ollama_test(request: Request):
     except Exception as exc:
         model_name = str(body.get("model") or body.get("model_name") or "").strip()
         if model_name and _ollama_error_is_missing_model(exc):
-            kind = str(body.get("kind") or ("embedding" if _is_embedding_model_name(model_name) else "chat"))
+            kind = str(body.get("kind") or _ollama_kind_from_model_name(model_name))
             job = _start_ollama_pull(model_name, reason=f"{kind} test", kind=kind)
             return JSONResponse(_ollama_pull_started_payload(model_name, job, "Ollama test"))
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
@@ -11776,7 +12370,7 @@ async def api_prompt_assistant_run(request: Request):
         if not paste_blocks:
             paste_blocks = _server_paste_blocks_from_payload(payload, mode)
         validation = None
-        if mode not in {"album", "trainer"}:
+        if mode not in {"album", "trainer", "image", "video"}:
             try:
                 validation = _validate_generation_payload(payload)
             except Exception as validation_exc:
@@ -12604,6 +13198,40 @@ def _build_smart_caption(artist: str, title: str, bpm: int | None, key: str, has
     return ", ".join(parts) if parts else "music track"
 
 
+def _missing_vocal_lora_label(
+    audio_path: Path,
+    *,
+    filename: str | None = None,
+    caption: str = "",
+    duration: float | None = None,
+    bpm: Any = None,
+    keyscale: str = "",
+    label_source: str = "lyrics_missing",
+    error: str = "",
+    trigger_tag: str = "",
+    tag_position: str = "prepend",
+) -> dict[str, Any]:
+    return {
+        "path": str(audio_path),
+        "filename": filename or audio_path.name,
+        "caption": caption or audio_path.stem.replace("-", " ").replace("_", " "),
+        "lyrics": "",
+        "lyrics_status": "missing",
+        "requires_review": True,
+        "genre": "",
+        "bpm": bpm,
+        "keyscale": keyscale,
+        "timesignature": "4",
+        "language": "unknown",
+        "duration": duration or 0,
+        "is_instrumental": False,
+        "label_source": label_source,
+        "error": error,
+        "trigger_tag": trigger_tag,
+        "tag_position": tag_position,
+    }
+
+
 def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = "", tag_position: str = "prepend") -> dict[str, Any]:
     """Auto-label a single audio file using MusicBrainz + online lyrics + audio analysis. No LLM needed."""
     artist, title = _parse_artist_title(filename)
@@ -12658,19 +13286,42 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
             caption = f"{trigger_tag}, {caption}"
         elif tag_position == "append":
             caption = f"{caption}, {trigger_tag}"
+    if not has_vocals:
+        label = _missing_vocal_lora_label(
+            audio_path,
+            filename=filename,
+            caption=caption,
+            duration=duration,
+            bpm=bpm,
+            keyscale=key,
+            label_source="online_lyrics_missing",
+            trigger_tag=trigger_tag,
+            tag_position=tag_position,
+        )
+        label.update(
+            {
+                "genre": ", ".join(genre_tags[:3]) if genre_tags else "",
+                "musicbrainz_tags": genre_tags,
+                "musicbrainz_album": mb_info.get("album", ""),
+                "musicbrainz_year": mb_info.get("year", ""),
+            }
+        )
+        return label
 
     return {
         "path": str(audio_path),
         "filename": filename,
         "caption": caption,
-        "lyrics": lyrics or "[Instrumental]",
+        "lyrics": lyrics,
+        "lyrics_status": "present",
+        "requires_review": False,
         "genre": ", ".join(genre_tags[:3]) if genre_tags else "",
         "bpm": bpm,
         "keyscale": key,
         "timesignature": "4",
-        "language": language if has_vocals else "instrumental",
+        "language": language,
         "duration": duration,
-        "is_instrumental": not has_vocals,
+        "is_instrumental": False,
         "label_source": "smart_musicbrainz",
         "trigger_tag": trigger_tag,
         "tag_position": tag_position,
@@ -12678,10 +13329,6 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
         "musicbrainz_album": mb_info.get("album", ""),
         "musicbrainz_year": mb_info.get("year", ""),
     }
-    lyrics_len = len(result["lyrics"].split()) if result["lyrics"] != "[Instrumental]" else 0
-    print(f"[autolabel] DONE: caption={caption[:80]}", flush=True)
-    print(f"[autolabel]       lyrics={lyrics_len} words, genre={result['genre']}, bpm={bpm}, key={key}", flush=True)
-    return result
 
 
 @app.post("/api/lora/dataset/autolabel")
@@ -12716,6 +13363,7 @@ async def api_lora_dataset_autolabel(request: Request):
 
         # Filename-only fallback mode
         if mode == "filename":
+            allow_instrumental = parse_bool(body.get("instrumental_training"), False) or str(body.get("training_target") or "").lower() in {"instrumental", "style", "style_only"}
             for item in files[: int(body.get("limit") or 24)]:
                 path = Path(str(item.get("path") if isinstance(item, dict) else item)).expanduser()
                 duration = None
@@ -12724,14 +13372,28 @@ async def api_lora_dataset_autolabel(request: Request):
                     duration = round(info.frames / info.samplerate, 2)
                 except Exception:
                     pass
-                labels.append({
-                    "path": str(path), "filename": path.name,
-                    "caption": path.stem.replace("-", " ").replace("_", " "),
-                    "lyrics": "[Instrumental]", "genre": "", "bpm": None, "keyscale": "",
-                    "timesignature": "4", "language": "instrumental", "duration": duration,
-                    "is_instrumental": True, "label_source": "filename_fallback",
-                    "trigger_tag": trigger_tag, "tag_position": tag_position,
-                })
+                caption = path.stem.replace("-", " ").replace("_", " ")
+                if allow_instrumental:
+                    labels.append({
+                        "path": str(path), "filename": path.name,
+                        "caption": caption,
+                        "lyrics": "[Instrumental]", "lyrics_status": "present", "requires_review": False,
+                        "genre": "", "bpm": None, "keyscale": "",
+                        "timesignature": "4", "language": "instrumental", "duration": duration,
+                        "is_instrumental": True, "label_source": "filename_fallback",
+                        "trigger_tag": trigger_tag, "tag_position": tag_position,
+                    })
+                else:
+                    labels.append(
+                        _missing_vocal_lora_label(
+                            path,
+                            caption=caption,
+                            duration=duration,
+                            label_source="filename_fallback",
+                            trigger_tag=trigger_tag,
+                            tag_position=tag_position,
+                        )
+                    )
             return JSONResponse({"success": True, "labels": labels, "label_mode": "filename", "dataset_health": _lora_dataset_health(labels)})
 
         # Official mode (original behavior, requires model)
@@ -12743,38 +13405,51 @@ async def api_lora_dataset_autolabel(request: Request):
                 duration = round(info.frames / info.samplerate, 2)
             except Exception:
                 pass
-            fallback = {
-                "path": str(path),
-                "filename": path.name,
-                "caption": (item.get("caption") if isinstance(item, dict) else "") or path.stem.replace("-", " ").replace("_", " "),
-                "lyrics": (item.get("lyrics") if isinstance(item, dict) else "") or "[Instrumental]",
-                "genre": item.get("genre", "") if isinstance(item, dict) else "",
-                "bpm": (item.get("bpm") if isinstance(item, dict) else None) or None,
-                "keyscale": (item.get("keyscale") if isinstance(item, dict) else "") or "",
-                "timesignature": (item.get("timesignature") if isinstance(item, dict) else "") or "4",
-                "language": (item.get("language") if isinstance(item, dict) else "") or "instrumental",
-                "duration": duration or (item.get("duration") if isinstance(item, dict) else 0),
-                "is_instrumental": True,
-                "label_source": "filename_duration_fallback",
-                "trigger_tag": body.get("custom_tag") or body.get("trigger_tag") or "",
-                "tag_position": body.get("tag_position") or "prepend",
-            }
+            existing_caption = (item.get("caption") if isinstance(item, dict) else "") or path.stem.replace("-", " ").replace("_", " ")
+            existing_lyrics = str((item.get("lyrics") if isinstance(item, dict) else "") or "").strip()
+            fallback = _missing_vocal_lora_label(
+                path,
+                caption=existing_caption,
+                duration=duration or (item.get("duration") if isinstance(item, dict) else 0),
+                bpm=(item.get("bpm") if isinstance(item, dict) else None) or None,
+                keyscale=(item.get("keyscale") if isinstance(item, dict) else "") or "",
+                label_source="filename_duration_fallback",
+                trigger_tag=body.get("custom_tag") or body.get("trigger_tag") or "",
+                tag_position=body.get("tag_position") or "prepend",
+            )
+            if existing_lyrics and not is_missing_vocal_lyrics({"lyrics": existing_lyrics}):
+                fallback.update(
+                    {
+                        "lyrics": existing_lyrics,
+                        "lyrics_status": "present",
+                        "requires_review": False,
+                        "language": (item.get("language") if isinstance(item, dict) else "") or "unknown",
+                        "is_instrumental": False,
+                    }
+                )
+            if isinstance(item, dict):
+                fallback["genre"] = item.get("genre", "")
+                fallback["timesignature"] = item.get("timesignature") or "4"
             if use_official and path.is_file():
                 try:
                     with handler_lock:
                         _ensure_song_model(body.get("song_model"))
                         codes = handler.convert_src_audio_to_codes(str(path))
                     understood = _run_official_lm_aux("understand_music", body, audio_codes=codes)
+                    lyrics_text = str(understood.get("lyrics") or "").strip()
+                    missing = is_missing_vocal_lyrics({**understood, "lyrics": lyrics_text})
                     fallback.update(
                         {
                             "caption": understood.get("caption") or fallback["caption"],
-                            "lyrics": understood.get("lyrics") or fallback["lyrics"],
+                            "lyrics": "" if missing else lyrics_text,
+                            "lyrics_status": "missing" if missing else "present",
+                            "requires_review": missing,
                             "bpm": understood.get("bpm") or fallback["bpm"],
                             "keyscale": understood.get("key_scale") or fallback["keyscale"],
                             "timesignature": understood.get("time_signature") or fallback["timesignature"],
-                            "language": understood.get("language") or fallback["language"],
-                            "is_instrumental": str(understood.get("lyrics") or "").strip().lower() == "[instrumental]",
-                            "label_source": "official_ace_step_understand_music",
+                            "language": understood.get("language") or ("unknown" if missing else fallback["language"]),
+                            "is_instrumental": False if missing else str(lyrics_text).strip().lower() == "[instrumental]",
+                            "label_source": "official_ace_step_understand_music" if not missing else "online_lyrics_missing",
                             "official_understanding": True,
                             "ace_lm_model": understood.get("ace_lm_model"),
                         }
@@ -12783,6 +13458,9 @@ async def api_lora_dataset_autolabel(request: Request):
                     raise
                 except Exception as official_exc:
                     fallback["official_error"] = str(official_exc)
+                    fallback["error"] = str(official_exc)
+                    fallback["lyrics_status"] = "missing"
+                    fallback["requires_review"] = True
             labels.append(fallback)
         return JSONResponse({"success": True, "labels": labels, "dataset_health": _lora_dataset_health(labels)})
     except ModelDownloadStarted as exc:
@@ -12861,34 +13539,47 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                 try:
                     existing_lyric_text = existing_lyrics.read_text(encoding="utf-8", errors="replace").strip()
                 except Exception:
-                    existing_lyric_text = "[Instrumental]"
+                    existing_lyric_text = ""
+                missing_existing = is_missing_vocal_lyrics({"lyrics": existing_lyric_text})
                 labels.append(
                     {
                         "path": str(audio_path),
                         "filename": audio_path.name,
-                        "lyrics": existing_lyric_text,
+                        "lyrics": "" if missing_existing else existing_lyric_text,
+                        "lyrics_status": "missing" if missing_existing else "present",
+                        "requires_review": missing_existing,
                         "label_source": "existing_sidecar",
                     }
                 )
-                succeeded += 1
+                if missing_existing:
+                    failed += 1
+                else:
+                    succeeded += 1
                 continue
             try:
                 understood = _training_lookup_online_lyrics(audio_path, request_body)
                 paths = _training_write_label_sidecars(audio_path, understood)
+                lyrics_text = str(understood.get("lyrics") or "").strip()
+                missing = is_missing_vocal_lyrics({**understood, "lyrics": lyrics_text})
                 labels.append(
                     {
                         "path": str(audio_path),
                         "filename": audio_path.name,
-                        "lyrics": str(understood.get("lyrics") or "[Instrumental]"),
+                        "lyrics": "" if missing else lyrics_text,
+                        "lyrics_status": "missing" if missing else "present",
+                        "requires_review": missing,
                         "caption": str(understood.get("caption") or ""),
                         "language": str(understood.get("language") or "unknown"),
                         "bpm": understood.get("bpm"),
                         "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
-                        "label_source": "official_ace_step_understand_music",
+                        "label_source": "online_lyrics_missing" if missing else "official_ace_step_understand_music",
                         **paths,
                     }
                 )
-                succeeded += 1
+                if missing:
+                    failed += 1
+                else:
+                    succeeded += 1
             except ModelDownloadStarted as dl:
                 _set_lora_autolabel_job(
                     job_id,
@@ -12906,7 +13597,9 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                     {
                         "path": str(audio_path),
                         "filename": audio_path.name,
-                        "lyrics": "[Instrumental]",
+                        "lyrics": "",
+                        "lyrics_status": "missing",
+                        "requires_review": True,
                         "label_source": "understand_music_failed",
                         "error": str(exc),
                     }
@@ -13315,13 +14008,45 @@ async def art_media(art_id: str, filename: str):
     return FileResponse(target, filename=target.name)
 
 
+@app.get("/media/mflux/{result_id}/{filename}")
+async def mflux_media(result_id: str, filename: str):
+    target = _resolve_child(MFLUX_RESULTS_DIR, safe_id(result_id), filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target, filename=target.name)
+
+
+@app.get("/media/mflux/uploads/{upload_id}/{filename}")
+async def mflux_upload_media(upload_id: str, filename: str):
+    target = _resolve_child(MFLUX_UPLOADS_DIR, safe_id(upload_id), filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target, filename=target.name)
+
+
+@app.get("/media/mlx-video/{result_id}/{filename}")
+async def mlx_video_media(result_id: str, filename: str):
+    target = _resolve_child(MLX_VIDEO_RESULTS_DIR, safe_id(result_id), filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target, filename=target.name)
+
+
+@app.get("/media/mlx-video/uploads/{upload_id}/{filename}")
+async def mlx_video_upload_media(upload_id: str, filename: str):
+    target = _resolve_child(MLX_VIDEO_UPLOADS_DIR, safe_id(upload_id), filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(target, filename=target.name)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def homepage():
     web_index = BASE_DIR / "web" / "dist" / "index.html"
     if web_index.is_file():
         return web_index.read_text(encoding="utf-8")
     return (
-        "<h1>AceJAM web UI is not built yet</h1>"
+        "<h1>MLX Media web UI is not built yet</h1>"
         "<p>Run <code>npm install &amp;&amp; npm run build</code> in <code>app/web</code>, "
         "or use the Pinokio installer / updater.</p>"
     )

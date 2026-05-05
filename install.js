@@ -66,6 +66,32 @@ module.exports = {
     {
       method: "shell.run",
       params: {
+        venv: "env",
+        path: "app",
+        env: {
+          PYTHONUNBUFFERED: "1"
+        },
+        message: [
+          "python install_mflux.py"
+        ]
+      }
+    },
+    {
+      method: "shell.run",
+      params: {
+        venv: "env",
+        path: "app",
+        env: {
+          PYTHONUNBUFFERED: "1"
+        },
+        message: [
+          "python install_mlx_video.py"
+        ]
+      }
+    },
+    {
+      method: "shell.run",
+      params: {
         path: "app/web",
         message: [
           "npm install --no-audit --no-fund",

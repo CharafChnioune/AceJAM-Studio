@@ -86,7 +86,7 @@ Also return `song_intent`, the structured UI menu contract AceJAM shows to the u
 - custom_tags: concise extra descriptors
 - caption: one concrete ACE-Step sonic portrait combining genre, drums/groove, bass, melodic identity, vocal delivery, arrangement movement, texture/space and mix/master.
 The top-level `caption` must match song_intent.caption and be editable by the user.
-Default quality: quality_profile "chart_master", song_model "acestep-v15-xl-sft", inference_steps 8, guidance_scale 7, shift 3, infer_method "ode", sampler_mode "heun", audio_format "wav32".
+Default quality: quality_profile "chart_master", song_model "acestep-v15-xl-sft", inference_steps 50, guidance_scale 7, shift 1, infer_method "ode", sampler_mode "heun", audio_format "wav32".
 
 Available instruments for tags (pick 2-3 that fit the genre):
 Keys: piano, Rhodes, organ, electric piano, grand piano, clavinet, celesta
@@ -638,9 +638,9 @@ class LocalComposer:
             "quality_profile": str(payload.get("quality_profile") or "chart_master"),
             "song_model": str(payload.get("song_model") or "acestep-v15-xl-sft"),
             "audio_format": str(payload.get("audio_format") or "wav32"),
-            "inference_steps": int(payload.get("inference_steps") or 8),
+            "inference_steps": int(payload.get("inference_steps") or 50),
             "guidance_scale": float(payload.get("guidance_scale") or 7.0),
-            "shift": float(payload.get("shift") or 3.0),
+            "shift": float(payload.get("shift") or 1.0),
             "infer_method": str(payload.get("infer_method") or "ode"),
             "sampler_mode": str(payload.get("sampler_mode") or "heun"),
             "composer_model": model,

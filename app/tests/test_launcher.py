@@ -9,7 +9,20 @@ class LauncherScriptTest(unittest.TestCase):
 
         self.assertIn('path: "app"', install_js)
         self.assertIn('"python download_models.py --all"', install_js)
+        self.assertIn('"python install_mflux.py"', install_js)
+        self.assertIn('"python install_mlx_video.py"', install_js)
         self.assertIn('PYTHONUNBUFFERED: "1"', install_js)
+
+    def test_mflux_runtime_has_dedicated_requirements(self):
+        root = Path(__file__).resolve().parents[2]
+        core_requirements = (root / "app" / "requirements.txt").read_text(encoding="utf-8")
+        mflux_requirements = (root / "app" / "requirements-mflux.txt").read_text(encoding="utf-8")
+        manager = (root / "app" / "mflux_manager.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("mflux>=", core_requirements)
+        self.assertIn("mflux>=0.17.5,<0.18", mflux_requirements)
+        self.assertIn("MFLUX_ENV_DIR", manager)
+        self.assertIn("_command_path", manager)
 
     def test_start_script_binds_localhost_and_captures_url(self):
         root = Path(__file__).resolve().parents[2]

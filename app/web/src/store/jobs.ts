@@ -3,6 +3,8 @@ import { create } from "zustand";
 export type JobKind =
   | "generation"
   | "album"
+  | "mflux"
+  | "mlx-video"
   | "lora"
   | "ollama-pull"
   | "model-download"

@@ -1,12 +1,15 @@
 {
-  "title": "AceJAM",
-  "description": "Describe any song in plain English, compose it locally with an embedded Qwen GGUF model, and generate it with ACE-Step v1.5.",
+  "title": "MLX Media",
+  "description": "Create songs, albums and artwork locally on Apple MLX with ACE-Step v1.5, MFLUX, local agents and LoRA training.",
   "icon": "icon.png",
   "links": [{
     "title": "Model References",
     "links": [{
       "title": "ACE-Step Model",
       "value": "https://huggingface.co/ACE-Step/Ace-Step1.5"
+    }, {
+      "title": "MFLUX",
+      "value": "https://github.com/filipstrand/mflux"
     }, {
       "title": "Qwen 4B Abliterated GGUF",
       "value": "https://huggingface.co/mradermacher/Qwen3-4B-abliterated-GGUF"

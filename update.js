@@ -57,6 +57,32 @@ module.exports = {
       ]
     }
   }, {
+    when: "{{exists('app/install_mflux.py')}}",
+    method: "shell.run",
+    params: {
+      venv: "env",
+      path: "app",
+      env: {
+        PYTHONUNBUFFERED: "1"
+      },
+      message: [
+        "python install_mflux.py"
+      ]
+    }
+  }, {
+    when: "{{exists('app/install_mlx_video.py')}}",
+    method: "shell.run",
+    params: {
+      venv: "env",
+      path: "app",
+      env: {
+        PYTHONUNBUFFERED: "1"
+      },
+      message: [
+        "python install_mlx_video.py"
+      ]
+    }
+  }, {
     when: "{{exists('app/web/package.json')}}",
     method: "shell.run",
     params: {

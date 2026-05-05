@@ -199,6 +199,49 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(labels[0]["lyrics"], "[Instrumental]")
             self.assertTrue(labels[0]["caption"].startswith("charafstyle, "))
             self.assertEqual(labels[0]["label_source"], "deterministic_filename")
+            self.assertEqual(labels[0]["lyrics_status"], "missing")
+            self.assertTrue(labels[0]["requires_review"])
+
+    def test_vocal_dataset_health_counts_instrumental_and_failed_labels_as_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            health = manager._dataset_training_warnings(
+                [
+                    {
+                        "filename": "good.wav",
+                        "caption": "rap vocal",
+                        "lyrics": "[Verse]\nReal lyric line with words",
+                        "bpm": 92,
+                        "keyscale": "A minor",
+                        "language": "en",
+                    },
+                    {
+                        "filename": "instrumental.wav",
+                        "caption": "rap vocal",
+                        "lyrics": "[Instrumental]",
+                        "bpm": 90,
+                        "keyscale": "B minor",
+                        "language": "instrumental",
+                    },
+                    {
+                        "filename": "failed.wav",
+                        "caption": "rap vocal",
+                        "lyrics": "",
+                        "lyrics_status": "missing",
+                        "label_source": "understand_music_failed",
+                        "bpm": "",
+                        "keyscale": "",
+                        "language": "unknown",
+                    },
+                ]
+            )
+
+            self.assertTrue(health["blocking"])
+            self.assertEqual(health["missing_lyrics_count"], 2)
+            self.assertEqual(health["real_lyrics_count"], 1)
+            self.assertIn("instrumental.wav", [item["filename"] for item in health["missing_lyrics_files"]])
+            self.assertIn("failed.wav", [item["filename"] for item in health["missing_lyrics_files"]])
 
     def test_one_click_defaults_are_lora_and_dynamic_epochs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,8 +267,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["rank"], 64)
             self.assertEqual(params["alpha"], 128)
             self.assertEqual(params["dropout"], 0.1)
-            self.assertEqual(params["training_shift"], 3.0)
-            self.assertEqual(params["num_inference_steps"], 8)
+            self.assertEqual(params["training_shift"], 1.0)
+            self.assertEqual(params["num_inference_steps"], 50)
             self.assertEqual(params["training_seed"], 42)
             self.assertIsNone(params["train_epochs"])
             self.assertEqual(params["save_every_n_epochs"], 1)
@@ -595,7 +638,7 @@ class LoraTrainerTest(unittest.TestCase):
             stored = manager.get_job("auditionjob")
             self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded"])
 
-    def test_epoch_audition_failure_is_recorded_and_training_continues(self):
+    def test_epoch_audition_failure_stops_vocal_training(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache", fail_epoch=1)
@@ -621,20 +664,71 @@ class LoraTrainerTest(unittest.TestCase):
                 "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
             }
 
-            manager._run_train_command_with_epoch_auditions(
-                "failaudition",
-                command,
-                output_dir,
-                Path(job.log_path),
-                epochs=2,
-                params=params,
-            )
+            with self.assertRaisesRegex(RuntimeError, "audition boom"):
+                manager._run_train_command_with_epoch_auditions(
+                    "failaudition",
+                    command,
+                    output_dir,
+                    Path(job.log_path),
+                    epochs=2,
+                    params=params,
+                )
 
-            self.assertEqual(len(manager.commands), 2)
+            self.assertEqual(len(manager.commands), 1)
             stored = manager.get_job("failaudition")
             auditions = stored["result"]["epoch_auditions"]
-            self.assertEqual([item["status"] for item in auditions], ["failed", "succeeded"])
+            self.assertEqual([item["status"] for item in auditions], ["failed"])
             self.assertIn("audition boom", auditions[0]["error"])
+
+    def test_epoch_audition_vocal_gate_failure_stops_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            manager.audition_runner = lambda request: {
+                "success": True,
+                "result_id": "bad-vocal",
+                "audios": [{"audio_url": "/media/results/bad-vocal/take.wav"}],
+                "vocal_intelligibility_gate": {
+                    "status": "fail",
+                    "reason": "phrase loop detected",
+                    "transcript_preview": "yeah yeah yeah yeah",
+                },
+            }
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="gatefail",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+            params = {
+                "adapter_type": "lora",
+                "song_model": "acestep-v15-xl-sft",
+                "model_variant": "xl_sft",
+                "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "phrase loop detected"):
+                manager._run_train_command_with_epoch_auditions(
+                    "gatefail",
+                    ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "2"],
+                    output_dir,
+                    Path(job.log_path),
+                    epochs=2,
+                    params=params,
+                )
+
+            stored = manager.get_job("gatefail")
+            audition = stored["result"]["epoch_auditions"][0]
+            self.assertEqual(audition["status"], "failed")
+            self.assertEqual(audition["transcript_preview"], "yeah yeah yeah yeah")
 
     def test_startup_marks_running_epoch_auditions_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -756,6 +850,39 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(first_command[first_command.index("--precision") + 1], "fp32")
             self.assertEqual(first_command[first_command.index("--resume-from") + 1], str(checkpoint))
             self.assertEqual(first_command[first_command.index("--scheduler-epochs") + 1], "3")
+
+    def test_resume_job_quarantines_old_xl_sft_shift3_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ResumeTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            job = TrainingJob(
+                id="unsafe",
+                kind="one_click_train",
+                state="failed",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["acejam-one-click-lora"],
+                params={
+                    "adapter_type": "lora",
+                    "song_model": "acestep-v15-xl-sft",
+                    "model_variant": "xl_sft",
+                    "train_epochs": 3,
+                    "training_shift": 3.0,
+                    "num_inference_steps": 8,
+                    "epoch_audition": {"enabled": True},
+                },
+                paths={},
+                log_path=str(root / "data" / "lora_jobs" / "unsafe" / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            resumed = manager.resume_job("unsafe")
+
+            self.assertEqual(resumed["stage"], "quarantined")
+            self.assertEqual(resumed["result"]["quality_status"], "quarantined")
+            self.assertIn("expected shift=1.0", resumed["error"])
+            self.assertEqual(manager.commands, [])
 
     def test_resume_job_retries_incomplete_latest_audition_from_latest_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -960,6 +1087,32 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(adapters[0]["model_variant"], "xl_sft")
             self.assertEqual(adapters[0]["song_model"], "acestep-v15-xl-sft")
             self.assertTrue((adapter_dir / "acejam_adapter.json").is_file())
+
+    def test_lora_registry_quarantines_xl_sft_shift3_adapter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            adapter_dir = self.make_peft_adapter(root / "data" / "loras" / "unsafe-xl-sft")
+            (adapter_dir / "acejam_adapter.json").write_text(
+                json.dumps(
+                    {
+                        "display_name": "unsafe",
+                        "adapter_type": "lora",
+                        "model_variant": "xl_sft",
+                        "song_model": "acestep-v15-xl-sft",
+                        "training_shift": 3.0,
+                        "num_inference_steps": 8,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            adapters = manager.list_adapters()
+
+            self.assertEqual(adapters[0]["quality_status"], "quarantined")
+            self.assertFalse(adapters[0]["is_loadable"])
+            self.assertFalse(adapters[0]["generation_loadable"])
+            self.assertIn("expected shift=1.0", " ".join(adapters[0]["quality_reasons"]))
 
     def test_job_result_registers_manual_training_output(self):
         with tempfile.TemporaryDirectory() as tmp:

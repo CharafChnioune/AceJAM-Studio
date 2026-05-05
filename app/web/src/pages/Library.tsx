@@ -1,9 +1,10 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Music2, Search, Trash2, Download, Repeat2, ImagePlus, Filter } from "lucide-react";
+import { Music2, Search, Trash2, Download, Video } from "lucide-react";
 
-import { listCommunity, deleteSong, generateArt, type SongMeta, type ArtMetadata } from "@/lib/api";
+import { getMlxVideoAttachments, listCommunity, deleteSong, type MlxVideoAttachment, type SongMeta } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -25,8 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { LyricSync } from "@/components/audio/LyricSync";
-import { ArtGenerator } from "@/components/art/ArtGenerator";
-import { defaultTrackArtPrompt } from "@/lib/schemas";
+import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { toast } from "@/components/ui/sonner";
 import { cn, formatDuration } from "@/lib/utils";
 
@@ -62,7 +62,13 @@ function songId(s: SongMeta): string {
 export function Library() {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["library", "community"], queryFn: () => listCommunity() });
+  const videoAttachmentsQ = useQuery({
+    queryKey: ["mlx-video", "attachments"],
+    queryFn: () => getMlxVideoAttachments(),
+    staleTime: 15_000,
+  });
   const songs = q.data?.songs ?? [];
+  const videoAttachments = videoAttachmentsQ.data?.attachments ?? [];
 
   const [search, setSearch] = React.useState("");
   const [language, setLanguage] = React.useState("__all__");
@@ -91,6 +97,14 @@ export function Library() {
 
   const allLanguages = Array.from(new Set(songs.map((s) => s.vocal_language).filter(Boolean))) as string[];
   const allModels = Array.from(new Set(songs.map((s) => s.song_model).filter(Boolean))) as string[];
+  const videosForSong = React.useCallback((song: SongMeta): MlxVideoAttachment[] => {
+    const ids = new Set(
+      [song.song_id, song.result_id, songId(song)]
+        .filter(Boolean)
+        .map((item) => String(item)),
+    );
+    return videoAttachments.filter((item) => ids.has(String(item.target_id || "")));
+  }, [videoAttachments]);
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteSong(id),
@@ -180,7 +194,9 @@ export function Library() {
         className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
       >
         <AnimatePresence>
-          {filtered.map((s) => (
+          {filtered.map((s) => {
+            const linkedVideos = videosForSong(s);
+            return (
             <motion.div
               key={songId(s)}
               layout
@@ -210,6 +226,11 @@ export function Library() {
                     {songTags(s).slice(0, 3).map((t) => (
                       <Badge key={t} variant="muted" className="text-[10px]">{t}</Badge>
                     ))}
+                    {linkedVideos.length > 0 && (
+                      <Badge variant="outline" className="gap-1 text-[10px]">
+                        <Video className="size-3" /> {linkedVideos.length}
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 pt-1 text-[10px] text-muted-foreground">
                     {s.duration && <span>{formatDuration(s.duration)}</span>}
@@ -219,7 +240,8 @@ export function Library() {
                 </div>
               </button>
             </motion.div>
-          ))}
+            );
+          })}
         </AnimatePresence>
       </motion.div>
 
@@ -234,6 +256,14 @@ export function Library() {
           )}
           {active && (
             <div className="space-y-3">
+              <MfluxArtMaker
+                title={active.title}
+                artist={active.artist_name}
+                context={String(active.caption || active.tags || "")}
+                targetType="song"
+                targetId={active.song_id || active.result_id}
+                compact
+              />
               <div className="grid grid-cols-3 gap-2">
                 {active.bpm && (
                   <div className="rounded-md border bg-card/40 p-2 text-center">
@@ -259,19 +289,31 @@ export function Library() {
                   <Badge key={t} variant="muted" className="text-[10px]">{t}</Badge>
                 ))}
               </div>
-              {!active.art?.url && (active.result_id || active.song_id) && (
-                <ArtGenerator
-                  scope="single"
-                  attachToResultId={active.result_id || active.song_id}
-                  title={active.title}
-                  caption={active.caption}
-                  defaultPrompt={defaultTrackArtPrompt({
-                    title: active.title,
-                    artist_name: active.artist_name,
-                    caption: active.caption,
-                    tags: songTags(active).join(", "),
-                  })}
-                />
+              {videosForSong(active).length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Linked videos</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {videosForSong(active).map((video) => (
+                      <div key={`${video.result_id}-${video.target_id}`} className="overflow-hidden rounded-md border bg-card/40">
+                        <video
+                          src={video.url || video.video_url}
+                          poster={video.poster_url || undefined}
+                          controls
+                          className="aspect-video w-full bg-black object-contain"
+                        />
+                        <div className="space-y-1 p-2">
+                          <p className="truncate text-xs font-medium">{video.model_label || "MLX video"}</p>
+                          <p className="line-clamp-2 text-[10px] text-muted-foreground">{video.prompt}</p>
+                          {(video.url || video.video_url) && (
+                            <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
+                              <a href={video.url || video.video_url} download>Download MP4</a>
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
               <div className="flex flex-wrap gap-2">
                 {active.audio_url && (
@@ -279,6 +321,23 @@ export function Library() {
                     <a href={active.audio_url} download target="_blank" rel="noreferrer">
                       <Download className="size-3.5" /> Download
                     </a>
+                  </Button>
+                )}
+                {active.audio_url && (
+                  <Button asChild variant="outline" size="sm" className="gap-2">
+                    <Link
+                      to="/wizard/video"
+                      state={{
+                        audio_url: active.audio_url,
+                        title: active.title,
+                        artist_name: active.artist_name,
+                        prompt: String(active.caption || active.tags || active.title || ""),
+                        target_type: "song",
+                        target_id: active.song_id || active.result_id || songId(active),
+                      }}
+                    >
+                      <Video className="size-3.5" /> Create video
+                    </Link>
                   </Button>
                 )}
                 <Button

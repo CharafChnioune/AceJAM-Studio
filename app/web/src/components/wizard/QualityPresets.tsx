@@ -12,9 +12,9 @@ interface PresetDef {
 }
 
 const PRESETS: PresetDef[] = [
-  { key: "draft", label: "Draft", blurb: "Snel, ~8 stappen", steps: 8, icon: Zap },
-  { key: "standard", label: "Standard", blurb: "Gebalanceerd, 32 stappen", steps: 32, icon: CircleCheck },
-  { key: "chart_master", label: "Chart Master", blurb: "Maximaal, 64 stappen", steps: 64, icon: Crown },
+  { key: "draft", label: "Laag", blurb: "Docs-correcte preview", steps: 50, icon: Zap },
+  { key: "standard", label: "Middel", blurb: "Docs standaard", steps: 50, icon: CircleCheck },
+  { key: "chart_master", label: "Hoog", blurb: "Beste standaardkwaliteit", steps: 50, icon: Crown },
 ];
 
 interface QualityPresetsProps {

@@ -17,7 +17,7 @@ export class AppErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("[AceJAM UI]", error, info.componentStack);
+    console.error("[MLX Media UI]", error, info.componentStack);
   }
 
   render() {
@@ -31,7 +31,7 @@ export class AppErrorBoundary extends React.Component<
               <AlertTriangle className="size-5" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold">AceJAM UI crashte</h1>
+              <h1 className="text-lg font-semibold">MLX Media UI crashte</h1>
               <p className="text-sm text-muted-foreground">
                 De app blijft draaien. Herlaad de interface om verder te gaan.
               </p>

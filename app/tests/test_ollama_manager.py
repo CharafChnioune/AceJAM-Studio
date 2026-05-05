@@ -1,5 +1,4 @@
 import importlib
-import base64
 import os
 import tempfile
 import unittest
@@ -61,6 +60,21 @@ class FakeOllamaClient:
         return SimpleNamespace(model=model, details={"family": "qwen"})
 
 
+class FakeOllamaClientNoImage(FakeOllamaClient):
+    def list(self):
+        return SimpleNamespace(
+            models=[
+                SimpleNamespace(
+                    model="qwen3:4b",
+                    size=4_000_000_000,
+                    modified_at="2026-04-25T00:00:00Z",
+                    digest="abc",
+                    details=SimpleNamespace(family="qwen", parameter_size="4B", quantization_level="Q4"),
+                ),
+            ]
+        )
+
+
 class OllamaManagerTest(unittest.TestCase):
     def setUp(self):
         acejam_app._ollama_pull_jobs.clear()
@@ -74,6 +88,12 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(data["embedding_models"], ["nomic-embed-text:latest"])
         self.assertEqual(data["image_models"], ["x/flux2-klein:4b"])
         self.assertEqual(data["running_models"], ["qwen3:4b"])
+
+    def test_ollama_kind_infers_image_generation_models(self):
+        self.assertEqual(acejam_app._ollama_kind_from_model_name("x/flux2-klein:9b-bf16"), "chat")
+        self.assertEqual(acejam_app._ollama_kind_from_model_name("x/z-image-turbo:bf16"), "chat")
+        self.assertEqual(acejam_app._ollama_kind_from_model_name("nomic-embed-text:latest"), "embedding")
+        self.assertEqual(acejam_app._ollama_kind_from_model_name("qwen3:4b"), "chat")
 
     def test_pull_worker_records_streaming_progress(self):
         with patch.object(acejam_app, "_ollama_client", return_value=FakeOllamaClient()):
@@ -279,7 +299,7 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(seen[1][1]["response_format"]["type"], "json_schema")
         self.assertEqual(seen[1][1]["response_format"]["json_schema"]["schema"], schema)
 
-    def test_local_llm_settings_and_catalog_endpoints_include_image_models(self):
+    def test_local_llm_settings_and_catalog_endpoints_ignore_image_generation_settings(self):
         client = TestClient(acejam_app.app)
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / "local_llm_settings.json"
@@ -301,33 +321,33 @@ class OllamaManagerTest(unittest.TestCase):
 
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(saved.json()["settings"]["planner_max_tokens"], 8192)
+        self.assertEqual(saved.json()["settings"]["art_model"], "")
+        self.assertFalse(saved.json()["settings"]["auto_single_art"])
+        self.assertFalse(saved.json()["settings"]["auto_album_art"])
         data = catalog.json()
         self.assertTrue(data["success"])
-        self.assertIn("ollama:x/flux2-klein:4b", data["image_models"])
+        self.assertEqual(data["image_models"], [])
         self.assertEqual(data["settings"]["provider"], "lmstudio")
 
-    def test_art_generation_stores_and_serves_file(self):
+    def test_art_generation_endpoint_is_disabled(self):
         client = TestClient(acejam_app.app)
-        png = base64.b64encode(b"fakepng").decode("ascii")
-        with tempfile.TemporaryDirectory() as tmp:
-            art_root = Path(tmp) / "art"
-            settings_path = Path(tmp) / "local_llm_settings.json"
-            with patch.object(acejam_app, "ART_DIR", art_root), \
-                patch.object(acejam_app, "LOCAL_LLM_SETTINGS_PATH", settings_path), \
-                patch.object(acejam_app, "_ensure_ollama_model_or_start_pull", return_value=None), \
-                patch.object(acejam_app, "ollama_generate_image", return_value={"image": png}):
-                response = client.post(
-                    "/api/art/generate",
-                    json={"scope": "single", "model": "x/flux2-klein:4b", "prompt": "cover art"},
-                )
-                data = response.json()
-                media = client.get(data["art"]["url"])
+        response = client.post(
+            "/api/art/generate",
+            json={"scope": "single", "model": "x/flux2-klein:4b", "prompt": "cover art"},
+        )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(data["success"])
-        self.assertEqual(data["art"]["model"], "x/flux2-klein:4b")
-        self.assertEqual(media.status_code, 200)
-        self.assertEqual(media.content, b"fakepng")
+        self.assertEqual(response.status_code, 410)
+        data = response.json()
+        self.assertFalse(data["success"])
+        self.assertIn("disabled", data["error"].lower())
+
+    def test_default_local_llm_settings_disable_art_generation(self):
+        with patch.object(acejam_app, "_ollama_client", return_value=FakeOllamaClientNoImage()):
+            settings = acejam_app._local_llm_default_settings()
+
+        self.assertEqual(settings["art_model"], "")
+        self.assertFalse(settings["auto_single_art"])
+        self.assertFalse(settings["auto_album_art"])
 
 
 if __name__ == "__main__":

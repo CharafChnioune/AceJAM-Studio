@@ -1564,9 +1564,9 @@ kill all the rivals
         self.assertEqual(len(result["tracks"]), 3)
         for track in result["tracks"]:
             self.assertEqual(track["song_model"], ALBUM_FINAL_MODEL)
-            self.assertEqual(track["inference_steps"], 64)
-            self.assertEqual(track["guidance_scale"], 8.0)
-            self.assertEqual(track["shift"], 3.0)
+            self.assertEqual(track["inference_steps"], 50)
+            self.assertEqual(track["guidance_scale"], 7.0)
+            self.assertEqual(track["shift"], 1.0)
             self.assertEqual(track["quality_profile"], "chart_master")
             self.assertIn("production_team", track)
             self.assertIn("studio_engineer", track["production_team"])

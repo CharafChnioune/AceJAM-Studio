@@ -100,6 +100,34 @@ try:
 except (ImportError, AttributeError):
     pass
 
+# Patch preprocessing temp filenames before the CLI imports the module. Upstream
+# uses the raw audio stem for "*.tmp.pt"; apostrophes/dots can create pass-2
+# mismatches and collisions. Keep this patch local and idempotent.
+try:
+    preprocess_path = _VENDOR / "acestep" / "training_v2" / "preprocess.py"
+    if preprocess_path.is_file():
+        text = preprocess_path.read_text(encoding="utf-8")
+        if "_acejam_safe_tensor_stem" not in text:
+            text = text.replace("import logging\n", "import logging\nimport re\n", 1)
+            text = text.replace(
+                "logger = logging.getLogger(__name__)\n",
+                (
+                    "logger = logging.getLogger(__name__)\n\n\n"
+                    "def _acejam_safe_tensor_stem(index, audio_path):\n"
+                    "    stem = re.sub(r\"[^A-Za-z0-9._-]+\", \"-\", audio_path.stem).strip(\"-._\")\n"
+                    "    return f\"{index + 1:06d}-{stem or 'sample'}\"\n"
+                ),
+                1,
+            )
+            text = text.replace(
+                'tmp_path = out_path / f"{af.stem}.tmp.pt"',
+                'tmp_path = out_path / f"{_acejam_safe_tensor_stem(i, af)}.tmp.pt"',
+                1,
+            )
+            preprocess_path.write_text(text, encoding="utf-8")
+except Exception:
+    pass
+
 # Run the actual ACE-Step training CLI by directly executing the file
 sys.argv = sys.argv[1:]
 _target = _VENDOR / "acestep" / "training_v2" / "cli" / "train_fixed.py"

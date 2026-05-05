@@ -1,6 +1,6 @@
-# AceJAM App Runtime
+# MLX Media App Runtime
 
-This folder contains the self-contained AceJAM web app runtime. Pinokio launcher scripts live one level above this folder.
+This folder contains the self-contained MLX Media web app runtime. Pinokio launcher scripts live one level above this folder.
 
 ## Runtime Layout
 
@@ -10,14 +10,21 @@ This folder contains the self-contained AceJAM web app runtime. Pinokio launcher
 - `songwriting_toolkit.py`: album agent toolbelt for model advice, tags, lyric length, rhyme/flow, hooks, metaphors, cliche checks, and fallback album planning.
 - `official_runner.py`: isolated official ACE-Step 1.5 inference bridge for LM/CoT, output formats, and post-processing controls.
 - `lora_trainer.py`: official ACE-Step trainer job manager.
-- `acestep/`: local ACE-Step inference runtime used by AceJAM generation.
+- `mflux_manager.py`: MFLUX image runtime manager, job registry, image-LoRA registry and CLI bridge.
+- `acestep/`: local ACE-Step inference runtime used by MLX Media generation.
 - `vendor/ACE-Step-1.5/`: official ACE-Step 1.5 trainer clone created by Pinokio install.
-- `data/`: uploads, generated results, local library, LoRA datasets, tensor outputs, training jobs, and adapters.
+- `data/`: uploads, generated results, local library, LoRA datasets, tensor outputs, training jobs, MFLUX results, and adapters.
 - `model_cache/checkpoints/`: ACE-Step DiT, VAE, text encoder, and LM checkpoints.
 
 ## Clean Studio UI
 
 `index.html` keeps the main workflow visible and hides advanced controls by default. Custom shows song, lyrics, reference audio, BPM, key, and time first; Album shows concept, track count, duration, language, model strategy, and planning/generation actions first; Trainer shows dataset flow first. Advanced inference, LM/CoT, output, post-processing, album craft/tooling, and training hyperparameters stay in closed disclosure panels with modified badges when values differ from defaults.
+
+## MFLUX Image Runtime
+
+Image generation is handled by MFLUX only; Ollama is intentionally limited to text/AI-fill and album planning. MFLUX runs in the isolated `mflux-env` because MFLUX 0.17.x uses the newer Transformers 5 stack while ACE-Step uses Transformers 4.x. The runtime exposes `/api/mflux/status`, `/api/mflux/models`, `/api/mflux/uploads`, `/api/mflux/jobs`, `/api/mflux/lora/train`, `/api/mflux/lora/adapters`, and `/api/mflux/art/attach`.
+
+The manager blocks image work unless the app runs on Apple Silicon with MLX available. When MFLUX is installed, jobs call the matching action CLI (`mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-fibo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, or `mflux-train`) and write result metadata to `data/mflux/results/<result_id>/mflux_result.json`. Source/mask uploads are stored in `data/mflux/uploads`, and image-LoRA adapters are discovered from `data/mflux/loras`.
 
 ## Model Advice Runtime
 
@@ -59,17 +66,17 @@ The model advisor never silently swaps to a different checkpoint. Album final re
 
 Album has its own LoRA selector in the Generation disclosure. The selected PEFT LoRA adapter is copied into every generated track payload as `use_lora`, `lora_adapter_path`, `lora_adapter_name`, `lora_scale`, and `adapter_model_variant`, so all selected model renders in the album use the same adapter.
 
-Album planning now uses AceJAM Agents by default: direct local LLM calls for album bible, per-track writer, finalizer, and quality repair, with deterministic Python gates for tag coverage, caption integrity, lyric duration fit, and contract enforcement before audio rendering. The deterministic toolbelt remains available only when `toolbelt_only=true`.
+Album planning now uses MLX Media Agents by default: direct local LLM calls for album bible, per-track writer, finalizer, and quality repair, with deterministic Python gates for tag coverage, caption integrity, lyric duration fit, and contract enforcement before audio rendering. The deterministic toolbelt remains available only when `toolbelt_only=true`.
 
 ## Trainer Flow
 
 1. Pick a dataset folder with the browser/Finder folder picker.
 2. Enter the trigger tag, test genre, and fixed training language.
 3. Click **Start training**.
-4. AceJAM imports the files into `data/lora_imports/<dataset_id>/`, labels sidecar-first, saves the official dataset JSON, preprocesses tensors, trains LoRA by default, registers the final adapter, and tries to auto-load it for generation.
+4. MLX Media imports the files into `data/lora_imports/<dataset_id>/`, labels sidecar-first, saves the official dataset JSON, preprocesses tensors, trains LoRA by default, registers the final adapter, and tries to auto-load it for generation.
 5. Advanced users can still edit labels, run preprocess/train separately, or switch to LoKr.
 
-Registration uses the trigger tag as the adapter folder name under `data/loras/`: `mytrigger`, then `mytrigger-2`, `mytrigger-3`, etc. AceJAM writes `acejam_adapter.json` with `display_name`, `trigger_tag`, `adapter_type`, `model_variant`, `song_model`, `job_id`, `trained_at`, and source paths. `/api/lora/status` and `/api/lora/adapters` return those fields for all Studio dropdowns.
+Registration uses the trigger tag as the adapter folder name under `data/loras/`: `mytrigger`, then `mytrigger-2`, `mytrigger-3`, etc. MLX Media writes `acejam_adapter.json` with `display_name`, `trigger_tag`, `adapter_type`, `model_variant`, `song_model`, `job_id`, `trained_at`, and source paths. `/api/lora/status` and `/api/lora/adapters` return those fields for all Studio dropdowns.
 
 Trainer device selection is independent from generation runtime settings. `auto` resolves to MPS on Apple Silicon when PyTorch MPS is available, CUDA when available elsewhere, and CPU as the fallback; CPU can still be selected explicitly.
 

@@ -6,6 +6,7 @@ export interface LoraSelection {
   lora_adapter_name: string;
   lora_scale: number;
   adapter_model_variant: string;
+  adapter_song_model: string;
 }
 
 export const DEFAULT_LORA_SCALE = 0.45;
@@ -17,7 +18,19 @@ export function emptyLoraSelection(): LoraSelection {
     lora_adapter_name: "",
     lora_scale: DEFAULT_LORA_SCALE,
     adapter_model_variant: "",
+    adapter_song_model: "",
   };
+}
+
+export function songModelFromLoraVariant(variant: string | undefined): string {
+  const normalized = String(variant || "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "xl_sft") return "acestep-v15-xl-sft";
+  if (normalized === "xl_base") return "acestep-v15-xl-base";
+  if (normalized === "xl_turbo") return "acestep-v15-xl-turbo";
+  if (normalized === "sft") return "acestep-v15-sft";
+  if (normalized === "base") return "acestep-v15-base";
+  if (normalized === "turbo") return "acestep-v15-turbo";
+  return "";
 }
 
 export function loraAdapterLabel(adapter: Partial<LoraAdapter>): string {
@@ -49,6 +62,7 @@ export function loraSelectionFromAdapter(
     lora_adapter_name: loraAdapterLabel(adapter),
     lora_scale: Number.isFinite(scale) ? scale : DEFAULT_LORA_SCALE,
     adapter_model_variant: adapter.model_variant || "",
+    adapter_song_model: adapter.song_model || songModelFromLoraVariant(adapter.model_variant),
   };
 }
 
@@ -65,6 +79,9 @@ export function normalizeLoraSelection(
     lora_scale: use && Number.isFinite(rawScale) ? rawScale : DEFAULT_LORA_SCALE,
     adapter_model_variant: use
       ? String(selection?.adapter_model_variant || "").trim()
+      : "",
+    adapter_song_model: use
+      ? String(selection?.adapter_song_model || "").trim()
       : "",
   };
 }

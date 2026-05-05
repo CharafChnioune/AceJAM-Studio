@@ -54,6 +54,12 @@ export const simpleSchema = z.object({
   lora_adapter_name: z.string().default(""),
   lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
   adapter_model_variant: z.string().default(""),
+  adapter_song_model: z.string().default(""),
+  auto_song_art: z.boolean().default(false),
+  auto_album_art: z.boolean().default(false),
+  auto_video_clip: z.boolean().default(false),
+  art_prompt: z.string().default(""),
+  video_prompt: z.string().default(""),
 });
 
 export type SimpleFormValues = z.infer<typeof simpleSchema>;
@@ -80,6 +86,12 @@ export const simpleDefaults: SimpleFormValues = {
   lora_adapter_name: "",
   lora_scale: DEFAULT_LORA_SCALE,
   adapter_model_variant: "",
+  adapter_song_model: "",
+  auto_song_art: false,
+  auto_album_art: false,
+  auto_video_clip: false,
+  art_prompt: "",
+  video_prompt: "",
 };
 
 // ---- Custom ----
@@ -88,9 +100,9 @@ export const customSchema = simpleSchema.extend({
   task_type: z.enum(["text2music", "cover", "repaint", "extract", "lego", "complete"]).default(
     "text2music",
   ),
-  inference_steps: z.number().int().min(4).max(100).default(8),
+  inference_steps: z.number().int().min(4).max(100).default(50),
   guidance_scale: z.number().min(1).max(15).default(7.0),
-  shift: z.number().min(0).max(10).default(3.0),
+  shift: z.number().min(0).max(10).default(1.0),
   audio_format: z.enum(["wav32", "wav16", "mp3", "flac"]).default("wav32"),
   batch_size: z.number().int().min(1).max(8).default(1),
 });
@@ -121,24 +133,12 @@ export const albumSchema = z.object({
   lora_adapter_name: z.string().default(""),
   lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
   adapter_model_variant: z.string().default(""),
+  adapter_song_model: z.string().default(""),
+  auto_song_art: z.boolean().default(false),
+  auto_album_art: z.boolean().default(false),
+  auto_video_clip: z.boolean().default(false),
+  art_prompt: z.string().default(""),
+  video_prompt: z.string().default(""),
 });
 
 export type AlbumFormValues = z.infer<typeof albumSchema>;
-
-// ---- Track-art prompt builder ----
-
-export function defaultTrackArtPrompt(meta: {
-  title?: string;
-  artist_name?: string;
-  caption?: string;
-  tags?: string;
-}): string {
-  const bits = [
-    meta.title && `cover artwork for the track "${meta.title}"`,
-    meta.artist_name && `by ${meta.artist_name}`,
-    meta.caption && `--- vibe: ${meta.caption}`,
-    meta.tags && `--- tags: ${meta.tags}`,
-    "Stylized, high-contrast, square 1:1 album artwork, no text, no watermark.",
-  ].filter(Boolean);
-  return bits.join(" ");
-}

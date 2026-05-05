@@ -2916,7 +2916,7 @@ def create_album_crew(
         "Use one emotional promise per song, one coherent metaphor world, concrete scene details (place, object, weather, body, action), "
         "a repeatable title-connected hook short enough to remember after one listen, "
         "language/script discipline, genre-module routing, and a duration-realistic section_map. "
-        "Default generation profile is chart_master: use 64-step SFT/Base final-render settings, wav32 output, "
+        "Default generation profile is chart_master: use ACE-Step docs-correct 50-step SFT/Base final-render settings with shift 1.0, wav32 output, "
         "ADG only for Base/XL Base, and one album take per track/model unless the user explicitly asks for more. "
         "Use AceStepSettingsPolicyTool, ChartMasterProfileTool, AceStepCoverageAuditTool, EffectiveSettingsTool, "
         "AandRVariantPlanTool, TaskApplicabilityTool, and ModelCompatibilityTool for generation controls; "

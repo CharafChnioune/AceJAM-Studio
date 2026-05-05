@@ -2,7 +2,7 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm, Controller } from "react-hook-form";
 import { motion } from "framer-motion";
-import { Newspaper, Music4, Hash } from "lucide-react";
+import { Newspaper, Music4, Hash, Video } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
@@ -11,8 +11,8 @@ import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { TagInput } from "@/components/wizard/TagInput";
+import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
-import { ArtGenerator } from "@/components/art/ArtGenerator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,8 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
+import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
-import { defaultTrackArtPrompt } from "@/lib/schemas";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { formatDuration } from "@/lib/utils";
 
@@ -62,9 +62,15 @@ interface NewsForm {
   lora_adapter_name: string;
   lora_scale: number;
   adapter_model_variant: string;
+  adapter_song_model: string;
   social_post_caption?: string;
   social_hook_line?: string;
   social_hashtags?: string;
+  auto_song_art: boolean;
+  auto_album_art: boolean;
+  auto_video_clip: boolean;
+  art_prompt: string;
+  video_prompt: string;
 }
 
 export function NewsWizard() {
@@ -73,9 +79,9 @@ export function NewsWizard() {
   const lastResult = useWizardStore((s) => s.lastResult[MODE]);
   const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
   const storePrompt = useWizardStore((s) => s.prompts[MODE]);
-
-  const form = useForm<NewsForm>({
-    defaultValues: {
+  const draft = useWizardStore((s) => s.drafts[MODE]);
+  const newsDefaults = React.useMemo<NewsForm>(
+    () => ({
       user_prompt: "",
       title: "",
       artist_name: "",
@@ -93,22 +99,30 @@ export function NewsWizard() {
       lora_adapter_name: "",
       lora_scale: DEFAULT_LORA_SCALE,
       adapter_model_variant: "",
+      adapter_song_model: "",
       social_post_caption: "",
       social_hook_line: "",
       social_hashtags: "",
-    },
+      auto_song_art: false,
+      auto_album_art: false,
+      auto_video_clip: false,
+      art_prompt: "",
+      video_prompt: "",
+    }),
+    [],
+  );
+
+  const form = useForm<NewsForm>({
+    defaultValues: mergeWizardDraft<NewsForm>(newsDefaults, draft),
     mode: "onChange",
   });
 
   const [step, setStep] = React.useState(0);
   const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const values = form.watch();
+  const draftState = useWizardDraft(MODE, form);
 
-  React.useEffect(() => {
-    if ((storePrompt ?? "") !== (form.getValues("user_prompt") ?? "")) {
-      form.setValue("user_prompt", storePrompt ?? "", { shouldValidate: true });
-    }
-  }, [storePrompt, form]);
+  usePromptMirror(form, "user_prompt", storePrompt);
 
   const generation = useGenerationJobRunner({
     mode: MODE,
@@ -125,6 +139,10 @@ export function NewsWizard() {
     form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
     form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
     form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+    form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
+    if (selection.use_lora && selection.adapter_song_model) {
+      form.setValue("song_model", selection.adapter_song_model, { shouldValidate: true });
+    }
   };
 
   const buildPayload = () => {
@@ -146,6 +164,11 @@ export function NewsWizard() {
       key_scale: v.key_scale,
       vocal_language: v.vocal_language || "nl",
       song_model: v.song_model,
+      auto_song_art: v.auto_song_art,
+      auto_album_art: false,
+      auto_video_clip: v.auto_video_clip,
+      art_prompt: v.art_prompt,
+      video_prompt: v.video_prompt,
       ...normalizeLoraSelection(v),
       social_pack: {
         post_caption: v.social_post_caption,
@@ -169,7 +192,10 @@ export function NewsWizard() {
     if (typeof social.post_caption === "string") merged.social_post_caption = social.post_caption;
     if (typeof social.hook_line === "string") merged.social_hook_line = social.hook_line;
     if (Array.isArray(social.hashtags)) merged.social_hashtags = social.hashtags.join(" ");
-    form.reset({ ...form.getValues(), ...merged });
+    const next = { ...form.getValues(), ...merged };
+    form.reset(next);
+    draftState.saveNow(next);
+    return next;
   };
 
   const audioUrl =
@@ -196,12 +222,16 @@ export function NewsWizard() {
           ]}
           onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
-            hydrate(payload);
+            const merged = hydrate(payload);
             const t =
               (payload.user_prompt as string | undefined) ??
               (payload.news_angle as string | undefined) ??
               "";
-            if (t) form.setValue("user_prompt", t, { shouldValidate: true });
+            if (t) {
+              const withPrompt = { ...merged, user_prompt: t };
+              form.reset(withPrompt);
+              draftState.saveNow(withPrompt);
+            }
           }}
         />
       ),
@@ -347,6 +377,7 @@ export function NewsWizard() {
           <FieldGroup title="LoRA" description="Optioneel: kies een getrainde PEFT LoRA voor deze track.">
             <LoraSelector value={values} onChange={setLoraSelection} />
           </FieldGroup>
+          <AutomationFields control={form.control} register={form.register} values={values} />
         </div>
       ),
     },
@@ -408,20 +439,6 @@ export function NewsWizard() {
                 }}
               />
             )}
-            {resultId && (
-              <ArtGenerator
-                scope="single"
-                attachToResultId={resultId}
-                title={title}
-                caption={(lastResult.caption as string) || values.caption}
-                defaultPrompt={defaultTrackArtPrompt({
-                  title,
-                  artist_name: artist,
-                  caption: (lastResult.caption as string) || values.caption,
-                  tags: (lastResult.tags as string) || values.tags,
-                })}
-              />
-            )}
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -430,7 +447,25 @@ export function NewsWizard() {
               <Button variant="outline" onClick={() => navigate("/library")} className="gap-2">
                 <Music4 className="size-4" /> Open library
               </Button>
-              <Button variant="ghost" onClick={() => setStep(0)}>Volgende nieuwsbericht</Button>
+              {audioUrl && (
+                <Button
+                  variant="outline"
+                  onClick={() => navigate("/wizard/video", {
+                    state: {
+                      audio_url: audioUrl,
+                      title,
+                      artist_name: artist,
+                      prompt: String(lastResult.caption || values.caption || values.tags || title || ""),
+                      target_type: "song",
+                      target_id: resultId || title,
+                    },
+                  })}
+                  className="gap-2"
+                >
+                  <Video className="size-4" /> Create video
+                </Button>
+              )}
+              <Button variant="ghost" onClick={() => { form.reset(newsDefaults); draftState.clear(); setStep(0); }}>Volgende nieuwsbericht</Button>
             </motion.div>
           </div>
         );

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Sparkles, Disc3, Music2, ArrowRight } from "lucide-react";
+import { Sparkles, Disc3, Music2, ArrowRight, Image as ImageIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -14,6 +14,12 @@ import { cn } from "@/lib/utils";
 const STORAGE_KEY = "acejam-welcome-seen";
 
 const QUICK_PATHS = [
+  {
+    to: "/wizard/image",
+    title: "Image Studio",
+    blurb: "MFLUX beelden, edits en artwork op Apple MLX.",
+    icon: ImageIcon,
+  },
   {
     to: "/wizard/simple",
     title: "Eén track snel",
@@ -62,11 +68,11 @@ export function WelcomeDialog() {
             <Sparkles className="size-3" /> Welkom
           </motion.div>
           <DialogTitle className="font-display text-3xl font-semibold leading-tight">
-            Maak muziek met één <span className="text-primary">prompt</span>.
+            Maak media met één <span className="text-primary">prompt</span>.
           </DialogTitle>
           <DialogDescription className="text-balance">
-            Elke wizard start met je idee in eigen woorden. De AI vult elk veld
-            alvast in — jij loopt langs en stuurt bij waar je wilt.
+            Elke wizard start met je idee in eigen woorden. AI-fill blijft voor tekst,
+            muziek loopt via ACE-Step en beelden via MFLUX.
           </DialogDescription>
         </div>
 

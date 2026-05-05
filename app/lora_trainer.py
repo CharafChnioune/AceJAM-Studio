@@ -37,10 +37,23 @@ EPOCH_AUDITION_CLARITY_CAPTION = (
     "sparse arrangement, steady rhythm, no noisy vocal artifacts"
 )
 DEFAULT_LORA_GENERATION_SCALE = 0.45
-DEFAULT_SFT_BASE_INFERENCE_STEPS = 8
-DEFAULT_SFT_BASE_SHIFT = 3.0
+DEFAULT_SFT_BASE_INFERENCE_STEPS = 50
+DEFAULT_SFT_BASE_SHIFT = 1.0
 DEFAULT_TURBO_INFERENCE_STEPS = 8
 DEFAULT_TURBO_SHIFT = 3.0
+VOCAL_MIN_REAL_LYRICS_RATIO = 0.95
+VOCAL_MIN_METADATA_RATIO = 0.90
+VOCAL_MIN_LANGUAGE_RATIO = 0.90
+INSTRUMENTAL_SENTINEL = "[Instrumental]"
+MISSING_LYRICS_SOURCES = {
+    "default_instrumental",
+    "deterministic_filename",
+    "filename_fallback",
+    "filename_duration_fallback",
+    "online_lyrics_missing",
+    "understand_music_failed",
+    "error",
+}
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
@@ -472,6 +485,212 @@ def training_inference_defaults(model_or_variant: Any) -> dict[str, Any]:
     }
 
 
+def _normalized_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _instrumental_like_lyrics(value: Any) -> bool:
+    text = _normalized_text(value).strip()
+    if not text:
+        return False
+    lowered = text.lower().strip()
+    if lowered in {"instrumental", "[instrumental]", "(instrumental)", "instrumental."}:
+        return True
+    return bool(re.fullmatch(r"\[?\s*instrumental\s*\]?", lowered))
+
+
+def is_missing_vocal_lyrics(entry: dict[str, Any] | Any) -> bool:
+    if isinstance(entry, dict):
+        lyrics = str(entry.get("lyrics") or "").strip()
+        status = str(entry.get("lyrics_status") or "").strip().lower()
+        label_source = str(entry.get("label_source") or entry.get("lyrics_source") or "").strip().lower()
+        if status in {"missing", "failed", "error", "needs_review"}:
+            return True
+        if parse_bool(entry.get("requires_review"), False) and status not in {"present", "verified"}:
+            return True
+        if not lyrics or _instrumental_like_lyrics(lyrics):
+            return True
+        if label_source in MISSING_LYRICS_SOURCES and _instrumental_like_lyrics(lyrics):
+            return True
+        return False
+    lyrics = str(entry or "").strip()
+    return not lyrics or _instrumental_like_lyrics(lyrics)
+
+
+def has_real_vocal_lyrics(entry: dict[str, Any] | Any) -> bool:
+    return not is_missing_vocal_lyrics(entry)
+
+
+def _metadata_ready(entry: dict[str, Any]) -> bool:
+    keyscale = str(entry.get("keyscale") or entry.get("key_scale") or "").strip()
+    bpm = entry.get("bpm")
+    try:
+        bpm_value = float(bpm)
+    except (TypeError, ValueError):
+        bpm_value = 0.0
+    return bpm_value > 0 and bool(keyscale)
+
+
+def _language_ready(entry: dict[str, Any]) -> bool:
+    language = str(entry.get("language") or entry.get("vocal_language") or "").strip().lower()
+    return language not in {"", "unknown", "instrumental", "none", "auto"}
+
+
+def _entry_name(entry: dict[str, Any]) -> str:
+    return str(entry.get("filename") or Path(str(entry.get("path") or entry.get("audio_path") or "")).name or "sample")
+
+
+def vocal_dataset_health(labels: list[dict[str, Any]] | None) -> dict[str, Any]:
+    entries = [dict(item) for item in (labels or []) if isinstance(item, dict)]
+    total = len(entries)
+    missing_lyrics = [entry for entry in entries if is_missing_vocal_lyrics(entry)]
+    missing_metadata = [entry for entry in entries if not _metadata_ready(entry)]
+    missing_caption = [entry for entry in entries if not str(entry.get("caption") or "").strip()]
+    weak_language = [entry for entry in entries if not _language_ready(entry)]
+    real_lyrics_count = total - len(missing_lyrics)
+    metadata_ready_count = total - len(missing_metadata)
+    language_ready_count = total - len(weak_language)
+    real_lyrics_ratio = real_lyrics_count / max(total, 1)
+    metadata_ratio = metadata_ready_count / max(total, 1)
+    language_ratio = language_ready_count / max(total, 1)
+
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    if total <= 0:
+        blocking_reasons.append("Dataset has no samples.")
+    if total > 0 and real_lyrics_ratio < VOCAL_MIN_REAL_LYRICS_RATIO:
+        blocking_reasons.append(
+            f"Only {real_lyrics_count}/{total} samples have real vocal lyrics; vocal LoRA training requires at least 95%."
+        )
+    if missing_caption:
+        blocking_reasons.append(f"{len(missing_caption)}/{total} samples are missing captions.")
+    if total > 0 and metadata_ratio < VOCAL_MIN_METADATA_RATIO:
+        blocking_reasons.append(f"Only {metadata_ready_count}/{total} samples have BPM and key metadata; at least 90% is required.")
+    if total > 0 and language_ratio < VOCAL_MIN_LANGUAGE_RATIO:
+        blocking_reasons.append(
+            f"Only {language_ready_count}/{total} samples have known vocal language metadata; at least 90% is required."
+        )
+    if total < 8:
+        warnings.append(f"{total} sample(s) is a tiny training set; quality may be unstable.")
+    if missing_lyrics:
+        warnings.append(
+            f"{len(missing_lyrics)}/{total} samples have missing, failed, filename-only, or [Instrumental] lyrics."
+        )
+    if missing_metadata:
+        warnings.append(f"{len(missing_metadata)}/{total} samples are missing BPM or key metadata.")
+
+    def compact(entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "filename": _entry_name(entry),
+            "path": str(entry.get("path") or entry.get("audio_path") or ""),
+            "label_source": str(entry.get("label_source") or entry.get("lyrics_source") or ""),
+            "lyrics_status": str(entry.get("lyrics_status") or ""),
+            "error": str(entry.get("error") or entry.get("official_error") or ""),
+        }
+
+    blocking = bool(blocking_reasons)
+    return {
+        "sample_count": total,
+        "real_lyrics_count": real_lyrics_count,
+        "missing_lyrics_count": len(missing_lyrics),
+        "caption_ready_count": total - len(missing_caption),
+        "missing_caption_count": len(missing_caption),
+        "metadata_ready_count": metadata_ready_count,
+        "missing_metadata_count": len(missing_metadata),
+        "language_ready_count": language_ready_count,
+        "weak_language_count": len(weak_language),
+        "real_lyrics_ratio": round(real_lyrics_ratio, 4),
+        "metadata_ready_ratio": round(metadata_ratio, 4),
+        "language_ready_ratio": round(language_ratio, 4),
+        "min_real_lyrics_ratio": VOCAL_MIN_REAL_LYRICS_RATIO,
+        "min_metadata_ratio": VOCAL_MIN_METADATA_RATIO,
+        "min_language_ratio": VOCAL_MIN_LANGUAGE_RATIO,
+        "vocal_audition_unreliable": bool(missing_lyrics or blocking),
+        "blocking": blocking,
+        "can_train_vocal": not blocking,
+        "warnings": warnings,
+        "blocking_reasons": blocking_reasons,
+        "missing_lyrics_files": [compact(entry) for entry in missing_lyrics[:50]],
+        "missing_metadata_files": [compact(entry) for entry in missing_metadata[:50]],
+        "missing_caption_files": [compact(entry) for entry in missing_caption[:50]],
+        "weak_language_files": [compact(entry) for entry in weak_language[:50]],
+    }
+
+
+def is_vocal_training_request(params: dict[str, Any] | None) -> bool:
+    params = dict(params or {})
+    target = str(params.get("training_target") or params.get("dataset_type") or "").strip().lower()
+    if target in {"instrumental", "instrumental_style", "style", "style_only"}:
+        return False
+    if parse_bool(params.get("instrumental_training"), False) or parse_bool(params.get("all_instrumental"), False):
+        return False
+    if parse_bool(params.get("style_only"), False):
+        return False
+    return True
+
+
+def dataset_block_message(health: dict[str, Any]) -> str:
+    reasons = [str(item) for item in list(health.get("blocking_reasons") or []) if str(item).strip()]
+    files = [str(item.get("filename") or item.get("path") or "") for item in list(health.get("missing_lyrics_files") or [])[:8] if isinstance(item, dict)]
+    message = "Vocal LoRA dataset is not healthy enough to train."
+    if reasons:
+        message += " " + " ".join(reasons)
+    if files:
+        message += " Fix lyrics/metadata for: " + ", ".join(files)
+    return message
+
+
+def schedule_mismatch_reasons(params: dict[str, Any] | None) -> list[str]:
+    params = dict(params or {})
+    variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
+    defaults = training_inference_defaults(variant)
+    reasons: list[str] = []
+    if params.get("training_shift") not in (None, "") or params.get("shift") not in (None, ""):
+        shift = parse_float(params.get("training_shift", params.get("shift")), defaults["training_shift"], 0.1, 10.0)
+        if abs(shift - float(defaults["training_shift"])) > 1e-6:
+            reasons.append(
+                f"{variant} adapter metadata has shift={shift}; expected shift={defaults['training_shift']}."
+            )
+    if params.get("num_inference_steps") not in (None, ""):
+        steps = parse_int(params.get("num_inference_steps"), defaults["num_inference_steps"], 1, 200)
+        if int(steps) != int(defaults["num_inference_steps"]):
+            reasons.append(
+                f"{variant} adapter metadata has {steps} inference steps; expected {defaults['num_inference_steps']}."
+            )
+    return reasons
+
+
+def adapter_quality_metadata(metadata: dict[str, Any] | None, *, adapter_type: str = "lora") -> dict[str, Any]:
+    meta = dict(metadata or {})
+    quality_status = str(meta.get("quality_status") or "").strip().lower() or "unknown"
+    reasons = [str(item) for item in list(meta.get("quality_reasons") or []) if str(item).strip()]
+    schedule_reasons = schedule_mismatch_reasons(meta)
+    if schedule_reasons:
+        quality_status = "quarantined"
+        reasons.extend(schedule_reasons)
+    dataset_warnings = meta.get("dataset_warnings") if isinstance(meta.get("dataset_warnings"), dict) else {}
+    if parse_bool(dataset_warnings.get("blocking"), False):
+        quality_status = "quarantined"
+        reasons.append("Training dataset failed vocal preflight.")
+    auditions = list(meta.get("epoch_auditions") or [])
+    passed_audition = any(
+        isinstance(item, dict)
+        and str(item.get("status") or "").lower() == "succeeded"
+        and str((item.get("vocal_intelligibility_gate") or {}).get("status") or "pass").lower() in {"pass", "passed"}
+        for item in auditions
+    )
+    if auditions and not passed_audition and quality_status == "unknown":
+        quality_status = "needs_review"
+        reasons.append("No epoch audition passed the vocal quality gate.")
+    if adapter_type != "lora":
+        quality_status = "not_generation_loadable"
+    return {
+        "quality_status": quality_status,
+        "quality_reasons": list(dict.fromkeys(reasons)),
+        "audition_passed": passed_audition,
+    }
+
+
 def infer_adapter_model_metadata(adapter_path: Path | str) -> dict[str, Any]:
     path = Path(adapter_path).expanduser()
     metadata: dict[str, Any] = {}
@@ -840,11 +1059,14 @@ class AceTrainingManager:
             fallback_caption = self._caption_fallback(entry)
             caption = str(entry.get("caption") or fallback_caption).strip() or fallback_caption
             caption = self._apply_trigger_tag(caption, trigger, position)
-            lyrics = str(entry.get("lyrics") or "").strip() or "[Instrumental]"
+            lyrics = str(entry.get("lyrics") or "").strip() or INSTRUMENTAL_SENTINEL
+            missing_vocal_lyrics = is_missing_vocal_lyrics({**entry, "lyrics": lyrics})
             entry.update(
                 {
                     "caption": caption,
                     "lyrics": lyrics,
+                    "lyrics_status": entry.get("lyrics_status") or ("missing" if missing_vocal_lyrics else "present"),
+                    "requires_review": parse_bool(entry.get("requires_review"), False) or missing_vocal_lyrics,
                     "language": fixed_language,
                     "custom_tag": trigger,
                     "trigger_tag": trigger,
@@ -852,7 +1074,7 @@ class AceTrainingManager:
                     "genre_ratio": ratio,
                     "label_source": entry.get("label_source")
                     or ("sidecar_metadata" if entry.get("caption_path") or entry.get("metadata_path") else "deterministic_filename"),
-                    "is_instrumental": parse_bool(entry.get("is_instrumental"), lyrics.strip().lower() == "[instrumental]"),
+                    "is_instrumental": parse_bool(entry.get("is_instrumental"), _instrumental_like_lyrics(lyrics)),
                     "labeled": True,
                 }
             )
@@ -931,40 +1153,7 @@ class AceTrainingManager:
         return ", ".join(parts[:8])
 
     def _dataset_training_warnings(self, labels: list[dict[str, Any]]) -> dict[str, Any]:
-        total = len(labels)
-        missing_lyrics = []
-        missing_metadata = []
-        for entry in labels:
-            lyrics = str(entry.get("lyrics") or "").strip()
-            if not lyrics or lyrics.lower() == "[instrumental]":
-                missing_lyrics.append(entry)
-            if not entry.get("bpm") or not str(entry.get("keyscale") or entry.get("key_scale") or "").strip():
-                missing_metadata.append(entry)
-        if not missing_lyrics:
-            return {
-                "missing_lyrics_count": 0,
-                "missing_metadata_count": len(missing_metadata),
-                "sample_count": total,
-                "vocal_audition_unreliable": False,
-                "warnings": [],
-            }
-        ratio = len(missing_lyrics) / max(total, 1)
-        warnings = [
-            (
-                f"{len(missing_lyrics)}/{total} training samples have empty or [Instrumental] lyrics. "
-                "For vocal LoRAs, add lyrics sidecars or enable online lyrics before training."
-            )
-        ]
-        if missing_metadata:
-            warnings.append(f"{len(missing_metadata)}/{total} samples are missing BPM or key metadata.")
-        return {
-            "missing_lyrics_count": len(missing_lyrics),
-            "missing_metadata_count": len(missing_metadata),
-            "sample_count": total,
-            "vocal_audition_unreliable": True,
-            "blocking": ratio >= 0.25,
-            "warnings": warnings,
-        }
+        return vocal_dataset_health(labels)
 
     def _apply_one_click_dataset_context(self, params: dict[str, Any], labels: list[dict[str, Any]]) -> dict[str, Any]:
         updated = dict(params)
@@ -1174,11 +1363,11 @@ class AceTrainingManager:
             "--lr",
             str(parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0)),
             "--shift",
-            str(parse_float(payload.get("training_shift", payload.get("shift")), inference_defaults["training_shift"], 0.1, 10.0)),
+            str(inference_defaults["training_shift"]),
             "--seed",
             str(training_seed),
             "--num-inference-steps",
-            str(parse_int(payload.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200)),
+            str(inference_defaults["num_inference_steps"]),
             "--warmup-steps",
             str(parse_int(payload.get("warmup_steps"), 100, 0, 100000)),
             "--weight-decay",
@@ -1256,8 +1445,8 @@ class AceTrainingManager:
                 "epochs": epochs,
                 "save_every_n_epochs": 1,
                 "epoch_audition": epoch_audition,
-                "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), inference_defaults["training_shift"], 0.1, 10.0),
-                "num_inference_steps": parse_int(payload.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200),
+                "training_shift": inference_defaults["training_shift"],
+                "num_inference_steps": inference_defaults["num_inference_steps"],
                 "lora_scale": parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
                 "device": device,
                 "precision": precision,
@@ -1358,6 +1547,19 @@ class AceTrainingManager:
                 raise ValueError("Only train and one-click LoRA jobs can be resumed")
             params = dict(job.params or {})
             paths = dict(job.paths or {})
+            quarantine_reasons = self._resume_quarantine_reasons(job, params)
+            if quarantine_reasons:
+                job.state = "failed"
+                job.stage = "quarantined"
+                job.error = "Unsafe LoRA resume blocked: " + " ".join(quarantine_reasons)
+                job.result = {
+                    **dict(job.result or {}),
+                    "quality_status": "quarantined",
+                    "quality_reasons": quarantine_reasons,
+                }
+                job.updated_at = utc_now()
+                self._write_job_unlocked(job)
+                return self._public_job(job)
 
         dataset_dir = Path(str(paths.get("dataset_dir") or paths.get("tensor_output") or "")).expanduser()
         output_dir = Path(str(paths.get("output_dir") or "")).expanduser()
@@ -1373,6 +1575,12 @@ class AceTrainingManager:
             raise RuntimeError(f"Could not determine checkpoint epoch from {latest_checkpoint}")
 
         total_epochs = self._resume_total_epochs(job, params, latest_epoch)
+        resume_variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
+        resume_defaults = training_inference_defaults(resume_variant)
+        params["model_variant"] = resume_defaults["model_variant"]
+        params["song_model"] = resume_defaults["song_model"]
+        params["training_shift"] = resume_defaults["training_shift"]
+        params["num_inference_steps"] = resume_defaults["num_inference_steps"]
         params["device"] = default_training_device("auto")
         params["precision"] = training_precision_for_device(params["device"], params.get("precision"))
         if job.kind == "one_click_train":
@@ -1450,7 +1658,11 @@ class AceTrainingManager:
                 display_name = str(meta.get("display_name") or meta.get("trigger_tag") or "").strip()
                 if not display_name:
                     display_name = child.parent.name if child.name == "final" and root == self.training_dir else child.name
-                loadable = bool(has_lora and adapter_type == "lora")
+                quality = adapter_quality_metadata(meta, adapter_type=adapter_type)
+                meta.setdefault("quality_status", quality["quality_status"])
+                meta.setdefault("quality_reasons", quality["quality_reasons"])
+                quarantined = str(quality.get("quality_status") or "").lower() == "quarantined"
+                loadable = bool(has_lora and adapter_type == "lora" and not quarantined)
                 if loadable and not meta_path.is_file():
                     generated_meta = {
                         "display_name": display_name,
@@ -1483,12 +1695,15 @@ class AceTrainingManager:
                         "language": meta.get("language", ""),
                         "model_variant": meta.get("model_variant", ""),
                         "song_model": meta.get("song_model", ""),
-                        "sample_count": meta.get("sample_count"),
-                        "is_loadable": loadable,
-                        "generation_loadable": loadable,
-                        "metadata": meta,
-                    }
-                )
+	                        "sample_count": meta.get("sample_count"),
+	                        "is_loadable": loadable,
+	                        "generation_loadable": loadable,
+	                        "quality_status": quality["quality_status"],
+	                        "quality_reasons": quality["quality_reasons"],
+	                        "audition_passed": quality["audition_passed"],
+	                        "metadata": meta,
+	                    }
+	                )
         return adapters
 
     def tensorboard_runs(self) -> list[dict[str, str]]:
@@ -1595,6 +1810,10 @@ class AceTrainingManager:
             adapter_metadata["epochs"] = epochs
         if language:
             adapter_metadata["language"] = language
+        quality = adapter_quality_metadata(adapter_metadata, adapter_type=adapter_type)
+        adapter_metadata["quality_status"] = quality["quality_status"]
+        adapter_metadata["quality_reasons"] = quality["quality_reasons"]
+        adapter_metadata["audition_passed"] = quality["audition_passed"]
         (target / "acejam_adapter.json").write_text(json.dumps(adapter_metadata, indent=2), encoding="utf-8")
         return {
             "success": True,
@@ -1633,8 +1852,10 @@ class AceTrainingManager:
             "rank": parse_int(payload.get("rank"), 64, 1, 512),
             "alpha": parse_int(payload.get("alpha"), 128, 1, 1024),
             "dropout": parse_float(payload.get("dropout"), 0.1, 0.0, 1.0),
-            "training_shift": parse_float(payload.get("training_shift", payload.get("shift")), inference_defaults["training_shift"], 0.1, 10.0),
-            "num_inference_steps": parse_int(payload.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200),
+            "training_shift": inference_defaults["training_shift"],
+            "num_inference_steps": inference_defaults["num_inference_steps"],
+            "training_target": str(payload.get("training_target") or payload.get("dataset_type") or "vocal").strip().lower() or "vocal",
+            "instrumental_training": parse_bool(payload.get("instrumental_training"), False),
             "training_seed": training_seed,
             "train_epochs": parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None,
             "save_every_n_epochs": 1,
@@ -1720,12 +1941,21 @@ class AceTrainingManager:
                         try:
                             understood = self.understand_music(audio_path, request_body)
                             self.write_label_sidecars(audio_path, understood)
-                            transcribed_ok += 1
+                            lyrics_text = str(understood.get("lyrics") or "").strip()
+                            missing_lyrics = is_missing_vocal_lyrics({**understood, "lyrics": lyrics_text})
+                            if missing_lyrics:
+                                understood.setdefault("lyrics_status", "missing")
+                                understood.setdefault("requires_review", True)
+                                transcribed_failed += 1
+                            else:
+                                transcribed_ok += 1
                             transcribe_labels.append(
                                 {
                                     "path": str(audio_path),
                                     "filename": audio_path.name,
-                                    "lyrics": str(understood.get("lyrics") or "[Instrumental]"),
+                                    "lyrics": lyrics_text,
+                                    "lyrics_status": "missing" if missing_lyrics else "present",
+                                    "requires_review": missing_lyrics,
                                     "caption": str(understood.get("caption") or ""),
                                     "language": str(understood.get("language") or "unknown"),
                                     "bpm": understood.get("bpm"),
@@ -1743,7 +1973,9 @@ class AceTrainingManager:
                                 {
                                     "path": str(audio_path),
                                     "filename": audio_path.name,
-                                    "lyrics": "[Instrumental]",
+                                    "lyrics": "",
+                                    "lyrics_status": "missing",
+                                    "requires_review": True,
                                     "label_source": "understand_music_failed",
                                     "error": str(transcribe_exc),
                                 }
@@ -1775,6 +2007,20 @@ class AceTrainingManager:
                 genre_ratio=params.get("genre_ratio", 0),
             )
             params = self._apply_one_click_dataset_context(params, labels)
+            dataset_warnings = dict(params.get("dataset_warnings") or {})
+            if is_vocal_training_request(params) and parse_bool(dataset_warnings.get("blocking"), False):
+                self._set_job_state(
+                    job.id,
+                    state="failed",
+                    stage="dataset_blocked",
+                    progress=24,
+                    result={
+                        "sample_count": len(labels),
+                        "dataset_warnings": dataset_warnings,
+                        "labels": labels[:10],
+                    },
+                )
+                raise ValueError(dataset_block_message(dataset_warnings))
             epochs = params.get("train_epochs") or self.auto_epochs(len(labels))
             params["train_epochs"] = epochs
 
@@ -1823,6 +2069,12 @@ class AceTrainingManager:
                 result={"sample_count": len(labels), "epochs": epochs, "dataset_warnings": params.get("dataset_warnings") or {}},
             )
             self._run_command_step(job.id, preprocess_command, log_path, stage="preprocess")
+            tensor_count = len([path for path in tensor_output.glob("*.pt") if not path.name.endswith(".tmp.pt")])
+            if tensor_count < len(labels):
+                raise RuntimeError(
+                    f"Preprocess produced only {tensor_count}/{len(labels)} tensor samples. "
+                    "Fix failed samples before training so the LoRA dataset is complete."
+                )
 
             output_dir = self.training_dir / f"{slug(trigger or adapter_type)}-{job.id}"
             log_dir = output_dir / "runs"
@@ -1935,6 +2187,8 @@ class AceTrainingManager:
                 raise FileNotFoundError(f"Training finished but no final adapter was found at {final_adapter}")
 
             self._set_job_state(job.id, stage="register", progress=90)
+            with self._lock:
+                pre_register_result = dict(self._read_job_unlocked(job.id).result or {})
             registered_info = self.register_adapter(
                 final_adapter,
                 trigger_tag=trigger,
@@ -1949,6 +2203,8 @@ class AceTrainingManager:
                 language=language,
                 metadata={
                     "epoch_audition": params.get("epoch_audition") or {},
+                    "epoch_auditions": list(pre_register_result.get("epoch_auditions") or []),
+                    "dataset_warnings": params.get("dataset_warnings") or {},
                     "training_shift": params.get("training_shift"),
                     "num_inference_steps": params.get("num_inference_steps"),
                     "lora_scale": params.get("lora_scale"),
@@ -2122,6 +2378,15 @@ class AceTrainingManager:
             raise ValueError(f"Cannot resume epoch {latest_epoch}; total epochs is only {total}")
         return total
 
+    def _resume_quarantine_reasons(self, job: TrainingJob, params: dict[str, Any]) -> list[str]:
+        reasons = schedule_mismatch_reasons(params)
+        dataset_warnings = params.get("dataset_warnings")
+        if not isinstance(dataset_warnings, dict):
+            dataset_warnings = (job.result or {}).get("dataset_warnings") if isinstance((job.result or {}).get("dataset_warnings"), dict) else {}
+        if is_vocal_training_request(params) and parse_bool(dataset_warnings.get("blocking"), False):
+            reasons.append("Original dataset failed the vocal LoRA preflight.")
+        return list(dict.fromkeys(str(reason) for reason in reasons if str(reason).strip()))
+
     def _audition_needs_resume_for_epoch(self, job: TrainingJob, epoch: int) -> bool:
         found = False
         for item in list((job.result or {}).get("epoch_auditions") or []):
@@ -2189,12 +2454,12 @@ class AceTrainingManager:
             command = self._command_with_arg(
                 command,
                 "--shift",
-                str(parse_float(params.get("training_shift", params.get("shift")), inference_defaults["training_shift"], 0.1, 10.0)),
+                str(inference_defaults["training_shift"]),
             )
             command = self._command_with_arg(
                 command,
                 "--num-inference-steps",
-                str(parse_int(params.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200)),
+                str(inference_defaults["num_inference_steps"]),
             )
             command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
             command = self._command_with_arg(
@@ -2230,12 +2495,12 @@ class AceTrainingManager:
             "1",
             "--lr",
             str(parse_float(params.get("learning_rate"), 1e-4, 1e-7, 1.0)),
-            "--shift",
-            str(parse_float(params.get("training_shift", params.get("shift")), inference_defaults["training_shift"], 0.1, 10.0)),
+	            "--shift",
+	            str(inference_defaults["training_shift"]),
             "--seed",
             str(parse_int(params.get("training_seed", params.get("seed")), 42, 0, 2**31 - 1)),
-            "--num-inference-steps",
-            str(parse_int(params.get("num_inference_steps"), inference_defaults["num_inference_steps"], 1, 200)),
+	            "--num-inference-steps",
+	            str(inference_defaults["num_inference_steps"]),
             "--warmup-steps",
             "100",
             "--weight-decay",
@@ -2373,21 +2638,43 @@ class AceTrainingManager:
             )
         try:
             result = self.audition_runner(request)
-            audios = list(result.get("audios") or []) if isinstance(result, dict) else []
-            first_audio = audios[0] if audios else {}
-            record = {
-                **base_record,
-                "status": "succeeded",
-                "result_id": str((result or {}).get("result_id") or first_audio.get("result_id") or ""),
-                "audio_url": str(first_audio.get("audio_url") or (result or {}).get("audio_url") or ""),
-                "created_at": utc_now(),
-            }
-            self._record_epoch_audition(job_id, record)
-            self._append_log(log_path, f"[audition epoch {epoch}] generated {record['audio_url'] or record['result_id']}\n")
         except Exception as exc:
             record = {**base_record, "status": "failed", "error": str(exc), "created_at": utc_now()}
             self._record_epoch_audition(job_id, record)
-            self._append_log(log_path, f"[audition epoch {epoch}] failed but training will continue: {exc}\n")
+            self._append_log(log_path, f"[audition epoch {epoch}] failed; stopping vocal training: {exc}\n")
+            raise
+
+        audios = list(result.get("audios") or []) if isinstance(result, dict) else []
+        first_audio = audios[0] if audios else {}
+        gate = {}
+        if isinstance(result, dict):
+            if isinstance(result.get("vocal_intelligibility_gate"), dict):
+                gate = dict(result.get("vocal_intelligibility_gate") or {})
+            elif isinstance(first_audio.get("vocal_intelligibility_gate"), dict):
+                gate = dict(first_audio.get("vocal_intelligibility_gate") or {})
+        audio_url = str(first_audio.get("audio_url") or (result or {}).get("audio_url") or "")
+        result_id = str((result or {}).get("result_id") or first_audio.get("result_id") or "")
+        failure_reason = ""
+        gate_status = str(gate.get("status") or "").strip().lower()
+        if gate and gate_status not in {"pass", "passed"}:
+            failure_reason = str(gate.get("reason") or gate.get("error") or f"vocal gate status={gate_status or 'unknown'}")
+        if not (audio_url or result_id):
+            failure_reason = failure_reason or "audition produced no audio result"
+        record = {
+            **base_record,
+            "status": "failed" if failure_reason else "succeeded",
+            "error": failure_reason,
+            "result_id": result_id,
+            "audio_url": audio_url,
+            "created_at": utc_now(),
+            "vocal_intelligibility_gate": gate,
+            "transcript_preview": str(gate.get("transcript_preview") or gate.get("transcript") or "")[:500],
+        }
+        self._record_epoch_audition(job_id, record)
+        if failure_reason:
+            self._append_log(log_path, f"[audition epoch {epoch}] failed vocal quality gate; stopping training: {failure_reason}\n")
+            raise RuntimeError(f"Epoch {epoch} audition failed vocal quality gate: {failure_reason}")
+        self._append_log(log_path, f"[audition epoch {epoch}] generated {record['audio_url'] or record['result_id']}\n")
 
     def _run_train_command_with_epoch_auditions(
         self,
@@ -2750,10 +3037,12 @@ class AceTrainingManager:
                     song_model=str(params.get("song_model") or ""),
                     job_id=job.id,
                     epochs=parse_int(params.get("epochs") or params.get("train_epochs") or existing_result.get("epochs"), 0, 0, None) or None,
-                    metadata={
-                        "epoch_audition": params.get("epoch_audition") or {},
-                        "training_shift": params.get("training_shift"),
-                        "num_inference_steps": params.get("num_inference_steps"),
+	                    metadata={
+	                        "epoch_audition": params.get("epoch_audition") or {},
+	                        "epoch_auditions": list(existing_result.get("epoch_auditions") or []),
+	                        "dataset_warnings": params.get("dataset_warnings") or existing_result.get("dataset_warnings") or {},
+	                        "training_shift": params.get("training_shift"),
+	                        "num_inference_steps": params.get("num_inference_steps"),
                         "lora_scale": params.get("lora_scale"),
                         "source_paths": {
                             "dataset_dir": job.paths.get("dataset_dir", ""),
@@ -2910,6 +3199,8 @@ class AceTrainingManager:
             "caption": caption,
             "lyrics": lyrics,
             "lyrics_source": lyrics_source,
+            "lyrics_status": str(metadata.get("lyrics_status") or ("missing" if _instrumental_like_lyrics(lyrics) else "present")),
+            "requires_review": parse_bool(metadata.get("requires_review"), _instrumental_like_lyrics(lyrics)),
             "genre": str(metadata.get("genre") or csv_row.get("Genre") or ""),
             "bpm": metadata.get("bpm") or csv_row.get("BPM") or None,
             "keyscale": metadata.get("keyscale") or metadata.get("key_scale") or csv_row.get("Key") or "",
@@ -2925,11 +3216,14 @@ class AceTrainingManager:
         if not audio_path.is_file():
             return {}
         lyrics = str(entry.get("lyrics") or "[Instrumental]").strip() or "[Instrumental]"
+        missing_lyrics = is_missing_vocal_lyrics({**entry, "lyrics": lyrics})
         return {
             "filename": audio_path.name,
             "audio_path": str(audio_path),
             "caption": str(entry.get("caption") or audio_path.stem.replace("_", " ").replace("-", " ")),
             "lyrics": lyrics,
+            "lyrics_status": str(entry.get("lyrics_status") or ("missing" if missing_lyrics else "present")),
+            "requires_review": parse_bool(entry.get("requires_review"), missing_lyrics),
             "genre": str(entry.get("genre") or ""),
             "bpm": None if entry.get("bpm") in [None, "", "auto"] else parse_int(entry.get("bpm"), 120, 30, 300),
             "keyscale": str(entry.get("keyscale") or entry.get("key_scale") or ""),

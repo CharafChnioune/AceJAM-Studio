@@ -285,6 +285,8 @@ ACEJAM_PAYLOAD_JSON
         prompts = client.get("/api/prompt-assistant/prompts")
         self.assertEqual(prompts.status_code, 200)
         self.assertNotIn("trainer", {item["mode"] for item in prompts.json()["prompts"]})
+        self.assertIn("image", {item["mode"] for item in prompts.json()["prompts"]})
+        self.assertIn("video", {item["mode"] for item in prompts.json()["prompts"]})
 
         response = client.post(
             "/api/prompt-assistant/run",
@@ -294,6 +296,63 @@ ACEJAM_PAYLOAD_JSON
         self.assertEqual(response.status_code, 400)
         self.assertFalse(response.json()["success"])
         self.assertIn("disabled for Trainer", response.json()["error"])
+
+    def test_prompt_assistant_run_parses_image_payload_without_music_validation(self):
+        raw = """
+ACEJAM_PAYLOAD_JSON
+{
+  "action": "generate",
+  "prompt": "premium square album artwork, neon street, cinematic lighting, no text",
+  "model_id": "qwen-image",
+  "width": 1024,
+  "height": 1024,
+  "steps": 30,
+  "seed": -1,
+  "lora_adapters": []
+}
+"""
+        client = TestClient(acejam_app.app)
+        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={"mode": "image", "user_prompt": "make album cover art", "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertIsNone(data["validation"])
+        self.assertEqual(data["payload"]["action"], "generate")
+        self.assertEqual(data["payload"]["model_id"], "qwen-image")
+        self.assertEqual(data["payload"]["width"], 1024)
+
+    def test_prompt_assistant_run_parses_video_song_payload_with_mux_policy(self):
+        raw = """
+ACEJAM_PAYLOAD_JSON
+{
+  "action": "song_video",
+  "prompt": "real-life night street music video, handheld camera, moody neon, no text",
+  "model_id": "ltx2-fast-draft",
+  "width": 512,
+  "height": 320,
+  "num_frames": 33,
+  "steps": 8
+}
+"""
+        client = TestClient(acejam_app.app)
+        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={"mode": "video", "user_prompt": "make a short music video", "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertIsNone(data["validation"])
+        self.assertEqual(data["payload"]["action"], "song_video")
+        self.assertEqual(data["payload"]["audio_policy"], "replace_with_source")
+        self.assertTrue(data["payload"]["mux_audio"])
 
     def test_prompt_assistant_run_parses_album_payload(self):
         raw = """

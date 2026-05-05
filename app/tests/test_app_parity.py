@@ -355,8 +355,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("component_status", payload["manifest"]["core_bundle"])
         self.assertIn("boot_downloads", payload["manifest"]["runtime"])
         self.assertEqual(payload["manifest"]["settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
-        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 8)
-        self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 8)
+        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 50)
+        self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
         self.assertEqual(payload["manifest"]["quality_policy"]["default_profile"], "chart_master")
         self.assertEqual(payload["manifest"]["quality_policy"]["turbo_models"]["inference_steps"], 8)
 
@@ -721,7 +721,7 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(normalized["thinking"])
         self.assertTrue(normalized["use_format"])
         self.assertTrue(normalized["sample_mode"] is False)
-        self.assertEqual(normalized["inference_steps"], 8)
+        self.assertEqual(normalized["inference_steps"], 50)
         self.assertEqual(normalized["quality_profile"], "chart_master")
         self.assertEqual(normalized["runner_plan"], "official")
 
@@ -816,9 +816,9 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(normalized["use_cot_caption"])
         self.assertFalse(normalized["use_cot_lyrics"])
         self.assertFalse(normalized["use_cot_language"])
-        self.assertEqual(normalized["inference_steps"], 8)
+        self.assertEqual(normalized["inference_steps"], 50)
         self.assertEqual(normalized["guidance_scale"], 7.0)
-        self.assertEqual(normalized["shift"], 3.0)
+        self.assertEqual(normalized["shift"], 1.0)
         self.assertTrue(normalized["use_adg"])
         self.assertEqual(normalized["batch_size"], 1)
         self.assertEqual(normalized["sampler_mode"], "heun")
@@ -1068,10 +1068,32 @@ class AppParityTest(unittest.TestCase):
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
             normalized = acejam_app._parse_generation_payload(payload)
 
-        self.assertEqual(normalized["inference_steps"], 8)
-        self.assertEqual(normalized["shift"], 3.0)
+        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertEqual(normalized["shift"], 1.0)
         self.assertEqual(normalized["song_model"], "acestep-v15-xl-sft")
         self.assertEqual(normalized["duration"], 180)
+
+    def test_xl_sft_stale_turbo_settings_are_corrected(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "quality_profile": "chart_master",
+            "caption": "west coast rap, clear male vocal, crisp drums",
+            "lyrics": "[Verse]\nClear words move through the city tonight\n\n[Chorus]\nEvery line lands bright",
+            "duration": 20,
+            "inference_steps": 8,
+            "shift": 3.0,
+            "ace_lm_model": "none",
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}):
+            normalized = acejam_app._parse_generation_payload(payload)
+            official = acejam_app._official_request_payload(dict(normalized), Path("/tmp/acejam-test"))
+
+        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertEqual(normalized["shift"], 1.0)
+        self.assertEqual(official["params"]["inference_steps"], 50)
+        self.assertEqual(official["params"]["shift"], 1.0)
 
     def test_simple_custom_helpers_default_to_local_writer_unless_ace_engine_selected(self):
         client = TestClient(acejam_app.app)
@@ -1287,6 +1309,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('value={NONE}>Geen LoRA', selector)
         self.assertIn("getLoraAdapters", selector)
         self.assertIn("isGenerationLoraAdapter", selector)
+        self.assertIn("songModelFromLoraVariant", lora_lib)
+        self.assertIn('return "acestep-v15-xl-sft"', lora_lib)
 
     def test_react_generation_wizards_send_lora_payload_fields(self):
         web_src = Path(__file__).resolve().parents[1] / "web" / "src"
@@ -1306,9 +1330,11 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("lora_adapter_path", text, path.name)
             self.assertIn("lora_scale", text, path.name)
             self.assertIn("adapter_model_variant", text, path.name)
+            self.assertIn("adapter_song_model", text, path.name)
+            self.assertIn('form.setValue("song_model", selection.adapter_song_model', text, path.name)
 
         schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
-        for field in ["use_lora", "lora_adapter_path", "lora_adapter_name", "lora_scale", "adapter_model_variant"]:
+        for field in ["use_lora", "lora_adapter_path", "lora_adapter_name", "lora_scale", "adapter_model_variant", "adapter_song_model"]:
             self.assertIn(field, schemas)
 
     def test_react_generation_wizards_default_to_xl_sft_with_base_only_guard(self):
@@ -1537,7 +1563,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "123")
-        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 8)
+        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 50)
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         self.assertEqual(captured["ace_lm_model"], "none")
         self.assertFalse(captured["thinking"])
@@ -2420,7 +2446,7 @@ class AppParityTest(unittest.TestCase):
         fallback = acejam_app._numbered_audio_filename("My Big Hook!", "acestep-v15-xl-sft", "wav", track_number=2, variant=3)
 
         self.assertEqual(filename, "02-The-Artist--My-Big-Hook--xl-sft--v3.wav")
-        self.assertEqual(fallback, "02-AceJAM--My-Big-Hook--xl-sft--v3.wav")
+        self.assertEqual(fallback, "02-MLX-Media--My-Big-Hook--xl-sft--v3.wav")
 
     def test_ollama_album_defaults_prefer_selected_27b_and_embedding(self):
         catalog = {
@@ -2577,11 +2603,11 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(by_model["acestep-v15-turbo"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo-shift1"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo-continuous"]["inference_steps"], 8)
-        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 8)
+        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 50)
         self.assertEqual(by_model["acestep-v15-turbo"]["guidance_scale"], 7.0)
         self.assertEqual(by_model["acestep-v15-sft"]["guidance_scale"], 7.0)
         self.assertEqual(by_model["acestep-v15-turbo"]["shift"], 3.0)
-        self.assertEqual(by_model["acestep-v15-sft"]["shift"], 3.0)
+        self.assertEqual(by_model["acestep-v15-sft"]["shift"], 1.0)
         self.assertEqual(data["render_strategy"], "all_models_song")
 
     def test_delete_generated_outputs_preserves_uploads_and_lora(self):
@@ -2672,6 +2698,15 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("asr_filler_ratio", score["issue"])
         self.assertIn("asr_repeat_yeah", score["issue"])
 
+    def test_vocal_transcript_score_rejects_phrase_loops(self):
+        score = acejam_app._score_vocal_transcript(
+            "I love you I love you I love you I love you I love you I love you concrete remembers everything lost",
+            ["concrete", "remembers", "everything", "lost"],
+        )
+
+        self.assertFalse(score["passed"])
+        self.assertIn("asr_phrase_loop", score["issue"])
+
     def test_vocal_transcript_score_accepts_clear_words(self):
         score = acejam_app._score_vocal_transcript(
             "Albus in de stad lichten schijnen helder elke regel klinkt nu klaar",
@@ -2721,6 +2756,52 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(result["recommended_take"]["audio_id"], "take-2")
             saved = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "pass")
+
+    def test_vocal_intelligibility_gate_failure_clears_recommended_take(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            result_dir = results / "gatefail"
+            result_dir.mkdir()
+            (result_dir / "take.wav").write_text("audio", encoding="utf-8")
+            result = {
+                "success": True,
+                "result_id": "gatefail",
+                "audios": [{"id": "take-1", "filename": "take.wav", "is_recommended_take": True}],
+                "recommended_take": {"audio_id": "take-1"},
+            }
+            (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+            params = {
+                "task_type": "text2music",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Albus Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "vocal_intelligibility_gate": True,
+            }
+            transcripts = [{
+                "path": str(result_dir / "take.wav"),
+                "status": "fail",
+                "passed": False,
+                "blocking": True,
+                "text": "so oh",
+                "word_count": 2,
+                "keyword_hits": [],
+                "missing_keywords": ["albus"],
+                "issue": "asr_words_2_min_8",
+            }]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_transcribe_audio_paths", return_value=transcripts):
+                gate = acejam_app._apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
+
+            self.assertEqual(gate["status"], "fail")
+            self.assertFalse(result["success"])
+            self.assertNotIn("recommended_take", result)
+            self.assertFalse(result["audios"][0]["is_recommended_take"])
+            saved = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
+            self.assertNotIn("recommended_take", saved)
+            self.assertFalse(saved["audios"][0]["is_recommended_take"])
 
     def test_vocal_intelligibility_gate_treats_unavailable_as_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2813,6 +2894,72 @@ class AppParityTest(unittest.TestCase):
 
             self.assertEqual(result["result_id"], "retry2")
             self.assertEqual(len(calls), 2)
+            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "pass")
+
+    def test_vocal_intelligibility_retries_lora_failure_without_lora_before_rescue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            params = {
+                "task_type": "text2music",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Albus Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "song_model": "acestep-v15-xl-sft",
+                "quality_profile": "chart_master",
+                "inference_steps": 50,
+                "guidance_scale": 7.0,
+                "shift": 1.0,
+                "use_lora": True,
+                "lora_adapter_path": "/tmp/adapter",
+                "lora_adapter_name": "adapter",
+                "lora_scale": 0.45,
+                "adapter_model_variant": "xl_sft",
+                "payload_warnings": [],
+                "album_metadata": {},
+                "vocal_intelligibility_gate": True,
+                "vocal_intelligibility_attempts": 3,
+                "vocal_intelligibility_model_rescue": True,
+                "vocal_intelligibility_model_rescue_after": 1,
+            }
+            calls = []
+
+            def fake_once(attempt_params):
+                calls.append(dict(attempt_params))
+                result_id = f"loraretry{len(calls)}"
+                result_dir = results / result_id
+                result_dir.mkdir()
+                (result_dir / "take.wav").write_text("audio", encoding="utf-8")
+                result = {"success": True, "result_id": result_id, "audios": [{"id": "take-1", "filename": "take.wav"}]}
+                (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                return result
+
+            def fake_asr(paths, **_kwargs):
+                passed = calls[-1].get("use_lora") is False
+                return [{
+                    "path": str(paths[0]),
+                    "status": "pass" if passed else "fail",
+                    "passed": passed,
+                    "blocking": not passed,
+                    "text": "Albus rises bright with every word clear tonight" if passed else "so oh",
+                    "word_count": 8 if passed else 2,
+                    "keyword_hits": ["albus", "rises", "bright"] if passed else [],
+                    "missing_keywords": [] if passed else ["albus"],
+                    "issue": "" if passed else "asr_words_2_min_8",
+                }]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
+                patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft", "acestep-v15-turbo"}), \
+                patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
+                patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
+
+            self.assertEqual([call["song_model"] for call in calls], ["acestep-v15-xl-sft", "acestep-v15-xl-sft"])
+            self.assertTrue(calls[0]["use_lora"])
+            self.assertFalse(calls[1]["use_lora"])
+            self.assertIn("vocal_intelligibility_retry_no_lora", calls[1]["payload_warnings"])
             self.assertEqual(result["vocal_intelligibility_gate"]["status"], "pass")
 
     def test_vocal_intelligibility_generation_rescues_to_turbo_model(self):
@@ -3005,6 +3152,254 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(transcripts[0]["status"], "error")
             self.assertFalse(transcripts[0]["blocking"])
             self.assertIn("timed out after 5s", transcripts[0]["issue"])
+
+    def test_react_ai_fill_persists_wizard_drafts(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        store = (web_src / "store" / "wizard.ts").read_text(encoding="utf-8")
+        draft_hook = (web_src / "hooks" / "useWizardDraft.ts").read_text(encoding="utf-8")
+        custom = (web_src / "wizards" / "CustomWizard.tsx").read_text(encoding="utf-8")
+        wizard_paths = [
+            web_src / "wizards" / "SimpleWizard.tsx",
+            web_src / "wizards" / "CustomWizard.tsx",
+            web_src / "wizards" / "SourceAudioWizard.tsx",
+            web_src / "wizards" / "AlbumWizard.tsx",
+            web_src / "wizards" / "NewsWizard.tsx",
+        ]
+
+        self.assertIn("drafts: Record<string, Record<string, unknown> | undefined>", store)
+        self.assertIn("setDraft", store)
+        self.assertIn("clearDraft", store)
+        self.assertIn("drafts: state.drafts", store)
+        self.assertIn("form.watch", draft_hook)
+        self.assertIn("mergeWizardDraft", draft_hook)
+        self.assertIn("usePromptMirror", draft_hook)
+        self.assertIn("normalizeAceStepRenderDraft", draft_hook)
+        self.assertIn("Number(normalized.inference_steps) < 50", draft_hook)
+        self.assertIn("normalized.shift = 1", draft_hook)
+        self.assertIn("docsCorrectRenderDefaults(nextModel)", custom)
+        self.assertNotIn("docsCorrectRenderDefaults(nextProfile)", custom)
+
+        for path in wizard_paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("useWizardDraft", text, path.name)
+            self.assertIn("mergeWizardDraft", text, path.name)
+            self.assertIn("draftState.saveNow", text, path.name)
+            self.assertIn("draftState.clear", text, path.name)
+
+    def test_react_ollama_image_generation_ui_is_removed(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
+        settings = (web_src / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+        wizard_text = "\n".join(
+            (web_src / "wizards" / name).read_text(encoding="utf-8")
+            for name in [
+                "SimpleWizard.tsx",
+                "CustomWizard.tsx",
+                "SourceAudioWizard.tsx",
+                "AlbumWizard.tsx",
+                "NewsWizard.tsx",
+            ]
+        )
+
+        self.assertNotIn("DEFAULT_OLLAMA_IMAGE_MODEL", api_ts)
+        self.assertNotIn("generateArt", api_ts)
+        self.assertNotIn("Album- &amp; track-art", settings)
+        self.assertNotIn("ArtGenerator", wizard_text)
+        self.assertFalse((web_src / "components" / "art" / "ArtGenerator.tsx").exists())
+        self.assertNotIn("aravhawk/flux:11.9bf16", settings)
+        self.assertNotIn("aravhawk/flux:11.9bf16", wizard_text)
+
+    def test_react_mflux_image_studio_routes_and_payloads_exist(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        app_tsx = (web_src / "App.tsx").read_text(encoding="utf-8")
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
+        settings = (web_src / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+        image_wizard = (web_src / "wizards" / "ImageWizard.tsx").read_text(encoding="utf-8")
+        image_trainer = (web_src / "wizards" / "ImageTrainerWizard.tsx").read_text(encoding="utf-8")
+        art_maker = (web_src / "components" / "mflux" / "MfluxArtMaker.tsx").read_text(encoding="utf-8")
+        home = (web_src / "pages" / "Home.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('path="/wizard/image"', app_tsx)
+        self.assertIn('path="/wizard/image-trainer"', app_tsx)
+        self.assertIn("MLX Media", app_tsx)
+        self.assertIn("getMfluxStatus", api_ts)
+        self.assertIn("startMfluxJob", api_ts)
+        self.assertIn("uploadMfluxImage", api_ts)
+        self.assertIn("startMfluxLoraTraining", api_ts)
+        self.assertIn("attachMfluxArt", api_ts)
+        self.assertIn('TabsTrigger value="mflux"', settings)
+        self.assertIn("MFLUX runtime", settings)
+        self.assertIn("MFLUX commands", settings)
+        self.assertIn("lora_adapters", image_wizard)
+        self.assertIn('mode="image"', image_wizard)
+        self.assertIn("useWizardStore", image_wizard)
+        self.assertIn("ImageUploadBox", image_wizard)
+        self.assertIn("mask_path", image_wizard)
+        self.assertIn("upscale_factor", image_wizard)
+        self.assertIn("model_id", image_wizard)
+        self.assertIn("dataset_path", image_trainer)
+        self.assertIn("dataset_type", image_trainer)
+        self.assertIn("preview_prompt", image_trainer)
+        self.assertIn("startMfluxLoraTraining", image_trainer)
+        self.assertIn("target_type", art_maker)
+        self.assertIn('action: "upscale"', art_maker)
+        self.assertIn("MFLUX Art Maker", art_maker)
+        self.assertIn("Image Studio", home)
+
+    def test_mflux_art_attach_endpoint_returns_metadata(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result_dir = root / "mock-image"
+            result_dir.mkdir(parents=True)
+            (result_dir / "cover.png").write_bytes(b"png")
+            (result_dir / "mflux_result.json").write_text(
+                json.dumps(
+                    {
+                        "result_id": "mock-image",
+                        "filename": "cover.png",
+                        "image_url": "/media/mflux/mock-image/cover.png",
+                        "prompt": "cover art",
+                        "model_label": "Qwen Image",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(acejam_app, "MFLUX_RESULTS_DIR", root):
+                response = client.post(
+                    "/api/mflux/art/attach",
+                    json={"source_result_id": "mock-image", "target_type": "mflux"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["art"]["url"], "/media/mflux/mock-image/cover.png")
+        self.assertEqual(data["art"]["source"], "mflux")
+        self.assertIn("path", data["art"])
+
+    def test_mflux_upload_endpoint_accepts_images_and_rejects_audio(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(acejam_app, "MFLUX_UPLOADS_DIR", root):
+                ok = client.post("/api/mflux/uploads", files={"file": ("cover.png", b"png", "image/png")})
+                bad = client.post("/api/mflux/uploads", files={"file": ("voice.wav", b"wav", "audio/wav")})
+
+        self.assertEqual(ok.status_code, 200)
+        self.assertTrue(ok.json()["success"])
+        self.assertIn("/media/mflux/uploads/", ok.json()["url"])
+        self.assertEqual(bad.status_code, 400)
+
+    def test_react_mlx_video_studio_routes_and_payloads_exist(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        app_tsx = (web_src / "App.tsx").read_text(encoding="utf-8")
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
+        settings = (web_src / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+        video_wizard = (web_src / "wizards" / "VideoWizard.tsx").read_text(encoding="utf-8")
+        library = (web_src / "pages" / "Library.tsx").read_text(encoding="utf-8")
+        source_audio = (web_src / "wizards" / "SourceAudioWizard.tsx").read_text(encoding="utf-8")
+        news = (web_src / "wizards" / "NewsWizard.tsx").read_text(encoding="utf-8")
+        image_wizard = (web_src / "wizards" / "ImageWizard.tsx").read_text(encoding="utf-8")
+        tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
+        home = (web_src / "pages" / "Home.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('path="/wizard/video"', app_tsx)
+        self.assertIn("getMlxVideoStatus", api_ts)
+        self.assertIn("startMlxVideoJob", api_ts)
+        self.assertIn("uploadMlxVideoMedia", api_ts)
+        self.assertIn("registerMlxVideoModelDir", api_ts)
+        self.assertIn("getMlxVideoAttachments", api_ts)
+        self.assertIn("startMlxVideoLoraTraining", api_ts)
+        self.assertIn('TabsTrigger value="video"', settings)
+        self.assertIn("MLX video runtime", settings)
+        self.assertIn("Wan model directories", settings)
+        self.assertIn("Video-LoRA training", settings)
+        self.assertIn("PR #23 end frame", settings)
+        self.assertIn("capabilities", settings)
+        self.assertIn("Video Studio", home)
+        self.assertIn("source_job_id", video_wizard)
+        self.assertIn('mode="video"', video_wizard)
+        self.assertIn("audio_policy", video_wizard)
+        self.assertIn("replace_with_source", video_wizard)
+        self.assertIn("primary_video_url", video_wizard)
+        self.assertIn("end_image_path", video_wizard)
+        self.assertIn("enhance_prompt", video_wizard)
+        self.assertIn("spatial_upscaler", video_wizard)
+        self.assertIn("tiling", video_wizard)
+        self.assertIn("attachMlxVideo", video_wizard)
+        self.assertIn("lora_adapters", video_wizard)
+        self.assertIn("Make Final", video_wizard)
+        self.assertIn("getMlxVideoAttachments", library)
+        self.assertIn('to="/wizard/video"', library)
+        self.assertIn('navigate("/wizard/video"', source_audio)
+        self.assertIn('navigate("/wizard/video"', news)
+        self.assertIn('navigate("/wizard/video"', image_wizard)
+        self.assertIn("mlx-video", tracker)
+
+    def test_react_music_wizards_send_after_render_automation_fields(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
+        automation = (web_src / "components" / "wizard" / "AutomationFields.tsx").read_text(encoding="utf-8")
+        wizard_text = "\n".join(
+            (web_src / "wizards" / name).read_text(encoding="utf-8")
+            for name in ["SimpleWizard.tsx", "CustomWizard.tsx", "AlbumWizard.tsx", "NewsWizard.tsx"]
+        )
+
+        for field in ["auto_song_art", "auto_album_art", "auto_video_clip", "art_prompt", "video_prompt"]:
+            self.assertIn(field, schemas)
+            self.assertIn(field, wizard_text)
+        self.assertIn("After audio render", automation)
+        self.assertIn("AutomationFields", wizard_text)
+        self.assertIn("auto_video_clip: v.auto_video_clip", wizard_text)
+
+    def test_mlx_video_upload_endpoint_accepts_image_audio_and_rejects_text(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(acejam_app, "MLX_VIDEO_UPLOADS_DIR", root):
+                image = client.post("/api/mlx-video/uploads", files={"file": ("frame.png", b"png", "image/png")})
+                audio = client.post("/api/mlx-video/uploads", files={"file": ("song.wav", b"wav", "audio/wav")})
+                bad = client.post("/api/mlx-video/uploads", files={"file": ("notes.txt", b"txt", "text/plain")})
+
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(audio.status_code, 200)
+        self.assertIn("/media/mlx-video/uploads/", image.json()["url"])
+        self.assertEqual(audio.json()["media_kind"], "audio")
+        self.assertEqual(bad.status_code, 400)
+
+    def test_mlx_video_attachments_endpoint_filters_targets(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "attachments.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {"target_type": "song", "target_id": "track-a", "result_id": "one"},
+                        {"target_type": "album", "target_id": "album-b", "result_id": "two"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "mlx_video_list_attachments", lambda target_type=None, target_id=None: [
+                     item for item in json.loads(path.read_text(encoding="utf-8"))
+                     if (not target_type or item["target_type"] == target_type) and (not target_id or item["target_id"] == target_id)
+                 ]):
+                response = client.get("/api/mlx-video/attachments?target_type=song&target_id=track-a")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(response.json()["attachments"][0]["result_id"], "one")
+
+    def test_mlx_video_lora_train_endpoint_reports_upstream_unavailable(self):
+        client = TestClient(acejam_app.app)
+        response = client.post("/api/mlx-video/lora/train", json={"dataset_path": "/tmp/nope"})
+
+        self.assertEqual(response.status_code, 501)
+        self.assertFalse(response.json()["success"])
+        self.assertFalse(response.json()["available"])
+        self.assertIn("upstream mlx-video", response.json()["error"])
 
 
 if __name__ == "__main__":

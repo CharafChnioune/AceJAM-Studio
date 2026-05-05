@@ -1,0 +1,2 @@
+mflux>=0.17.5,<0.18; sys_platform == "darwin" and platform_machine == "arm64"
+hf_transfer>=0.1.9

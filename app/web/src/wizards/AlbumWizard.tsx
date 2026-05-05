@@ -5,15 +5,16 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Disc3, Music4, Trash2, Plus, Loader2, Sparkles,
+  Disc3, Music4, Trash2, Plus, Loader2, Sparkles, Video,
 } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
+import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
-import { ArtGenerator } from "@/components/art/ArtGenerator";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,9 +34,9 @@ import {
   api,
   startAlbumPlanJob,
   getAlbumPlanJob,
-  type ArtMetadata,
 } from "@/lib/api";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
+import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useSettingsStore } from "@/store/settings";
 import { useJobsStore } from "@/store/jobs";
@@ -67,7 +68,7 @@ interface AlbumTrack {
   role?: string;
   result_id?: string;
   audio_url?: string;
-  art?: ArtMetadata;
+  art?: { url?: string };
   [k: string]: unknown;
 }
 
@@ -88,11 +89,10 @@ export function AlbumWizard() {
   const lastResult = useWizardStore((s) => s.lastResult[MODE]);
   const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
   const storePrompt = useWizardStore((s) => s.prompts[MODE]);
+  const draft = useWizardStore((s) => s.drafts[MODE]);
   const plannerModel = useSettingsStore((s) => s.plannerModel);
-
-  const form = useForm<AlbumFormValues>({
-    resolver: zodResolver(albumSchema),
-    defaultValues: {
+  const albumDefaults = React.useMemo<AlbumFormValues>(
+    () => ({
       concept: "",
       num_tracks: 7,
       track_duration: 180,
@@ -100,12 +100,26 @@ export function AlbumWizard() {
       song_model: "acestep-v15-xl-sft",
       song_model_strategy: "single_model_album",
       quality_profile: "standard",
+      custom_tags: "",
+      negative_tags: "",
       use_lora: false,
       lora_adapter_path: "",
       lora_adapter_name: "",
       lora_scale: DEFAULT_LORA_SCALE,
       adapter_model_variant: "",
-    },
+      adapter_song_model: "",
+      auto_song_art: false,
+      auto_album_art: false,
+      auto_video_clip: false,
+      art_prompt: "",
+      video_prompt: "",
+    }),
+    [],
+  );
+
+  const form = useForm<AlbumFormValues>({
+    resolver: zodResolver(albumSchema),
+    defaultValues: mergeWizardDraft<AlbumFormValues>(albumDefaults, draft),
     mode: "onChange",
   });
 
@@ -116,12 +130,9 @@ export function AlbumWizard() {
   const [jobProgress, setJobProgress] = React.useState<number>(0);
   const [jobStatus, setJobStatus] = React.useState<string>("");
   const values = form.watch();
+  const draftState = useWizardDraft(MODE, form);
 
-  React.useEffect(() => {
-    if ((storePrompt ?? "") !== (form.getValues("concept") ?? "")) {
-      form.setValue("concept", storePrompt ?? "", { shouldValidate: true });
-    }
-  }, [storePrompt, form]);
+  usePromptMirror(form, "concept", storePrompt);
 
   // ---- Hydration from AI prompt assistant ----
   const hydrate = (payload: Record<string, unknown>) => {
@@ -145,14 +156,20 @@ export function AlbumWizard() {
       "lora_adapter_name",
       "lora_scale",
       "adapter_model_variant",
+      "adapter_song_model",
+      "auto_song_art",
+      "auto_album_art",
+      "auto_video_clip",
+      "art_prompt",
+      "video_prompt",
     ] as const) {
       if (k in payload) {
         // @ts-expect-error dynamic
         next[k] = payload[k];
       }
     }
-    form.reset({ ...form.getValues(), ...next });
-
+    const merged = { ...form.getValues(), ...next };
+    form.reset(merged);
     if (Array.isArray(payload.tracks)) {
       setPlan({
         concept: (payload.concept as string) ?? values.concept,
@@ -165,6 +182,8 @@ export function AlbumWizard() {
         tracks: payload.tracks as AlbumTrack[],
       });
     }
+    draftState.saveNow(merged);
+    return merged;
   };
 
   const setLoraSelection = (selection: LoraSelection) => {
@@ -173,6 +192,11 @@ export function AlbumWizard() {
     form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
     form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
     form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
+    form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
+    if (selection.use_lora && selection.adapter_song_model) {
+      form.setValue("song_model", selection.adapter_song_model, { shouldValidate: true });
+      form.setValue("song_model_strategy", "single_model_album", { shouldValidate: true });
+    }
   };
 
   // ---- Async generate ----
@@ -193,6 +217,11 @@ export function AlbumWizard() {
         genre_prompt: values.genre_prompt,
         custom_tags: values.custom_tags,
         negative_tags: values.negative_tags,
+        auto_song_art: values.auto_song_art,
+        auto_album_art: values.auto_album_art,
+        auto_video_clip: values.auto_video_clip,
+        art_prompt: values.art_prompt,
+        video_prompt: values.video_prompt,
         ...normalizeLoraSelection(values),
         planner_lm_provider: "ollama",
         ollama_model: plannerModel || undefined,
@@ -300,7 +329,7 @@ export function AlbumWizard() {
     (lastResult?.album_family_id as string | undefined) ||
     plan?.album_family_id;
   const resultTracks = (lastResult?.tracks as AlbumTrack[] | undefined) ?? [];
-  const albumArt = lastResult?.album_art as ArtMetadata | undefined;
+  const albumArt = lastResult?.album_art as { url?: string } | undefined;
 
   const steps: WizardStepDef[] = [
     {
@@ -320,12 +349,16 @@ export function AlbumWizard() {
           ]}
           onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
-            hydrate(payload);
+            const merged = hydrate(payload);
             const c =
               (payload.concept as string | undefined) ??
               (payload.user_prompt as string | undefined) ??
               form.getValues("concept");
-            if (c) form.setValue("concept", c, { shouldValidate: true });
+            if (c) {
+              const withConcept = { ...merged, concept: c };
+              form.reset(withConcept);
+              draftState.saveNow(withConcept);
+            }
           }}
         />
       ),
@@ -508,26 +541,6 @@ export function AlbumWizard() {
       ),
     },
     {
-      key: "cover",
-      title: "Album cover",
-      description:
-        "Genereer de cover via Ollama. Per-track artwork volgt na de render.",
-      isValid: true,
-      render: () => (
-        <ArtGenerator
-          scope="album"
-          attachToAlbumFamilyId={albumFamilyId}
-          title={values.album_title || values.concept.slice(0, 80)}
-          caption={values.album_mood || values.genre_prompt || values.concept}
-          defaultPrompt={
-            `Album cover artwork for "${values.album_title || values.concept.slice(0, 80)}". ` +
-            `Mood: ${values.album_mood || "—"}. Genre: ${values.genre_prompt || "—"}. ` +
-            "1:1 square, high-contrast, cinematic, no text, no watermark."
-          }
-        />
-      ),
-    },
-    {
       key: "render",
       title: "Render-instellingen",
       isValid: true,
@@ -581,9 +594,9 @@ export function AlbumWizard() {
                     <Select value={field.value} onValueChange={field.onChange}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="draft">Draft</SelectItem>
-                        <SelectItem value="standard">Standard</SelectItem>
-                        <SelectItem value="chart_master">Chart Master</SelectItem>
+                        <SelectItem value="draft">Laag</SelectItem>
+                        <SelectItem value="standard">Middel</SelectItem>
+                        <SelectItem value="chart_master">Hoog</SelectItem>
                       </SelectContent>
                     </Select>
                   )}
@@ -601,6 +614,7 @@ export function AlbumWizard() {
           >
             <LoraSelector value={values} onChange={setLoraSelection} />
           </FieldGroup>
+          <AutomationFields control={form.control} register={form.register} values={values} albumContext />
         </div>
       ),
     },
@@ -693,6 +707,13 @@ export function AlbumWizard() {
                 </div>
               </motion.div>
             )}
+            <MfluxArtMaker
+              title={values.album_title || (lastResult.album_title as string | undefined)}
+              artist={values.artist_name || (lastResult.artist_name as string | undefined)}
+              context={values.concept || (lastResult.concept as string | undefined)}
+              targetType="album_family"
+              targetId={albumFamilyId || (lastResult.album_id as string | undefined)}
+            />
             <div className="space-y-2">
               {resultTracks.map((t, i) => (
                 <motion.div
@@ -717,22 +738,31 @@ export function AlbumWizard() {
                     )}
                   </div>
                   {t.audio_url && (
-                    <WaveformPlayer
-                      src={t.audio_url}
-                      title={t.title}
-                      artist={values.artist_name}
-                    />
-                  )}
-                  {t.result_id && !t.art && (
-                    <ArtGenerator
-                      scope="single"
-                      attachToResultId={t.result_id}
-                      title={t.title}
-                      caption={t.caption}
-                      defaultPrompt={
-                        `Cover artwork for "${t.title}". Vibe: ${t.caption ?? values.album_mood ?? ""}. 1:1, high contrast.`
-                      }
-                    />
+                    <div className="space-y-2">
+                      <WaveformPlayer
+                        src={t.audio_url}
+                        title={t.title}
+                        artist={values.artist_name}
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => navigate("/wizard/video", {
+                          state: {
+                            audio_url: t.audio_url,
+                            title: t.title,
+                            artist_name: values.artist_name,
+                            prompt: String(t.caption || values.concept || t.title || ""),
+                            target_type: "song",
+                            target_id: t.result_id || t.song_id || `${lastResult.album_id || albumFamilyId || "album"}:track:${i + 1}`,
+                          },
+                        })}
+                        className="gap-2"
+                      >
+                        <Video className="size-3.5" />
+                        Create video
+                      </Button>
+                    </div>
                   )}
                 </motion.div>
               ))}
@@ -755,7 +785,7 @@ export function AlbumWizard() {
               <Button variant="outline" onClick={() => navigate("/library")} className="gap-2">
                 <Music4 className="size-4" /> Open library
               </Button>
-              <Button variant="ghost" onClick={() => { setStep(0); setPlan(null); }}>Nog een album</Button>
+              <Button variant="ghost" onClick={() => { form.reset(albumDefaults); draftState.clear(); setStep(0); setPlan(null); }}>Nog een album</Button>
             </div>
           </div>
         );
@@ -766,7 +796,7 @@ export function AlbumWizard() {
   return (
     <WizardShell
       title="Album wizard"
-      subtitle="Concept → tracklist → cover → render. Albumcoherentie via planner-agents."
+      subtitle="Concept → tracklist → render. Albumcoherentie via planner-agents."
       steps={steps}
       step={step}
       onStepChange={setStep}
