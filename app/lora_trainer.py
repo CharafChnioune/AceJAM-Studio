@@ -1020,7 +1020,7 @@ class AceTrainingManager:
 
     @staticmethod
     def _needs_understand(item: dict[str, Any]) -> bool:
-        """True when an audio sample lacks usable lyric/caption sidecars."""
+        """True when an audio sample lacks usable lyric/caption/metadata sidecars."""
         if not isinstance(item, dict):
             return False
         path = Path(str(item.get("path") or ""))
@@ -1030,12 +1030,25 @@ class AceTrainingManager:
         lyrics_path = path.with_name(f"{stem}.lyrics.txt")
         legacy_lyrics_path = path.with_suffix(".txt")
         json_path = path.with_name(f"{stem}.json")
-        if lyrics_path.is_file() or legacy_lyrics_path.is_file() or json_path.is_file():
-            return False
-        existing_lyrics = str(item.get("lyrics") or "").strip()
-        if existing_lyrics and existing_lyrics.lower() != "[instrumental]":
-            return False
-        return True
+        metadata: dict[str, Any] = {}
+        if json_path.is_file():
+            try:
+                metadata = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception:
+                metadata = {}
+        existing_lyrics = str(item.get("lyrics") or metadata.get("lyrics") or "").strip()
+        if not existing_lyrics and lyrics_path.is_file():
+            existing_lyrics = lyrics_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not existing_lyrics and legacy_lyrics_path.is_file():
+            existing_lyrics = legacy_lyrics_path.read_text(encoding="utf-8", errors="replace").strip()
+
+        if is_missing_vocal_lyrics({**metadata, **item, "lyrics": existing_lyrics}):
+            return True
+        if not str(item.get("caption") or metadata.get("caption") or "").strip():
+            return True
+        if not _metadata_ready({**metadata, **item}):
+            return True
+        return False
 
     def label_entries(
         self,
@@ -1960,7 +1973,7 @@ class AceTrainingManager:
                                     "language": str(understood.get("language") or "unknown"),
                                     "bpm": understood.get("bpm"),
                                     "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
-                                    "label_source": "official_ace_step_understand_music",
+                                    "label_source": str(understood.get("label_source") or "online_lyrics"),
                                 }
                             )
                             self._append_log(

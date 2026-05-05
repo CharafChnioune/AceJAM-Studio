@@ -2699,31 +2699,41 @@ def _training_lookup_online_lyrics(audio_path: Path, body: dict[str, Any]) -> di
     """Look up lyrics for an audio file online and return an understand_music
     -shaped dict that `write_label_sidecars` can consume.
 
-    No LM, no audio-codes extraction — just ID3 + HTTP. Returns:
+    No LM, no audio-codes extraction — just ID3 + HTTP + lightweight
+    audio analysis. Returns:
         caption       — "{artist} – {title}" derived from tags/filename
         lyrics        — section-tagged lyrics (or "[Instrumental]" if not found)
-        bpm           — None (let ACE-Step auto-detect at training time)
-        key_scale     — "" (auto)
-        time_signature— "" (auto)
-        language      — "" (let preprocessing infer)
+        bpm/key_scale — detected from audio when possible
+        time_signature— "4" fallback
+        language      — request language when known
         is_instrumental — true when lyrics lookup failed
-        label_source  — "online_lyrics_ovh" or "online_lyrics_missing"
+        label_source  — online source used, or "online_lyrics_missing"
     """
     artist, title = _resolve_audio_artist_title(audio_path)
-    online = _fetch_lyrics_ovh(artist, title) if (artist and title) else ""
+    source = "online_lyrics_missing"
+    online = ""
+    if artist and title:
+        online = _search_lyrics_online(artist, title)
+        if online:
+            source = "online_lyrics_genius"
+        else:
+            online = _fetch_lyrics_ovh(artist, title)
+            if online:
+                source = "online_lyrics_ovh"
     tagged = _apply_acestep_section_tags(online) if online else ""
     has_lyrics = bool(tagged.strip())
+    bpm, keyscale = _detect_bpm_key(str(audio_path))
     caption_bits = [bit for bit in [artist, title] if bit]
     caption = " – ".join(caption_bits).strip() or audio_path.stem
     return {
         "caption": caption,
         "lyrics": tagged or "[Instrumental]",
-        "bpm": None,
-        "key_scale": "",
-        "time_signature": "",
-        "language": "",
+        "bpm": bpm,
+        "key_scale": keyscale,
+        "time_signature": "4",
+        "language": str(body.get("language") or body.get("vocal_language") or "").strip() or "unknown",
         "is_instrumental": not has_lyrics,
-        "label_source": "online_lyrics_ovh" if has_lyrics else "online_lyrics_missing",
+        "label_source": source if has_lyrics else "online_lyrics_missing",
         "ace_lm_model": "",
         "online_artist": artist,
         "online_title": title,
@@ -2747,9 +2757,11 @@ def _training_write_label_sidecars(audio_path: Path, payload: dict[str, Any]) ->
         "keyscale": str(payload.get("key_scale") or payload.get("keyscale") or "").strip(),
         "timesignature": str(payload.get("time_signature") or payload.get("timesignature") or "").strip(),
         "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
-        "is_instrumental": False if missing else lyrics_text.strip().lower() == "[instrumental]",
-        "label_source": "online_lyrics_missing" if missing else "official_ace_step_understand_music",
+        "is_instrumental": lyrics_text.strip().lower() == "[instrumental]",
+        "label_source": "online_lyrics_missing" if missing else str(payload.get("label_source") or "online_lyrics"),
         "ace_lm_model": str(payload.get("ace_lm_model") or ""),
+        "online_artist": str(payload.get("online_artist") or ""),
+        "online_title": str(payload.get("online_title") or ""),
     }
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
     return {"lyrics_path": str(lyrics_path), "metadata_path": str(metadata_path)}

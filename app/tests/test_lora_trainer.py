@@ -177,6 +177,32 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(payload["samples"][0]["audio_path"], str(audio.resolve()))
             self.assertEqual(payload["samples"][0]["lyrics"], "[Verse]\nhello")
 
+    def test_one_click_refreshes_missing_lyrics_or_metadata_sidecars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "track.wav"
+            audio.write_bytes(b"audio")
+
+            (root / "track.lyrics.txt").write_text("[Instrumental]\n", encoding="utf-8")
+            (root / "track.json").write_text(
+                json.dumps({"caption": "rap vocal", "lyrics": "[Instrumental]", "bpm": 92, "keyscale": "A minor"}),
+                encoding="utf-8",
+            )
+            self.assertTrue(AceTrainingManager._needs_understand({"path": str(audio)}))
+
+            (root / "track.lyrics.txt").write_text("[Verse]\nReal lyric line", encoding="utf-8")
+            (root / "track.json").write_text(
+                json.dumps({"caption": "rap vocal", "lyrics": "[Verse]\nReal lyric line"}),
+                encoding="utf-8",
+            )
+            self.assertTrue(AceTrainingManager._needs_understand({"path": str(audio)}))
+
+            (root / "track.json").write_text(
+                json.dumps({"caption": "rap vocal", "lyrics": "[Verse]\nReal lyric line", "bpm": 92, "keyscale": "A minor"}),
+                encoding="utf-8",
+            )
+            self.assertFalse(AceTrainingManager._needs_understand({"path": str(audio)}))
+
     def test_one_click_labeling_keeps_user_language_and_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
