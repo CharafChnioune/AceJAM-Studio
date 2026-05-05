@@ -97,6 +97,24 @@ class AppParityTest(unittest.TestCase):
         (path / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
         return path
 
+    def test_online_lyrics_title_candidates_cover_common_2pac_variants(self):
+        candidates = acejam_app._lyrics_title_candidates("Bomb First (Intro)")
+        self.assertIn("Bomb First My Second Reply", candidates)
+        self.assertIn("Hellrazor", acejam_app._lyrics_title_candidates("Hell Razor"))
+        self.assertIn("Nothing To Lose", acejam_app._lyrics_title_candidates("Nothin To Lose"))
+        self.assertIn("California Love", acejam_app._lyrics_title_candidates("Califonia Love"))
+        self.assertIn("Only Fear Of Death", acejam_app._lyrics_title_candidates("Only Fear Death"))
+        self.assertIn("Whatz Ya Phone Number", acejam_app._lyrics_title_candidates("What'z Ya Phone Number"))
+
+        self.assertEqual(
+            acejam_app._genius_slug("2Pac", "To Live & Die In L.A."),
+            "2pac-to-live-and-die-in-la",
+        )
+        self.assertEqual(
+            acejam_app._strip_artist_prefix_from_title("2Pac", "2Pac - Ready 4 Whatever"),
+            "Ready 4 Whatever",
+        )
+
     def test_nested_generation_metadata_is_canonicalized(self):
         payload = acejam_app._merge_nested_generation_metadata(
             {

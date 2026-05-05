@@ -4,6 +4,7 @@ import base64
 import asyncio
 import gc
 import hashlib
+import html as html_lib
 import importlib
 import ast
 import json
@@ -2528,6 +2529,21 @@ _WORD_TO_INT = {
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
 
+_LYRICS_TITLE_ALIASES = {
+    "bomb first": ["Bomb First My Second Reply"],
+    "bomb first intro": ["Bomb First My Second Reply"],
+    "hell razor": ["Hellrazor"],
+    "nothin to lose": ["Nothing To Lose"],
+    "only fear death": ["Only Fear Of Death"],
+    "califonia love": ["California Love"],
+}
+
+_LYRICS_WORD_REPLACEMENTS = {
+    "califonia": "california",
+    "nothin": "nothing",
+    "whatz": "whats",
+}
+
 
 def _extract_artist_title_from_id3(audio_path: Path) -> tuple[str, str]:
     try:
@@ -2567,25 +2583,100 @@ def _extract_artist_title_from_filename(audio_path: Path) -> tuple[str, str]:
     return (artist, title)
 
 
+def _lyrics_lookup_key(value: str) -> str:
+    text = (value or "").lower()
+    text = text.replace("&", " and ")
+    text = text.replace("’", "'").replace("`", "'")
+    text = re.sub(r"\bfeat(?:uring)?\.?\b.*$", "", text)
+    text = re.sub(r"\bft\.?\b.*$", "", text)
+    text = re.sub(r"[\(\)\[\]]", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _strip_artist_prefix_from_title(artist: str, title: str) -> str:
+    cleaned = (title or "").strip()
+    if not artist or not cleaned:
+        return cleaned
+    artist_key = _lyrics_lookup_key(artist)
+    title_key = _lyrics_lookup_key(cleaned)
+    if not artist_key or not title_key.startswith(artist_key + " "):
+        return cleaned
+    # Handles bad ID3 titles like "2Pac - Ready 4 Whatever" while preserving
+    # normal titles that merely mention the artist later in the text.
+    patterns = [
+        rf"^\s*{re.escape(artist)}\s*[-–—:]\s*",
+        rf"^\s*{re.escape(artist)}\s+",
+    ]
+    for pattern in patterns:
+        stripped = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        if stripped and stripped != cleaned:
+            return stripped
+    parts = cleaned.split(None, 1)
+    return parts[1].strip() if len(parts) == 2 else cleaned
+
+
 def _resolve_audio_artist_title(audio_path: Path) -> tuple[str, str]:
     artist, title = _extract_artist_title_from_id3(audio_path)
     if artist and title:
-        return (artist, title)
+        return (artist, _strip_artist_prefix_from_title(artist, title))
     fa, ft = _extract_artist_title_from_filename(audio_path)
-    return (artist or fa, title or ft)
+    resolved_artist = artist or fa
+    resolved_title = title or ft
+    return (resolved_artist, _strip_artist_prefix_from_title(resolved_artist, resolved_title))
 
 
 def _strip_paren_suffix(title: str) -> str:
     return re.sub(r"\s*[\(\[][^\)\]]*[\)\]]\s*$", "", title or "").strip()
 
 
+def _lyrics_title_candidates(title: str) -> list[str]:
+    """Return likely public-lyrics title variants for messy filenames/ID3 tags."""
+    original = (title or "").strip()
+    if not original:
+        return []
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        cleaned = re.sub(r"\s+", " ", (value or "").strip(" -–—:"))
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+
+    add(original)
+    bare = _strip_paren_suffix(original)
+    add(bare)
+    punctless = re.sub(r"[’'`]", "", bare or original).strip()
+    add(punctless)
+
+    key = _lyrics_lookup_key(bare or original)
+    for alias_key, aliases in _LYRICS_TITLE_ALIASES.items():
+        if key == alias_key:
+            for alias in aliases:
+                add(alias)
+
+    replaced = key
+    for source, target in _LYRICS_WORD_REPLACEMENTS.items():
+        replaced = re.sub(rf"\b{re.escape(source)}\b", target, replaced)
+    if replaced and replaced != key:
+        add(replaced.title())
+
+    if key == "only fear death":
+        add("Only Fear Of Death")
+    if key == "hell razor":
+        add("Hellrazor")
+
+    # Some lyrics sites collapse short compound titles into a single word.
+    words = key.split()
+    if len(words) == 2 and all(len(word) > 3 for word in words):
+        add("".join(words).title())
+
+    return candidates
+
+
 def _fetch_lyrics_ovh(artist: str, title: str) -> str:
     if not artist or not title:
         return ""
-    candidates: list[tuple[str, str]] = [(artist, title)]
-    bare_title = _strip_paren_suffix(title)
-    if bare_title and bare_title != title:
-        candidates.append((artist, bare_title))
+    candidates: list[tuple[str, str]] = [(artist, item) for item in _lyrics_title_candidates(title)]
     for artist_q, title_q in candidates:
         try:
             url = f"{_LYRICS_OVH_BASE}/{quote(artist_q, safe='')}/{quote(title_q, safe='')}"
@@ -13049,76 +13140,68 @@ def _parse_artist_title(filename: str) -> tuple[str, str]:
     return "", stem.replace("-", " ").replace("_", " ").strip()
 
 
+def _genius_slug(artist_name: str, song_title: str) -> str:
+    slug = f"{artist_name} {song_title}".lower()
+    slug = slug.replace("&", " and ")
+    slug = slug.replace("’", "'").replace("`", "'")
+    slug = re.sub(r"[^a-z0-9\s]", "", slug)
+    slug = re.sub(r"\s+", "-", slug.strip())
+    return slug
+
+
+def _fetch_genius_page(url: str) -> str:
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    })
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
+
+
+def _extract_genius_lyrics(html: str) -> str:
+    blocks = re.findall(r'data-lyrics-container="true"[^>]*>(.*?)</div>', html, re.DOTALL)
+    if not blocks:
+        return ""
+    text = "\n".join(blocks)
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html_lib.unescape(text)
+    # Clean Genius header junk (contributors, translations line)
+    lines = text.split("\n")
+    cleaned: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip contributor/translation header lines
+        if re.match(r"^\d+\s*Contributor", stripped):
+            continue
+        if stripped.startswith("Translations") or re.match(r"^[A-Z][a-zà-ü]+(,\s*[A-Z])", stripped):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
 def _search_lyrics_online(artist: str, title: str) -> str:
     """Fetch lyrics from Genius. Returns lyrics text or empty string."""
-    import urllib.parse
-    import urllib.request
-
     if not artist or not title:
         return ""
     print(f"[autolabel] Genius lyrics lookup: {artist} - {title}...", flush=True)
 
-    def _genius_slug(artist_name: str, song_title: str) -> str:
-        slug = f"{artist_name} {song_title}".lower()
-        slug = re.sub(r"[^a-z0-9\s]", "", slug)
-        slug = re.sub(r"\s+", "-", slug.strip())
-        return slug
-
-    def _fetch_genius_page(url: str) -> str:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode("utf-8", errors="ignore")
-
-    def _extract_genius_lyrics(html: str) -> str:
-        blocks = re.findall(r'data-lyrics-container="true"[^>]*>(.*?)</div>', html, re.DOTALL)
-        if not blocks:
-            return ""
-        text = "\n".join(blocks)
-        text = re.sub(r"<br\s*/?>", "\n", text)
-        text = re.sub(r"<[^>]+>", "", text)
-        text = text.replace("&amp;", "&").replace("&#x27;", "'").replace("&quot;", '"')
-        # Clean Genius header junk (contributors, translations line)
-        lines = text.split("\n")
-        cleaned: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            # Skip contributor/translation header lines
-            if re.match(r"^\d+\s*Contributor", stripped):
-                continue
-            if stripped.startswith("Translations") or re.match(r"^[A-Z][a-zà-ü]+(,\s*[A-Z])", stripped):
-                continue
-            cleaned.append(line)
-        return "\n".join(cleaned).strip()
-
-    try:
-        slug = _genius_slug(artist, title)
-        url = f"https://genius.com/{slug}-lyrics"
-        html = _fetch_genius_page(url)
-        lyrics = _extract_genius_lyrics(html)
-        if lyrics and len(lyrics) > 50:
-            lines = len(lyrics.split("\n"))
-            print(f"[autolabel] Genius lyrics FOUND: {len(lyrics)} chars, {lines} lines", flush=True)
-            return lyrics
-    except Exception as exc:
-        print(f"[autolabel] Genius primary lookup failed: {exc}", flush=True)
-
-    # Fallback: try with simplified title (remove parentheses, features)
-    try:
-        clean_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", title).strip()
-        if clean_title != title:
-            print(f"[autolabel] Genius retry with clean title: {clean_title}", flush=True)
-            slug = _genius_slug(artist, clean_title)
+    for index, candidate_title in enumerate(_lyrics_title_candidates(title)):
+        try:
+            if index:
+                print(f"[autolabel] Genius retry with title variant: {candidate_title}", flush=True)
+            slug = _genius_slug(artist, candidate_title)
             url = f"https://genius.com/{slug}-lyrics"
             html = _fetch_genius_page(url)
             lyrics = _extract_genius_lyrics(html)
             if lyrics and len(lyrics) > 50:
                 lines = len(lyrics.split("\n"))
-                print(f"[autolabel] Genius lyrics FOUND (retry): {len(lyrics)} chars, {lines} lines", flush=True)
+                suffix = " (variant)" if index else ""
+                print(f"[autolabel] Genius lyrics FOUND{suffix}: {len(lyrics)} chars, {lines} lines", flush=True)
                 return lyrics
-    except Exception:
-        pass
+        except Exception as exc:
+            if index == 0:
+                print(f"[autolabel] Genius primary lookup failed: {exc}", flush=True)
+            continue
 
     print(f"[autolabel] Genius lyrics NOT FOUND for: {artist} - {title}", flush=True)
     return ""
