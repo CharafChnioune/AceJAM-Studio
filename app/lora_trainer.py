@@ -54,10 +54,12 @@ MISSING_LYRICS_SOURCES = {
     "understand_music_failed",
     "error",
 }
-ONLINE_LYRICS_REVIEW_SOURCES = {
+TRUSTED_ONLINE_LYRICS_SOURCES = {
+    "genius",
     "online_lyrics",
     "online_lyrics_genius",
-    "genius",
+    "online_lyrics_ovh",
+    "smart_musicbrainz",
 }
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
@@ -632,14 +634,22 @@ def _instrumental_like_lyrics(value: Any) -> bool:
     return bool(re.fullmatch(r"\[?\s*instrumental\s*\]?", lowered))
 
 
+def _trusted_online_vocal_label(entry: dict[str, Any], lyrics: str, status: str, label_source: str) -> bool:
+    if label_source not in TRUSTED_ONLINE_LYRICS_SOURCES:
+        return False
+    if not lyrics or _instrumental_like_lyrics(lyrics):
+        return False
+    return status not in {"missing", "failed", "error"}
+
+
 def is_missing_vocal_lyrics(entry: dict[str, Any] | Any) -> bool:
     if isinstance(entry, dict):
         lyrics = str(entry.get("lyrics") or "").strip()
         status = str(entry.get("lyrics_status") or "").strip().lower()
         label_source = str(entry.get("label_source") or entry.get("lyrics_source") or "").strip().lower()
+        if _trusted_online_vocal_label(entry, lyrics, status, label_source):
+            return False
         if status in {"missing", "failed", "error", "needs_review", "unreviewed"}:
-            return True
-        if label_source in ONLINE_LYRICS_REVIEW_SOURCES and status != "verified":
             return True
         if parse_bool(entry.get("requires_review"), False) and status != "verified":
             return True
@@ -3418,9 +3428,9 @@ class AceTrainingManager:
         label_source = str(metadata.get("label_source") or metadata.get("lyrics_source") or lyrics_source or "").strip().lower()
         lyrics_status = str(metadata.get("lyrics_status") or ("missing" if _instrumental_like_lyrics(lyrics) else "present")).strip().lower()
         requires_review = parse_bool(metadata.get("requires_review"), _instrumental_like_lyrics(lyrics))
-        if label_source in ONLINE_LYRICS_REVIEW_SOURCES and lyrics_status != "verified":
-            lyrics_status = "needs_review"
-            requires_review = True
+        if _trusted_online_vocal_label(metadata, lyrics, lyrics_status, label_source):
+            lyrics_status = "verified"
+            requires_review = False
         duration = None
         if sf is not None:
             try:

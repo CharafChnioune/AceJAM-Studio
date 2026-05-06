@@ -183,7 +183,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(payload["samples"][0]["audio_path"], str(audio.resolve()))
             self.assertEqual(payload["samples"][0]["lyrics"], "[Verse]\nhello")
 
-    def test_scan_marks_old_online_lyrics_sidecars_for_review(self):
+    def test_scan_accepts_trusted_online_lyrics_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             dataset = root / "songs"
@@ -209,9 +209,9 @@ class LoraTrainerTest(unittest.TestCase):
             manager = self.make_manager(root)
             scanned = manager.scan_dataset(dataset)
             sample = scanned["files"][0]
-            self.assertEqual(sample["lyrics_status"], "needs_review")
-            self.assertTrue(sample["requires_review"])
-            self.assertTrue(is_missing_vocal_lyrics(sample))
+            self.assertEqual(sample["lyrics_status"], "verified")
+            self.assertFalse(sample["requires_review"])
+            self.assertFalse(is_missing_vocal_lyrics(sample))
 
     def test_one_click_refreshes_missing_lyrics_or_metadata_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -340,7 +340,7 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertEqual([item["filename"] for item in kept], ["good.wav"])
         self.assertEqual([item["filename"] for item in removed], ["instrumental.wav", "failed.wav"])
 
-    def test_vocal_training_blocks_unreviewed_online_lyrics(self):
+    def test_vocal_training_accepts_trusted_online_lyrics(self):
         label = {
             "filename": "online.wav",
             "caption": "rap vocal",
@@ -353,10 +353,28 @@ class LoraTrainerTest(unittest.TestCase):
             "language": "en",
         }
 
+        self.assertFalse(is_missing_vocal_lyrics(label))
+        kept, removed = split_missing_vocal_lyrics_labels([label])
+        self.assertEqual([item["filename"] for item in kept], ["online.wav"])
+        self.assertEqual(removed, [])
+
+    def test_vocal_training_still_blocks_unreviewed_manual_lyrics(self):
+        label = {
+            "filename": "manual.wav",
+            "caption": "rap vocal",
+            "lyrics": "[Verse]\nReal lyric line with words",
+            "lyrics_status": "needs_review",
+            "requires_review": True,
+            "label_source": "manual_import",
+            "bpm": 92,
+            "keyscale": "A minor",
+            "language": "en",
+        }
+
         self.assertTrue(is_missing_vocal_lyrics(label))
         kept, removed = split_missing_vocal_lyrics_labels([label])
         self.assertEqual(kept, [])
-        self.assertEqual([item["filename"] for item in removed], ["online.wav"])
+        self.assertEqual([item["filename"] for item in removed], ["manual.wav"])
 
     def test_adapter_quality_requires_explicit_gate_pass(self):
         quality = adapter_quality_metadata(
