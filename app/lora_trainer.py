@@ -521,6 +521,20 @@ def has_real_vocal_lyrics(entry: dict[str, Any] | Any) -> bool:
     return not is_missing_vocal_lyrics(entry)
 
 
+def split_missing_vocal_lyrics_labels(labels: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for item in labels or []:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        if is_missing_vocal_lyrics(entry):
+            removed.append(entry)
+        else:
+            kept.append(entry)
+    return kept, removed
+
+
 def _metadata_ready(entry: dict[str, Any]) -> bool:
     keyscale = str(entry.get("keyscale") or entry.get("key_scale") or "").strip()
     bpm = entry.get("bpm")
@@ -2021,6 +2035,31 @@ class AceTrainingManager:
                 tag_position=str(params.get("tag_position") or "prepend"),
                 genre_ratio=params.get("genre_ratio", 0),
             )
+            excluded_missing_lyrics: list[dict[str, Any]] = []
+            if is_vocal_training_request(params):
+                labels, excluded_missing_lyrics = split_missing_vocal_lyrics_labels(labels)
+                if excluded_missing_lyrics:
+                    names = ", ".join(_entry_name(entry) for entry in excluded_missing_lyrics[:12])
+                    suffix = "" if len(excluded_missing_lyrics) <= 12 else f", +{len(excluded_missing_lyrics) - 12} more"
+                    self._append_log(
+                        log_path,
+                        f"[dataset] removed {len(excluded_missing_lyrics)} sample(s) without real vocal lyrics after labeling: {names}{suffix}\n",
+                    )
+                    self._set_job_state(
+                        job.id,
+                        result={
+                            "excluded_missing_lyrics_count": len(excluded_missing_lyrics),
+                            "excluded_missing_lyrics_files": [
+                                {
+                                    "filename": _entry_name(entry),
+                                    "path": str(entry.get("path") or entry.get("audio_path") or ""),
+                                    "lyrics_status": str(entry.get("lyrics_status") or ""),
+                                    "label_source": str(entry.get("label_source") or entry.get("lyrics_source") or ""),
+                                }
+                                for entry in excluded_missing_lyrics[:50]
+                            ],
+                        },
+                    )
             params = self._apply_one_click_dataset_context(params, labels)
             dataset_warnings = dict(params.get("dataset_warnings") or {})
             if is_vocal_training_request(params) and parse_bool(dataset_warnings.get("blocking"), False):
@@ -2031,6 +2070,16 @@ class AceTrainingManager:
                     progress=24,
                     result={
                         "sample_count": len(labels),
+                        "excluded_missing_lyrics_count": len(excluded_missing_lyrics),
+                        "excluded_missing_lyrics_files": [
+                            {
+                                "filename": _entry_name(entry),
+                                "path": str(entry.get("path") or entry.get("audio_path") or ""),
+                                "lyrics_status": str(entry.get("lyrics_status") or ""),
+                                "label_source": str(entry.get("label_source") or entry.get("lyrics_source") or ""),
+                            }
+                            for entry in excluded_missing_lyrics[:50]
+                        ],
                         "dataset_warnings": dataset_warnings,
                         "labels": labels[:10],
                     },

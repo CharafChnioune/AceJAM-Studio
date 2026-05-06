@@ -15,6 +15,7 @@ from lora_trainer import (
     model_to_variant,
     normalize_training_song_model,
     safe_generation_trigger_tag,
+    split_missing_vocal_lyrics_labels,
     training_device_policy,
     training_precision_for_device,
     utc_now,
@@ -268,6 +269,41 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(health["real_lyrics_count"], 1)
             self.assertIn("instrumental.wav", [item["filename"] for item in health["missing_lyrics_files"]])
             self.assertIn("failed.wav", [item["filename"] for item in health["missing_lyrics_files"]])
+
+    def test_vocal_training_filters_samples_without_real_lyrics_after_labeling(self):
+        labels = [
+            {
+                "filename": "good.wav",
+                "caption": "rap vocal",
+                "lyrics": "[Verse]\nReal lyric line with words",
+                "lyrics_status": "present",
+                "bpm": 92,
+                "keyscale": "A minor",
+                "language": "en",
+            },
+            {
+                "filename": "instrumental.wav",
+                "caption": "rap vocal",
+                "lyrics": "[Instrumental]",
+                "lyrics_status": "missing",
+                "requires_review": True,
+                "bpm": 90,
+                "keyscale": "B minor",
+                "language": "instrumental",
+            },
+            {
+                "filename": "failed.wav",
+                "caption": "rap vocal",
+                "lyrics": "",
+                "lyrics_status": "missing",
+                "label_source": "understand_music_failed",
+            },
+        ]
+
+        kept, removed = split_missing_vocal_lyrics_labels(labels)
+
+        self.assertEqual([item["filename"] for item in kept], ["good.wav"])
+        self.assertEqual([item["filename"] for item in removed], ["instrumental.wav", "failed.wav"])
 
     def test_one_click_defaults_are_lora_and_dynamic_epochs(self):
         with tempfile.TemporaryDirectory() as tmp:
