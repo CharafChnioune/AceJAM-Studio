@@ -27,13 +27,13 @@ except Exception:  # pragma: no cover - dependency is installed in the app env.
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".m4a"}
 JOB_ACTIVE_STATES = {"queued", "running", "stopping"}
-EPOCH_AUDITION_DURATION_SECONDS = 20
+EPOCH_AUDITION_DURATION_SECONDS = 30
 EPOCH_AUDITION_CHARS_PER_SECOND = 8
 EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 2
 EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 5.0
 EPOCH_AUDITION_SECTION_STYLE = "clear dry lead vocal, intelligible delivery"
 EPOCH_AUDITION_CLARITY_CAPTION = (
-    "20-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
+    "30-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
     "sparse arrangement, steady rhythm, no noisy vocal artifacts"
 )
 DEFAULT_LORA_GENERATION_SCALE = 0.45
@@ -74,45 +74,73 @@ SONG_MODEL_TO_VARIANT = {model: variant for variant, model in VARIANT_TO_SONG_MO
 EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "rap",
+        "label": "Rap / Hip-hop",
         "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster", "2pac", "tupac"),
         "caption_tags": "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
         "lyrics": "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+        "bpm": 95,
+        "keyscale": "A minor",
+        "timesignature": "4",
     },
     {
         "key": "pop",
+        "label": "Pop",
         "terms": ("pop", "radio", "dance pop", "synth pop", "electropop"),
         "caption_tags": "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
         "lyrics": "[Verse]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+        "bpm": 118,
+        "keyscale": "C major",
+        "timesignature": "4",
     },
     {
         "key": "rnb",
+        "label": "Soul / R&B",
         "terms": ("r&b", "rnb", "soul", "neo soul", "smooth", "slow jam"),
         "caption_tags": "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
         "lyrics": "[Verse]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+        "bpm": 82,
+        "keyscale": "D minor",
+        "timesignature": "4",
     },
     {
         "key": "rock",
+        "label": "Rock",
         "terms": ("rock", "guitar", "punk", "metal", "alt rock", "indie rock"),
         "caption_tags": "driving rock drums, electric guitars, clear lead vocal, strong chorus",
         "lyrics": "[Verse]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+        "bpm": 128,
+        "keyscale": "E minor",
+        "timesignature": "4",
     },
     {
         "key": "edm",
+        "label": "EDM / Dance",
         "terms": ("edm", "house", "techno", "trance", "club", "dance", "electronic"),
         "caption_tags": "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
         "lyrics": "[Verse]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+        "bpm": 124,
+        "keyscale": "F# minor",
+        "timesignature": "4",
     },
     {
         "key": "cinematic",
+        "label": "Cinematic",
         "terms": ("cinematic", "orchestral", "score", "trailer", "choir", "epic"),
         "caption_tags": "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
         "lyrics": "[Verse]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+        "bpm": 88,
+        "keyscale": "D minor",
+        "timesignature": "4",
     },
     {
         "key": "country",
+        "label": "Country / Folk",
         "terms": ("country", "folk", "americana", "acoustic", "banjo"),
         "caption_tags": "warm acoustic guitars, steady country drums, clear heartfelt vocal",
         "lyrics": "[Verse]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+        "bpm": 96,
+        "keyscale": "G major",
+        "timesignature": "4",
     },
 )
 EPOCH_AUDITION_DEFAULT_PROFILE_KEY = "pop"
@@ -220,7 +248,11 @@ def _format_epoch_audition_time(seconds: float | int) -> str:
 
 def _epoch_audition_timed_section(section: str, start: float, end: float) -> str:
     section_name = str(section or "[Verse]").strip().strip("[]") or "Verse"
-    return f"[{section_name} - seconds {int(round(start))}-{int(round(end))}, {EPOCH_AUDITION_SECTION_STYLE}]"
+    # ACE-Step docs warn that stacked lyric tags can be sung literally or
+    # confuse the model. Keep timing in metadata, and keep lyric tags concise.
+    if section_name.lower().startswith("verse"):
+        return f"[{section_name} - spoken word]"
+    return f"[{section_name}]"
 
 
 def _epoch_audition_search_text(*values: str | None) -> str:
@@ -237,7 +269,12 @@ def epoch_audition_genre_profile(
     requested = _epoch_audition_search_text(genre_key)
     if requested and requested != "auto":
         for profile in EPOCH_AUDITION_GENRE_PROFILES:
-            if _epoch_audition_search_text(str(profile.get("key") or "")) == requested:
+            keys = [
+                str(profile.get("key") or ""),
+                str(profile.get("label") or ""),
+                *[str(term) for term in profile.get("terms", ())],
+            ]
+            if any(_epoch_audition_search_text(item) == requested for item in keys):
                 return dict(profile)
     search_text = _epoch_audition_search_text(caption, lyrics_hint)
     for profile in EPOCH_AUDITION_GENRE_PROFILES:
@@ -248,6 +285,37 @@ def epoch_audition_genre_profile(
         if profile.get("key") == EPOCH_AUDITION_DEFAULT_PROFILE_KEY:
             return dict(profile)
     return dict(EPOCH_AUDITION_GENRE_PROFILES[0])
+
+
+def epoch_audition_genre_options() -> list[dict[str, Any]]:
+    """Public UI catalog for LoRA test-WAV lyrics, tags, and metadata."""
+    options: list[dict[str, Any]] = [
+        {
+            "key": "auto",
+            "label": "Auto",
+            "caption_tags": "Uses the dataset captions to infer rap, pop, soul, rock, EDM, cinematic, or country.",
+            "lyrics": "",
+            "bpm": None,
+            "keyscale": "",
+            "timesignature": "",
+            "default": False,
+        }
+    ]
+    for profile in EPOCH_AUDITION_GENRE_PROFILES:
+        options.append(
+            {
+                "key": str(profile.get("key") or ""),
+                "label": str(profile.get("label") or profile.get("key") or "").strip(),
+                "caption_tags": str(profile.get("caption_tags") or "").strip(),
+                "lyrics": str(profile.get("lyrics") or "").strip(),
+                "bpm": profile.get("bpm"),
+                "keyscale": str(profile.get("keyscale") or "").strip(),
+                "timesignature": str(profile.get("timesignature") or "").strip(),
+                "terms": list(profile.get("terms") or []),
+                "default": profile.get("key") == EPOCH_AUDITION_DEFAULT_PROFILE_KEY,
+            }
+        )
+    return options
 
 
 def _append_caption_parts(parts: list[str], value: str | None, seen: set[str]) -> None:
@@ -320,6 +388,66 @@ def default_epoch_audition_lyrics(
     return lyrics, meta
 
 
+def _profile_audition_metadata(profile: dict[str, Any]) -> dict[str, Any]:
+    bpm = parse_int(profile.get("bpm"), 0, 0, 300)
+    return {
+        "bpm": bpm if bpm > 0 else None,
+        "keyscale": str(profile.get("keyscale") or "").strip(),
+        "timesignature": str(profile.get("timesignature") or "").strip(),
+    }
+
+
+def _most_common_nonempty(values: list[Any]) -> str:
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if text not in counts:
+            counts[text] = 0
+            order.append(text)
+        counts[text] += 1
+    if not counts:
+        return ""
+    return sorted(order, key=lambda item: (-counts[item], order.index(item)))[0]
+
+
+def _median_positive_bpm(values: list[Any]) -> int | None:
+    bpms: list[float] = []
+    for value in values:
+        try:
+            bpm = float(value)
+        except (TypeError, ValueError):
+            continue
+        if bpm > 0:
+            bpms.append(bpm)
+    if not bpms:
+        return None
+    bpms.sort()
+    mid = len(bpms) // 2
+    if len(bpms) % 2:
+        return int(round(bpms[mid]))
+    return int(round((bpms[mid - 1] + bpms[mid]) / 2.0))
+
+
+def dataset_epoch_audition_metadata(labels: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return stable music metadata for no-LM epoch auditions.
+
+    ACE-Step can infer metadata when its LM formatting path is enabled, but
+    epoch auditions intentionally run without LM for speed and reproducibility.
+    Passing BPM/key/time from the reviewed dataset keeps those calls complete.
+    """
+    bpm = _median_positive_bpm([entry.get("bpm") for entry in labels])
+    keyscale = _most_common_nonempty([entry.get("keyscale") or entry.get("key_scale") for entry in labels])
+    timesignature = _most_common_nonempty([entry.get("timesignature") or entry.get("time_signature") for entry in labels])
+    return {
+        "bpm": bpm,
+        "keyscale": keyscale,
+        "timesignature": timesignature,
+    }
+
+
 def _add_epoch_audition_timing(blocks: list[dict[str, Any]], *, duration: int) -> tuple[str, list[dict[str, Any]]]:
     active_blocks = [block for block in blocks if block.get("lines")]
     if not active_blocks:
@@ -356,8 +484,8 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
     raw = str(lyrics or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     duration_seconds = max(10, int(duration or EPOCH_AUDITION_DURATION_SECONDS))
     lyric_char_budget = int(duration_seconds * EPOCH_AUDITION_CHARS_PER_SECOND)
-    # Timed section tags are part of ACE-Step's temporal script, but they add
-    # prompt text that should not reduce the sung-line budget to one section.
+    # Timing is tracked in metadata, not embedded into the lyric tags. This keeps
+    # runtime lyrics aligned with ACE-Step's concise tag guidance.
     max_chars = max(280, min(420, lyric_char_budget + 140))
     max_sung_lines = max(2, min(8, int(round(duration_seconds / EPOCH_AUDITION_SECONDS_PER_SUNG_LINE))))
     source_lines = [line for line in raw.splitlines() if line.strip()]
@@ -429,7 +557,7 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
         "runtime_sung_lines": len(runtime_sung_lines),
         "timed_structure": bool(time_slices),
         "time_slices": time_slices,
-        "action": "none" if fitted == raw else "fit_for_20s",
+        "action": "none" if fitted == raw else f"fit_for_{duration_seconds}s",
     }
     return fitted, meta
 
@@ -1138,6 +1266,7 @@ class AceTrainingManager:
         enabled = parse_bool(payload.get("epoch_audition_enabled"), True) or bool(user_caption or user_lyrics)
         profile = epoch_audition_genre_profile(user_caption, user_lyrics, user_genre)
         safe_trigger = safe_generation_trigger_tag(trigger_tag)
+        profile_metadata = _profile_audition_metadata(profile)
         lyrics, lyrics_meta = default_epoch_audition_lyrics(
             user_caption,
             trigger_tag=safe_trigger,
@@ -1160,6 +1289,9 @@ class AceTrainingManager:
             "genre_profile": lyrics_meta["genre_profile"],
             "duration": EPOCH_AUDITION_DURATION_SECONDS,
             "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),
+            "bpm": parse_int(payload.get("epoch_audition_bpm"), profile_metadata["bpm"], 0, 300) or None,
+            "keyscale": str(payload.get("epoch_audition_keyscale") or profile_metadata["keyscale"] or "").strip(),
+            "timesignature": str(payload.get("epoch_audition_timesignature") or profile_metadata["timesignature"] or "").strip(),
             "scale": parse_float(
                 payload.get("epoch_audition_scale"),
                 parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
@@ -1202,6 +1334,7 @@ class AceTrainingManager:
             context_caption = self._dataset_audition_context(labels, trigger_tag=trigger)
             genre = str(audition.get("genre") or "auto")
             profile = epoch_audition_genre_profile(context_caption, str(audition.get("user_lyrics") or ""), genre)
+            dataset_metadata = dataset_epoch_audition_metadata(labels)
             lyrics, lyrics_meta = default_epoch_audition_lyrics(
                 context_caption,
                 trigger_tag=safe_trigger,
@@ -1216,6 +1349,10 @@ class AceTrainingManager:
                     "lyrics_source": lyrics_meta["lyrics_source"],
                     "genre_profile": lyrics_meta["genre_profile"],
                     "dataset_caption_source": "labeled_dataset",
+                    "bpm": dataset_metadata["bpm"] or audition.get("bpm"),
+                    "keyscale": dataset_metadata["keyscale"] or audition.get("keyscale"),
+                    "timesignature": dataset_metadata["timesignature"] or audition.get("timesignature"),
+                    "metadata_source": "labeled_dataset",
                 }
             )
         updated["epoch_audition"] = audition
@@ -2668,6 +2805,9 @@ class AceTrainingManager:
             "lyrics_source": str(config.get("lyrics_source") or "custom"),
             "genre_profile": str(config.get("genre_profile") or ""),
             "vocal_language": vocal_language,
+            "bpm": config.get("bpm"),
+            "keyscale": str(config.get("keyscale") or ""),
+            "timesignature": str(config.get("timesignature") or ""),
         }
         self._record_epoch_audition(job_id, base_record)
         if self.audition_runner is None:
@@ -2703,6 +2843,9 @@ class AceTrainingManager:
             "song_model": song_model,
             "model_variant": variant,
             "adapter_type": str(params.get("adapter_type") or "lora"),
+            "bpm": config.get("bpm"),
+            "keyscale": str(config.get("keyscale") or ""),
+            "timesignature": str(config.get("timesignature") or ""),
         }
         if lyrics_fit["action"] != "none":
             self._append_log(

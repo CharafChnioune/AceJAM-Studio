@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Loader2, Music4, Upload, GraduationCap, X, FileMusic, Mic2, SkipForward,
@@ -13,6 +13,13 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   api,
   getLoraAutolabelJob,
@@ -28,6 +35,7 @@ interface TrainerForm {
   dataset_id: string;
   trigger_tag: string;
   genre: string;
+  epoch_audition_genre: string;
   genre_ratio: number;
   default_language: string;
   default_bpm: number;
@@ -64,6 +72,90 @@ interface TrainJobState {
 }
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
+
+interface EpochAuditionGenre {
+  key: string;
+  label: string;
+  caption_tags: string;
+  lyrics: string;
+  bpm?: number | null;
+  keyscale?: string;
+  timesignature?: string;
+  default?: boolean;
+}
+
+const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
+  {
+    key: "rap",
+    label: "Rap / Hip-hop",
+    caption_tags: "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
+    lyrics:
+      "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+    bpm: 95,
+    keyscale: "A minor",
+    timesignature: "4",
+  },
+  {
+    key: "pop",
+    label: "Pop",
+    caption_tags: "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
+    lyrics:
+      "[Verse]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+    bpm: 118,
+    keyscale: "C major",
+    timesignature: "4",
+  },
+  {
+    key: "rnb",
+    label: "Soul / R&B",
+    caption_tags: "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
+    lyrics:
+      "[Verse]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+    bpm: 82,
+    keyscale: "D minor",
+    timesignature: "4",
+  },
+  {
+    key: "rock",
+    label: "Rock",
+    caption_tags: "driving rock drums, electric guitars, clear lead vocal, strong chorus",
+    lyrics:
+      "[Verse]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+    bpm: 128,
+    keyscale: "E minor",
+    timesignature: "4",
+  },
+  {
+    key: "edm",
+    label: "EDM / Dance",
+    caption_tags: "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
+    lyrics:
+      "[Verse]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+    bpm: 124,
+    keyscale: "F# minor",
+    timesignature: "4",
+  },
+  {
+    key: "cinematic",
+    label: "Cinematic",
+    caption_tags: "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
+    lyrics:
+      "[Verse]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+    bpm: 88,
+    keyscale: "D minor",
+    timesignature: "4",
+  },
+  {
+    key: "country",
+    label: "Country / Folk",
+    caption_tags: "warm acoustic guitars, steady country drums, clear heartfelt vocal",
+    lyrics:
+      "[Verse]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+    bpm: 96,
+    keyscale: "G major",
+    timesignature: "4",
+  },
+];
 
 function labelSourceBadge(source?: string) {
   if (!source) return { variant: "muted" as const, label: "—" };
@@ -238,7 +330,8 @@ export function TrainerWizard() {
   const [form, setForm] = React.useState<TrainerForm>({
     dataset_id: "",
     trigger_tag: "",
-    genre: "",
+    genre: "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
+    epoch_audition_genre: "rap",
     genre_ratio: 0,
     default_language: "en",
     default_bpm: 120,
@@ -252,6 +345,32 @@ export function TrainerWizard() {
   const addJob = useJobsStore((s) => s.addJob);
   const updateJobStore = useJobsStore((s) => s.updateJob);
   const removeJob = useJobsStore((s) => s.removeJob);
+  const genreQuery = useQuery({
+    queryKey: ["lora-epoch-audition-genres"],
+    queryFn: () =>
+      api.get<{ success: boolean; genres?: EpochAuditionGenre[] }>(
+        "/api/lora/epoch-audition/genres",
+      ),
+    staleTime: 5 * 60 * 1000,
+  });
+  const auditionGenres = React.useMemo(() => {
+    const fromApi = genreQuery.data?.genres?.filter((item) => item.key) ?? [];
+    return fromApi.length > 0 ? fromApi : FALLBACK_AUDITION_GENRES;
+  }, [genreQuery.data?.genres]);
+  const selectedAuditionGenre =
+    auditionGenres.find((item) => item.key === form.epoch_audition_genre) ??
+    auditionGenres.find((item) => item.key === "rap") ??
+    auditionGenres[0];
+
+  const setAuditionGenre = (value: string) => {
+    const selected = auditionGenres.find((item) => item.key === value);
+    setForm((f) => ({
+      ...f,
+      epoch_audition_genre: value,
+      genre: selected?.caption_tags || f.genre,
+      default_bpm: typeof selected?.bpm === "number" && selected.bpm > 0 ? selected.bpm : f.default_bpm,
+    }));
+  };
 
   // ---- File selection ----------------------------------------------------
 
@@ -415,6 +534,10 @@ export function TrainerWizard() {
         language: form.default_language,
         genre: form.genre,
         genre_ratio: form.genre_ratio,
+        epoch_audition_genre: form.epoch_audition_genre,
+        epoch_audition_bpm: selectedAuditionGenre?.bpm ?? undefined,
+        epoch_audition_keyscale: selectedAuditionGenre?.keyscale ?? undefined,
+        epoch_audition_timesignature: selectedAuditionGenre?.timesignature ?? undefined,
         auto_understand_music: form.auto_understand_music,
         training_defaults: {
           learning_rate: form.learning_rate,
@@ -444,6 +567,7 @@ export function TrainerWizard() {
           dataset_id: dataset?.dataset_id,
           trigger_tag: form.trigger_tag,
           language: form.default_language,
+          epoch_audition_genre: form.epoch_audition_genre,
           learning_rate: form.learning_rate,
           train_epochs: form.train_epochs,
           batch_size: form.batch_size,
@@ -742,12 +866,27 @@ export function TrainerWizard() {
       render: () => (
         <div className="space-y-4">
           <FieldGroup
-            title="Genre"
-            description="Bv. 'lofi hip-hop', 'progressive metal', 'ambient electronic'. Helpt epoch-auditions met passende test-prompts."
+            title="Test-WAV genre"
+            description="Kies welke veilige testtekst en tags de epoch-audition gebruikt. Rap krijgt rap-lyrics/tags, pop krijgt pop-lyrics/tags, soul krijgt soul/R&B-lyrics/tags."
           >
-            <div className="grid gap-3 sm:grid-cols-[1fr_180px]">
+            <div className="grid gap-3 lg:grid-cols-[260px_1fr_180px]">
               <div className="space-y-1.5">
-                <Label>Genre-tag</Label>
+                <Label>Test-WAV stijl</Label>
+                <Select value={form.epoch_audition_genre} onValueChange={setAuditionGenre}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Kies genre" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {auditionGenres.map((item) => (
+                      <SelectItem key={item.key} value={item.key}>
+                        {item.label || item.key}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Tags die naar de test-WAV gaan</Label>
                 <Input
                   value={form.genre}
                   onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
@@ -773,6 +912,30 @@ export function TrainerWizard() {
                 </p>
               </div>
             </div>
+            {selectedAuditionGenre && (
+              <div className="grid gap-3 rounded-lg border bg-background/35 p-3 text-xs lg:grid-cols-[1fr_1.2fr]">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge variant="muted">{selectedAuditionGenre.label}</Badge>
+                    {selectedAuditionGenre.bpm && (
+                      <Badge variant="outline">{selectedAuditionGenre.bpm} bpm</Badge>
+                    )}
+                    {selectedAuditionGenre.keyscale && (
+                      <Badge variant="outline">{selectedAuditionGenre.keyscale}</Badge>
+                    )}
+                    {selectedAuditionGenre.timesignature && (
+                      <Badge variant="outline">{selectedAuditionGenre.timesignature}/4</Badge>
+                    )}
+                  </div>
+                  <p className="leading-relaxed text-muted-foreground">
+                    {selectedAuditionGenre.caption_tags || "Auto gebruikt de dataset-caption om een passende test te kiezen."}
+                  </p>
+                </div>
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-black/25 p-3 text-[11px] leading-relaxed text-foreground/85">
+                  {selectedAuditionGenre.lyrics || "Auto: MLX Media kiest rap/pop/soul/rock/EDM/cinematic/country op basis van je dataset."}
+                </pre>
+              </div>
+            )}
           </FieldGroup>
 
           <FieldGroup

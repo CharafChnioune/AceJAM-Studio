@@ -382,13 +382,33 @@ function LoraDetails({
               <div key={index} className="rounded-md border bg-background/35 p-2 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <span>Epoch {text(item.epoch)}</span>
-                  <Badge variant={text(item.success, "false") === "yes" ? "default" : "outline"}>
+                  <Badge variant={text(item.status).toLowerCase() === "succeeded" ? "default" : "outline"}>
                     {text(item.status || item.state || item.success)}
                   </Badge>
                 </div>
                 {Boolean(item.audio_url) && (
-                  <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
-                    {text(item.audio_url)}
+                  <div className="mt-2 space-y-2">
+                    <WaveformPlayer
+                      src={text(item.audio_url)}
+                      title={`Epoch ${text(item.epoch)} test-WAV`}
+                      artist={text(params.trigger_tag || "LoRA audition")}
+                      metadata={{
+                        model: item.song_model || params.song_model,
+                        duration: item.duration,
+                        bpm: item.bpm,
+                        key: item.keyscale,
+                        resultId: item.result_id,
+                      }}
+                      className="bg-card/55"
+                    />
+                    <p className="truncate font-mono text-[10px] text-muted-foreground">
+                      {text(item.audio_url)}
+                    </p>
+                  </div>
+                )}
+                {Boolean(item.transcript_preview) && (
+                  <p className="mt-2 line-clamp-3 rounded-md bg-background/40 p-2 leading-relaxed text-muted-foreground">
+                    {text(item.transcript_preview)}
                   </p>
                 )}
               </div>

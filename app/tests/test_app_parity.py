@@ -1313,6 +1313,19 @@ class AppParityTest(unittest.TestCase):
     # Playwright smoke tests; the live API contract is covered elsewhere in
     # this file.
 
+    def test_react_lora_trainer_exposes_test_wav_genres_and_playback(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        trainer = (web_src / "wizards" / "TrainerWizard.tsx").read_text(encoding="utf-8")
+        tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("/api/lora/epoch-audition/genres", trainer)
+        self.assertIn("epoch_audition_genre", trainer)
+        self.assertIn("Test-WAV genre", trainer)
+        self.assertIn("Rap / Hip-hop", trainer)
+        self.assertIn("Soul / R&B", trainer)
+        self.assertIn("WaveformPlayer", tracker)
+        self.assertIn("Epoch ${text(item.epoch)} test-WAV", tracker)
+
     def test_react_lora_selector_filters_peft_lora_and_uses_tag_labels(self):
         web_src = Path(__file__).resolve().parents[1] / "web" / "src"
         lora_lib = (web_src / "lib" / "lora.ts").read_text(encoding="utf-8")
@@ -1587,8 +1600,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(result["result_id"], "audition-result")
         self.assertEqual(captured["task_type"], "text2music")
         self.assertEqual(captured["duration"], 20)
-        self.assertIn("[Verse - seconds", captured["lyrics"])
-        self.assertIn("[Chorus - seconds", captured["lyrics"])
+        self.assertIn("[Verse - spoken word]", captured["lyrics"])
+        self.assertIn("[Chorus]", captured["lyrics"])
         self.assertIn("Line one", captured["lyrics"])
         self.assertIn("Hook line", captured["lyrics"])
         self.assertIn("clear intelligible vocal", captured["caption"])
@@ -1609,6 +1622,10 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(captured["use_lora"])
         self.assertEqual(captured["lora_adapter_path"], "/tmp/checkpoints/epoch_2_loss_0.1")
         self.assertEqual(captured["lora_scale"], 0.7)
+        if acejam_app._IS_APPLE_SILICON:
+            self.assertEqual(captured["device"], "mps")
+            self.assertEqual(captured["dtype"], "float32")
+            self.assertFalse(captured["use_mlx_dit"])
         self.assertEqual(result["lyrics_fit"]["action"], "fit_for_20s")
         self.assertTrue(result["lyrics_fit"]["timed_structure"])
 
@@ -1717,21 +1734,25 @@ class AppParityTest(unittest.TestCase):
             )
 
         self.assertTrue(result["success"])
-        self.assertEqual(captured["duration"], 20)
+        self.assertEqual(captured["duration"], 30)
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "42")
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         sung_lines = [line for line in captured["lyrics"].splitlines() if line.strip() and not line.startswith("[")]
         self.assertLessEqual(len(captured["lyrics"]), 360)
-        self.assertLessEqual(len(sung_lines), 4)
-        self.assertIn("[Chorus - seconds", captured["lyrics"])
-        self.assertIn("[Verse - seconds", captured["lyrics"])
+        self.assertLessEqual(len(sung_lines), 6)
+        self.assertIn("[Chorus]", captured["lyrics"])
+        self.assertIn("[Verse - spoken word]", captured["lyrics"])
         self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertNotIn("Final Chorus -", captured["lyrics"])
         self.assertNotIn("Verse 4 -", captured["lyrics"])
         self.assertNotIn("[drums return", captured["lyrics"])
         self.assertNotIn("Arrangement note", captured["lyrics"])
-        self.assertEqual(result["lyrics_fit"]["action"], "fit_for_20s")
+        if acejam_app._IS_APPLE_SILICON:
+            self.assertEqual(captured["device"], "mps")
+            self.assertEqual(captured["dtype"], "float32")
+            self.assertFalse(captured["use_mlx_dit"])
+        self.assertEqual(result["lyrics_fit"]["action"], "fit_for_30s")
 
     def test_lora_upload_path_sanitizer_preserves_relative_folders(self):
         self.assertEqual(str(acejam_app._safe_lora_upload_relative_path("dataset/sub/song.wav")), "dataset/sub/song.wav")

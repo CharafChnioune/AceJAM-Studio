@@ -244,6 +244,7 @@ from lora_trainer import (
     EPOCH_AUDITION_CLARITY_CAPTION,
     AceTrainingManager,
     adapter_quality_metadata,
+    epoch_audition_genre_options,
     fit_epoch_audition_lyrics,
     infer_adapter_model_metadata,
     is_missing_vocal_lyrics,
@@ -2403,6 +2404,45 @@ def _unload_llm_models_for_generation() -> None:
 EPOCH_AUDITION_INFERENCE_STEPS = 50
 
 
+def _use_pytorch_mps_for_vocal_sft_audio(song_model: Any, *, task_type: str = "text2music", instrumental: bool = False) -> bool:
+    """Prefer the verified PyTorch/MPS path for vocal SFT/Base audio on Apple Silicon."""
+    model = str(song_model or "").strip().lower()
+    return bool(
+        _IS_APPLE_SILICON
+        and task_type == "text2music"
+        and not instrumental
+        and model
+        and "turbo" not in model
+    )
+
+
+def _apply_verified_vocal_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Avoid native MLX-DiT for vocal SFT/Base renders until it passes the same gate locally."""
+    if not _use_pytorch_mps_for_vocal_sft_audio(
+        params.get("song_model"),
+        task_type=str(params.get("task_type") or "text2music"),
+        instrumental=parse_bool(params.get("instrumental"), False),
+    ):
+        return params
+    changed: list[str] = []
+    if str(params.get("use_mlx_dit") or "auto").strip().lower() in {"", "auto", "true", "1", "yes", "on"}:
+        params["use_mlx_dit"] = False
+        changed.append("use_mlx_dit=false")
+    if str(params.get("device") or "auto").strip().lower() in {"", "auto"}:
+        params["device"] = "mps"
+        changed.append("device=mps")
+    if str(params.get("dtype") or "auto").strip().lower() in {"", "auto"}:
+        params["dtype"] = "float32"
+        changed.append("dtype=float32")
+    if changed:
+        warnings = list(params.get("payload_warnings") or [])
+        warning = f"verified_vocal_audio_backend:{source}:{','.join(changed)}"
+        if warning not in warnings:
+            warnings.append(warning)
+        params["payload_warnings"] = warnings
+    return params
+
+
 def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
     variant = model_to_variant(str(request.get("model_variant") or request.get("song_model") or ""))
     return model_from_variant(variant, normalize_training_song_model(str(request.get("song_model") or "")))
@@ -2411,12 +2451,13 @@ def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     epoch = int(request.get("epoch") or 0)
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
+    duration = clamp_int(request.get("duration"), 30, 10, 60)
     request_fit = request.get("lyrics_fit") if isinstance(request.get("lyrics_fit"), dict) else {}
     if request_fit.get("timed_structure"):
         runtime_lyrics = str(request.get("lyrics") or "")
         lyrics_fit = dict(request_fit)
     else:
-        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=20)
+        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=duration)
     vocal_language = str(request.get("vocal_language") or request.get("language") or "en").strip() or "en"
     seed_value = request.get("seed")
     if seed_value in (None, ""):
@@ -2425,7 +2466,13 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     defaults = training_inference_defaults(song_model)
     inference_steps = int(defaults["num_inference_steps"])
     shift = float(defaults["training_shift"])
+    backend_defaults = _apply_verified_vocal_audio_backend_defaults(
+        {"song_model": song_model, "task_type": "text2music", "instrumental": False},
+        source="lora_epoch_audition",
+    )
     raw_caption = str(request.get("caption") or trigger).strip()
+    if duration != 20:
+        raw_caption = re.sub(r"\b20-second LoRA audition\b", f"{duration}-second LoRA audition", raw_caption)
     clarity_caption = EPOCH_AUDITION_CLARITY_CAPTION
     if "clear intelligible vocal" in raw_caption.lower():
         caption = raw_caption
@@ -2441,10 +2488,16 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "language": vocal_language,
         "vocal_language": vocal_language,
         "lyric_duration_fit": lyrics_fit,
-        "duration": 20,
+        "duration": duration,
+        "bpm": request.get("bpm"),
+        "keyscale": str(request.get("keyscale") or ""),
+        "timesignature": str(request.get("timesignature") or ""),
         "song_model": song_model,
         "seed": str(seed_value),
         "use_random_seed": False,
+        "device": backend_defaults.get("device", "auto"),
+        "dtype": backend_defaults.get("dtype", "auto"),
+        "use_mlx_dit": backend_defaults.get("use_mlx_dit", "auto"),
         "inference_steps": inference_steps,
         "shift": shift,
         "batch_size": 1,
@@ -2469,6 +2522,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "auto_score": False,
         "auto_lrc": False,
         "audio_format": "wav",
+        "payload_warnings": backend_defaults.get("payload_warnings", []),
     }
     params = _parse_generation_payload(raw_payload)
     params["lora_preflight_required"] = True
@@ -6170,6 +6224,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "device": str(payload.get("device") or "auto").strip() or "auto",
         "dtype": str(payload.get("dtype") or "auto").strip() or "auto",
         "use_flash_attention": payload.get("use_flash_attention", "auto"),
+        "use_mlx_dit": payload.get("use_mlx_dit", "auto"),
         "compile_model": parse_bool(payload.get("compile_model"), False),
         "offload_to_cpu": parse_bool(payload.get("offload_to_cpu"), False),
         "offload_dit_to_cpu": parse_bool(payload.get("offload_dit_to_cpu"), False),
@@ -6180,6 +6235,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "requires_official_runner": use_official,
         "runner_plan": "official" if use_official else "fast",
     }
+    _apply_verified_vocal_audio_backend_defaults(parsed, source="parse")
     if vocal_clarity_recovery and task_type == "text2music" and supplied_vocal_lyrics:
         parsed["caption"] = _caption_with_vocal_clarity_traits(parsed["caption"])
         parsed["tag_list"] = split_terms(parsed["caption"])
@@ -6792,6 +6848,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "device": params["device"],
         "dtype": params["dtype"],
         "use_flash_attention": params["use_flash_attention"],
+        "use_mlx_dit": params.get("use_mlx_dit", "auto"),
         "compile_model": params["compile_model"],
         "offload_to_cpu": params["offload_to_cpu"],
         "offload_dit_to_cpu": params["offload_dit_to_cpu"],
@@ -14728,6 +14785,11 @@ async def api_lora_estimate(request: Request):
 @app.get("/api/lora/jobs")
 async def api_lora_jobs():
     return JSONResponse({"success": True, "jobs": training_manager.list_jobs()})
+
+
+@app.get("/api/lora/epoch-audition/genres")
+async def api_lora_epoch_audition_genres():
+    return JSONResponse({"success": True, "genres": epoch_audition_genre_options()})
 
 
 @app.get("/api/lora/jobs/{job_id}/log")

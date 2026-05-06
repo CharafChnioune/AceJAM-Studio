@@ -9,8 +9,10 @@ from lora_trainer import (
     TrainingJob,
     adapter_quality_metadata,
     build_epoch_audition_caption,
+    dataset_epoch_audition_metadata,
     default_training_device,
     default_epoch_audition_lyrics,
+    epoch_audition_genre_options,
     fit_epoch_audition_lyrics,
     is_missing_vocal_lyrics,
     model_from_variant,
@@ -565,7 +567,7 @@ class LoraTrainerTest(unittest.TestCase):
 
             audition = job["params"]["epoch_audition"]
             self.assertTrue(audition["enabled"])
-            self.assertEqual(audition["duration"], 20)
+            self.assertEqual(audition["duration"], 30)
             self.assertIn("charaf hook", audition["caption"])
             self.assertIn("bright pop", audition["caption"])
             self.assertIn("clear intelligible vocal", audition["caption"])
@@ -577,6 +579,9 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertNotIn("User draft line", audition["lyrics"])
             self.assertEqual(audition["user_lyrics"], "[Verse]\nUser draft line should stay out of the generated test")
             self.assertEqual(audition["seed"], 123)
+            self.assertEqual(audition["bpm"], 95)
+            self.assertEqual(audition["keyscale"], "A minor")
+            self.assertEqual(audition["timesignature"], "4")
             self.assertEqual(audition["scale"], 0.75)
             self.assertEqual(audition["vocal_language"], "en")
 
@@ -607,7 +612,23 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("west coast rap", audition["caption"])
             self.assertIn("hip hop drums", audition["caption"])
             self.assertIn("Every bar lands clean", audition["lyrics"])
+            self.assertEqual(audition["bpm"], 95)
+            self.assertEqual(audition["keyscale"], "A minor")
+            self.assertEqual(audition["timesignature"], "4")
             self.assertNotIn("Pac", audition["lyrics"])
+
+    def test_dataset_epoch_audition_metadata_uses_reviewed_labels(self):
+        labels = [
+            {"bpm": 86, "keyscale": "B major", "timesignature": "4"},
+            {"bpm": 92, "keyscale": "B major", "timesignature": "4"},
+            {"bpm": 96, "key_scale": "F# minor", "time_signature": "4"},
+        ]
+
+        metadata = dataset_epoch_audition_metadata(labels)
+
+        self.assertEqual(metadata["bpm"], 92)
+        self.assertEqual(metadata["keyscale"], "B major")
+        self.assertEqual(metadata["timesignature"], "4")
 
     def test_default_epoch_audition_lyrics_keep_trigger_out_of_song_text(self):
         lyrics, meta = default_epoch_audition_lyrics("drill rap, dark piano", trigger_tag="Pac", lyrics_hint="Pac forever")
@@ -620,6 +641,17 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertIn("drill rap", caption)
         self.assertIn("clear intelligible vocal", caption)
         self.assertNotIn("Pac", lyrics)
+
+    def test_epoch_audition_genre_options_expose_ui_lyrics_and_tags(self):
+        options = {item["key"]: item for item in epoch_audition_genre_options()}
+
+        self.assertIn("rap", options)
+        self.assertIn("pop", options)
+        self.assertIn("rnb", options)
+        self.assertIn("Every bar lands clean", options["rap"]["lyrics"])
+        self.assertIn("modern pop groove", options["pop"]["caption_tags"])
+        self.assertIn("smooth rnb groove", options["rnb"]["caption_tags"])
+        self.assertEqual(default_epoch_audition_lyrics("", genre_key="soul")[1]["genre_profile"], "rnb")
 
     def test_epoch_audition_caption_uses_generation_safe_numeric_trigger(self):
         caption = build_epoch_audition_caption("west coast rap", trigger_tag="2pac", genre_key="rap")
@@ -659,8 +691,9 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertTrue(meta["timed_structure"])
         self.assertEqual(meta["time_slices"][0]["start"], 0.0)
         self.assertEqual(meta["time_slices"][-1]["end"], 20.0)
-        self.assertIn("[Chorus - seconds", fitted)
-        self.assertIn("[Verse - seconds", fitted)
+        self.assertIn("[Chorus]", fitted)
+        self.assertIn("[Verse - spoken word]", fitted)
+        self.assertNotIn("seconds", fitted)
         self.assertNotIn("Final Chorus -", fitted)
         self.assertNotIn("Verse 4 -", fitted)
         self.assertNotIn("[drums return", fitted)
@@ -681,7 +714,7 @@ class LoraTrainerTest(unittest.TestCase):
 
         fitted, _ = fit_epoch_audition_lyrics(lyrics, duration=20)
 
-        self.assertIn("[Verse - seconds", fitted)
+        self.assertIn("[Verse - spoken word]", fitted)
         self.assertIn("Borrowed soil", fitted)
         self.assertNotIn("[Outro]", fitted)
 
@@ -761,7 +794,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertTrue(all("--scheduler-epochs" in cmd for _, cmd in manager.commands))
             self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2])
             self.assertEqual(manager.audition_requests[0]["duration"], 20)
-            self.assertIn("[Verse - seconds 0-20", manager.audition_requests[0]["lyrics"])
+            self.assertIn("[Verse - spoken word]", manager.audition_requests[0]["lyrics"])
+            self.assertNotIn("seconds", manager.audition_requests[0]["lyrics"])
             self.assertIn("Line one", manager.audition_requests[0]["lyrics"])
             self.assertEqual(manager.audition_requests[0]["vocal_language"], "en")
             self.assertEqual(manager.audition_requests[0]["lyrics_fit"]["action"], "fit_for_20s")

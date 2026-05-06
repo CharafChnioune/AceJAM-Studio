@@ -386,7 +386,9 @@ def _run(request_path: Path, response_path: Path) -> None:
     from acestep.llm_inference import LLMHandler
 
     _is_apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
-    if not _is_apple_silicon:
+    requested_mlx_dit = _bool_or_auto(request.get("use_mlx_dit", _is_apple_silicon))
+    use_mlx_dit = bool(_is_apple_silicon and requested_mlx_dit)
+    if not use_mlx_dit:
         _disable_acestep_mlx_backends(AceStepHandler)
     else:
         # MLX Metal streams are thread-local. The diffusion timeout mechanism runs
@@ -464,7 +466,7 @@ def _run(request_path: Path, response_path: Path) -> None:
         compile_model=_bool_or_auto(request.get("compile_model", False)),
         offload_to_cpu=_bool_or_auto(request.get("offload_to_cpu", False)),
         offload_dit_to_cpu=_bool_or_auto(request.get("offload_dit_to_cpu", False)),
-        use_mlx_dit=_is_apple_silicon,
+        use_mlx_dit=use_mlx_dit,
     )
     if not ready:
         raise RuntimeError(status)
