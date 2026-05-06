@@ -177,6 +177,17 @@ ACEJAM_VOCAL_INTELLIGIBILITY_MAX_REPEAT_RATIO = min(
 ACEJAM_VOCAL_ASR_TIMEOUT = max(30, _env_int("ACEJAM_VOCAL_ASR_TIMEOUT", 240))
 ACEJAM_VOCAL_ASR_MODEL = os.environ.get("ACEJAM_VOCAL_ASR_MODEL", "").strip()
 ACEJAM_VOCAL_ASR_DEVICE = os.environ.get("ACEJAM_VOCAL_ASR_DEVICE", "cpu").strip().lower() or "cpu"
+ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS = max(10, min(60, _env_int("ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS", 30)))
+ACEJAM_LORA_PREFLIGHT_SCALES = tuple(
+    sorted(
+        {
+            max(0.0, min(1.0, _env_float(f"ACEJAM_LORA_PREFLIGHT_SCALE_{index}", default)))
+            for index, default in enumerate((0.15, 0.30, 0.45), start=1)
+        }
+    )
+)
+ACEJAM_LORA_UNSAFE_QUALITY_STATUSES = {"quarantined", "failed_audition", "not_generation_loadable"}
+ACEJAM_LORA_REVIEW_QUALITY_STATUSES = {"needs_review"}
 
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 ACE_LM_ABLITERATED_DIR.mkdir(parents=True, exist_ok=True)
@@ -232,6 +243,7 @@ from lora_trainer import (
     DEFAULT_LORA_GENERATION_SCALE,
     EPOCH_AUDITION_CLARITY_CAPTION,
     AceTrainingManager,
+    adapter_quality_metadata,
     fit_epoch_audition_lyrics,
     infer_adapter_model_metadata,
     is_missing_vocal_lyrics,
@@ -848,19 +860,7 @@ def _docs_correct_render_steps(song_model: str, quality_profile: str | None, raw
     profile = normalize_quality_profile(quality_profile)
     model_defaults = quality_profile_model_settings(song_model, profile)
     default_steps = int(model_defaults["inference_steps"])
-    if raw_steps in [None, "", "auto"]:
-        steps = default_steps
-    else:
-        try:
-            steps = int(raw_steps)
-        except (TypeError, ValueError):
-            steps = default_steps
-    steps = clamp_int(steps, default_steps, 1, 200)
-    if "turbo" in str(song_model or "").lower():
-        return min(steps, DOCS_BEST_TURBO_HIGH_CAP_STEPS)
-    if profile != QUALITY_PROFILE_OFFICIAL_RAW and steps < default_steps:
-        return default_steps
-    return steps
+    return default_steps
 
 
 def _docs_correct_render_shift(song_model: str, quality_profile: str | None, raw_shift: Any) -> float:
@@ -2932,6 +2932,68 @@ def _validate_lora_request_for_song_model(lora_request: dict[str, Any], song_mod
             f"Selected LoRA was trained for {adapter_song_model}, but this render uses {requested}. "
             "Choose the matching ACE-Step model or select a different LoRA."
         )
+    quality = adapter_quality_metadata(lora_request.get("adapter_metadata") or {}, adapter_type="lora")
+    quality_status = str(quality.get("quality_status") or "").lower()
+    if quality_status in ACEJAM_LORA_UNSAFE_QUALITY_STATUSES:
+        reasons = "; ".join(str(item) for item in quality.get("quality_reasons") or [] if str(item))
+        raise ValueError(
+            "Selected LoRA is quarantined and cannot be used for generation"
+            + (f": {reasons}" if reasons else ".")
+        )
+
+
+def _lora_quality_for_params(params: dict[str, Any]) -> dict[str, Any]:
+    metadata = params.get("adapter_metadata") if isinstance(params.get("adapter_metadata"), dict) else {}
+    if not metadata and params.get("lora_adapter_path"):
+        metadata = infer_adapter_model_metadata(Path(str(params.get("lora_adapter_path"))))
+    quality = adapter_quality_metadata(metadata, adapter_type=str(metadata.get("adapter_type") or "lora"))
+    return {**quality, "metadata": metadata}
+
+
+def _lora_adapter_metadata_path(adapter_path: str | Path) -> Path | None:
+    raw_path = str(adapter_path or "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if path.is_file():
+        path = path.parent
+    return path / "acejam_adapter.json"
+
+
+def _update_lora_adapter_quality_metadata(
+    adapter_path: str | Path,
+    *,
+    quality_status: str,
+    reason: str,
+    audition: dict[str, Any] | None = None,
+    recommended_lora_scale: float | None = None,
+) -> None:
+    meta_path = _lora_adapter_metadata_path(adapter_path)
+    if meta_path is None:
+        return
+    meta: dict[str, Any] = {}
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    meta["quality_status"] = quality_status
+    reasons = [str(item) for item in list(meta.get("quality_reasons") or []) if str(item).strip()]
+    if reason:
+        reasons.append(reason)
+    meta["quality_reasons"] = list(dict.fromkeys(reasons))
+    if recommended_lora_scale is not None:
+        meta["recommended_lora_scale"] = round(float(recommended_lora_scale), 4)
+    if audition:
+        auditions = [dict(item) for item in list(meta.get("epoch_auditions") or []) if isinstance(item, dict)]
+        auditions.append(dict(audition))
+        meta["epoch_auditions"] = auditions[-20:]
+        meta["audition_passed"] = quality_status in {"verified", "succeeded", "passed"}
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[lora_quality] failed to update {meta_path}: {exc}", flush=True)
 
 
 def _apply_lora_request(params: dict[str, Any]) -> dict[str, Any]:
@@ -7554,9 +7616,9 @@ def _apply_vocal_intelligibility_gate_to_result(
             audio["is_recommended_take"] = False
         result.pop("recommended_take", None)
     if verifier_error and not passed_ids:
-        result["success"] = True
+        result["success"] = False
         result["needs_review"] = True
-        result.pop("error", None)
+        result["error"] = "Vocal intelligibility verifier could not complete."
         suggestions = list(result.get("rerender_suggestions") or [])
         suggestions.extend(
             [
@@ -7587,8 +7649,6 @@ def _apply_vocal_intelligibility_gate_to_result(
             meta["success"] = result.get("success", meta.get("success"))
             if "error" in result:
                 meta["error"] = result.get("error")
-            elif verifier_error:
-                meta.pop("error", None)
             meta["audios"] = audios
             meta["payload_warnings"] = result.get("payload_warnings") or meta.get("payload_warnings") or []
             meta["vocal_intelligibility_gate"] = gate
@@ -7632,14 +7692,117 @@ def _apply_vocal_intelligibility_gate_to_result(
     return gate
 
 
-def _vocal_retry_params(params: dict[str, Any], *, attempt: int, last_gate: dict[str, Any] | None) -> dict[str, Any]:
+def _defer_library_save_until_vocal_pass(params: dict[str, Any]) -> dict[str, Any]:
+    if not _vocal_gate_required(params) or not parse_bool(params.get("save_to_library"), False):
+        return params
+    updated = dict(params)
+    updated["save_to_library"] = False
+    updated["_deferred_save_to_library"] = True
+    return updated
+
+
+def _save_vocal_gate_passed_result_to_library(result: dict[str, Any], params: dict[str, Any]) -> None:
+    if not parse_bool(params.get("_deferred_save_to_library"), False):
+        return
+    gate = result.get("vocal_intelligibility_gate") if isinstance(result.get("vocal_intelligibility_gate"), dict) else {}
+    if not gate.get("passed"):
+        return
+    if result.get("_library_saved_after_vocal_gate"):
+        return
+    result_id = safe_id(str(result.get("result_id") or ""))
+    audios = result.get("audios") if isinstance(result.get("audios"), list) else []
+    recommended = result.get("recommended_take") if isinstance(result.get("recommended_take"), dict) else {}
+    recommended_id = str(recommended.get("audio_id") or "")
+    chosen = next(
+        (
+            audio
+            for audio in audios
+            if isinstance(audio, dict)
+            and (str(audio.get("id") or "") == recommended_id or audio.get("is_recommended_take"))
+        ),
+        None,
+    )
+    if not isinstance(chosen, dict):
+        return
+    filename = str(chosen.get("filename") or "").strip()
+    if not filename:
+        return
+    audio_path = RESULTS_DIR / result_id / filename
+    if not audio_path.is_file():
+        return
+    entry = _save_song_entry(
+        {
+            "artist_name": params.get("artist_name"),
+            "title": chosen.get("title") or params.get("title"),
+            "description": params.get("description"),
+            "tags": params.get("caption"),
+            "tag_list": params.get("tag_list"),
+            "lyrics": "[Instrumental]" if params.get("instrumental") else params.get("lyrics"),
+            "caption_source": params.get("caption_source"),
+            "lyrics_source": params.get("lyrics_source"),
+            "payload_warnings": params.get("payload_warnings") or result.get("payload_warnings") or [],
+            "generation_metadata_audit": chosen.get("generation_metadata_audit") or result.get("generation_metadata_audit"),
+            "audio_quality_audit": chosen.get("audio_quality_audit"),
+            "metadata_adherence": chosen.get("metadata_adherence"),
+            "hit_readiness": chosen.get("hit_readiness") or result.get("hit_readiness"),
+            "vocal_intelligibility_gate": gate,
+            "lora_adapter": chosen.get("lora_adapter") or result.get("lora_adapter"),
+            "runner_plan": params.get("runner_plan"),
+            "ui_mode": params.get("ui_mode"),
+            "bpm": params.get("bpm"),
+            "key_scale": params.get("key_scale"),
+            "time_signature": params.get("time_signature"),
+            "language": params.get("vocal_language"),
+            "duration": params.get("duration"),
+            "task_type": params.get("task_type"),
+            "song_model": params.get("song_model"),
+            "ace_lm_model": params.get("ace_lm_model"),
+            "seed": chosen.get("seed") or params.get("seed"),
+            "parameters": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+            "album": _jsonable(params.get("album_metadata") or {}),
+            "album_concept": (params.get("album_metadata") or {}).get("album_concept")
+            if isinstance(params.get("album_metadata"), dict)
+            else None,
+            "album_id": (params.get("album_metadata") or {}).get("album_id")
+            if isinstance(params.get("album_metadata"), dict)
+            else None,
+            "track_number": (params.get("album_metadata") or {}).get("track_number")
+            if isinstance(params.get("album_metadata"), dict)
+            else None,
+            "result_id": result_id,
+            "runner": result.get("runner") or params.get("runner_plan"),
+            "preferred_audio_file": filename,
+        },
+        audio_path,
+    )
+    chosen["song_id"] = entry["id"]
+    chosen["library_url"] = entry["audio_url"]
+    result["_library_saved_after_vocal_gate"] = True
+    result_path = RESULTS_DIR / result_id / "result.json"
+    if result_path.is_file():
+        try:
+            meta = json.loads(result_path.read_text(encoding="utf-8"))
+            meta["audios"] = audios
+            meta["_library_saved_after_vocal_gate"] = True
+            result_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"[vocal_gate] deferred library save metadata update failed for {result_id}: {exc}", flush=True)
+
+
+def _vocal_retry_params(
+    params: dict[str, Any],
+    *,
+    attempt: int,
+    last_gate: dict[str, Any] | None,
+    allow_lora_changes: bool = True,
+) -> dict[str, Any]:
     retry = dict(params)
     retry["seed"] = "-1"
     retry["use_random_seed"] = True
     retry["caption"] = _caption_with_vocal_clarity_traits(retry.get("caption") or "")
     retry["tag_list"] = split_terms(retry["caption"])
     lora_retry_note = ""
-    if parse_bool(params.get("use_lora"), False):
+    if allow_lora_changes and parse_bool(params.get("use_lora"), False):
         if attempt == 2:
             retry["use_lora"] = False
             retry["lora_adapter_path"] = ""
@@ -7669,6 +7832,201 @@ def _vocal_retry_params(params: dict[str, Any], *, attempt: int, last_gate: dict
         payload_warnings.append(lora_retry_note)
     retry["payload_warnings"] = payload_warnings
     return retry
+
+
+def _vocal_gate_transcript_preview(gate: dict[str, Any] | None) -> str:
+    if not isinstance(gate, dict):
+        return ""
+    preview = gate.get("transcript_preview")
+    if isinstance(preview, list):
+        parts = [
+            str((item if isinstance(item, dict) else {}).get("text") or "").strip()
+            for item in preview
+        ]
+        joined = " ".join(part for part in parts if part)
+        if joined:
+            return joined[:500]
+    transcripts = gate.get("transcripts")
+    if isinstance(transcripts, list):
+        parts = [
+            str((item if isinstance(item, dict) else {}).get("text") or "").strip()
+            for item in transcripts
+        ]
+        return " ".join(part for part in parts if part)[:500]
+    return ""
+
+
+def _attempt_failure_reason(result: dict[str, Any] | None, gate: dict[str, Any] | None = None) -> str:
+    if isinstance(result, dict) and result.get("error"):
+        return str(result.get("error") or "")
+    if isinstance(gate, dict):
+        issues = [
+            str((item if isinstance(item, dict) else {}).get("issue") or "").strip()
+            for item in (gate.get("transcripts") if isinstance(gate.get("transcripts"), list) else [])
+        ]
+        issues = [issue for issue in issues if issue]
+        if issues:
+            return "; ".join(dict.fromkeys(issues))[:800]
+        status = str(gate.get("status") or "").strip()
+        if status:
+            return f"Vocal gate status: {status}"
+    return ""
+
+
+def _attempt_lora_quality_status(params: dict[str, Any]) -> str:
+    if not parse_bool(params.get("use_lora"), False):
+        return ""
+    try:
+        quality = _lora_quality_for_params(params)
+        return str(quality.get("quality_status") or "")
+    except Exception:
+        return ""
+
+
+def _generation_attempt_summary(
+    result: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    role: str,
+    gate: dict[str, Any] | None = None,
+    requested_params: dict[str, Any] | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    gate = gate if isinstance(gate, dict) else (
+        result.get("vocal_intelligibility_gate") if isinstance(result.get("vocal_intelligibility_gate"), dict) else {}
+    )
+    result_params = result.get("params") if isinstance(result.get("params"), dict) else {}
+    requested_params = requested_params if isinstance(requested_params, dict) else params
+    actual_model = (
+        result.get("active_song_model")
+        or result.get("song_model")
+        or result_params.get("song_model")
+        or params.get("song_model")
+    )
+    return _jsonable(
+        {
+            "attempt_role": role,
+            "result_id": result.get("result_id"),
+            "requested_song_model": requested_params.get("song_model"),
+            "actual_song_model": actual_model,
+            "song_model": params.get("song_model"),
+            "inference_steps": params.get("inference_steps"),
+            "shift": params.get("shift"),
+            "with_lora": parse_bool(params.get("use_lora"), False),
+            "lora_scale": params.get("lora_scale"),
+            "lora_adapter_name": params.get("lora_adapter_name"),
+            "lora_adapter_path": params.get("lora_adapter_path"),
+            "lora_quality_status": _attempt_lora_quality_status(params),
+            "vocal_gate_status": gate.get("status"),
+            "passed": bool(gate.get("passed")),
+            "blocking": bool(gate.get("blocking")),
+            "transcript_preview": _vocal_gate_transcript_preview(gate),
+            "failure_reason": reason or _attempt_failure_reason(result, gate),
+        }
+    )
+
+
+def _annotate_generation_attempt_result(
+    result: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    role: str,
+    gate: dict[str, Any] | None = None,
+    requested_params: dict[str, Any] | None = None,
+    primary_attempt_id: str | None = None,
+    diagnostic_attempts: list[dict[str, Any]] | None = None,
+    failure_reason: str = "",
+) -> dict[str, Any]:
+    summary = _generation_attempt_summary(
+        result,
+        params,
+        role=role,
+        gate=gate,
+        requested_params=requested_params,
+        reason=failure_reason,
+    )
+    result["attempt_role"] = role
+    result["requested_song_model"] = summary.get("requested_song_model")
+    result["actual_song_model"] = summary.get("actual_song_model")
+    result["with_lora"] = summary.get("with_lora")
+    result["lora_scale"] = summary.get("lora_scale")
+    result["lora_quality_status"] = summary.get("lora_quality_status")
+    result["vocal_gate_status"] = summary.get("vocal_gate_status")
+    result["transcript_preview"] = summary.get("transcript_preview")
+    if failure_reason or summary.get("failure_reason"):
+        result["failure_reason"] = failure_reason or summary.get("failure_reason")
+    result["primary_attempt_id"] = primary_attempt_id or result.get("primary_attempt_id") or result.get("result_id")
+    if diagnostic_attempts is not None:
+        result["diagnostic_attempts"] = diagnostic_attempts
+    return result
+
+
+def _short_vocal_attempt_params(
+    params: dict[str, Any],
+    *,
+    label: str,
+    use_lora: bool | None = None,
+    lora_scale: float | None = None,
+    song_model: str | None = None,
+    warning_prefix: str = "vocal_preflight",
+) -> dict[str, Any]:
+    attempt = dict(params)
+    attempt["duration"] = min(
+        float(params.get("duration") or ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS),
+        float(ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS),
+    )
+    attempt["batch_size"] = 1
+    attempt["save_to_library"] = False
+    attempt["_deferred_save_to_library"] = False
+    attempt["auto_song_art"] = False
+    attempt["auto_album_art"] = False
+    attempt["auto_video_clip"] = False
+    attempt["vocal_intelligibility_attempts"] = 1
+    attempt["vocal_intelligibility_model_rescue"] = False
+    attempt["use_random_seed"] = False
+    attempt["seed"] = str(params.get("seed") or "42")
+    if attempt["seed"].strip() in {"", "-1"}:
+        attempt["seed"] = "42"
+    if song_model:
+        quality_profile = normalize_quality_profile(attempt.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+        model_defaults = quality_profile_model_settings(song_model, quality_profile)
+        attempt["song_model"] = song_model
+        attempt["inference_steps"] = int(model_defaults["inference_steps"])
+        attempt["guidance_scale"] = float(model_defaults["guidance_scale"])
+        attempt["shift"] = float(model_defaults["shift"])
+        attempt["infer_method"] = str(model_defaults["infer_method"])
+        attempt["sampler_mode"] = str(model_defaults["sampler_mode"])
+        attempt["use_adg"] = bool(model_defaults.get("use_adg", False))
+        attempt["audio_format"] = str(model_defaults.get("audio_format") or attempt.get("audio_format") or "wav32")
+    attempt["caption"] = _caption_with_vocal_clarity_traits(str(attempt.get("caption") or ""))
+    attempt["tag_list"] = split_terms(attempt["caption"])
+    if use_lora is not None:
+        attempt["use_lora"] = bool(use_lora)
+    if parse_bool(attempt.get("use_lora"), False):
+        if lora_scale is not None:
+            attempt["lora_scale"] = round(float(lora_scale), 4)
+    else:
+        attempt["lora_adapter_path"] = ""
+        attempt["lora_adapter_name"] = ""
+        attempt["lora_scale"] = 0.0
+        attempt["adapter_model_variant"] = ""
+        attempt["adapter_song_model"] = ""
+        attempt["adapter_metadata"] = {}
+    warnings = list(attempt.get("payload_warnings") or [])
+    for warning in [warning_prefix, f"{warning_prefix}_{label}"]:
+        if warning not in warnings:
+            warnings.append(warning)
+    attempt["payload_warnings"] = warnings
+    attempt["repair_actions"] = list(attempt.get("repair_actions") or []) + [
+        {
+            "type": warning_prefix,
+            "label": label,
+            "song_model": attempt.get("song_model"),
+            "use_lora": bool(attempt.get("use_lora")),
+            "lora_scale": attempt.get("lora_scale"),
+        }
+    ]
+    return _enforce_model_correct_render_settings(attempt, source=warning_prefix)
 
 
 def _vocal_rescue_models(params: dict[str, Any]) -> list[str]:
@@ -7721,6 +8079,328 @@ def _vocal_rescue_model_for_attempt(params: dict[str, Any], attempt: int, rescue
     )
     index = max(0, (attempt - rescue_after - 1) // attempts_per_model)
     return rescue_models[min(index, len(rescue_models) - 1)]
+
+
+def _lora_preflight_required(params: dict[str, Any]) -> bool:
+    if not parse_bool(params.get("use_lora"), False):
+        return False
+    if not _vocal_gate_required(params):
+        return False
+    quality = _lora_quality_for_params(params)
+    status = str(quality.get("quality_status") or "").lower()
+    if status in ACEJAM_LORA_UNSAFE_QUALITY_STATUSES:
+        raise RuntimeError(
+            "Selected LoRA is quarantined and cannot be used for generation"
+            + (
+                ": " + "; ".join(str(item) for item in quality.get("quality_reasons") or [] if str(item))
+                if quality.get("quality_reasons")
+                else "."
+            )
+        )
+    try:
+        duration = float(params.get("duration") or 0)
+    except Exception:
+        duration = 0.0
+    return status in ACEJAM_LORA_REVIEW_QUALITY_STATUSES or duration > float(ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS)
+
+
+def _lora_preflight_attempt_params(
+    params: dict[str, Any],
+    *,
+    use_lora: bool,
+    scale: float,
+    label: str,
+) -> dict[str, Any]:
+    return _short_vocal_attempt_params(
+        params,
+        label=label,
+        use_lora=use_lora,
+        lora_scale=scale,
+        warning_prefix="lora_preflight_audition",
+    )
+
+
+def _run_lora_preflight_attempt(params: dict[str, Any], *, attempt: int, max_attempts: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    result = _run_advanced_generation_once(params)
+    gate = _apply_vocal_intelligibility_gate_to_result(result, params, attempt=attempt, max_attempts=max_attempts)
+    label = ""
+    if params.get("repair_actions"):
+        label = str((params.get("repair_actions") or [{}])[-1].get("label") or "")
+    result["lora_preflight_attempt"] = {
+        "label": label,
+        "use_lora": bool(params.get("use_lora")),
+        "lora_scale": params.get("lora_scale"),
+        "result_id": result.get("result_id"),
+        "gate_status": gate.get("status"),
+        "passed": gate.get("passed"),
+        "transcript_preview": gate.get("transcript_preview") or [],
+    }
+    return result, gate
+
+
+def _persist_result_update(result: dict[str, Any]) -> None:
+    result_id = str(result.get("result_id") or "").strip()
+    if not result_id:
+        return
+    try:
+        path = RESULTS_DIR / safe_id(result_id) / "result.json"
+    except ValueError:
+        return
+    if not path.is_file():
+        return
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta.update(_jsonable(result))
+        path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[generation] result update failed for {result_id}: {exc}", flush=True)
+
+
+def _run_lora_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | None:
+    if not _lora_preflight_required(params):
+        return None
+    adapter_path = str(params.get("lora_adapter_path") or "")
+    scales = tuple(scale for scale in ACEJAM_LORA_PREFLIGHT_SCALES if scale > 0)
+    total_attempts = 1 + len(scales)
+    baseline_params = _lora_preflight_attempt_params(params, use_lora=False, scale=0.0, label="baseline")
+    baseline_result, baseline_gate = _run_lora_preflight_attempt(baseline_params, attempt=1, max_attempts=total_attempts)
+    preflight = {
+        "status": "running",
+        "baseline": baseline_result.get("lora_preflight_attempt"),
+        "attempts": [baseline_result.get("lora_preflight_attempt")],
+        "adapter_path": adapter_path,
+    }
+    if not baseline_gate.get("passed"):
+        preflight["status"] = "base_failed"
+        baseline_result["success"] = False
+        baseline_result["error"] = "LoRA preflight baseline failed; base model/prompt/runtime must be fixed before testing LoRA."
+        baseline_result["lora_preflight"] = preflight
+        _persist_result_update(baseline_result)
+        return baseline_result
+    for index, scale in enumerate(scales, start=2):
+        lora_params = _lora_preflight_attempt_params(params, use_lora=True, scale=scale, label=f"lora_{scale:g}")
+        lora_result, lora_gate = _run_lora_preflight_attempt(lora_params, attempt=index, max_attempts=total_attempts)
+        preflight["attempts"].append(lora_result.get("lora_preflight_attempt"))
+        if lora_gate.get("passed"):
+            preflight["status"] = "passed"
+            preflight["selected_scale"] = scale
+            _update_lora_adapter_quality_metadata(
+                adapter_path,
+                quality_status="verified",
+                reason=f"LoRA preflight passed at scale {scale:g}.",
+                recommended_lora_scale=scale,
+                audition={
+                    "status": "succeeded",
+                    "type": "lora_preflight",
+                    "result_id": lora_result.get("result_id"),
+                    "lora_scale": scale,
+                    "vocal_intelligibility_gate": lora_gate,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            params["lora_scale"] = scale
+            params["adapter_metadata"] = infer_adapter_model_metadata(Path(adapter_path))
+            warnings = list(params.get("payload_warnings") or [])
+            if "lora_preflight_passed" not in warnings:
+                warnings.append("lora_preflight_passed")
+            params["payload_warnings"] = warnings
+            params["lora_preflight"] = preflight
+            return None
+    preflight["status"] = "failed_audition"
+    _update_lora_adapter_quality_metadata(
+        adapter_path,
+        quality_status="failed_audition",
+        reason="LoRA preflight failed at all tested scales while no-LoRA baseline passed.",
+        audition={
+            "status": "failed",
+            "type": "lora_preflight",
+            "baseline_result_id": baseline_result.get("result_id"),
+            "attempts": preflight["attempts"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    baseline_result["success"] = False
+    baseline_result["error"] = "LoRA preflight failed; adapter was marked failed_audition and the no-LoRA baseline was kept for review."
+    baseline_result["lora_preflight"] = preflight
+    _persist_result_update(baseline_result)
+    return baseline_result
+
+
+def _vocal_preflight_required(params: dict[str, Any]) -> bool:
+    if not _vocal_gate_required(params):
+        return False
+    if parse_bool(params.get("use_lora"), False):
+        return False
+    try:
+        duration = float(params.get("duration") or 0)
+    except Exception:
+        duration = 0.0
+    return duration > float(ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS)
+
+
+def _run_vocal_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | None:
+    if not _vocal_preflight_required(params):
+        return None
+    preflight_params = _short_vocal_attempt_params(
+        params,
+        label="selected_model",
+        use_lora=False,
+        warning_prefix="vocal_preflight",
+    )
+    result = _run_advanced_generation_once(preflight_params)
+    gate = _apply_vocal_intelligibility_gate_to_result(result, preflight_params, attempt=1, max_attempts=1)
+    attempt = _generation_attempt_summary(
+        result,
+        preflight_params,
+        role="primary",
+        gate=gate,
+        requested_params=params,
+        reason=_attempt_failure_reason(result, gate),
+    )
+    preflight = {
+        "status": "passed" if gate.get("passed") else "failed",
+        "attempt": attempt,
+        "required_for_long_render": True,
+        "duration": preflight_params.get("duration"),
+    }
+    params["vocal_preflight"] = preflight
+    result["vocal_preflight"] = preflight
+    if gate.get("passed"):
+        _persist_result_update(result)
+        return None
+    result["success"] = False
+    result["needs_review"] = True
+    result["error"] = (
+        "Selected ACE-Step model failed the 30s vocal preflight; long render was not started."
+    )
+    _annotate_generation_attempt_result(
+        result,
+        preflight_params,
+        role="primary",
+        gate=gate,
+        requested_params=params,
+        failure_reason=result["error"],
+    )
+    _persist_result_update(result)
+    return result
+
+
+def _run_vocal_diagnostic_attempts(
+    params: dict[str, Any],
+    *,
+    primary_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    labels: set[tuple[str, bool]] = set()
+    requested_model = str(params.get("song_model") or "").strip()
+    if not requested_model:
+        return diagnostics
+
+    def add_diagnostic(label: str, *, song_model: str | None = None, use_lora: bool = False) -> None:
+        model_name = song_model or str(params.get("song_model") or "")
+        key = (model_name, bool(use_lora))
+        if key in labels:
+            return
+        labels.add(key)
+        diag_params = _short_vocal_attempt_params(
+            params,
+            label=label,
+            use_lora=use_lora,
+            song_model=model_name,
+            warning_prefix="vocal_diagnostic",
+        )
+        try:
+            diag_result = _run_advanced_generation_once(diag_params)
+            diag_gate = _apply_vocal_intelligibility_gate_to_result(
+                diag_result,
+                diag_params,
+                attempt=1,
+                max_attempts=1,
+            )
+            diag_summary = _generation_attempt_summary(
+                diag_result,
+                diag_params,
+                role="diagnostic",
+                gate=diag_gate,
+                requested_params=params,
+                reason=_attempt_failure_reason(diag_result, diag_gate),
+            )
+            diag_summary["label"] = label
+            _annotate_generation_attempt_result(
+                diag_result,
+                diag_params,
+                role="diagnostic",
+                gate=diag_gate,
+                requested_params=params,
+                primary_attempt_id=str((primary_result or {}).get("result_id") or ""),
+                failure_reason=diag_summary.get("failure_reason") or "",
+            )
+            _persist_result_update(diag_result)
+            diagnostics.append(diag_summary)
+        except Exception as exc:
+            diagnostics.append(
+                _jsonable(
+                    {
+                        "attempt_role": "diagnostic",
+                        "label": label,
+                        "requested_song_model": params.get("song_model"),
+                        "actual_song_model": model_name,
+                        "with_lora": bool(use_lora),
+                        "passed": False,
+                        "vocal_gate_status": "error",
+                        "failure_reason": str(exc),
+                    }
+                )
+            )
+
+    if parse_bool(params.get("use_lora"), False):
+        add_diagnostic("same_model_no_lora", song_model=requested_model, use_lora=False)
+    for model in _vocal_rescue_models(params):
+        add_diagnostic(f"{safe_id(model)}_no_lora", song_model=model, use_lora=False)
+    return diagnostics
+
+
+def _finalize_failed_primary_with_diagnostics(
+    result: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    gate: dict[str, Any] | None = None,
+    history: list[dict[str, Any]] | None = None,
+    failure_reason: str = "",
+    run_diagnostics: bool = True,
+) -> dict[str, Any]:
+    diagnostics = _run_vocal_diagnostic_attempts(params, primary_result=result) if run_diagnostics else []
+    diagnostic_passed = any(item.get("passed") for item in diagnostics)
+    result["success"] = False
+    result["needs_review"] = True
+    result["error"] = failure_reason or _attempt_failure_reason(result, gate) or "Primary vocal render failed."
+    if diagnostic_passed:
+        result["error"] = (
+            f"{result['error']} Diagnostic fallback passed, but the requested model/LoRA primary remains failed."
+        )
+    if history is not None:
+        result["vocal_intelligibility_history"] = history
+    if params.get("lora_preflight"):
+        result["lora_preflight"] = params.get("lora_preflight")
+    if params.get("vocal_preflight"):
+        result["vocal_preflight"] = params.get("vocal_preflight")
+    _annotate_generation_attempt_result(
+        result,
+        params,
+        role="primary",
+        gate=gate,
+        requested_params=params,
+        diagnostic_attempts=diagnostics,
+        failure_reason=result["error"],
+    )
+    warnings = list(result.get("payload_warnings") or params.get("payload_warnings") or [])
+    if diagnostic_passed and "vocal_diagnostic_passed_primary_failed" not in warnings:
+        warnings.append("vocal_diagnostic_passed_primary_failed")
+    if "primary_vocal_gate_failed" not in warnings:
+        warnings.append("primary_vocal_gate_failed")
+    result["payload_warnings"] = warnings
+    _persist_result_update(result)
+    return result
 
 
 def _with_vocal_rescue_model(params: dict[str, Any], rescue_model: str, *, attempt: int) -> dict[str, Any]:
@@ -8539,6 +9219,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     params = _enforce_model_correct_render_settings(_parse_generation_payload(raw_payload), source="generation")
     if params["instrumental"] and not params["lyrics"].strip():
         params["lyrics"] = "[Instrumental]"
+    params = _defer_library_save_until_vocal_pass(params)
     max_attempts = int(params.get("vocal_intelligibility_attempts") or ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS)
     max_attempts = max(1, min(32, max_attempts))
     if not _vocal_gate_required(params):
@@ -8546,27 +9227,44 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         _apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
         return result
 
+    preflight_result = _run_lora_preflight_verifier(params)
+    if preflight_result is not None:
+        preflight = preflight_result.get("lora_preflight") if isinstance(preflight_result.get("lora_preflight"), dict) else {}
+        synthetic_gate = {
+            "status": preflight.get("status") or "lora_preflight_failed",
+            "passed": False,
+            "blocking": True,
+            "transcript_preview": preflight.get("attempts") or [],
+        }
+        return _finalize_failed_primary_with_diagnostics(
+            preflight_result,
+            params,
+            gate=synthetic_gate,
+            history=[],
+            failure_reason=str(preflight_result.get("error") or "LoRA preflight failed; long render was not started."),
+            run_diagnostics=False,
+        )
+
+    preflight_result = _run_vocal_preflight_verifier(params)
+    if preflight_result is not None:
+        gate = preflight_result.get("vocal_intelligibility_gate") if isinstance(preflight_result.get("vocal_intelligibility_gate"), dict) else {}
+        return _finalize_failed_primary_with_diagnostics(
+            preflight_result,
+            params,
+            gate=gate,
+            history=[],
+            failure_reason=str(preflight_result.get("error") or "Selected model vocal preflight failed; long render was not started."),
+        )
+
     history: list[dict[str, Any]] = []
     last_gate: dict[str, Any] | None = None
-    rescue_models = _vocal_rescue_models(params)
-    if rescue_models:
-        print(
-            "Vocal intelligibility model rescue armed: "
-            f"{params.get('song_model')} -> {', '.join(rescue_models)} "
-            f"after {params.get('vocal_intelligibility_model_rescue_after')} failed attempt(s)",
-            flush=True,
-        )
+    last_result: dict[str, Any] | None = None
     for attempt in range(1, max_attempts + 1):
-        attempt_params = params if attempt == 1 else _vocal_retry_params(params, attempt=attempt, last_gate=last_gate)
-        rescue_model = _vocal_rescue_model_for_attempt(params, attempt, rescue_models)
-        attempt_params = _with_vocal_rescue_model(attempt_params, rescue_model, attempt=attempt)
-        if attempt_params.get("vocal_intelligibility_rescue_model"):
-            print(
-                "Vocal intelligibility model rescue: "
-                f"attempt {attempt}/{max_attempts} using {attempt_params.get('song_model')} "
-                f"after {params.get('song_model')} failed clarity.",
-                flush=True,
-            )
+        attempt_params = (
+            params
+            if attempt == 1
+            else _vocal_retry_params(params, attempt=attempt, last_gate=last_gate, allow_lora_changes=False)
+        )
         result = _run_advanced_generation_once(attempt_params)
         gate = _apply_vocal_intelligibility_gate_to_result(
             result,
@@ -8574,14 +9272,28 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             attempt=attempt,
             max_attempts=max_attempts,
         )
+        _annotate_generation_attempt_result(
+            result,
+            attempt_params,
+            role="primary",
+            gate=gate,
+            requested_params=params,
+            failure_reason=_attempt_failure_reason(result, gate),
+        )
+        last_result = result
         last_gate = gate
         history_item = {
             "attempt": attempt,
+            "attempt_role": "primary",
             "result_id": result.get("result_id"),
             "song_model": attempt_params.get("song_model"),
-            "vocal_intelligibility_original_model": attempt_params.get("vocal_intelligibility_original_model"),
-            "vocal_intelligibility_rescue_model": attempt_params.get("vocal_intelligibility_rescue_model"),
+            "requested_song_model": params.get("song_model"),
+            "actual_song_model": result.get("actual_song_model") or result.get("active_song_model") or attempt_params.get("song_model"),
+            "with_lora": parse_bool(attempt_params.get("use_lora"), False),
+            "lora_scale": attempt_params.get("lora_scale"),
+            "lora_quality_status": result.get("lora_quality_status"),
             "inference_steps": attempt_params.get("inference_steps"),
+            "shift": attempt_params.get("shift"),
             "status": gate.get("status"),
             "blocking": gate.get("blocking"),
             "passed_audio_ids": gate.get("passed_audio_ids") or [],
@@ -8603,12 +9315,28 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
         history.append(history_item)
         if gate.get("passed") and not gate.get("blocking"):
             result["vocal_intelligibility_history"] = history
+            if params.get("lora_preflight"):
+                result["lora_preflight"] = params.get("lora_preflight")
+            if params.get("vocal_preflight"):
+                result["vocal_preflight"] = params.get("vocal_preflight")
+            _save_vocal_gate_passed_result_to_library(result, attempt_params)
+            _persist_result_update(result)
             return result
         if gate.get("needs_review") or gate.get("status") == "needs_review":
             result["vocal_intelligibility_history"] = history
+            if params.get("lora_preflight"):
+                result["lora_preflight"] = params.get("lora_preflight")
+            if params.get("vocal_preflight"):
+                result["vocal_preflight"] = params.get("vocal_preflight")
+            _persist_result_update(result)
             return result
         if gate.get("status") == "error":
             result["vocal_intelligibility_history"] = history
+            if params.get("lora_preflight"):
+                result["lora_preflight"] = params.get("lora_preflight")
+            if params.get("vocal_preflight"):
+                result["vocal_preflight"] = params.get("vocal_preflight")
+            _persist_result_update(result)
             return result
         issue_summary = ", ".join(
             sorted(
@@ -8623,6 +9351,24 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             f"Vocal intelligibility retry: attempt {attempt}/{max_attempts}: {issue_summary} "
             f"(model {attempt_params.get('song_model')}, result {result.get('result_id')})",
             flush=True,
+        )
+
+    if last_result is not None:
+        compact_history = "; ".join(
+            f"attempt {item['attempt']} model={item.get('song_model')} result {item['result_id']} status={item['status']} "
+            f"transcripts={[t.get('text') or t.get('issue') for t in item['transcripts']]}"
+            for item in history
+        )
+        debug_path = RESULTS_DIR / "vocal_intelligibility_gate.jsonl"
+        return _finalize_failed_primary_with_diagnostics(
+            last_result,
+            params,
+            gate=last_gate,
+            history=history,
+            failure_reason=(
+                "Vocal intelligibility gate failed after "
+                f"{max_attempts} primary attempt(s). Debug log: {debug_path}. History: {compact_history}"
+            ),
         )
 
     debug_path = RESULTS_DIR / "vocal_intelligibility_gate.jsonl"
@@ -10747,7 +11493,23 @@ def _generation_result_summary(result: dict[str, Any] | None) -> dict[str, Any]:
             "key_scale": result.get("key_scale"),
             "payload_warnings": list(result.get("payload_warnings") or []),
             "vocal_intelligibility_gate": result.get("vocal_intelligibility_gate"),
+            "vocal_intelligibility_history": result.get("vocal_intelligibility_history"),
+            "vocal_preflight": result.get("vocal_preflight"),
+            "lora_preflight": result.get("lora_preflight"),
+            "requested_song_model": result.get("requested_song_model"),
+            "actual_song_model": result.get("actual_song_model"),
+            "primary_attempt_id": result.get("primary_attempt_id"),
+            "attempt_role": result.get("attempt_role"),
+            "with_lora": result.get("with_lora"),
+            "lora_scale": result.get("lora_scale"),
+            "lora_quality_status": result.get("lora_quality_status"),
+            "vocal_gate_status": result.get("vocal_gate_status"),
+            "transcript_preview": result.get("transcript_preview"),
+            "failure_reason": result.get("failure_reason"),
+            "diagnostic_attempts": result.get("diagnostic_attempts"),
             "recommended_take": result.get("recommended_take"),
+            "needs_review": result.get("needs_review"),
+            "error": result.get("error"),
             "audio_count": len(audios) if isinstance(audios, list) else 0,
         }
     )

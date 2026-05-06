@@ -2861,7 +2861,7 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(gate["status"], "needs_review")
             self.assertFalse(gate["passed"])
             self.assertFalse(gate["blocking"])
-            self.assertTrue(result["success"])
+            self.assertFalse(result["success"])
             self.assertTrue(result["needs_review"])
             self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
 
@@ -2914,7 +2914,7 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual(result["vocal_intelligibility_gate"]["status"], "pass")
 
-    def test_vocal_intelligibility_retries_lora_failure_without_lora_before_rescue(self):
+    def test_vocal_intelligibility_records_no_lora_and_turbo_as_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = Path(tmp)
             params = {
@@ -2974,13 +2974,111 @@ class AppParityTest(unittest.TestCase):
                 patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
                 result = acejam_app._run_advanced_generation({"title": "ignored"})
 
-            self.assertEqual([call["song_model"] for call in calls], ["acestep-v15-xl-sft", "acestep-v15-xl-sft"])
-            self.assertTrue(calls[0]["use_lora"])
-            self.assertFalse(calls[1]["use_lora"])
-            self.assertIn("vocal_intelligibility_retry_no_lora", calls[1]["payload_warnings"])
-            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "pass")
+            self.assertEqual(
+                [call["song_model"] for call in calls],
+                [
+                    "acestep-v15-xl-sft",
+                    "acestep-v15-xl-sft",
+                    "acestep-v15-xl-sft",
+                    "acestep-v15-xl-sft",
+                    "acestep-v15-turbo",
+                ],
+            )
+            self.assertTrue(all(call["use_lora"] for call in calls[:3]))
+            self.assertFalse(calls[3]["use_lora"])
+            self.assertFalse(calls[4]["use_lora"])
+            self.assertFalse(result["success"])
+            self.assertEqual(result["attempt_role"], "primary")
+            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "fail")
+            self.assertTrue(result["diagnostic_attempts"][0]["passed"])
+            self.assertEqual(result["diagnostic_attempts"][0]["actual_song_model"], "acestep-v15-xl-sft")
 
-    def test_vocal_intelligibility_generation_rescues_to_turbo_model(self):
+    def test_lora_preflight_quarantines_review_adapter_before_long_render(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            results = root / "results"
+            results.mkdir()
+            adapter = root / "adapter"
+            adapter.mkdir()
+            (adapter / "acejam_adapter.json").write_text(
+                json.dumps(
+                    {
+                        "display_name": "review adapter",
+                        "adapter_type": "lora",
+                        "model_variant": "xl_sft",
+                        "song_model": "acestep-v15-xl-sft",
+                        "quality_status": "needs_review",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            params = {
+                "task_type": "text2music",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Albus Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "song_model": "acestep-v15-xl-sft",
+                "quality_profile": "chart_master",
+                "inference_steps": 50,
+                "guidance_scale": 7.0,
+                "shift": 1.0,
+                "use_lora": True,
+                "lora_adapter_path": str(adapter),
+                "lora_adapter_name": "review adapter",
+                "lora_scale": 0.45,
+                "adapter_model_variant": "xl_sft",
+                "adapter_metadata": {
+                    "adapter_type": "lora",
+                    "model_variant": "xl_sft",
+                    "song_model": "acestep-v15-xl-sft",
+                    "quality_status": "needs_review",
+                },
+                "payload_warnings": [],
+                "album_metadata": {},
+                "vocal_intelligibility_gate": True,
+                "vocal_intelligibility_attempts": 3,
+            }
+            calls = []
+
+            def fake_once(attempt_params):
+                calls.append(dict(attempt_params))
+                result_id = f"preflight{len(calls)}"
+                result_dir = results / result_id
+                result_dir.mkdir()
+                (result_dir / "take.wav").write_text("audio", encoding="utf-8")
+                result = {"success": True, "result_id": result_id, "audios": [{"id": "take-1", "filename": "take.wav"}]}
+                (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                return result
+
+            def fake_asr(paths, **_kwargs):
+                passed = calls[-1].get("use_lora") is False
+                return [{
+                    "path": str(paths[0]),
+                    "status": "pass" if passed else "fail",
+                    "passed": passed,
+                    "blocking": not passed,
+                    "text": "Albus rises bright with every word clear tonight" if passed else "I don't know I don't know",
+                    "word_count": 8 if passed else 5,
+                    "keyword_hits": ["albus", "rises", "bright"] if passed else [],
+                    "missing_keywords": [] if passed else ["albus"],
+                    "issue": "" if passed else "asr_phrase_loop_i_don't_know",
+                }]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
+                patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
+                patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
+
+            self.assertEqual([call["use_lora"] for call in calls], [False, True, True, True])
+            self.assertFalse(result["success"])
+            self.assertEqual(result["lora_preflight"]["status"], "failed_audition")
+            metadata = json.loads((adapter / "acejam_adapter.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["quality_status"], "failed_audition")
+
+    def test_vocal_intelligibility_generation_records_turbo_as_diagnostic_not_primary_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = Path(tmp)
             params = {
@@ -3044,14 +3142,93 @@ class AppParityTest(unittest.TestCase):
                 patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
                 result = acejam_app._run_advanced_generation({"title": "ignored"})
 
-            self.assertEqual([call["song_model"] for call in calls], ["acestep-v15-xl-sft", "acestep-v15-turbo"])
-            self.assertEqual(calls[1]["inference_steps"], 8)
-            self.assertEqual(result["result_id"], "modelrescue2")
-            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "pass")
-            self.assertIn(
-                "vocal_intelligibility_model_rescue:acestep-v15-xl-sft->acestep-v15-turbo",
-                result["payload_warnings"],
+            self.assertEqual(
+                [call["song_model"] for call in calls],
+                ["acestep-v15-xl-sft", "acestep-v15-xl-sft", "acestep-v15-xl-sft", "acestep-v15-turbo"],
             )
+            self.assertTrue(all(call["inference_steps"] == 50 for call in calls[:3]))
+            self.assertTrue(all(call["shift"] == 1.0 for call in calls[:3]))
+            self.assertEqual(calls[3]["inference_steps"], 8)
+            self.assertEqual(calls[3]["shift"], 3.0)
+            self.assertEqual(result["result_id"], "modelrescue3")
+            self.assertFalse(result["success"])
+            self.assertEqual(result["attempt_role"], "primary")
+            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "fail")
+            self.assertEqual(result["diagnostic_attempts"][0]["actual_song_model"], "acestep-v15-turbo")
+            self.assertTrue(result["diagnostic_attempts"][0]["passed"])
+            self.assertIn("vocal_diagnostic_passed_primary_failed", result["payload_warnings"])
+
+    def test_long_xl_sft_render_blocks_when_vocal_preflight_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            params = {
+                "task_type": "text2music",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Albus Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "song_model": "acestep-v15-xl-sft",
+                "quality_profile": "chart_master",
+                "inference_steps": 8,
+                "guidance_scale": 8.0,
+                "shift": 3.0,
+                "duration": 180,
+                "payload_warnings": [],
+                "album_metadata": {},
+                "vocal_intelligibility_gate": True,
+                "vocal_intelligibility_attempts": 3,
+            }
+            calls = []
+
+            def fake_once(attempt_params):
+                calls.append(dict(attempt_params))
+                result_id = f"preblock{len(calls)}"
+                result_dir = results / result_id
+                result_dir.mkdir()
+                (result_dir / "take.wav").write_text("audio", encoding="utf-8")
+                result = {
+                    "success": True,
+                    "result_id": result_id,
+                    "active_song_model": attempt_params.get("song_model"),
+                    "song_model": attempt_params.get("song_model"),
+                    "audios": [{"id": "take-1", "filename": "take.wav"}],
+                    "payload_warnings": list(attempt_params.get("payload_warnings") or []),
+                }
+                (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                return result
+
+            def fake_asr(paths, **_kwargs):
+                passed = calls[-1].get("song_model") == "acestep-v15-turbo"
+                return [{
+                    "path": str(paths[0]),
+                    "status": "pass" if passed else "fail",
+                    "passed": passed,
+                    "blocking": not passed,
+                    "text": "Albus rises bright with every word clear tonight" if passed else "thank you thank you",
+                    "word_count": 8 if passed else 4,
+                    "keyword_hits": ["albus", "rises", "bright"] if passed else [],
+                    "missing_keywords": [] if passed else ["albus"],
+                    "issue": "" if passed else "asr_phrase_loop_thank_you",
+                }]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
+                patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft", "acestep-v15-turbo"}), \
+                patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
+                patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
+
+            self.assertEqual([call["song_model"] for call in calls], ["acestep-v15-xl-sft", "acestep-v15-turbo"])
+            self.assertEqual(calls[0]["duration"], acejam_app.ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS)
+            self.assertEqual(calls[0]["inference_steps"], 50)
+            self.assertEqual(calls[0]["shift"], 1.0)
+            self.assertEqual(calls[1]["inference_steps"], 8)
+            self.assertEqual(calls[1]["shift"], 3.0)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["vocal_preflight"]["status"], "failed")
+            self.assertEqual(result["diagnostic_attempts"][0]["actual_song_model"], "acestep-v15-turbo")
+            self.assertTrue(result["diagnostic_attempts"][0]["passed"])
 
     def test_vocal_intelligibility_generation_fails_loudly_after_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3095,14 +3272,16 @@ class AppParityTest(unittest.TestCase):
                 patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
                 patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
                 patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
-                with self.assertRaisesRegex(RuntimeError, "Vocal intelligibility gate failed after 2 attempt"):
-                    acejam_app._run_advanced_generation({"title": "ignored"})
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
 
             self.assertEqual(calls, ["fail01", "fail02"])
+            self.assertFalse(result["success"])
+            self.assertEqual(result["attempt_role"], "primary")
+            self.assertIn("Vocal intelligibility gate failed after 2 primary attempt", result["error"])
             for result_id in calls:
                 saved = json.loads((results / result_id / "result.json").read_text(encoding="utf-8"))
                 self.assertFalse(saved["success"])
-                self.assertEqual(saved["error"], "Vocal intelligibility gate rejected every take.")
+                self.assertIn("Vocal intelligibility", saved["error"])
 
     def test_vocal_intelligibility_verifier_error_does_not_retry_audio(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3149,13 +3328,13 @@ class AppParityTest(unittest.TestCase):
                 result = acejam_app._run_advanced_generation({"title": "ignored"})
 
             self.assertEqual(calls, ["asrerr"])
-            self.assertTrue(result["success"])
+            self.assertFalse(result["success"])
             self.assertEqual(result["vocal_intelligibility_gate"]["status"], "needs_review")
             self.assertFalse(result["vocal_intelligibility_gate"]["blocking"])
             self.assertNotIn("recommended_take", result)
             self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
             saved = json.loads((results / "asrerr" / "result.json").read_text(encoding="utf-8"))
-            self.assertTrue(saved["success"])
+            self.assertFalse(saved["success"])
             self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "needs_review")
 
     def test_vocal_intelligibility_asr_timeout_returns_advisory_error(self):

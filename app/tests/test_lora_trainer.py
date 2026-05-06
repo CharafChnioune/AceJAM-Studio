@@ -1076,7 +1076,8 @@ class LoraTrainerTest(unittest.TestCase):
             adapters = manager.list_adapters()
             exported = [item for item in adapters if item["source"] == "exports"]
             self.assertEqual([item["display_name"] for item in exported], ["charaf hook", "charaf hook"])
-            self.assertTrue(all(item["is_loadable"] for item in exported))
+            self.assertTrue(all(item["quality_status"] == "needs_review" for item in exported))
+            self.assertFalse(any(item["is_loadable"] for item in exported))
             self.assertTrue(all(item["trigger_tag"] == "charaf hook" for item in exported))
 
     def test_lokr_adapter_is_listed_but_not_generation_loadable(self):
@@ -1139,6 +1140,30 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertFalse(adapters[0]["is_loadable"])
             self.assertFalse(adapters[0]["generation_loadable"])
             self.assertIn("expected shift=1.0", " ".join(adapters[0]["quality_reasons"]))
+
+    def test_lora_registry_hides_needs_review_adapters_from_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            adapter_dir = self.make_peft_adapter(root / "data" / "loras" / "review-xl-sft")
+            (adapter_dir / "acejam_adapter.json").write_text(
+                json.dumps(
+                    {
+                        "display_name": "review",
+                        "adapter_type": "lora",
+                        "model_variant": "xl_sft",
+                        "song_model": "acestep-v15-xl-sft",
+                        "quality_status": "needs_review",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            adapters = manager.list_adapters()
+
+            self.assertEqual(adapters[0]["quality_status"], "needs_review")
+            self.assertFalse(adapters[0]["is_loadable"])
+            self.assertFalse(adapters[0]["generation_loadable"])
 
     def test_job_result_registers_manual_training_output(self):
         with tempfile.TemporaryDirectory() as tmp:

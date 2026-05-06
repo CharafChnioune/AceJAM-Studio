@@ -2,6 +2,7 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  Activity,
   AlertTriangle,
   Brain,
   CheckCircle2,
@@ -433,6 +434,13 @@ function GenerationDetails({
   const artist = text(resultSummary.artist_name || result.artist_name || summary.artist_name, "");
   const gate = asRecord(result.vocal_intelligibility_gate || resultSummary.vocal_intelligibility_gate);
   const transcriptPreview = asArray(gate.transcript_preview);
+  const vocalPreflight = asRecord(result.vocal_preflight || resultSummary.vocal_preflight);
+  const loraPreflight = asRecord(result.lora_preflight || resultSummary.lora_preflight);
+  const loraPreflightAttempts = asArray(loraPreflight.attempts);
+  const vocalHistory = asArray(result.vocal_intelligibility_history || resultSummary.vocal_intelligibility_history);
+  const diagnosticAttempts = asArray(result.diagnostic_attempts || resultSummary.diagnostic_attempts);
+  const requestedModel = text(result.requested_song_model || resultSummary.requested_song_model || summary.song_model, "");
+  const actualModel = text(result.actual_song_model || resultSummary.actual_song_model || summary.song_model, "");
 
   return (
     <div className="space-y-4">
@@ -457,6 +465,8 @@ function GenerationDetails({
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <InfoRow label="Task" value={summary.task_type} />
           <InfoRow label="Model" value={summary.song_model || "auto"} />
+          <InfoRow label="Requested model" value={requestedModel || "auto"} />
+          <InfoRow label="Actual model" value={actualModel || "auto"} />
           <InfoRow label="Quality" value={summary.quality_profile || "auto"} />
           <InfoRow label="Duration" value={summary.duration ? `${text(summary.duration)}s` : "auto"} />
           <InfoRow label="Instrumental" value={summary.instrumental} />
@@ -464,6 +474,9 @@ function GenerationDetails({
           <InfoRow label="Seed" value={summary.seed} />
           <InfoRow label="BPM / key" value={`${text(summary.bpm, "auto")} / ${text(summary.key_scale, "auto")}`} />
           <InfoRow label="Source audio" value={summary.has_source_audio} />
+          <InfoRow label="Attempt role" value={result.attempt_role || resultSummary.attempt_role || "primary"} />
+          <InfoRow label="LoRA active" value={result.with_lora ?? resultSummary.with_lora} />
+          <InfoRow label="LoRA scale" value={result.lora_scale ?? resultSummary.lora_scale} />
         </div>
       </Section>
 
@@ -509,6 +522,84 @@ function GenerationDetails({
                     })}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {(Object.keys(vocalPreflight).length > 0 || Object.keys(loraPreflight).length > 0 || vocalHistory.length > 0 || diagnosticAttempts.length > 0) && (
+        <Section title="Attempts" icon={Activity}>
+          <div className="space-y-2 text-xs">
+            {Object.keys(vocalPreflight).length > 0 && (
+              <div className="rounded-md border bg-background/35 p-3">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  <InfoRow label="Vocal preflight" value={vocalPreflight.status} />
+                  <InfoRow label="Duration" value={vocalPreflight.duration ? `${text(vocalPreflight.duration)}s` : ""} />
+                  <InfoRow label="Required" value={vocalPreflight.required_for_long_render} />
+                </div>
+                {Object.keys(asRecord(vocalPreflight.attempt)).length > 0 && (
+                  <p className="mt-2 rounded-md bg-muted/35 p-2">
+                    Primary preflight · model {text(asRecord(vocalPreflight.attempt).actual_song_model)} ·{" "}
+                    {text(asRecord(vocalPreflight.attempt).vocal_gate_status)} · result{" "}
+                    {text(asRecord(vocalPreflight.attempt).result_id)}
+                  </p>
+                )}
+              </div>
+            )}
+            {Object.keys(loraPreflight).length > 0 && (
+              <div className="rounded-md border bg-background/35 p-3">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  <InfoRow label="LoRA preflight" value={loraPreflight.status} />
+                  <InfoRow label="Selected scale" value={loraPreflight.selected_scale} />
+                  <InfoRow label="Adapter" value={shortPath(loraPreflight.adapter_path)} />
+                </div>
+                {loraPreflightAttempts.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {loraPreflightAttempts.map((item, index) => {
+                      const row = asRecord(item);
+                      return (
+                        <p key={index} className="rounded-md bg-muted/35 p-2">
+                          {text(row.label || `attempt ${index + 1}`)} · LoRA {text(row.use_lora)} · scale{" "}
+                          {text(row.lora_scale)} · {text(row.gate_status)} · result {text(row.result_id)}
+                        </p>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            {vocalHistory.length > 0 && (
+              <div className="space-y-1">
+                {vocalHistory.map((item, index) => {
+                  const row = asRecord(item);
+                  return (
+                    <p key={index} className="rounded-md border bg-background/35 p-2">
+                      Attempt {text(row.attempt || index + 1)} · {text(row.attempt_role || "primary")} · requested{" "}
+                      {text(row.requested_song_model || requestedModel)} · actual {text(row.actual_song_model || row.song_model)} · LoRA{" "}
+                      {text(row.with_lora)} · scale {text(row.lora_scale)} · result {text(row.result_id)} · {text(row.status)}
+                    </p>
+                  );
+                })}
+              </div>
+            )}
+            {diagnosticAttempts.length > 0 && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                <p className="mb-2 font-medium text-amber-700 dark:text-amber-300">
+                  Diagnostic fallback only. Deze pogingen vervangen de primaire render niet.
+                </p>
+                <div className="space-y-1">
+                  {diagnosticAttempts.map((item, index) => {
+                    const row = asRecord(item);
+                    return (
+                      <p key={index} className="rounded-md bg-background/45 p-2">
+                        {text(row.label || `diagnostic ${index + 1}`)} · actual {text(row.actual_song_model)} · LoRA{" "}
+                        {text(row.with_lora)} · {text(row.vocal_gate_status)} · passed {text(row.passed)} · result{" "}
+                        {text(row.result_id)} {row.failure_reason ? `· ${text(row.failure_reason)}` : ""}
+                      </p>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

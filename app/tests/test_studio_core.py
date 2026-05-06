@@ -424,6 +424,22 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(planner["steps"], 64)
         self.assertIn(planner["risk"], {"medium", "high"})
 
+    def test_hit_readiness_counts_section_descriptors_and_metadata_aliases(self):
+        payload = {
+            "task_type": "text2music",
+            "caption": "G-funk rap with clear vocals",
+            "lyrics": "[Verse 1 - Male Rap Vocal]\nConcrete remembers every line\n\n[Chorus - Anthemic]\nConcrete remembers everything",
+            "bpm": 78,
+            "keyscale": "C minor",
+            "timesignature": "4",
+        }
+
+        readiness = hit_readiness_report(payload, task_type="text2music", song_model="acestep-v15-xl-sft")
+
+        self.assertEqual(readiness["section_count"], 2)
+        self.assertEqual(readiness["hook_count"], 1)
+        self.assertNotIn("metadata_presence", " ".join(readiness["issues"]))
+
     def test_hit_readiness_fails_caption_and_fallback_lyric_leakage(self):
         payload = {
             "task_type": "text2music",

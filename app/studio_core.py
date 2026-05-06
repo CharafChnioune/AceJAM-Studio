@@ -2161,7 +2161,9 @@ def hit_readiness_report(payload: dict[str, Any], *, task_type: str | None = Non
     )
     add("no_fallback_artifacts", "pass" if fallback_artifact_count == 0 else "fail", f"{fallback_artifact_count} fallback artifact(s)", 10)
 
-    metadata_present = bool(payload.get("bpm") not in [None, ""] and payload.get("key_scale") not in [None, ""] and payload.get("time_signature") not in [None, ""])
+    key_value = payload.get("key_scale", payload.get("keyscale"))
+    signature_value = payload.get("time_signature", payload.get("timesignature"))
+    metadata_present = bool(payload.get("bpm") not in [None, ""] and key_value not in [None, ""] and signature_value not in [None, ""])
     add("metadata_presence", "pass" if metadata_present else "warn", "BPM/key/time present" if metadata_present else "metadata is auto or missing", 8)
 
     gate = payload.get("payload_quality_gate") if isinstance(payload.get("payload_quality_gate"), dict) else {}
@@ -2281,11 +2283,11 @@ PARAM_ALIASES: dict[str, list[str]] = {
 
 LYRIC_SECTION_RE = re.compile(
     r"(?im)^\s*\*{0,2}\[(?:intro|verse|pre[-\s]?chorus|chorus|final\s+chorus|hook|bridge|drop|break|interlude|outro|refrain|rap|spoken)"
-    r"(?:\s+\d+)?\]\s*$"
+    r"(?:\s+\d+)?(?:\s*[-:–—][^\]]+)?\]\s*$"
 )
 INLINE_LYRIC_SECTION_RE = re.compile(
     r"(?i)\[(?:intro|verse|pre[-\s]?chorus|chorus|final\s+chorus|hook|bridge|drop|break|interlude|outro|refrain|rap|spoken)"
-    r"(?:\s+\d+)?\]"
+    r"(?:\s+\d+)?(?:\s*[-:–—][^\]]+)?\]"
 )
 
 

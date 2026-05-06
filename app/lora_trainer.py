@@ -679,9 +679,10 @@ def adapter_quality_metadata(metadata: dict[str, Any] | None, *, adapter_type: s
         and str((item.get("vocal_intelligibility_gate") or {}).get("status") or "pass").lower() in {"pass", "passed"}
         for item in auditions
     )
-    if auditions and not passed_audition and quality_status == "unknown":
+    generated_training_adapter = any(meta.get(key) not in (None, "", [], {}) for key in ("job_id", "epochs", "sample_count", "dataset_id"))
+    if not passed_audition and quality_status == "unknown" and (auditions or generated_training_adapter):
         quality_status = "needs_review"
-        reasons.append("No epoch audition passed the vocal quality gate.")
+        reasons.append("No adapter audition passed the vocal quality gate.")
     if adapter_type != "lora":
         quality_status = "not_generation_loadable"
     return {
@@ -1674,8 +1675,9 @@ class AceTrainingManager:
                 quality = adapter_quality_metadata(meta, adapter_type=adapter_type)
                 meta.setdefault("quality_status", quality["quality_status"])
                 meta.setdefault("quality_reasons", quality["quality_reasons"])
-                quarantined = str(quality.get("quality_status") or "").lower() == "quarantined"
-                loadable = bool(has_lora and adapter_type == "lora" and not quarantined)
+                blocked_statuses = {"quarantined", "needs_review", "failed_audition", "not_generation_loadable"}
+                quality_status = str(quality.get("quality_status") or "").lower()
+                loadable = bool(has_lora and adapter_type == "lora" and quality_status not in blocked_statuses)
                 if loadable and not meta_path.is_file():
                     generated_meta = {
                         "display_name": display_name,
