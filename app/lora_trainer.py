@@ -54,6 +54,11 @@ MISSING_LYRICS_SOURCES = {
     "understand_music_failed",
     "error",
 }
+ONLINE_LYRICS_REVIEW_SOURCES = {
+    "online_lyrics",
+    "online_lyrics_genius",
+    "genius",
+}
 NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
@@ -504,9 +509,11 @@ def is_missing_vocal_lyrics(entry: dict[str, Any] | Any) -> bool:
         lyrics = str(entry.get("lyrics") or "").strip()
         status = str(entry.get("lyrics_status") or "").strip().lower()
         label_source = str(entry.get("label_source") or entry.get("lyrics_source") or "").strip().lower()
-        if status in {"missing", "failed", "error", "needs_review"}:
+        if status in {"missing", "failed", "error", "needs_review", "unreviewed"}:
             return True
-        if parse_bool(entry.get("requires_review"), False) and status not in {"present", "verified"}:
+        if label_source in ONLINE_LYRICS_REVIEW_SOURCES and status != "verified":
+            return True
+        if parse_bool(entry.get("requires_review"), False) and status != "verified":
             return True
         if not lyrics or _instrumental_like_lyrics(lyrics):
             return True
@@ -690,11 +697,12 @@ def adapter_quality_metadata(metadata: dict[str, Any] | None, *, adapter_type: s
     passed_audition = any(
         isinstance(item, dict)
         and str(item.get("status") or "").lower() == "succeeded"
-        and str((item.get("vocal_intelligibility_gate") or {}).get("status") or "pass").lower() in {"pass", "passed"}
+        and isinstance(item.get("vocal_intelligibility_gate"), dict)
+        and str((item.get("vocal_intelligibility_gate") or {}).get("status") or "").lower() in {"pass", "passed"}
+        and parse_bool((item.get("vocal_intelligibility_gate") or {}).get("passed"), False)
         for item in auditions
     )
-    generated_training_adapter = any(meta.get(key) not in (None, "", [], {}) for key in ("job_id", "epochs", "sample_count", "dataset_id"))
-    if not passed_audition and quality_status == "unknown" and (auditions or generated_training_adapter):
+    if not passed_audition and quality_status == "unknown" and adapter_type == "lora":
         quality_status = "needs_review"
         reasons.append("No adapter audition passed the vocal quality gate.")
     if adapter_type != "lora":
@@ -1692,7 +1700,7 @@ class AceTrainingManager:
                 blocked_statuses = {"quarantined", "needs_review", "failed_audition", "not_generation_loadable"}
                 quality_status = str(quality.get("quality_status") or "").lower()
                 loadable = bool(has_lora and adapter_type == "lora" and quality_status not in blocked_statuses)
-                if loadable and not meta_path.is_file():
+                if has_lora and adapter_type == "lora" and not meta_path.is_file():
                     generated_meta = {
                         "display_name": display_name,
                         "trigger_tag": str(meta.get("trigger_tag") or ""),
@@ -1703,6 +1711,9 @@ class AceTrainingManager:
                         "source_path": str(child),
                         "registered_path": str(child),
                         "source_paths": {"source": str(child), "registered": str(child)},
+                        "quality_status": quality["quality_status"],
+                        "quality_reasons": quality["quality_reasons"],
+                        "audition_passed": quality["audition_passed"],
                     }
                     if meta.get("base_model_name_or_path"):
                         generated_meta["base_model_name_or_path"] = meta["base_model_name_or_path"]
@@ -1972,8 +1983,10 @@ class AceTrainingManager:
                             self.write_label_sidecars(audio_path, understood)
                             lyrics_text = str(understood.get("lyrics") or "").strip()
                             missing_lyrics = is_missing_vocal_lyrics({**understood, "lyrics": lyrics_text})
+                            lyrics_status = str(understood.get("lyrics_status") or ("missing" if missing_lyrics else "present"))
+                            requires_review = parse_bool(understood.get("requires_review"), missing_lyrics)
                             if missing_lyrics:
-                                understood.setdefault("lyrics_status", "missing")
+                                understood.setdefault("lyrics_status", lyrics_status or "missing")
                                 understood.setdefault("requires_review", True)
                                 transcribed_failed += 1
                             else:
@@ -1983,8 +1996,8 @@ class AceTrainingManager:
                                     "path": str(audio_path),
                                     "filename": audio_path.name,
                                     "lyrics": lyrics_text,
-                                    "lyrics_status": "missing" if missing_lyrics else "present",
-                                    "requires_review": missing_lyrics,
+                                    "lyrics_status": lyrics_status,
+                                    "requires_review": requires_review,
                                     "caption": str(understood.get("caption") or ""),
                                     "language": str(understood.get("language") or "unknown"),
                                     "bpm": understood.get("bpm"),
@@ -2720,8 +2733,16 @@ class AceTrainingManager:
         result_id = str((result or {}).get("result_id") or first_audio.get("result_id") or "")
         failure_reason = ""
         gate_status = str(gate.get("status") or "").strip().lower()
-        if gate and gate_status not in {"pass", "passed"}:
+        preflight = result.get("lora_preflight") if isinstance(result, dict) and isinstance(result.get("lora_preflight"), dict) else {}
+        preflight_status = str(preflight.get("status") or "").strip().lower()
+        if isinstance(result, dict) and result.get("success") is False:
+            failure_reason = str(result.get("error") or "audition result was not successful")
+        if not gate:
+            failure_reason = failure_reason or "audition produced no vocal intelligibility gate"
+        elif gate_status not in {"pass", "passed"} or not parse_bool(gate.get("passed"), False):
             failure_reason = str(gate.get("reason") or gate.get("error") or f"vocal gate status={gate_status or 'unknown'}")
+        if preflight_status and preflight_status != "passed":
+            failure_reason = failure_reason or f"LoRA preflight status={preflight_status}"
         if not (audio_url or result_id):
             failure_reason = failure_reason or "audition produced no audio result"
         record = {
@@ -2733,6 +2754,12 @@ class AceTrainingManager:
             "created_at": utc_now(),
             "vocal_intelligibility_gate": gate,
             "transcript_preview": str(gate.get("transcript_preview") or gate.get("transcript") or "")[:500],
+            "lora_preflight": preflight,
+            "lora_scale": request.get("lora_scale"),
+            "song_model": request.get("song_model"),
+            "model_variant": request.get("model_variant"),
+            "inference_steps": result.get("inference_steps") if isinstance(result, dict) else None,
+            "shift": result.get("shift") if isinstance(result, dict) else None,
         }
         self._record_epoch_audition(job_id, record)
         if failure_reason:
@@ -3245,6 +3272,12 @@ class AceTrainingManager:
         if caption_path.is_file():
             caption = caption_path.read_text(encoding="utf-8", errors="replace").strip()
         caption = caption or str(metadata.get("caption") or csv_row.get("Caption") or stem.replace("_", " ").replace("-", " "))
+        label_source = str(metadata.get("label_source") or metadata.get("lyrics_source") or lyrics_source or "").strip().lower()
+        lyrics_status = str(metadata.get("lyrics_status") or ("missing" if _instrumental_like_lyrics(lyrics) else "present")).strip().lower()
+        requires_review = parse_bool(metadata.get("requires_review"), _instrumental_like_lyrics(lyrics))
+        if label_source in ONLINE_LYRICS_REVIEW_SOURCES and lyrics_status != "verified":
+            lyrics_status = "needs_review"
+            requires_review = True
         duration = None
         if sf is not None:
             try:
@@ -3263,8 +3296,9 @@ class AceTrainingManager:
             "caption": caption,
             "lyrics": lyrics,
             "lyrics_source": lyrics_source,
-            "lyrics_status": str(metadata.get("lyrics_status") or ("missing" if _instrumental_like_lyrics(lyrics) else "present")),
-            "requires_review": parse_bool(metadata.get("requires_review"), _instrumental_like_lyrics(lyrics)),
+            "label_source": label_source,
+            "lyrics_status": lyrics_status,
+            "requires_review": requires_review,
             "genre": str(metadata.get("genre") or csv_row.get("Genre") or ""),
             "bpm": metadata.get("bpm") or csv_row.get("BPM") or None,
             "keyscale": metadata.get("keyscale") or metadata.get("key_scale") or csv_row.get("Key") or "",

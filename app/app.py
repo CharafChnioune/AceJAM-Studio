@@ -2465,21 +2465,99 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "use_cot_lyrics": False,
         "use_cot_language": False,
         "vocal_intelligibility_gate": True,
+        "lora_preflight_required": True,
         "auto_score": False,
         "auto_lrc": False,
         "audio_format": "wav",
     }
     params = _parse_generation_payload(raw_payload)
+    params["lora_preflight_required"] = True
+    preflight_result = _run_lora_preflight_verifier(params)
+    if preflight_result is not None:
+        audios = list(preflight_result.get("audios") or [])
+        first_audio = audios[0] if audios else {}
+        preflight = preflight_result.get("lora_preflight") if isinstance(preflight_result.get("lora_preflight"), dict) else {}
+        gate = preflight_result.get("vocal_intelligibility_gate") if isinstance(preflight_result.get("vocal_intelligibility_gate"), dict) else {}
+        return {
+            "success": False,
+            "error": str(preflight_result.get("error") or "LoRA epoch audition preflight failed."),
+            "result_id": str(preflight_result.get("result_id") or first_audio.get("result_id") or ""),
+            "audio_url": str(first_audio.get("audio_url") or ""),
+            "audios": audios,
+            "lyrics_fit": lyrics_fit,
+            "vocal_intelligibility_gate": gate,
+            "lora_preflight": preflight,
+            "transcript_preview": _vocal_gate_transcript_preview(gate),
+            "song_model": params.get("song_model"),
+            "inference_steps": params.get("inference_steps"),
+            "shift": params.get("shift"),
+            "lora_scale": params.get("lora_scale"),
+        }
     result = _run_advanced_generation_once(params)
+    gate = _apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
+    _annotate_generation_attempt_result(
+        result,
+        params,
+        role="primary",
+        gate=gate,
+        requested_params=params,
+        failure_reason=_attempt_failure_reason(result, gate),
+    )
+    adapter_path = str(params.get("lora_adapter_path") or "")
+    if adapter_path:
+        if result.get("success") and gate.get("passed"):
+            _update_lora_adapter_quality_metadata(
+                adapter_path,
+                quality_status="verified",
+                reason=f"Epoch {epoch} audition passed the vocal intelligibility gate.",
+                recommended_lora_scale=float(params.get("lora_scale") or DEFAULT_LORA_GENERATION_SCALE),
+                audition={
+                    "status": "succeeded",
+                    "type": "epoch_audition",
+                    "epoch": epoch,
+                    "result_id": result.get("result_id"),
+                    "lora_scale": params.get("lora_scale"),
+                    "song_model": params.get("song_model"),
+                    "inference_steps": params.get("inference_steps"),
+                    "shift": params.get("shift"),
+                    "vocal_intelligibility_gate": gate,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        else:
+            _update_lora_adapter_quality_metadata(
+                adapter_path,
+                quality_status="failed_audition",
+                reason=str(result.get("error") or _attempt_failure_reason(result, gate) or "Epoch audition failed the vocal intelligibility gate."),
+                audition={
+                    "status": "failed",
+                    "type": "epoch_audition",
+                    "epoch": epoch,
+                    "result_id": result.get("result_id"),
+                    "lora_scale": params.get("lora_scale"),
+                    "song_model": params.get("song_model"),
+                    "inference_steps": params.get("inference_steps"),
+                    "shift": params.get("shift"),
+                    "vocal_intelligibility_gate": gate,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
     audios = list(result.get("audios") or [])
     first_audio = audios[0] if audios else {}
     return {
-        "success": True,
+        "success": bool(result.get("success") and gate.get("passed")),
+        "error": str(result.get("error") or ""),
         "result_id": str(result.get("result_id") or first_audio.get("result_id") or ""),
         "audio_url": str(first_audio.get("audio_url") or ""),
         "audios": audios,
         "lyrics_fit": lyrics_fit,
-        "vocal_intelligibility_gate": result.get("vocal_intelligibility_gate") or first_audio.get("vocal_intelligibility_gate") or {},
+        "vocal_intelligibility_gate": gate,
+        "lora_preflight": params.get("lora_preflight") if isinstance(params.get("lora_preflight"), dict) else {},
+        "transcript_preview": _vocal_gate_transcript_preview(gate),
+        "song_model": params.get("song_model"),
+        "inference_steps": params.get("inference_steps"),
+        "shift": params.get("shift"),
+        "lora_scale": params.get("lora_scale"),
     }
 
 
@@ -2819,6 +2897,8 @@ def _training_lookup_online_lyrics(audio_path: Path, body: dict[str, Any]) -> di
     return {
         "caption": caption,
         "lyrics": tagged or "[Instrumental]",
+        "lyrics_status": "needs_review" if has_lyrics else "missing",
+        "requires_review": True,
         "bpm": bpm,
         "key_scale": keyscale,
         "time_signature": "4",
@@ -2838,18 +2918,19 @@ def _training_write_label_sidecars(audio_path: Path, payload: dict[str, Any]) ->
     metadata_path = audio_path.with_name(f"{stem}.json")
     lyrics_text = str(payload.get("lyrics") or "").strip()
     missing = is_missing_vocal_lyrics({**payload, "lyrics": lyrics_text})
+    raw_status = str(payload.get("lyrics_status") or "").strip().lower()
     lyrics_path.write_text(lyrics_text + "\n", encoding="utf-8")
     metadata = {
         "caption": str(payload.get("caption") or "").strip(),
         "lyrics": lyrics_text,
-        "lyrics_status": "missing" if missing else "present",
-        "requires_review": missing,
+        "lyrics_status": raw_status or ("missing" if missing else "present"),
+        "requires_review": parse_bool(payload.get("requires_review"), missing),
         "bpm": payload.get("bpm"),
         "keyscale": str(payload.get("key_scale") or payload.get("keyscale") or "").strip(),
         "timesignature": str(payload.get("time_signature") or payload.get("timesignature") or "").strip(),
         "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
         "is_instrumental": lyrics_text.strip().lower() == "[instrumental]",
-        "label_source": "online_lyrics_missing" if missing else str(payload.get("label_source") or "online_lyrics"),
+        "label_source": str(payload.get("label_source") or ("online_lyrics_missing" if missing else "online_lyrics")),
         "ace_lm_model": str(payload.get("ace_lm_model") or ""),
         "online_artist": str(payload.get("online_artist") or ""),
         "online_title": str(payload.get("online_title") or ""),
@@ -6038,6 +6119,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "vocal_intelligibility_rescue_models",
             ACEJAM_VOCAL_INTELLIGIBILITY_RESCUE_MODELS,
         ),
+        "lora_preflight_required": parse_bool(payload.get("lora_preflight_required"), False),
         "return_audio_codes": parse_bool(payload.get("return_audio_codes"), False),
         "save_to_library": parse_bool(payload.get("save_to_library"), False),
         "title": title,
@@ -7219,8 +7301,26 @@ def _vocal_gate_words(text: str) -> list[str]:
 
 
 def _vocal_phrase_loop_issue(words: list[str]) -> str:
-    if len(words) < 16:
+    if len(words) < 4:
         return ""
+    known_loops = {
+        ("i", "don't", "know"),
+        ("i", "don", "t", "know"),
+        ("thank", "you"),
+        ("we'll", "be", "right", "back"),
+        ("we", "ll", "be", "right", "back"),
+        ("yeah",),
+        ("oh",),
+    }
+    for phrase in known_loops:
+        size = len(phrase)
+        if len(words) < size * 2:
+            continue
+        count = sum(1 for index in range(0, len(words) - size + 1) if tuple(words[index : index + size]) == phrase)
+        coverage = (count * size) / max(1, len(words))
+        if count >= 2 and coverage >= 0.45:
+            label = "_".join(phrase[:4])
+            return f"asr_phrase_loop_{label}_{coverage:.2f}"
     for size in [5, 4, 3, 2]:
         counts: dict[tuple[str, ...], int] = {}
         for index in range(0, len(words) - size + 1):
@@ -7232,7 +7332,7 @@ def _vocal_phrase_loop_issue(words: list[str]) -> str:
             continue
         phrase, count = max(counts.items(), key=lambda item: item[1])
         coverage = (count * size) / max(1, len(words))
-        if count >= 6 and coverage >= 0.18:
+        if (count >= 3 and coverage >= 0.35) or (count >= 6 and coverage >= 0.18):
             label = "_".join(phrase[:4])
             return f"asr_phrase_loop_{label}_{coverage:.2f}"
     return ""
@@ -8097,6 +8197,8 @@ def _lora_preflight_required(params: dict[str, Any]) -> bool:
                 else "."
             )
         )
+    if parse_bool(params.get("lora_preflight_required"), False):
+        return True
     try:
         duration = float(params.get("duration") or 0)
     except Exception:
@@ -14170,8 +14272,8 @@ def _smart_autolabel_file(audio_path: Path, filename: str, trigger_tag: str = ""
         "filename": filename,
         "caption": caption,
         "lyrics": lyrics,
-        "lyrics_status": "present",
-        "requires_review": False,
+        "lyrics_status": "needs_review",
+        "requires_review": True,
         "genre": ", ".join(genre_tags[:3]) if genre_tags else "",
         "bpm": bpm,
         "keyscale": key,
@@ -14418,18 +14520,20 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                 paths = _training_write_label_sidecars(audio_path, understood)
                 lyrics_text = str(understood.get("lyrics") or "").strip()
                 missing = is_missing_vocal_lyrics({**understood, "lyrics": lyrics_text})
+                lyrics_status = str(understood.get("lyrics_status") or ("missing" if missing else "present"))
+                requires_review = parse_bool(understood.get("requires_review"), missing)
                 labels.append(
                     {
                         "path": str(audio_path),
                         "filename": audio_path.name,
                         "lyrics": "" if missing else lyrics_text,
-                        "lyrics_status": "missing" if missing else "present",
-                        "requires_review": missing,
+                        "lyrics_status": lyrics_status,
+                        "requires_review": requires_review,
                         "caption": str(understood.get("caption") or ""),
                         "language": str(understood.get("language") or "unknown"),
                         "bpm": understood.get("bpm"),
                         "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
-                        "label_source": "online_lyrics_missing" if missing else "official_ace_step_understand_music",
+                        "label_source": str(understood.get("label_source") or ("online_lyrics_missing" if missing else "official_ace_step_understand_music")),
                         **paths,
                     }
                 )

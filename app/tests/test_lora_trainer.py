@@ -7,10 +7,12 @@ from unittest.mock import patch
 from lora_trainer import (
     AceTrainingManager,
     TrainingJob,
+    adapter_quality_metadata,
     build_epoch_audition_caption,
     default_training_device,
     default_epoch_audition_lyrics,
     fit_epoch_audition_lyrics,
+    is_missing_vocal_lyrics,
     model_from_variant,
     model_to_variant,
     normalize_training_song_model,
@@ -54,6 +56,7 @@ class AuditionTrainingManager(AceTrainingManager):
             "success": True,
             "result_id": f"audition-{epoch}",
             "audios": [{"result_id": f"audition-{epoch}", "audio_url": f"/media/results/audition-{epoch}/take-1.wav"}],
+            "vocal_intelligibility_gate": {"status": "pass", "passed": True, "transcript_preview": "clear vocal line"},
         }
 
 
@@ -177,6 +180,36 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(payload["metadata"]["custom_tag"], "acejam")
             self.assertEqual(payload["samples"][0]["audio_path"], str(audio.resolve()))
             self.assertEqual(payload["samples"][0]["lyrics"], "[Verse]\nhello")
+
+    def test_scan_marks_old_online_lyrics_sidecars_for_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "songs"
+            dataset.mkdir()
+            audio = dataset / "online.wav"
+            audio.write_bytes(b"audio")
+            (dataset / "online.lyrics.txt").write_text("[Verse]\nDownloaded lyric line", encoding="utf-8")
+            (dataset / "online.caption.txt").write_text("west coast rap vocal", encoding="utf-8")
+            (dataset / "online.json").write_text(
+                json.dumps(
+                    {
+                        "bpm": 92,
+                        "keyscale": "A minor",
+                        "language": "en",
+                        "lyrics_status": "present",
+                        "requires_review": False,
+                        "label_source": "online_lyrics_genius",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = self.make_manager(root)
+            scanned = manager.scan_dataset(dataset)
+            sample = scanned["files"][0]
+            self.assertEqual(sample["lyrics_status"], "needs_review")
+            self.assertTrue(sample["requires_review"])
+            self.assertTrue(is_missing_vocal_lyrics(sample))
 
     def test_one_click_refreshes_missing_lyrics_or_metadata_sidecars(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -304,6 +337,43 @@ class LoraTrainerTest(unittest.TestCase):
 
         self.assertEqual([item["filename"] for item in kept], ["good.wav"])
         self.assertEqual([item["filename"] for item in removed], ["instrumental.wav", "failed.wav"])
+
+    def test_vocal_training_blocks_unreviewed_online_lyrics(self):
+        label = {
+            "filename": "online.wav",
+            "caption": "rap vocal",
+            "lyrics": "[Verse]\nReal lyric line with words",
+            "lyrics_status": "needs_review",
+            "requires_review": True,
+            "label_source": "online_lyrics_genius",
+            "bpm": 92,
+            "keyscale": "A minor",
+            "language": "en",
+        }
+
+        self.assertTrue(is_missing_vocal_lyrics(label))
+        kept, removed = split_missing_vocal_lyrics_labels([label])
+        self.assertEqual(kept, [])
+        self.assertEqual([item["filename"] for item in removed], ["online.wav"])
+
+    def test_adapter_quality_requires_explicit_gate_pass(self):
+        quality = adapter_quality_metadata(
+            {
+                "job_id": "job",
+                "epoch_auditions": [
+                    {
+                        "epoch": 1,
+                        "status": "succeeded",
+                        "result_id": "wav-only",
+                        "vocal_intelligibility_gate": {},
+                    }
+                ],
+            },
+            adapter_type="lora",
+        )
+
+        self.assertEqual(quality["quality_status"], "needs_review")
+        self.assertFalse(quality["audition_passed"])
 
     def test_one_click_defaults_are_lora_and_dynamic_epochs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -791,6 +861,50 @@ class LoraTrainerTest(unittest.TestCase):
             audition = stored["result"]["epoch_auditions"][0]
             self.assertEqual(audition["status"], "failed")
             self.assertEqual(audition["transcript_preview"], "yeah yeah yeah yeah")
+
+    def test_epoch_audition_missing_vocal_gate_stops_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            manager.audition_runner = lambda request: {
+                "success": True,
+                "result_id": "missing-gate",
+                "audios": [{"audio_url": "/media/results/missing-gate/take.wav"}],
+            }
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="missinggate",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+            params = {
+                "adapter_type": "lora",
+                "song_model": "acestep-v15-xl-sft",
+                "model_variant": "xl_sft",
+                "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "no vocal intelligibility gate"):
+                manager._run_epoch_audition(
+                    "missinggate",
+                    params,
+                    output_dir / "checkpoints" / "epoch_1_loss_0.1",
+                    1,
+                    Path(job.log_path),
+                )
+
+            stored = manager.get_job("missinggate")
+            audition = stored["result"]["epoch_auditions"][0]
+            self.assertEqual(audition["status"], "failed")
+            self.assertIn("no vocal intelligibility gate", audition["error"])
 
     def test_startup_marks_running_epoch_auditions_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
