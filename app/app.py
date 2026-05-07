@@ -7475,6 +7475,46 @@ def _resolve_local_whisper_model() -> str | None:
     return str(candidates[0]) if candidates else None
 
 
+def _ffmpeg_subprocess_bin_dirs() -> list[str]:
+    dirs: list[Path] = []
+    env_bin = os.environ.get("ACEJAM_FFMPEG_BIN", "").strip()
+    if env_bin:
+        dirs.append(Path(env_bin).expanduser())
+    if shutil.which("ffmpeg"):
+        try:
+            dirs.append(Path(shutil.which("ffmpeg") or "").resolve().parent)
+        except Exception:
+            pass
+    roots: list[Path] = []
+    pinokio_home = os.environ.get("PINOKIO_HOME", "").strip()
+    if pinokio_home:
+        roots.append(Path(pinokio_home).expanduser())
+    try:
+        roots.append(BASE_DIR.parents[2])
+    except IndexError:
+        pass
+    for root in roots:
+        dirs.append(root / "bin" / "ffmpeg-env" / "bin")
+        pkgs = root / "bin" / "ffmpeg-pkgs"
+        if pkgs.is_dir():
+            dirs.extend(path for path in pkgs.glob("*/bin") if path.is_dir())
+    unique: list[str] = []
+    seen: set[str] = set()
+    for path in dirs:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if not (resolved / "ffmpeg").exists():
+            continue
+        value = str(resolved)
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
 def _vocal_gate_required(params: dict[str, Any]) -> bool:
     if not parse_bool(params.get("vocal_intelligibility_gate"), ACEJAM_VOCAL_INTELLIGIBILITY_GATE):
         return False
@@ -7608,6 +7648,9 @@ print(json.dumps(results))
     env.setdefault("HF_HUB_OFFLINE", "1")
     env.setdefault("TRANSFORMERS_OFFLINE", "1")
     env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    ffmpeg_dirs = _ffmpeg_subprocess_bin_dirs()
+    if ffmpeg_dirs:
+        env["PATH"] = os.pathsep.join([*ffmpeg_dirs, env.get("PATH", "")])
     try:
         proc = subprocess.run(
             [sys.executable, "-c", code],

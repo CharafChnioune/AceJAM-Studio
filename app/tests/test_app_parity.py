@@ -3412,6 +3412,18 @@ class AppParityTest(unittest.TestCase):
             self.assertFalse(transcripts[0]["blocking"])
             self.assertIn("timed out after 5s", transcripts[0]["issue"])
 
+    def test_vocal_asr_finds_pinokio_ffmpeg_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pinokio"
+            app_dir = root / "api" / "MLX-Media.git" / "app"
+            ffmpeg_dir = root / "bin" / "ffmpeg-env" / "bin"
+            ffmpeg_dir.mkdir(parents=True)
+            (ffmpeg_dir / "ffmpeg").write_text("#!/bin/sh\n", encoding="utf-8")
+
+            with patch.object(acejam_app, "BASE_DIR", app_dir), \
+                patch.object(acejam_app.shutil, "which", return_value=None):
+                self.assertIn(str(ffmpeg_dir.resolve()), acejam_app._ffmpeg_subprocess_bin_dirs())
+
     def test_react_ai_fill_persists_wizard_drafts(self):
         web_src = Path(__file__).resolve().parents[1] / "web" / "src"
         store = (web_src / "store" / "wizard.ts").read_text(encoding="utf-8")
