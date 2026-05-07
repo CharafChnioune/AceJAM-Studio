@@ -2624,7 +2624,7 @@ class AceTrainingManager:
                 continue
             found = True
             status = str(item.get("status") or "").lower()
-            if status != "succeeded":
+            if status not in {"succeeded", "needs_review"}:
                 return True
             if not (str(item.get("audio_url") or "").strip() or str(item.get("result_id") or "").strip()):
                 return True
@@ -2885,23 +2885,37 @@ class AceTrainingManager:
         audio_url = str(first_audio.get("audio_url") or (result or {}).get("audio_url") or "")
         result_id = str((result or {}).get("result_id") or first_audio.get("result_id") or "")
         failure_reason = ""
+        review_reason = ""
         gate_status = str(gate.get("status") or "").strip().lower()
         preflight = result.get("lora_preflight") if isinstance(result, dict) and isinstance(result.get("lora_preflight"), dict) else {}
         preflight_status = str(preflight.get("status") or "").strip().lower()
+        has_audio = bool(audio_url or result_id)
         if isinstance(result, dict) and result.get("success") is False:
-            failure_reason = str(result.get("error") or "audition result was not successful")
+            if gate_status == "needs_review" and has_audio:
+                review_reason = str(result.get("error") or gate.get("reason") or gate.get("error") or "vocal gate needs manual review")
+            else:
+                failure_reason = str(result.get("error") or "audition result was not successful")
         if not gate:
             failure_reason = failure_reason or "audition produced no vocal intelligibility gate"
+        elif gate_status == "needs_review" and has_audio:
+            review_reason = review_reason or str(
+                gate.get("reason")
+                or gate.get("error")
+                or f"vocal gate status={gate_status}"
+            )
         elif gate_status not in {"pass", "passed"} or not parse_bool(gate.get("passed"), False):
             failure_reason = str(gate.get("reason") or gate.get("error") or f"vocal gate status={gate_status or 'unknown'}")
-        if preflight_status and preflight_status != "passed":
+        if preflight_status and preflight_status not in {"passed", "needs_review"}:
             failure_reason = failure_reason or f"LoRA preflight status={preflight_status}"
+        elif preflight_status == "needs_review" and has_audio:
+            review_reason = review_reason or "LoRA preflight needs manual review"
         if not (audio_url or result_id):
             failure_reason = failure_reason or "audition produced no audio result"
+        record_status = "failed" if failure_reason else ("needs_review" if review_reason else "succeeded")
         record = {
             **base_record,
-            "status": "failed" if failure_reason else "succeeded",
-            "error": failure_reason,
+            "status": record_status,
+            "error": failure_reason or review_reason,
             "result_id": result_id,
             "audio_url": audio_url,
             "created_at": utc_now(),
@@ -2918,6 +2932,9 @@ class AceTrainingManager:
         if failure_reason:
             self._append_log(log_path, f"[audition epoch {epoch}] failed vocal quality gate; stopping training: {failure_reason}\n")
             raise RuntimeError(f"Epoch {epoch} audition failed vocal quality gate: {failure_reason}")
+        if review_reason:
+            self._append_log(log_path, f"[audition epoch {epoch}] needs manual review; training will continue: {review_reason}\n")
+            return
         self._append_log(log_path, f"[audition epoch {epoch}] generated {record['audio_url'] or record['result_id']}\n")
 
     def _run_train_command_with_epoch_auditions(

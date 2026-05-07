@@ -914,6 +914,60 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(audition["status"], "failed")
             self.assertEqual(audition["transcript_preview"], "yeah yeah yeah yeah")
 
+    def test_epoch_audition_needs_review_does_not_stop_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            manager.audition_runner = lambda request: {
+                "success": False,
+                "error": "LoRA preflight could not verify the no-LoRA baseline; listen manually before approving this adapter.",
+                "result_id": f"review-{request['epoch']}",
+                "audios": [{"audio_url": f"/media/results/review-{request['epoch']}/take.wav"}],
+                "vocal_intelligibility_gate": {
+                    "status": "needs_review",
+                    "passed": False,
+                    "blocking": False,
+                    "needs_review": True,
+                    "transcript_preview": [{"status": "error", "issue": "asr_model_unavailable"}],
+                },
+                "lora_preflight": {"status": "needs_review"},
+            }
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="gatereview",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+            params = {
+                "adapter_type": "lora",
+                "song_model": "acestep-v15-xl-sft",
+                "model_variant": "xl_sft",
+                "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
+            }
+
+            manager._run_train_command_with_epoch_auditions(
+                "gatereview",
+                ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "2"],
+                output_dir,
+                Path(job.log_path),
+                epochs=2,
+                params=params,
+            )
+
+            stored = manager.get_job("gatereview")
+            auditions = stored["result"]["epoch_auditions"]
+            self.assertEqual([item["status"] for item in auditions], ["needs_review", "needs_review"])
+            self.assertEqual(len(manager.commands), 2)
+            self.assertIn("needs manual review; training will continue", Path(job.log_path).read_text(encoding="utf-8"))
+
     def test_epoch_audition_missing_vocal_gate_stops_training(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

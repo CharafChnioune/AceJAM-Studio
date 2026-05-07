@@ -8330,9 +8330,17 @@ def _run_lora_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | Non
         "adapter_path": adapter_path,
     }
     if not baseline_gate.get("passed"):
-        preflight["status"] = "base_failed"
+        baseline_gate_status = str(baseline_gate.get("status") or "").strip().lower()
+        if baseline_gate_status == "needs_review":
+            preflight["status"] = "needs_review"
+            baseline_result["needs_review"] = True
+            baseline_result["error"] = (
+                "LoRA preflight could not verify the no-LoRA baseline; listen manually before approving this adapter."
+            )
+        else:
+            preflight["status"] = "base_failed"
+            baseline_result["error"] = "LoRA preflight baseline failed; base model/prompt/runtime must be fixed before testing LoRA."
         baseline_result["success"] = False
-        baseline_result["error"] = "LoRA preflight baseline failed; base model/prompt/runtime must be fixed before testing LoRA."
         baseline_result["lora_preflight"] = preflight
         _persist_result_update(baseline_result)
         return baseline_result
