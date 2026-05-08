@@ -102,6 +102,8 @@ export function SimpleWizard() {
     form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
     form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
     form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
+    form.setValue("use_lora_trigger", selection.use_lora_trigger, { shouldValidate: true });
+    form.setValue("lora_trigger_tag", selection.lora_trigger_tag, { shouldValidate: true });
     form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
     form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
     form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
@@ -402,6 +404,7 @@ export function SimpleWizard() {
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
               { key: "lora_adapter_name", label: "LoRA" },
+              { key: "lora_trigger_tag", label: "LoRA trigger" },
               { key: "vocal_language", label: "Taal" },
               { key: "quality_profile", label: "Kwaliteit" },
               { key: "tags", label: "Tags" },

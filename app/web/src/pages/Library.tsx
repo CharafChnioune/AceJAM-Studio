@@ -2,13 +2,15 @@ import * as React from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, HardDrive, Image as ImageIcon, Library as LibraryIcon, Music2, Search, Trash2, Video } from "lucide-react";
+import { CheckSquare, Download, HardDrive, Image as ImageIcon, Library as LibraryIcon, Music2, Search, Square, Trash2, Video, X } from "lucide-react";
 
 import {
   deleteLibraryItem,
+  deleteLibraryItems,
   getMlxVideoAttachments,
   listLibrary,
   type LibraryItem,
+  type LibraryDeleteTarget,
   type MlxVideoAttachment,
 } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
@@ -60,6 +62,17 @@ function deleteKind(item: LibraryItem): DeleteKind {
   if (item.kind === "video") return "video";
   if (item.kind === "image") return "image";
   return item.source === "song" ? "song" : "result-audio";
+}
+
+function deleteTargetForItem(item: LibraryItem): LibraryDeleteTarget {
+  return {
+    id: item.id,
+    kind: deleteKind(item),
+    result_id: item.result_id,
+    song_id: item.song_id,
+    audio_id: item.audio_id,
+    filename: item.filename,
+  };
 }
 
 function sourceLabel(item: LibraryItem) {
@@ -121,7 +134,10 @@ export function Library() {
   const [model, setModel] = React.useState("__all__");
   const [active, setActive] = React.useState<LibraryItem | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<LibraryItem | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [deleteText, setDeleteText] = React.useState("");
+  const [bulkDeleteText, setBulkDeleteText] = React.useState("");
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
 
   const filtered = React.useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -150,6 +166,43 @@ export function Library() {
   }, [items, search, tab, model]);
 
   const allModels = Array.from(new Set(items.map((item) => item.song_model || item.model_label).filter(Boolean))) as string[];
+  const selectedItems = React.useMemo(
+    () => items.filter((item) => selectedIds.has(item.id)),
+    [items, selectedIds],
+  );
+  const filteredSelectedCount = filtered.filter((item) => selectedIds.has(item.id)).length;
+
+  React.useEffect(() => {
+    const valid = new Set(items.map((item) => item.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
+
+  const toggleSelected = (item: LibraryItem) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  };
+
+  const selectVisible = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const item of filtered) next.add(item.id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    setSelectedIds(new Set(items.map((item) => item.id)));
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
   const videosForItem = React.useCallback((item: LibraryItem): MlxVideoAttachment[] => {
     const ids = new Set(
       [item.song_id, item.result_id, item.id]
@@ -161,15 +214,7 @@ export function Library() {
 
   const remove = useMutation({
     mutationFn: (item: LibraryItem) =>
-      deleteLibraryItem({
-        id: item.id,
-        kind: deleteKind(item),
-        result_id: item.result_id,
-        song_id: item.song_id,
-        audio_id: item.audio_id,
-        filename: item.filename,
-        confirm: "DELETE",
-      }),
+      deleteLibraryItem({ ...deleteTargetForItem(item), confirm: "DELETE" }),
     onSuccess: (resp) => {
       if (!resp.success) {
         toast.error(resp.error || "Verwijderen mislukt");
@@ -179,6 +224,28 @@ export function Library() {
       setActive(null);
       setDeleteTarget(null);
       setDeleteText("");
+      qc.invalidateQueries({ queryKey: ["library"] });
+      qc.invalidateQueries({ queryKey: ["mlx-video"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const removeMany = useMutation({
+    mutationFn: (targets: LibraryItem[]) =>
+      deleteLibraryItems({
+        items: targets.map(deleteTargetForItem),
+        confirm: "DELETE",
+      }),
+    onSuccess: (resp) => {
+      if (!resp.success) {
+        toast.error(resp.error || `${resp.errors?.length || 0} item(s) konden niet verwijderd worden`);
+        return;
+      }
+      toast.success(`${selectedItems.length} media-items van schijf verwijderd.`);
+      setActive(null);
+      setBulkDeleteOpen(false);
+      setBulkDeleteText("");
+      clearSelection();
       qc.invalidateQueries({ queryKey: ["library"] });
       qc.invalidateQueries({ queryKey: ["mlx-video"] });
     },
@@ -228,6 +295,33 @@ export function Library() {
         </Select>
       </div>
 
+      {!q.isLoading && filtered.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-card/35 p-2 text-xs text-muted-foreground">
+          <Button variant="outline" size="sm" onClick={selectVisible} className="gap-2">
+            <CheckSquare className="size-3.5" /> Selecteer zichtbaar ({filtered.length})
+          </Button>
+          <Button variant="outline" size="sm" onClick={selectAll} className="gap-2">
+            <CheckSquare className="size-3.5" /> Selecteer alles ({items.length})
+          </Button>
+          <Button variant="ghost" size="sm" onClick={clearSelection} disabled={selectedIds.size === 0} className="gap-2">
+            <X className="size-3.5" /> Wis selectie
+          </Button>
+          <span className="px-1">{selectedIds.size} geselecteerd · {filteredSelectedCount} zichtbaar</span>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={selectedItems.length === 0}
+            onClick={() => {
+              setBulkDeleteOpen(true);
+              setBulkDeleteText("");
+            }}
+            className="ml-auto gap-2"
+          >
+            <Trash2 className="size-3.5" /> Delete selected
+          </Button>
+        </div>
+      )}
+
       {q.isLoading && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -268,7 +362,19 @@ export function Library() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 variants={{ show: { opacity: 1, y: 0 } }}
+                className="relative"
               >
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggleSelected(item);
+                  }}
+                  className="absolute left-2 top-2 z-10 rounded-md border bg-background/90 p-1 text-foreground shadow-sm transition hover:border-primary"
+                  aria-label={selectedIds.has(item.id) ? "Deselecteer media" : "Selecteer media"}
+                >
+                  {selectedIds.has(item.id) ? <CheckSquare className="size-4 text-primary" /> : <Square className="size-4" />}
+                </button>
                 <button
                   type="button"
                   onClick={() => setActive(item)}
@@ -454,6 +560,42 @@ export function Library() {
             >
               <Trash2 className={cn("size-4", remove.isPending && "animate-pulse")} />
               Delete from disk
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDeleteOpen} onOpenChange={(open) => !open && setBulkDeleteOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{selectedItems.length} media-items permanent verwijderen?</DialogTitle>
+            <DialogDescription>
+              Dit verwijdert audio, images en video’s echt van schijf. Typ DELETE om te bevestigen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border bg-card/40 p-3 text-sm">
+              {selectedItems.slice(0, 30).map((item) => (
+                <div key={item.id} className="flex items-center justify-between gap-3">
+                  <span className="truncate">{itemTitle(item)}</span>
+                  <Badge variant="outline" className="shrink-0 text-[10px]">{sourceLabel(item)}</Badge>
+                </div>
+              ))}
+              {selectedItems.length > 30 && (
+                <p className="pt-2 text-xs text-muted-foreground">+ {selectedItems.length - 30} extra items</p>
+              )}
+            </div>
+            <Input value={bulkDeleteText} onChange={(e) => setBulkDeleteText(e.target.value)} placeholder="DELETE" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkDeleteOpen(false)}>Annuleer</Button>
+            <Button
+              variant="destructive"
+              disabled={bulkDeleteText !== "DELETE" || selectedItems.length === 0 || removeMany.isPending}
+              onClick={() => removeMany.mutate(selectedItems)}
+            >
+              <Trash2 className={cn("size-4", removeMany.isPending && "animate-pulse")} />
+              Delete selected from disk
             </Button>
           </DialogFooter>
         </DialogContent>

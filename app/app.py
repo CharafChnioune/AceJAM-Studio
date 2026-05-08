@@ -253,6 +253,7 @@ from lora_trainer import (
     model_from_variant,
     model_to_variant,
     normalize_training_song_model,
+    safe_generation_trigger_tag,
     training_inference_defaults,
     vocal_dataset_health,
 )
@@ -3059,21 +3060,101 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
     scale = clamp_float(payload.get("lora_scale", payload.get("lora_weight")), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0)
     model_variant = str(payload.get("adapter_model_variant") or "").strip()
     adapter_song_model = str(payload.get("adapter_song_model") or "").strip()
+    payload_trigger_tag = str(payload.get("lora_trigger_tag") or payload.get("lora_trigger") or "").strip()
+    trigger_tag = payload_trigger_tag
     adapter_metadata: dict[str, Any] = {}
     if path:
         adapter_metadata = infer_adapter_model_metadata(Path(path))
         model_variant = model_variant or str(adapter_metadata.get("model_variant") or "").strip()
         adapter_song_model = adapter_song_model or str(adapter_metadata.get("song_model") or "").strip()
         name = name or str(adapter_metadata.get("display_name") or adapter_metadata.get("trigger_tag") or "").strip()
+        trigger_tag = trigger_tag or str(
+            adapter_metadata.get("generation_trigger_tag")
+            or adapter_metadata.get("trigger_tag")
+            or ""
+        ).strip()
+    safe_trigger = safe_generation_trigger_tag(trigger_tag)
+    trigger_toggle = payload.get("use_lora_trigger", payload.get("lora_use_trigger"))
+    trigger_explicitly_disabled = payload_trigger_tag and not parse_bool(trigger_toggle, True)
+    use_trigger = bool(
+        use_lora
+        and safe_trigger
+        and not trigger_explicitly_disabled
+    )
     return {
         "use_lora": use_lora,
         "lora_adapter_path": path,
         "lora_adapter_name": name,
+        "use_lora_trigger": use_trigger,
+        "lora_trigger_tag": safe_trigger if use_trigger else "",
         "lora_scale": scale,
         "adapter_model_variant": model_variant,
         "adapter_song_model": adapter_song_model,
         "adapter_metadata": adapter_metadata,
     }
+
+
+def _caption_contains_lora_trigger(caption: str, trigger_tag: str) -> bool:
+    trigger = str(trigger_tag or "").strip()
+    if not trigger:
+        return False
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(trigger)}(?![A-Za-z0-9])"
+    return re.search(pattern, str(caption or ""), flags=re.IGNORECASE) is not None
+
+
+def _apply_lora_trigger_conditioning(params: dict[str, Any]) -> None:
+    if not params.get("use_lora"):
+        params["use_lora_trigger"] = False
+        params["lora_trigger_tag"] = ""
+        params["lora_trigger_applied"] = False
+        params["lora_trigger_conditioning_audit"] = {"status": "disabled", "caption_only": True}
+        return
+
+    trigger = safe_generation_trigger_tag(params.get("lora_trigger_tag"))
+    use_trigger = bool(params.get("use_lora_trigger") and trigger)
+    params["use_lora_trigger"] = use_trigger
+    params["lora_trigger_tag"] = trigger if use_trigger else ""
+    audit = {
+        "status": "disabled",
+        "caption_only": True,
+        "trigger_tag": trigger,
+        "applied": False,
+        "already_present": False,
+        "in_lyrics": False,
+    }
+    if not use_trigger:
+        params["lora_trigger_applied"] = False
+        params["lora_trigger_conditioning_audit"] = audit
+        return
+
+    caption = str(params.get("caption") or "").strip()
+    already_present = _caption_contains_lora_trigger(caption, trigger)
+    if not already_present:
+        caption = f"{trigger}, {caption}" if caption else trigger
+        params["caption"] = caption
+        warnings = list(params.get("payload_warnings") or [])
+        marker = "lora_trigger_tag_added_to_caption"
+        if marker not in warnings:
+            warnings.append(marker)
+        params["payload_warnings"] = warnings
+    params["tag_list"] = split_terms(caption)
+    in_lyrics = _caption_contains_lora_trigger(str(params.get("lyrics") or ""), trigger)
+    audit.update(
+        {
+            "status": "present" if already_present else "applied",
+            "applied": not already_present,
+            "already_present": already_present,
+            "in_lyrics": in_lyrics,
+        }
+    )
+    if in_lyrics:
+        warnings = list(params.get("payload_warnings") or [])
+        marker = "lora_trigger_tag_present_in_user_lyrics"
+        if marker not in warnings:
+            warnings.append(marker)
+        params["payload_warnings"] = warnings
+    params["lora_trigger_applied"] = True
+    params["lora_trigger_conditioning_audit"] = audit
 
 
 def _validate_lora_request_for_song_model(lora_request: dict[str, Any], song_model: str) -> None:
@@ -4200,9 +4281,7 @@ def _delete_library_image(result_id: str) -> dict[str, Any]:
     return {"songs": 0, "results": 0, "videos": 0, "images": 1, "files": 1}
 
 
-def _delete_library_item(body: dict[str, Any]) -> dict[str, Any]:
-    if str(body.get("confirm") or "").strip() != "DELETE":
-        raise HTTPException(status_code=400, detail="confirm must be DELETE")
+def _delete_library_single_item(body: dict[str, Any]) -> dict[str, Any]:
     kind = str(body.get("kind") or body.get("type") or "").strip()
     item_id = str(body.get("id") or body.get("item_id") or "").strip()
     parsed = _parse_library_item_id(kind, item_id)
@@ -4220,6 +4299,38 @@ def _delete_library_item(body: dict[str, Any]) -> dict[str, Any]:
         deleted = _delete_library_video(str(body.get("result_id") or parsed.get("result_id") or ""))
     else:
         raise HTTPException(status_code=400, detail="Unsupported library item kind")
+    return deleted
+
+
+def _merge_library_delete_counts(target: dict[str, Any], deleted: dict[str, Any]) -> None:
+    for key in ("songs", "results", "videos", "images", "files"):
+        target[key] = int(target.get(key) or 0) + int(deleted.get(key) or 0)
+
+
+def _delete_library_item(body: dict[str, Any]) -> dict[str, Any]:
+    if str(body.get("confirm") or "").strip() != "DELETE":
+        raise HTTPException(status_code=400, detail="confirm must be DELETE")
+    raw_items = body.get("items")
+    if isinstance(raw_items, list):
+        deleted = {"songs": 0, "results": 0, "videos": 0, "images": 0, "files": 0}
+        errors: list[dict[str, Any]] = []
+        for index, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                errors.append({"index": index, "error": "Invalid item"})
+                continue
+            try:
+                _merge_library_delete_counts(deleted, _delete_library_single_item(item))
+            except HTTPException as exc:
+                errors.append({"index": index, "id": item.get("id"), "error": exc.detail})
+            except Exception as exc:
+                errors.append({"index": index, "id": item.get("id"), "error": str(exc)})
+        return {
+            "success": not errors,
+            "deleted": deleted,
+            "errors": errors,
+            "library": _library_items(),
+        }
+    deleted = _delete_library_single_item(body)
     return {"success": True, "deleted": deleted, "library": _library_items()}
 
 
@@ -6759,6 +6870,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         parsed["tag_list"] = split_terms(parsed["caption"])
         if "vocal_clarity_recovery_caption_traits" not in parsed["payload_warnings"]:
             parsed["payload_warnings"].append("vocal_clarity_recovery_caption_traits")
+    _apply_lora_trigger_conditioning(parsed)
     _enforce_model_correct_render_settings(parsed, source="parse")
     settings_compliance = ace_step_settings_compliance(
         parsed,
@@ -7360,6 +7472,8 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "use_lora": params.get("use_lora", False),
         "lora_adapter_path": params.get("lora_adapter_path", ""),
         "lora_adapter_name": params.get("lora_adapter_name", ""),
+        "use_lora_trigger": params.get("use_lora_trigger", False),
+        "lora_trigger_tag": params.get("lora_trigger_tag", ""),
         "lora_scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
         "requested_take_count": params.get("requested_take_count", params.get("batch_size", 1)),
@@ -7495,6 +7609,9 @@ def _generation_metadata_audit(params: dict[str, Any], official_request: dict[st
         "take_count": params.get("batch_size"),
         "use_lora": params.get("use_lora"),
         "lora_adapter_path": params.get("lora_adapter_path"),
+        "use_lora_trigger": params.get("use_lora_trigger"),
+        "lora_trigger_tag": params.get("lora_trigger_tag"),
+        "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
         "lora_scale": params.get("lora_scale"),
         "source_lyrics_char_count": (params.get("ace_step_text_budget") or {}).get("source_lyrics_char_count"),
         "runtime_lyrics_char_count": (params.get("ace_step_text_budget") or {}).get("runtime_lyrics_char_count"),
@@ -7545,6 +7662,9 @@ def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
         "use_lora",
         "lora_adapter_name",
         "lora_adapter_path",
+        "use_lora_trigger",
+        "lora_trigger_tag",
+        "lora_trigger_applied",
         "lora_scale",
         "adapter_model_variant",
         "runner_plan",
@@ -8847,11 +8967,7 @@ def _lora_preflight_required(params: dict[str, Any]) -> bool:
         )
     if parse_bool(params.get("lora_preflight_required"), False):
         return True
-    try:
-        duration = float(params.get("duration") or 0)
-    except Exception:
-        duration = 0.0
-    return status in ACEJAM_LORA_REVIEW_QUALITY_STATUSES or duration > float(ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS)
+    return False
 
 
 def _lora_preflight_attempt_params(
@@ -8998,11 +9114,7 @@ def _vocal_preflight_required(params: dict[str, Any]) -> bool:
         return False
     if parse_bool(params.get("use_lora"), False):
         return False
-    try:
-        duration = float(params.get("duration") or 0)
-    except Exception:
-        duration = 0.0
-    return duration > float(ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS)
+    return parse_bool(params.get("vocal_preflight_required"), False)
 
 
 def _run_vocal_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | None:
@@ -9575,6 +9687,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
+            "use_lora_trigger": params.get("use_lora_trigger", False),
+            "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+            "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
             "lora_scale": params["lora_scale"],
             "adapter_model_variant": params["adapter_model_variant"],
             "lora_adapter": _jsonable(official_lora_status),
@@ -9648,6 +9763,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
+            "use_lora_trigger": params.get("use_lora_trigger", False),
+            "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+            "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
             "lora_scale": params["lora_scale"],
             "adapter_model_variant": params["adapter_model_variant"],
             "lora_adapter": _jsonable(official_lora_status),
@@ -9695,6 +9813,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
+            "use_lora_trigger": params.get("use_lora_trigger", False),
+            "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+            "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
             "lora_scale": params["lora_scale"],
             "adapter_model_variant": params["adapter_model_variant"],
             "lora_adapter": _jsonable(official_lora_status),
@@ -9739,6 +9860,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
+            "use_lora_trigger": params.get("use_lora_trigger", False),
+            "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+            "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
             "lora_scale": params["lora_scale"],
             "adapter_model_variant": params["adapter_model_variant"],
             "lora_adapter": _jsonable(official_lora_status),
@@ -9786,6 +9910,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
+            "use_lora_trigger": params.get("use_lora_trigger", False),
+            "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+            "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
             "lora_scale": params["lora_scale"],
             "adapter_model_variant": params["adapter_model_variant"],
             "lora_adapter": _jsonable(official_lora_status),
@@ -9984,6 +10111,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "use_lora": params["use_lora"],
         "lora_adapter_path": params["lora_adapter_path"],
         "lora_adapter_name": params["lora_adapter_name"],
+        "use_lora_trigger": params.get("use_lora_trigger", False),
+        "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+        "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
         "lora_scale": params["lora_scale"],
         "adapter_model_variant": params["adapter_model_variant"],
         "lora_adapter": _jsonable(official_lora_status),
@@ -10089,6 +10219,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "use_lora": params["use_lora"],
         "lora_adapter_path": params["lora_adapter_path"],
         "lora_adapter_name": params["lora_adapter_name"],
+        "use_lora_trigger": params.get("use_lora_trigger", False),
+        "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+        "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
         "lora_scale": params["lora_scale"],
         "adapter_model_variant": params["adapter_model_variant"],
         "lora_adapter": _jsonable(official_lora_status),
@@ -10277,6 +10410,9 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "use_lora": params["use_lora"],
         "lora_adapter_path": params["lora_adapter_path"],
         "lora_adapter_name": params["lora_adapter_name"],
+        "use_lora_trigger": params.get("use_lora_trigger", False),
+        "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+        "lora_trigger_conditioning_audit": _jsonable(params.get("lora_trigger_conditioning_audit") or {}),
         "lora_scale": params["lora_scale"],
         "adapter_model_variant": params["adapter_model_variant"],
         "lora_adapter": _jsonable(lora_status),
@@ -11482,7 +11618,16 @@ def generate_album(
                         return parse_bool(track.get(field, request_payload.get(field)), default)
 
                     lora_source = dict(request_payload)
-                    for lora_key in ("use_lora", "lora_adapter_path", "lora_adapter_name", "lora_scale", "adapter_model_variant"):
+                    for lora_key in (
+                        "use_lora",
+                        "lora_adapter_path",
+                        "lora_adapter_name",
+                        "use_lora_trigger",
+                        "lora_trigger_tag",
+                        "lora_scale",
+                        "adapter_model_variant",
+                        "adapter_song_model",
+                    ):
                         if lora_key in track and track.get(lora_key) not in (None, ""):
                             lora_source[lora_key] = track.get(lora_key)
                     track_lora_request = _lora_adapter_request(lora_source)
@@ -11579,6 +11724,8 @@ def generate_album(
                         "use_lora": track_lora_request["use_lora"],
                         "lora_adapter_path": track_lora_request["lora_adapter_path"],
                         "lora_adapter_name": track_lora_request["lora_adapter_name"],
+                        "use_lora_trigger": track_lora_request["use_lora_trigger"],
+                        "lora_trigger_tag": track_lora_request["lora_trigger_tag"],
                         "lora_scale": track_lora_request["lora_scale"],
                         "adapter_model_variant": track_lora_request["adapter_model_variant"],
                         "album_metadata": {
@@ -12644,6 +12791,9 @@ def _generation_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "with_lora": parse_bool(payload.get("use_lora"), False),
             "lora_adapter_name": str(payload.get("lora_adapter_name") or "").strip(),
             "lora_adapter_path": str(payload.get("lora_adapter_path") or "").strip(),
+            "use_lora_trigger": parse_bool(payload.get("use_lora_trigger"), False),
+            "lora_trigger_tag": str(payload.get("lora_trigger_tag") or "").strip(),
+            "lora_trigger_conditioning_audit": payload.get("lora_trigger_conditioning_audit") if isinstance(payload.get("lora_trigger_conditioning_audit"), dict) else {},
             "lora_scale": payload.get("lora_scale"),
             "adapter_model_variant": str(payload.get("adapter_model_variant") or "").strip(),
             "auto_song_art": parse_bool(payload.get("auto_song_art"), False),

@@ -1,10 +1,11 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Layers } from "lucide-react";
+import { Layers, Tag } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -18,12 +19,14 @@ import {
   isGenerationLoraAdapter,
   loraAdapterLabel,
   loraSelectionFromAdapter,
+  loraTriggerOptions,
   normalizeLoraSelection,
   type LoraSelection,
 } from "@/lib/lora";
 import { cn } from "@/lib/utils";
 
 const NONE = "__none__";
+const NO_TRIGGER = "__no_trigger__";
 
 interface LoraSelectorProps {
   value: Partial<LoraSelection>;
@@ -45,6 +48,42 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
   );
   const selected = adapters.find((adapter) => adapter.path === selection.lora_adapter_path);
   const selectedValue = selected ? selected.path : NONE;
+  const triggerOptions = React.useMemo(
+    () => (selected ? loraTriggerOptions(selected) : []),
+    [selected],
+  );
+  const effectiveTrigger = selection.lora_trigger_tag || triggerOptions[0] || "";
+  const effectiveUseTrigger = Boolean(
+    selected && effectiveTrigger && (selection.use_lora_trigger || !selection.lora_trigger_tag),
+  );
+
+  React.useEffect(() => {
+    if (!selected || !selection.use_lora || selection.lora_trigger_tag || triggerOptions.length === 0) {
+      return;
+    }
+    onChange({
+      ...loraSelectionFromAdapter(selected, selection.lora_scale),
+      use_lora_trigger: true,
+      lora_trigger_tag: triggerOptions[0],
+    });
+  }, [
+    selected,
+    selection.use_lora,
+    selection.lora_trigger_tag,
+    selection.lora_scale,
+    triggerOptions,
+    onChange,
+  ]);
+
+  const selectionForSelected = (patch: Partial<LoraSelection> = {}): LoraSelection | null => {
+    if (!selected) return null;
+    return {
+      ...loraSelectionFromAdapter(selected, selection.lora_scale),
+      use_lora_trigger: effectiveUseTrigger,
+      lora_trigger_tag: effectiveTrigger,
+      ...patch,
+    };
+  };
 
   const setAdapter = (path: string) => {
     if (path === NONE) {
@@ -57,7 +96,25 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
 
   const setScale = (scale: number) => {
     if (!selected) return;
-    onChange(loraSelectionFromAdapter(selected, scale));
+    const next = selectionForSelected({ lora_scale: scale });
+    if (next) onChange(next);
+  };
+
+  const setUseTrigger = (enabled: boolean) => {
+    const next = selectionForSelected({
+      use_lora_trigger: enabled && Boolean(effectiveTrigger),
+      lora_trigger_tag: effectiveTrigger,
+    });
+    if (next) onChange(next);
+  };
+
+  const setTriggerTag = (tag: string) => {
+    const trigger = tag === NO_TRIGGER ? "" : tag;
+    const next = selectionForSelected({
+      use_lora_trigger: Boolean(trigger),
+      lora_trigger_tag: trigger,
+    });
+    if (next) onChange(next);
   };
 
   return (
@@ -113,7 +170,45 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
         )}
       </div>
       {selected && (
-        <div className="space-y-2">
+        <div className="space-y-4">
+          <div className="space-y-2 rounded-md border border-border/70 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <Label className="flex items-center gap-2">
+                <Tag className="size-4 text-primary" />
+                Trigger tag activeren
+              </Label>
+              <Switch
+                checked={effectiveUseTrigger}
+                disabled={triggerOptions.length === 0}
+                onCheckedChange={setUseTrigger}
+              />
+            </div>
+            {triggerOptions.length > 0 ? (
+              <Select
+                value={effectiveTrigger || NO_TRIGGER}
+                onValueChange={setTriggerTag}
+                disabled={!effectiveUseTrigger}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Kies trigger tag" />
+                </SelectTrigger>
+                <SelectContent>
+                  {triggerOptions.map((tag) => (
+                    <SelectItem key={tag} value={tag}>
+                      {tag}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Deze adapter heeft geen trigger-tag metadata.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              De tag wordt aan de ACE-Step caption toegevoegd, niet aan de lyrics.
+            </p>
+          </div>
           <div className="flex items-baseline justify-between">
             <Label>LoRA scale (jouw keuze)</Label>
             <span className="font-mono text-xs">{selection.lora_scale.toFixed(2)}</span>

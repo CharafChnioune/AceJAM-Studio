@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -1108,6 +1109,62 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(result_dir_exists)
         self.assertFalse(job_exists)
 
+    def test_library_bulk_delete_removes_audio_image_and_video(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            results = root / "results"
+            image_results = root / "mflux-results"
+            video_results = root / "video-results"
+            video_jobs = root / "video-jobs"
+            video_attachments = root / "video-attachments.json"
+            audio_dir = results / "res123"
+            image_dir = image_results / "img123"
+            video_dir = video_results / "vid123"
+            audio_dir.mkdir(parents=True)
+            image_dir.mkdir(parents=True)
+            video_dir.mkdir(parents=True)
+            video_jobs.mkdir()
+            (audio_dir / "take.wav").write_bytes(b"audio")
+            (audio_dir / "result.json").write_text(
+                json.dumps({"id": "res123", "audios": [{"id": "take-1", "filename": "take.wav"}]}),
+                encoding="utf-8",
+            )
+            (image_dir / "cover.png").write_bytes(b"png")
+            (image_dir / "mflux_result.json").write_text(json.dumps({"result_id": "img123", "filename": "cover.png"}), encoding="utf-8")
+            (video_dir / "clip.mp4").write_bytes(b"mp4")
+            (video_dir / "mlx_video_result.json").write_text(json.dumps({"result_id": "vid123", "filename": "clip.mp4"}), encoding="utf-8")
+            (video_jobs / "job.json").write_text(json.dumps({"result_id": "vid123"}), encoding="utf-8")
+            video_attachments.write_text(json.dumps([{"result_id": "vid123", "target_id": "res123"}]), encoding="utf-8")
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "MFLUX_RESULTS_DIR", image_results), \
+                patch.object(acejam_app, "MLX_VIDEO_RESULTS_DIR", video_results), \
+                patch.object(acejam_app, "MLX_VIDEO_JOBS_DIR", video_jobs), \
+                patch.object(acejam_app, "MLX_VIDEO_ATTACHMENTS_PATH", video_attachments):
+                response = client.post(
+                    "/api/library/delete",
+                    json={
+                        "confirm": "DELETE",
+                        "items": [
+                            {"kind": "result-audio", "result_id": "res123", "audio_id": "take-1"},
+                            {"kind": "image", "result_id": "img123"},
+                            {"kind": "video", "result_id": "vid123"},
+                        ],
+                    },
+                )
+
+            data = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["deleted"]["results"], 1)
+        self.assertEqual(data["deleted"]["images"], 1)
+        self.assertEqual(data["deleted"]["videos"], 1)
+        self.assertFalse(audio_dir.exists())
+        self.assertFalse(image_dir.exists())
+        self.assertFalse(video_dir.exists())
+
     def test_library_delete_rejects_path_traversal_filename(self):
         client = TestClient(acejam_app.app)
         with tempfile.TemporaryDirectory() as tmp:
@@ -1793,6 +1850,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('value={NONE}>Geen LoRA', selector)
         self.assertIn("getLoraAdapters", selector)
         self.assertIn("isGenerationLoraAdapter", selector)
+        self.assertIn("loraTriggerOptions", lora_lib)
+        self.assertIn("Trigger tag activeren", selector)
         self.assertIn("songModelFromLoraVariant", lora_lib)
         self.assertIn('return "acestep-v15-xl-sft"', lora_lib)
 
@@ -1812,13 +1871,24 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("normalizeLoraSelection", text, path.name)
             self.assertIn("lora_adapter_name", text, path.name)
             self.assertIn("lora_adapter_path", text, path.name)
+            self.assertIn("use_lora_trigger", text, path.name)
+            self.assertIn("lora_trigger_tag", text, path.name)
             self.assertIn("lora_scale", text, path.name)
             self.assertIn("adapter_model_variant", text, path.name)
             self.assertIn("adapter_song_model", text, path.name)
             self.assertIn('form.setValue("song_model", selection.adapter_song_model', text, path.name)
 
         schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
-        for field in ["use_lora", "lora_adapter_path", "lora_adapter_name", "lora_scale", "adapter_model_variant", "adapter_song_model"]:
+        for field in [
+            "use_lora",
+            "lora_adapter_path",
+            "lora_adapter_name",
+            "use_lora_trigger",
+            "lora_trigger_tag",
+            "lora_scale",
+            "adapter_model_variant",
+            "adapter_song_model",
+        ]:
             self.assertIn(field, schemas)
 
     def test_react_generation_wizards_default_to_xl_sft_with_base_only_guard(self):
@@ -1989,6 +2059,8 @@ class AppParityTest(unittest.TestCase):
                     "use_lora": True,
                     "lora_adapter_path": adapter_path,
                     "lora_adapter_name": "unit",
+                    "use_lora_trigger": True,
+                    "lora_trigger_tag": "2pac",
                     "lora_scale": 0.65,
                     "adapter_model_variant": "xl_sft",
                 }
@@ -1996,15 +2068,45 @@ class AppParityTest(unittest.TestCase):
 
         self.assertTrue(params["use_lora"])
         self.assertEqual(params["lora_adapter_path"], adapter_path)
+        self.assertTrue(params["use_lora_trigger"])
+        self.assertEqual(params["lora_trigger_tag"], "pac")
+        self.assertRegex(params["caption"], r"(?i)(?<![a-z0-9])pac(?![a-z0-9])")
+        self.assertNotRegex(params["lyrics"], r"(?i)(?<![a-z0-9])pac(?![a-z0-9])")
+        self.assertEqual(params["lora_trigger_conditioning_audit"]["status"], "applied")
         self.assertEqual(params["lora_scale"], 0.65)
         with tempfile.TemporaryDirectory() as tmp:
             request = acejam_app._official_request_payload(params, Path(tmp))
         self.assertTrue(request["use_lora"])
         self.assertEqual(request["lora_adapter_path"], adapter_path)
         self.assertEqual(request["lora_adapter_name"], "unit")
+        self.assertEqual(request["params"]["caption"], params["caption"])
         self.assertEqual(request["lora_scale"], 0.65)
         self.assertEqual(request["params"]["seed"], 314)
         self.assertEqual(request["config"]["seeds"], "314")
+
+    def test_lora_trigger_tag_is_not_duplicated_in_caption(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "pac, rap, west coast hip hop",
+                    "lyrics": "[Verse]\nClear line\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "use_lora": True,
+                    "lora_adapter_path": "/tmp/unit-adapter",
+                    "use_lora_trigger": True,
+                    "lora_trigger_tag": "pac",
+                    "adapter_model_variant": "xl_sft",
+                }
+            )
+
+        self.assertEqual(
+            len(re.findall(r"(?i)(?<![a-z0-9])pac(?![a-z0-9])", params["caption"])),
+            1,
+        )
+        self.assertEqual(params["lora_trigger_conditioning_audit"]["status"], "present")
 
     def test_lora_epoch_audition_uses_private_generation_without_library_save(self):
         captured = {}
@@ -3548,6 +3650,7 @@ class AppParityTest(unittest.TestCase):
                     "song_model": "acestep-v15-xl-sft",
                     "quality_status": "needs_review",
                 },
+                "lora_preflight_required": True,
                 "payload_warnings": [],
                 "album_metadata": {},
                 "vocal_intelligibility_gate": True,
@@ -3689,6 +3792,7 @@ class AppParityTest(unittest.TestCase):
                 "guidance_scale": 8.0,
                 "shift": 3.0,
                 "duration": 180,
+                "vocal_preflight_required": True,
                 "payload_warnings": [],
                 "album_metadata": {},
                 "vocal_intelligibility_gate": True,
@@ -3744,6 +3848,70 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(result["vocal_preflight"]["status"], "failed")
             self.assertEqual(result["diagnostic_attempts"][0]["actual_song_model"], "acestep-v15-turbo")
             self.assertTrue(result["diagnostic_attempts"][0]["passed"])
+
+    def test_long_xl_sft_render_does_not_create_30s_preflight_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            params = {
+                "task_type": "text2music",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Albus Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "song_model": "acestep-v15-xl-sft",
+                "quality_profile": "chart_master",
+                "inference_steps": 50,
+                "guidance_scale": 7.0,
+                "shift": 1.0,
+                "duration": 180,
+                "payload_warnings": [],
+                "album_metadata": {},
+                "vocal_intelligibility_gate": True,
+                "vocal_intelligibility_attempts": 1,
+            }
+            calls = []
+
+            def fake_once(attempt_params):
+                calls.append(dict(attempt_params))
+                result_id = f"fullsong{len(calls)}"
+                result_dir = results / result_id
+                result_dir.mkdir()
+                (result_dir / "take.wav").write_text("audio", encoding="utf-8")
+                result = {
+                    "success": True,
+                    "result_id": result_id,
+                    "active_song_model": attempt_params.get("song_model"),
+                    "song_model": attempt_params.get("song_model"),
+                    "audios": [{"id": "take-1", "filename": "take.wav"}],
+                    "payload_warnings": list(attempt_params.get("payload_warnings") or []),
+                }
+                (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                return result
+
+            def fake_asr(paths, **_kwargs):
+                return [{
+                    "path": str(paths[0]),
+                    "status": "pass",
+                    "passed": True,
+                    "blocking": False,
+                    "text": "Albus rises bright with every word clear tonight",
+                    "word_count": 8,
+                    "keyword_hits": ["albus", "rises", "bright"],
+                    "missing_keywords": [],
+                    "issue": "",
+                }]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
+                patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
+                patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["duration"], 180)
+            self.assertNotIn("vocal_preflight", result)
+            self.assertTrue(result["success"])
 
     def test_vocal_intelligibility_generation_fails_loudly_after_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4038,6 +4206,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("startMlxVideoLoraTraining", api_ts)
         self.assertIn("listLibrary", api_ts)
         self.assertIn("deleteLibraryItem", api_ts)
+        self.assertIn("deleteLibraryItems", api_ts)
         self.assertIn('TabsTrigger value="video"', settings)
         self.assertIn("MLX video runtime", settings)
         self.assertIn("Wan model directories", settings)
@@ -4059,7 +4228,11 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Make Final", video_wizard)
         self.assertIn("listLibrary", library)
         self.assertIn("deleteLibraryItem", library)
+        self.assertIn("deleteLibraryItems", library)
         self.assertIn("Delete from disk", library)
+        self.assertIn("Selecteer zichtbaar", library)
+        self.assertIn("Selecteer alles", library)
+        self.assertIn("Delete selected", library)
         self.assertIn('TabsTrigger value="results"', library)
         self.assertIn('TabsTrigger value="images"', library)
         self.assertIn('TabsTrigger value="videos"', library)

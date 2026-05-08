@@ -410,15 +410,23 @@ export interface LibraryResponse {
 export const listLibrary = () =>
   api.get<LibraryResponse>("/api/library");
 
-export const deleteLibraryItem = (body: {
+export interface LibraryDeleteTarget {
   id: string;
   kind: "song" | "result-audio" | "image" | "video";
   result_id?: string;
   song_id?: string;
   audio_id?: string;
   filename?: string;
+}
+
+export const deleteLibraryItem = (body: LibraryDeleteTarget & {
   confirm: "DELETE";
 }) => api.post<{ success: boolean; deleted?: Record<string, unknown>; error?: string }>("/api/library/delete", body);
+
+export const deleteLibraryItems = (body: {
+  items: LibraryDeleteTarget[];
+  confirm: "DELETE";
+}) => api.post<{ success: boolean; deleted?: Record<string, unknown>; errors?: Array<Record<string, unknown>>; error?: string }>("/api/library/delete", body);
 
 // ---- Uploads ----
 

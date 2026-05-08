@@ -511,6 +511,11 @@ function GenerationDetails({
     summary.lora_adapter_name ||
     payload.lora_adapter_name ||
     shortPath(result.lora_adapter_path || resultSummary.lora_adapter_path || audioLora.path || summary.lora_adapter_path || payload.lora_adapter_path);
+  const loraTriggerTag =
+    result.lora_trigger_tag ||
+    resultSummary.lora_trigger_tag ||
+    summary.lora_trigger_tag ||
+    payload.lora_trigger_tag;
   const requestedLoraScale = payload.lora_scale ?? summary.lora_scale;
 
   return (
@@ -542,6 +547,7 @@ function GenerationDetails({
           <InfoRow label="Attempt role" value={result.attempt_role || resultSummary.attempt_role || "primary"} />
           <InfoRow label="LoRA active" value={loraActive} />
           <InfoRow label="LoRA adapter" value={loraAdapterName} />
+          <InfoRow label="LoRA trigger" value={loraTriggerTag} />
           <InfoRow label="LoRA scale" value={loraScale} />
           <InfoRow label="Requested LoRA scale" value={requestedLoraScale} />
           <InfoRow label="Style profile" value={result.style_profile ?? resultSummary.style_profile} />
