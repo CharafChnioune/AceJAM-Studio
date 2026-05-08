@@ -9,12 +9,12 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { QualityPresets } from "@/components/wizard/QualityPresets";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
-import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
-import { LyricSync } from "@/components/audio/LyricSync";
+import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,30 +67,6 @@ const QUALITY_PROFILES = [
   ["standard", "Middel (docs standaard)"],
   ["chart_master", "Hoog (beste standaardkwaliteit)"],
 ] as const;
-
-function ResultPlayback({
-  src,
-  title,
-  artist,
-  resultId,
-  staticLyrics,
-  metadata,
-}: {
-  src: string;
-  title?: string;
-  artist?: string;
-  resultId?: string;
-  staticLyrics?: string;
-  metadata?: React.ComponentProps<typeof WaveformPlayer>["metadata"];
-}) {
-  const [t, setT] = React.useState(0);
-  return (
-    <div className="space-y-3">
-      <WaveformPlayer src={src} title={title} artist={artist} metadata={metadata} onTimeUpdate={setT} />
-      <LyricSync resultId={resultId} audioCurrentTime={t} staticLyrics={staticLyrics} />
-    </div>
-  );
-}
 
 export function SimpleWizard() {
   const navigate = useNavigate();
@@ -157,6 +133,7 @@ export function SimpleWizard() {
       title: v.title,
       artist_name: v.artist_name,
       caption: v.caption,
+      style_profile: v.style_profile,
       tags: v.tags,
       negative_tags: v.negative_tags,
       lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
@@ -184,7 +161,7 @@ export function SimpleWizard() {
   };
 
   const audioUrl =
-    (lastResult?.audio_url as string | undefined) ||
+    firstGenerationAudioUrl(lastResult) ||
     (typeof lastResult?.audio === "string"
       ? `data:audio/wav;base64,${lastResult.audio}`
       : undefined);
@@ -295,6 +272,10 @@ export function SimpleWizard() {
 
           <FieldGroup title="Tags & sfeer" description="Komma-gescheiden lijst — gebruik genres, instrumenten, mood-tags.">
             <div className="grid gap-3">
+              <AudioStyleSelector
+                value={values.style_profile}
+                onChange={(value) => form.setValue("style_profile", value, { shouldValidate: true })}
+              />
               <div className="space-y-1.5">
                 <Label htmlFor="caption">Caption</Label>
                 <Textarea id="caption" rows={2} {...form.register("caption")} />
@@ -456,24 +437,7 @@ export function SimpleWizard() {
         const songId = lastResult.song_id as string | undefined;
         return (
           <div className="space-y-4">
-            {audioUrl && (
-              <ResultPlayback
-                src={audioUrl}
-                title={title}
-                artist={artist}
-                resultId={resultId}
-                staticLyrics={(lastResult.lyrics as string | undefined) ?? values.lyrics}
-                metadata={{
-                  model: lastResult.song_model ?? values.song_model,
-                  quality: values.quality_profile,
-                  duration: lastResult.duration ?? values.duration,
-                  bpm: lastResult.bpm ?? values.bpm,
-                  key: lastResult.key_scale ?? values.key_scale,
-                  seed: lastResult.seed ?? values.seed,
-                  resultId,
-                }}
-              />
-            )}
+            <GenerationAudioList result={lastResult} title={title} artist={artist} />
             <MfluxArtMaker
               title={title}
               artist={artist}

@@ -115,7 +115,7 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
       {selected && (
         <div className="space-y-2">
           <div className="flex items-baseline justify-between">
-            <Label>LoRA scale</Label>
+            <Label>LoRA scale (jouw keuze)</Label>
             <span className="font-mono text-xs">{selection.lora_scale.toFixed(2)}</span>
           </div>
           <Slider
@@ -127,7 +127,7 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
           />
           {selection.lora_scale > 0.75 && (
             <p className="rounded-md border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-100">
-              Volle LoRA-kracht kan vocals sneller vervormen. Voor testen is 0.45 meestal veiliger.
+              Volle LoRA-kracht gebruikt exact deze scale in de render. Als vocals vervormen, vergelijk dezelfde seed met een lagere scale.
             </p>
           )}
         </div>

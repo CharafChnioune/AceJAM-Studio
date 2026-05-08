@@ -9,11 +9,12 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { TagInput } from "@/components/wizard/TagInput";
-import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -168,6 +169,7 @@ export function CustomWizard() {
       title: v.title,
       artist_name: v.artist_name,
       caption: v.caption,
+      style_profile: v.style_profile,
       tags: v.tags,
       negative_tags: v.negative_tags,
       lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
@@ -200,7 +202,7 @@ export function CustomWizard() {
   };
 
   const audioUrl =
-    (lastResult?.audio_url as string | undefined) ||
+    firstGenerationAudioUrl(lastResult) ||
     (typeof lastResult?.audio === "string"
       ? `data:audio/wav;base64,${lastResult.audio}`
       : undefined);
@@ -304,6 +306,10 @@ export function CustomWizard() {
       render: () => (
         <div className="space-y-4">
           <FieldGroup title="Caption" description="Korte prozabeschrijving van de sound.">
+            <AudioStyleSelector
+              value={values.style_profile}
+              onChange={(value) => form.setValue("style_profile", value, { shouldValidate: true })}
+            />
             <Textarea rows={2} {...form.register("caption")} />
           </FieldGroup>
           <FieldGroup
@@ -535,7 +541,7 @@ export function CustomWizard() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Batch size</Label>
+                <Label>Aantal takes</Label>
                 <Controller
                   control={form.control}
                   name="batch_size"
@@ -543,7 +549,9 @@ export function CustomWizard() {
                     <Slider value={[field.value]} min={1} max={8} step={1} onValueChange={(v) => field.onChange(v[0])} />
                   )}
                 />
-                <p className="font-mono text-xs text-muted-foreground">{values.batch_size}× variant</p>
+                <p className="text-xs text-muted-foreground">
+                  {values.batch_size} take{values.batch_size === 1 ? "" : "s"} · XL-SFT/Base rendert takes een voor een op MPS.
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label>Seed</Label>
@@ -580,7 +588,7 @@ export function CustomWizard() {
               { key: "quality_profile", label: "Kwaliteit" },
               { key: "tags", label: "Tags" },
               { key: "inference_steps", label: "Steps" },
-              { key: "batch_size", label: "Batch" },
+              { key: "batch_size", label: "Takes" },
             ]}
           />
           <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
@@ -611,22 +619,7 @@ export function CustomWizard() {
         const songId = lastResult.song_id as string | undefined;
         return (
           <div className="space-y-4">
-            {audioUrl && (
-              <WaveformPlayer
-                src={audioUrl}
-                title={title}
-                artist={artist}
-                metadata={{
-                  model: lastResult.song_model ?? values.song_model,
-                  quality: values.quality_profile,
-                  duration: lastResult.duration ?? values.duration,
-                  bpm: lastResult.bpm ?? values.bpm,
-                  key: lastResult.key_scale ?? values.key_scale,
-                  seed: lastResult.seed ?? values.seed,
-                  resultId,
-                }}
-              />
-            )}
+            <GenerationAudioList result={lastResult} title={title} artist={artist} />
             <MfluxArtMaker
               title={title}
               artist={artist}

@@ -143,59 +143,105 @@ MODEL_STRATEGIES: dict[str, dict[str, Any]] = {
 }
 
 DENSITY_PRESETS = {
-    "sparse": {"label": "Sparse", "word_factor": 0.9, "line_factor": 0.9},
-    "balanced": {"label": "Balanced", "word_factor": 1.15, "line_factor": 1.0},
-    "dense": {"label": "Dense", "word_factor": 1.35, "line_factor": 1.12},
-    "rap_dense": {"label": "Rap dense", "word_factor": 1.55, "line_factor": 1.25},
+    "sparse": {"label": "Sparse", "word_factor": 0.95, "line_factor": 0.95},
+    "balanced": {"label": "Balanced", "word_factor": 1.30, "line_factor": 1.10},
+    "dense": {"label": "Dense", "word_factor": 1.50, "line_factor": 1.20},
+    "rap_dense": {"label": "Rap dense", "word_factor": 1.65, "line_factor": 1.30},
 }
 
 TAG_TAXONOMY: dict[str, list[str]] = {
     "genre_style": [
-        "pop", "hip-hop", "rap", "trap", "drill", "melodic rap", "R&B", "soul", "afrobeat",
-        "afrobeats", "amapiano", "afrohouse", "dancehall", "reggaeton", "garage", "house", "tech house",
-        "techno", "trance", "drum and bass", "dubstep", "EDM", "synthwave", "indie pop", "indie folk",
-        "rock", "alt rock", "punk", "punk rock", "metal", "jazz", "lo-fi hip hop",
-        "classical", "cinematic", "orchestral", "ambient", "gospel", "country", "latin pop", "K-pop", "J-pop",
+        "pop", "hip-hop", "rap", "trap", "drill", "drill UK", "drill NY", "melodic rap",
+        "boom bap", "G-funk", "West Coast hip hop", "East Coast hip hop", "NYC street rap",
+        "Detroit rap", "Memphis rap", "cloud rap", "phonk", "phonk drift", "afrodrill",
+        "jersey club", "trap soul", "neo-soul", "R&B", "soul", "afrobeat", "afrobeats",
+        "amapiano", "afrohouse", "dancehall", "reggaeton", "dembow", "garage", "house",
+        "tech house", "techno", "melodic techno", "trance", "drum and bass", "dubstep",
+        "EDM", "deconstructed club", "hyperpop", "synthwave", "vaporwave", "chillwave",
+        "indie pop", "indie folk", "dream pop", "art pop", "electropop", "dark pop",
+        "country pop", "rock", "alt rock", "punk", "punk rock", "metal", "shoegaze",
+        "post-rock", "psychedelic", "grunge", "country", "bluegrass", "folk", "jazz",
+        "modal jazz", "free jazz", "bebop", "chamber jazz", "lo-fi hip hop", "downtempo",
+        "IDM", "classical", "chamber pop", "cinematic", "orchestral", "ambient", "gospel",
+        "latin pop", "salsa", "son", "Afro-Cuban", "K-pop", "J-pop", "kawaii pop",
+        "musical theatre", "spoken word",
     ],
     "mood_atmosphere": [
         "melancholic", "uplifting", "euphoric", "dark", "dreamy", "nostalgic", "intimate",
         "aggressive", "confident", "romantic", "cinematic", "tense", "hopeful", "bittersweet",
         "luxurious", "gritty", "warm", "cold", "neon-lit", "late night", "sunlit",
+        "motivational", "inspirational", "empowering", "cheerful", "deadpan", "sarcastic",
+        "ironic", "menacing", "triumphant", "vulnerable", "rebellious", "haunted",
+        "pulsating", "urban", "bold", "playful", "dramatic", "urgent", "chaotic",
     ],
     "instruments": [
-        "piano", "grand piano", "Rhodes", "electric piano", "organ", "acoustic guitar",
-        "clean electric guitar", "distorted guitar", "nylon guitar", "bass guitar", "upright bass",
-        "808 bass", "sub-bass", "synth bass", "trap hi-hats", "808 kick", "punchy snare",
-        "breakbeat", "drum machine", "brush drums", "synth pads", "analog synth", "lead synth",
-        "arpeggiated synth", "strings", "violin", "cello", "brass", "trumpet", "saxophone",
-        "flute", "choir", "turntable scratches", "risers", "glitch effects",
+        "piano", "grand piano", "Rhodes", "electric piano", "organ", "clavinet", "mellotron",
+        "wurlitzer", "harpsichord", "acoustic guitar", "clean electric guitar",
+        "distorted guitar", "nylon guitar", "bass guitar", "upright bass", "808 bass",
+        "sub-bass", "synth bass", "303 acid bass", "trap hi-hats", "808 kick",
+        "punchy snare", "rim click", "cowbell", "808 cowbell", "shaker", "tambourine",
+        "breakbeat", "drum machine", "brush drums", "synth pads", "analog synth",
+        "lead synth", "arpeggiated synth", "arpeggiator", "strings", "violin", "cello",
+        "harp", "mandolin", "brass", "trumpet", "saxophone", "trombone", "french horn",
+        "flute", "oboe", "clarinet", "choir", "turntable scratches", "risers",
+        "glitch effects", "talkbox", "vocoder", "kalimba", "accordion", "congas",
+        "bongos", "timpani", "vibraphone", "soul sample chops", "dusty piano sample",
+        "horn stab", "string stab",
     ],
     "timbre_texture": [
         "warm", "bright", "crisp", "airy", "punchy", "lush", "raw", "polished", "gritty",
         "wide stereo", "close-mic", "tape saturation", "vinyl texture", "deep low end",
-        "silky top end", "dry vocal", "wet reverb", "analog warmth",
+        "silky top end", "dry vocal", "wet reverb", "analog warmth", "muddy", "dusty",
+        "smoky", "metallic", "resonant", "hollow", "velvety", "saturated", "glossy",
     ],
     "era_reference": [
-        "70s soul", "80s synth pop", "90s boom bap", "90s R&B", "2000s pop punk",
-        "2010s EDM", "modern trap", "future garage", "vintage soul", "classic house",
+        "60s soul", "70s soul", "70s funk", "80s synth pop", "80s pop polish",
+        "90s boom bap", "early 90s boom bap", "90s G-funk", "90s R&B", "90s grunge",
+        "2000s pop punk", "early 2000s crunk", "2000s rap", "2010s EDM",
+        "late 2010s trap", "modern trap", "2020s phonk drift", "future garage",
+        "vintage soul", "classic house",
     ],
     "production_style": [
-        "high-fidelity", "studio polished", "crisp modern mix", "lo-fi texture", "warm analog mix",
-        "club master", "radio ready", "atmospheric", "minimal arrangement", "layered production",
-        "cinematic build", "hard-hitting drums", "sidechain pulse",
+        "high-fidelity", "studio polished", "crisp modern mix", "lo-fi texture",
+        "warm analog mix", "club master", "radio ready", "atmospheric",
+        "minimal arrangement", "layered production", "cinematic build",
+        "hard-hitting drums", "sidechain pulse", "bedroom pop", "live recording",
+        "tape worn", "vinyl crackle", "head-nod groove", "summer banger polish",
+        "dusty mix", "stripped mix", "raw demo feel", "big reverb tail",
+        "gated reverb", "telephone EQ vocal",
     ],
     "vocal_character": [
-        "male vocal", "female vocal", "male rap vocal", "female rap vocal", "melodic rap vocal",
-        "autotune vocal", "breathy vocal", "raspy vocal", "powerful belt", "falsetto",
-        "stacked harmonies", "choir vocals", "spoken vocal", "whispered vocal",
+        "male vocal", "female vocal", "male rap vocal", "female rap vocal",
+        "melodic rap vocal", "autotune vocal", "auto-tune", "breathy vocal",
+        "raspy vocal", "powerful belt", "falsetto", "stacked harmonies",
+        "choir vocals", "spoken vocal", "whispered vocal",
+        "mumble rap", "chopper rap", "lyrical rap", "trap flow", "double-time rap",
+        "syncopated flow", "melodic flow", "storytelling flow", "punchline rap",
+        "freestyle flow", "deadpan delivery", "comedic rap vocal",
+        "bright vocal", "dark vocal", "warm vocal", "cold vocal", "nasal vocal",
+        "gritty vocal", "smooth vocal", "husky vocal", "metallic vocal",
+        "whispery vocal", "resonant vocal", "smoky vocal", "sultry vocal",
+        "ethereal vocal", "hollow vocal", "velvety vocal", "shrill vocal",
+        "mellow vocal", "thin vocal", "thick vocal", "reedy vocal", "silvery vocal",
+        "twangy vocal", "vocoder vocal", "chopped vocal", "pitched-up vocal",
+        "pitched-down vocal", "ad-libs", "shouted vocal", "narration", "spoken word",
+        "auto-tune trap vocal", "Chinese-language vocal", "Spanish-language vocal",
+        "Dutch-language vocal", "Arabic-language vocal",
     ],
     "speed_rhythm": [
-        "slow tempo", "mid-tempo", "fast-paced", "groovy", "driving rhythm", "laid-back groove",
-        "swing feel", "four-on-the-floor", "half-time drums", "syncopated rhythm",
+        "slow tempo", "mid-tempo", "fast-paced", "groovy", "driving rhythm",
+        "laid-back groove", "swing feel", "four-on-the-floor", "half-time drums",
+        "syncopated rhythm", "head-nod groove", "trap bounce", "drill bounce",
+        "double-time hi-hats", "shuffled hi-hats", "swung sixteenths",
+        "behind-the-beat groove", "ahead-of-the-beat groove", "dembow groove",
+        "afrohouse groove",
     ],
     "structure_hints": [
-        "building intro", "catchy chorus", "anthemic hook", "dramatic bridge", "explosive drop",
-        "breakdown", "beat switch", "fade-out ending", "stripped outro", "call and response",
+        "building intro", "catchy chorus", "anthemic hook", "dramatic bridge",
+        "explosive drop", "breakdown", "beat switch", "fade-out ending",
+        "stripped outro", "call and response", "chant hook", "headline hook",
+        "punchline outro", "crowd chant", "cinematic bridge", "intimate verse",
+        "explosive chorus", "final chorus lift",
     ],
     "track_stems": [
         "woodwinds", "brass", "fx", "synth", "strings", "percussion", "keyboard", "guitar",
@@ -204,14 +250,46 @@ TAG_TAXONOMY: dict[str, list[str]] = {
 }
 
 LYRIC_META_TAGS: dict[str, list[str]] = {
-    "basic_structure": ["[Intro]", "[Verse]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Post-Chorus]", "[Bridge]", "[Final Chorus]", "[Outro]"],
-    "dynamic_sections": ["[Build]", "[Build-Up]", "[Drop]", "[Final Drop]", "[Breakdown]", "[Climax]", "[Fade Out]", "[Silence]"],
-    "instrumental_sections": ["[Instrumental]", "[Instrumental Break]", "[Synth Solo]", "[Guitar Solo]", "[Piano Interlude]", "[Brass Break]", "[Drum Break]"],
-    "performance_modifiers": [
-        "[Verse - rap]", "[Chorus - rap]", "[Verse - melodic rap]", "[Chorus - anthemic]",
-        "[Bridge - whispered]", "[Chorus - layered vocals]", "[Intro - dreamy]",
+    "basic_structure": [
+        "[Intro]", "[Verse]", "[Verse 1]", "[Verse 2]", "[Verse 3]",
+        "[Pre-Chorus]", "[Chorus]", "[Post-Chorus]", "[Hook]", "[Hook/Chorus]",
+        "[Refrain]", "[Bridge]", "[Final Chorus]", "[Outro]", "[Interlude]",
     ],
-    "energy_markers": ["[building energy]", "[explosive drop]", "[calm]", "[intense]", "[Final chord fades out]"],
+    "dynamic_sections": [
+        "[Build]", "[Build-Up]", "[Drop]", "[Final Drop]", "[Breakdown]",
+        "[Climax]", "[Fade Out]", "[Silence]", "[Beat Switch]",
+    ],
+    "instrumental_sections": [
+        "[Instrumental]", "[inst]", "[Instrumental Break]",
+        "[Synth Solo]", "[Guitar Solo]", "[Piano Solo]", "[Piano Interlude]",
+        "[Brass Break]", "[Saxophone Solo]", "[Violin Solo]", "[Drum Break]",
+    ],
+    "vocal_control": [
+        "[whispered]", "[falsetto]", "[powerful belting]", "[spoken word]",
+        "[raspy vocal]", "[harmonies]", "[call and response]", "[ad-lib]",
+        "[shouted]", "[layered vocals]",
+    ],
+    "energy_markers": [
+        "[high energy]", "[low energy]", "[building energy]", "[explosive]",
+        "[explosive drop]", "[calm]", "[intense]", "[Final chord fades out]",
+    ],
+    "emotion_markers": [
+        "[melancholic]", "[euphoric]", "[dreamy]", "[aggressive]", "[tense]",
+        "[hopeful]", "[bittersweet]",
+    ],
+    "performance_modifiers": [
+        "[Verse - rap]", "[Verse - melodic rap]", "[Verse - double time rap]",
+        "[Verse - whispered]", "[Verse - spoken]", "[Verse - shouted]",
+        "[Verse - powerful]", "[Verse - falsetto]", "[Verse - crooned]",
+        "[Chorus - anthemic]", "[Chorus - rap]", "[Chorus - layered vocals]",
+        "[Chorus - chant]", "[Chorus - whispered]", "[Chorus - call and response]",
+        "[Bridge - whispered]", "[Bridge - spoken]", "[Bridge - emotional]",
+        "[Intro - dreamy]", "[Intro - dark]", "[Intro - spoken]",
+        "[Intro - ambient]", "[Intro - piano]", "[Intro - talkbox]",
+        "[Outro - fade out]", "[Outro - spoken]", "[Outro - acapella]",
+        "[Outro - talkbox]", "[Climax - powerful]", "[Hook - sung]",
+        "[Hook - chant]",
+    ],
 }
 
 CRAFT_TOOLS: list[dict[str, str]] = [
@@ -582,7 +660,7 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
     if rap and dur <= 240:
         return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Second Chorus", "Verse 3 - Beat Switch", "Bridge", "Final Chorus", "Outro"]
     if dur <= 240:
-        return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Break", "Bridge", "Final Chorus", "Outro"]
+        return ["Intro", "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Final Chorus", "Outro"]
     if rap and dur <= 360:
         return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Second Chorus", "Verse 3 - Beat Switch", "Bridge", "Final Chorus", "Outro"]
     if dur <= 360:
@@ -604,24 +682,26 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         preset = DENSITY_PRESETS["sparse"]
     else:
         sections = section_sequence(dur, structure_preset, rap=rap)
+    # Bands tuned to push lyrics fuller while keeping char count under
+    # ACE_STEP_LYRICS_SOFT_TARGET_MAX (3600) -> ~600 words at ~6 chars/word.
     bands = [
-        (30, 45, 58, 70),
-        (60, 90, 110, 130),
-        (120, 190, 225, 260),
-        (180, 300, 360, 420),
-        (240, 340, 430, 500),
-        (300, 390, 500, 560),
-        (600, 430, 560, 620),
+        (30, 55, 75, 95),
+        (60, 120, 155, 195),
+        (120, 240, 300, 360),
+        (180, 340, 420, 500),
+        (240, 420, 510, 580),
+        (300, 480, 570, 640),
+        (600, 540, 620, 660),
     ]
     if rap:
         bands = [
-            (30, 60, 74, 90),
-            (60, 120, 150, 180),
-            (120, 240, 300, 360),
-            (180, 360, 420, 470),
-            (240, 430, 480, 520),
-            (300, 470, 520, 570),
-            (600, 500, 560, 620),
+            (30, 70, 90, 110),
+            (60, 150, 190, 230),
+            (120, 290, 360, 430),
+            (180, 410, 500, 580),
+            (240, 490, 570, 630),
+            (300, 540, 600, 650),
+            (600, 580, 630, 660),
         ]
     min_words, base_words, max_words = bands[-1][1:]
     for limit, low, base, high in bands:
@@ -646,12 +726,12 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
     min_lines = max(len(sections) * 2, int(target_lines * 0.72))
     if rap:
         rap_line_bands = [
-            (60, 24, 34),
-            (120, 44, 58),
-            (180, 62, 76),
-            (240, 75, 92),
-            (300, 86, 104),
-            (600, 96, 120),
+            (60, 30, 42),
+            (120, 56, 74),
+            (180, 78, 96),
+            (240, 92, 112),
+            (300, 104, 124),
+            (600, 116, 136),
         ]
         rap_min_lines, rap_target_lines = rap_line_bands[-1][1:]
         for limit, low, high in rap_line_bands:

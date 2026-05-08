@@ -78,74 +78,372 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "rap",
         "label": "Rap / Hip-hop",
         "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster", "2pac", "tupac"),
-        "caption_tags": "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
-        "lyrics": "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+        "caption_tags": "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
+        "lyrics_section_tags": {"verse": "rap, rhythmic spoken flow", "chorus": "rap hook"},
+        "lyrics": "[Verse - rap, rhythmic spoken flow]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus - rap hook]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
         "bpm": 95,
         "keyscale": "A minor",
         "timesignature": "4",
+        "vocal_language": "en",
     },
     {
         "key": "pop",
         "label": "Pop",
         "terms": ("pop", "radio", "dance pop", "synth pop", "electropop"),
         "caption_tags": "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
-        "lyrics": "[Verse]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+        "lyrics_section_tags": {"verse": "clean pop vocal", "chorus": "bright pop hook"},
+        "lyrics": "[Verse - clean pop vocal]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus - bright pop hook]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
         "bpm": 118,
         "keyscale": "C major",
         "timesignature": "4",
+        "vocal_language": "en",
     },
     {
         "key": "rnb",
         "label": "Soul / R&B",
         "terms": ("r&b", "rnb", "soul", "neo soul", "smooth", "slow jam"),
         "caption_tags": "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
-        "lyrics": "[Verse]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+        "lyrics_section_tags": {"verse": "smooth rnb vocal", "chorus": "soulful rnb hook"},
+        "lyrics": "[Verse - smooth rnb vocal]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus - soulful rnb hook]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
         "bpm": 82,
         "keyscale": "D minor",
         "timesignature": "4",
+        "vocal_language": "en",
     },
     {
         "key": "rock",
         "label": "Rock",
         "terms": ("rock", "guitar", "punk", "metal", "alt rock", "indie rock"),
         "caption_tags": "driving rock drums, electric guitars, clear lead vocal, strong chorus",
-        "lyrics": "[Verse]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+        "lyrics_section_tags": {"verse": "rock lead vocal", "chorus": "strong rock chorus"},
+        "lyrics": "[Verse - rock lead vocal]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus - strong rock chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
         "bpm": 128,
         "keyscale": "E minor",
         "timesignature": "4",
+        "vocal_language": "en",
     },
     {
         "key": "edm",
         "label": "EDM / Dance",
         "terms": ("edm", "house", "techno", "trance", "club", "dance", "electronic"),
         "caption_tags": "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
-        "lyrics": "[Verse]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+        "lyrics_section_tags": {"verse": "dance vocal", "chorus": "club vocal hook"},
+        "lyrics": "[Verse - dance vocal]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus - club vocal hook]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
         "bpm": 124,
         "keyscale": "F# minor",
         "timesignature": "4",
+        "vocal_language": "en",
     },
     {
         "key": "cinematic",
         "label": "Cinematic",
         "terms": ("cinematic", "orchestral", "score", "trailer", "choir", "epic"),
         "caption_tags": "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
-        "lyrics": "[Verse]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+        "lyrics_section_tags": {"verse": "dramatic vocal", "chorus": "cinematic anthem"},
+        "lyrics": "[Verse - dramatic vocal]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus - cinematic anthem]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
         "bpm": 88,
         "keyscale": "D minor",
         "timesignature": "4",
+        "vocal_language": "en",
     },
     {
         "key": "country",
         "label": "Country / Folk",
         "terms": ("country", "folk", "americana", "acoustic", "banjo"),
         "caption_tags": "warm acoustic guitars, steady country drums, clear heartfelt vocal",
-        "lyrics": "[Verse]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+        "lyrics_section_tags": {"verse": "country lead vocal", "chorus": "heartfelt country hook"},
+        "lyrics": "[Verse - country lead vocal]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus - heartfelt country hook]\nTake me home where the porch light shines\nGood hearts gather at closing time",
         "bpm": 96,
         "keyscale": "G major",
         "timesignature": "4",
+        "vocal_language": "en",
     },
 )
 EPOCH_AUDITION_DEFAULT_PROFILE_KEY = "pop"
+STYLE_PROFILE_AUTO = "auto"
+
+
+def _style_term_key(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text.replace("_", " ")
+
+
+def _style_profile_by_key(key: str | None) -> dict[str, Any] | None:
+    requested = _style_term_key(key)
+    if not requested or requested == STYLE_PROFILE_AUTO:
+        return None
+    for profile in EPOCH_AUDITION_GENRE_PROFILES:
+        keys = [
+            str(profile.get("key") or ""),
+            str(profile.get("label") or ""),
+            *[str(term) for term in profile.get("terms", ())],
+        ]
+        if any(_style_term_key(item) == requested for item in keys):
+            return dict(profile)
+    return None
+
+
+def _style_profile_public(profile: dict[str, Any]) -> dict[str, Any]:
+    lyrics = str(profile.get("lyrics") or "").strip()
+    section_tags = dict(profile.get("lyrics_section_tags") or {})
+    return {
+        "key": str(profile.get("key") or ""),
+        "style_profile": str(profile.get("key") or ""),
+        "label": str(profile.get("label") or profile.get("key") or "").strip(),
+        "caption_tags": str(profile.get("caption_tags") or "").strip(),
+        "lyrics_section_tags": section_tags,
+        "lyrics": lyrics,
+        "test_lyrics": lyrics,
+        "bpm": profile.get("bpm"),
+        "keyscale": str(profile.get("keyscale") or "").strip(),
+        "timesignature": str(profile.get("timesignature") or "").strip(),
+        "vocal_language": str(profile.get("vocal_language") or "en").strip() or "en",
+        "terms": list(profile.get("terms") or []),
+        "default": profile.get("key") == EPOCH_AUDITION_DEFAULT_PROFILE_KEY,
+    }
+
+
+def audio_style_profiles(*, include_auto: bool = True) -> list[dict[str, Any]]:
+    """Public catalog shared by audio generation and LoRA epoch auditions."""
+    profiles: list[dict[str, Any]] = []
+    if include_auto:
+        profiles.append(
+            {
+                "key": STYLE_PROFILE_AUTO,
+                "style_profile": STYLE_PROFILE_AUTO,
+                "label": "Auto",
+                "caption_tags": "Infer style from the prompt/caption without forcing a fallback genre.",
+                "lyrics_section_tags": {},
+                "lyrics": "",
+                "test_lyrics": "",
+                "bpm": None,
+                "keyscale": "",
+                "timesignature": "",
+                "vocal_language": "",
+                "default": False,
+            }
+        )
+    profiles.extend(_style_profile_public(dict(profile)) for profile in EPOCH_AUDITION_GENRE_PROFILES)
+    return profiles
+
+
+def _dedupe_csv_terms(*values: Any) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            chunks = value
+        else:
+            chunks = str(value or "").split(",")
+        for chunk in chunks:
+            cleaned = re.sub(r"\s+", " ", str(chunk or "").strip())
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(cleaned)
+    return ", ".join(parts)
+
+
+def _section_kind_and_display(raw_label: str) -> tuple[str, str, str]:
+    raw = re.sub(r"\s+", " ", str(raw_label or "").strip())
+    raw = re.sub(r"\s*[-:|]\s*.*$", "", raw).strip()
+    normalized = re.sub(r"[^a-z0-9]+", " ", raw.lower()).strip()
+    normalized_no_num = re.sub(r"\s+\d+$", "", normalized).strip()
+    if normalized_no_num in {"pre chorus", "prechorus"}:
+        return "pre_chorus", "Pre-Chorus", raw
+    if normalized_no_num in {"chorus", "final chorus", "hook", "refrain"}:
+        return "chorus", "Chorus", raw
+    if normalized_no_num in {"verse", "rap", "spoken", "spoken word"}:
+        return "verse", "Verse", raw
+    if normalized_no_num in {"intro"}:
+        return "intro", "Intro", raw
+    if normalized_no_num in {"bridge"}:
+        return "bridge", "Bridge", raw
+    if normalized_no_num in {"drop", "break", "interlude", "breakdown"}:
+        return "break", "Break", raw
+    if normalized_no_num in {"outro"}:
+        return "outro", "Outro", raw
+    return "", raw, raw
+
+
+def _concise_performance_tags(tags: str) -> str:
+    allowed = ("rap", "spoken", "vocal", "hook", "rnb", "soul", "pop", "rock", "country", "dance", "dramatic", "anthem", "lead", "flow")
+    kept: list[str] = []
+    for part in str(tags or "").split(","):
+        cleaned = re.sub(r"\s+", " ", part).strip()
+        if not cleaned:
+            continue
+        text = cleaned.lower()
+        if any(token in text for token in allowed):
+            kept.append(cleaned)
+        if len(kept) >= 3:
+            break
+    return _dedupe_csv_terms(kept)
+
+
+def _existing_section_tags(raw_label: str, display_raw: str) -> str:
+    raw = str(raw_label or "").strip()
+    match = re.search(r"\s[-:|]\s*(.+)$", raw)
+    if match:
+        return match.group(1).strip()
+    # Keep unstructured descriptors after "Verse 1 ..." only when they look
+    # like performance tags, not when they are merely section numbering.
+    remainder = raw[len(display_raw):].strip() if display_raw and raw.lower().startswith(display_raw.lower()) else ""
+    remainder = re.sub(r"^\d+\s*", "", remainder).strip()
+    return remainder
+
+
+def _style_tags_for_section(profile: dict[str, Any], section_kind: str) -> str:
+    section_tags = dict(profile.get("lyrics_section_tags") or {})
+    if section_kind == "pre_chorus":
+        return str(section_tags.get("chorus") or "").strip()
+    if section_kind in {"hook", "refrain"}:
+        return str(section_tags.get("chorus") or "").strip()
+    return str(section_tags.get(section_kind) or "").strip()
+
+
+def _format_section_header(display: str, tags: str = "") -> str:
+    clean_display = re.sub(r"\s+", " ", str(display or "Verse").strip()) or "Verse"
+    clean_tags = _dedupe_csv_terms(tags)
+    return f"[{clean_display} - {clean_tags}]" if clean_tags else f"[{clean_display}]"
+
+
+def _enrich_audio_style_lyrics(lyrics: str, profile: dict[str, Any]) -> tuple[str, list[str]]:
+    raw = str(lyrics or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not raw.strip() or raw.strip().lower() == INSTRUMENTAL_SENTINEL.lower():
+        return raw, []
+    applied: list[str] = []
+    output: list[str] = []
+    saw_section = False
+    for line in raw.splitlines():
+        match = re.fullmatch(r"\s*[*_`~]*\s*\[([^\]]+)\]\s*[*_`~]*\s*", line)
+        if not match:
+            output.append(line)
+            continue
+        saw_section = True
+        raw_label = match.group(1).strip()
+        section_kind, display, display_raw = _section_kind_and_display(raw_label)
+        style_tags = _style_tags_for_section(profile, section_kind)
+        if not section_kind or not style_tags:
+            output.append(line)
+            continue
+        existing_tags = _existing_section_tags(raw_label, display_raw)
+        merged_tags = _dedupe_csv_terms(style_tags, existing_tags)
+        header = _format_section_header(display, merged_tags)
+        output.append(header)
+        applied.append(f"{display}: {merged_tags}")
+    if not saw_section and raw.strip():
+        section_tags = _style_tags_for_section(profile, "verse")
+        header = _format_section_header("Verse", section_tags)
+        return f"{header}\n{raw.strip()}", [f"Verse: {section_tags}"] if section_tags else []
+    return "\n".join(output).strip(), applied
+
+
+def _style_caption_has_rap(caption: str) -> bool:
+    text = _style_term_key(caption)
+    return any(term in text for term in ("rap", "hip hop", "hip-hop", "spoken-word", "spoken word"))
+
+
+def _style_lyrics_have_rap(lyrics: str) -> bool:
+    text = _style_term_key(lyrics)
+    return bool(re.search(r"\[(?:verse|chorus|hook)[^\]]*(?:rap|spoken)", text, flags=re.IGNORECASE))
+
+
+def audio_style_conditioning_audit(caption: str, lyrics: str, style_profile: str | None) -> dict[str, Any]:
+    profile = _style_profile_by_key(style_profile)
+    if not profile:
+        return {"status": "skipped", "style_profile": str(style_profile or STYLE_PROFILE_AUTO)}
+    key = str(profile.get("key") or "")
+    missing: list[str] = []
+    if key == "rap":
+        if not _style_caption_has_rap(caption):
+            missing.append("caption_rap_hiphop_spoken_word")
+        if str(lyrics or "").strip().lower() != INSTRUMENTAL_SENTINEL.lower() and not _style_lyrics_have_rap(lyrics):
+            missing.append("lyrics_rap_performance_section")
+    else:
+        caption_tags = str(profile.get("caption_tags") or "")
+        first_tag = next((term.strip() for term in caption_tags.split(",") if term.strip()), key)
+        if first_tag and first_tag.lower() not in str(caption or "").lower():
+            missing.append("caption_style_tags")
+        style_tags = ", ".join(str(v) for v in dict(profile.get("lyrics_section_tags") or {}).values())
+        if style_tags and str(lyrics or "").strip().lower() != INSTRUMENTAL_SENTINEL.lower():
+            first_lyric_tag = next((term.strip() for term in style_tags.split(",") if term.strip()), "")
+            if first_lyric_tag and first_lyric_tag.lower() not in str(lyrics or "").lower():
+                missing.append("lyrics_performance_section_tags")
+    return {
+        "status": "fail" if missing else "pass",
+        "style_profile": key,
+        "missing": missing,
+        "caption_tags": str(profile.get("caption_tags") or ""),
+        "lyrics_section_tags": dict(profile.get("lyrics_section_tags") or {}),
+    }
+
+
+def apply_audio_style_conditioning(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply docs-correct style conditioning to a generation payload.
+
+    ACE-Step's docs recommend complex style/timbre/instrument guidance in
+    caption, while lyric tags should stay concise. This normalizer keeps that
+    split and only enriches section headers in lyrics.
+    """
+    updated = dict(payload or {})
+    requested = str(
+        updated.get("style_profile")
+        or updated.get("genre_profile")
+        or updated.get("audio_style_profile")
+        or STYLE_PROFILE_AUTO
+    ).strip().lower() or STYLE_PROFILE_AUTO
+    profile = _style_profile_by_key(requested)
+    if profile is None and requested == STYLE_PROFILE_AUTO:
+        inferred = epoch_audition_genre_profile(
+            str(updated.get("caption") or updated.get("tags") or updated.get("custom_tags") or ""),
+            str(updated.get("lyrics") or ""),
+            "",
+        )
+        search_text = _epoch_audition_search_text(
+            str(updated.get("caption") or ""),
+            str(updated.get("tags") or ""),
+            str(updated.get("custom_tags") or ""),
+            str(updated.get("lyrics") or ""),
+        )
+        inferred_terms = [str(term) for term in inferred.get("terms", ())]
+        if any(_epoch_audition_search_text(term) in search_text for term in inferred_terms):
+            profile = inferred
+    if profile is None:
+        updated["style_profile"] = STYLE_PROFILE_AUTO
+        updated["style_caption_tags"] = ""
+        updated["style_lyric_tags_applied"] = []
+        updated["style_conditioning_audit"] = audio_style_conditioning_audit(
+            str(updated.get("caption") or ""),
+            str(updated.get("lyrics") or ""),
+            STYLE_PROFILE_AUTO,
+        )
+        return updated
+
+    caption = _dedupe_csv_terms(
+        str(profile.get("caption_tags") or ""),
+        updated.get("caption"),
+        updated.get("tags"),
+        updated.get("custom_tags"),
+    )
+    lyrics, lyric_tags = _enrich_audio_style_lyrics(str(updated.get("lyrics") or ""), profile)
+    key = str(profile.get("key") or "")
+    updated["caption"] = caption
+    if str(updated.get("lyrics") or "").strip():
+        updated["lyrics"] = lyrics
+    updated["style_profile"] = key
+    updated["style_caption_tags"] = str(profile.get("caption_tags") or "")
+    updated["style_lyric_tags_applied"] = lyric_tags
+    updated["style_conditioning_audit"] = audio_style_conditioning_audit(caption, str(updated.get("lyrics") or ""), key)
+    warnings = list(updated.get("payload_warnings") or [])
+    warning = f"audio_style_profile_applied:{key}"
+    if warning not in warnings:
+        warnings.append(warning)
+    updated["payload_warnings"] = warnings
+    return updated
 
 
 def utc_now() -> str:
@@ -197,26 +495,12 @@ def _epoch_audition_section_marker(line: str) -> str | None:
     match = re.fullmatch(r"\s*[*_`~]*\s*\[([^\]]+)\]\s*[*_`~]*\s*", str(line or ""))
     if not match:
         return None
-    label = re.sub(r"\s*[-:|,]\s*.*$", "", match.group(1).strip().lower())
-    label = re.sub(r"\s+\d+$", "", label)
-    label = re.sub(r"[^a-z0-9]+", " ", label).strip()
-    if not label:
+    raw_label = match.group(1).strip()
+    section_kind, display, display_raw = _section_kind_and_display(raw_label)
+    if not section_kind:
         return ""
-    if label in {"intro"}:
-        return "[Intro]"
-    if label in {"pre chorus", "prechorus"}:
-        return "[Pre-Chorus]"
-    if label in {"chorus", "final chorus", "hook", "refrain"}:
-        return "[Chorus]"
-    if label in {"verse", "rap", "spoken"}:
-        return "[Verse]"
-    if label in {"bridge"}:
-        return "[Bridge]"
-    if label in {"drop", "break", "interlude"}:
-        return "[Break]"
-    if label in {"outro"}:
-        return "[Outro]"
-    return ""
+    existing_tags = _concise_performance_tags(_existing_section_tags(raw_label, display_raw))
+    return _format_section_header(display, existing_tags)
 
 
 def _epoch_audition_blocks(lines: list[str]) -> list[dict[str, Any]]:
@@ -228,8 +512,7 @@ def _epoch_audition_blocks(lines: list[str]) -> list[dict[str, Any]]:
         if section is not None:
             if current_lines:
                 blocks.append({"section": current_section, "lines": current_lines})
-            elif current_section == "[Verse]" and section == "[Outro]":
-                current_section = "[Verse]"
+            elif current_section.lower().startswith("[verse") and section.lower().startswith("[outro"):
                 current_lines = []
                 continue
             current_section = section or current_section
@@ -252,7 +535,7 @@ def _epoch_audition_timed_section(section: str, start: float, end: float) -> str
     section_name = str(section or "[Verse]").strip().strip("[]") or "Verse"
     # ACE-Step docs warn that stacked lyric tags can be sung literally or
     # confuse the model. Keep timing in metadata, and keep lyric tags concise.
-    if section_name.lower().startswith("verse"):
+    if section_name.lower().startswith("verse") and " - " not in section_name:
         return f"[{section_name} - spoken word]"
     return f"[{section_name}]"
 
@@ -291,32 +574,11 @@ def epoch_audition_genre_profile(
 
 def epoch_audition_genre_options() -> list[dict[str, Any]]:
     """Public UI catalog for LoRA test-WAV lyrics, tags, and metadata."""
-    options: list[dict[str, Any]] = [
-        {
-            "key": "auto",
-            "label": "Auto",
-            "caption_tags": "Uses the dataset captions to infer rap, pop, soul, rock, EDM, cinematic, or country.",
-            "lyrics": "",
-            "bpm": None,
-            "keyscale": "",
-            "timesignature": "",
-            "default": False,
-        }
-    ]
-    for profile in EPOCH_AUDITION_GENRE_PROFILES:
-        options.append(
-            {
-                "key": str(profile.get("key") or ""),
-                "label": str(profile.get("label") or profile.get("key") or "").strip(),
-                "caption_tags": str(profile.get("caption_tags") or "").strip(),
-                "lyrics": str(profile.get("lyrics") or "").strip(),
-                "bpm": profile.get("bpm"),
-                "keyscale": str(profile.get("keyscale") or "").strip(),
-                "timesignature": str(profile.get("timesignature") or "").strip(),
-                "terms": list(profile.get("terms") or []),
-                "default": profile.get("key") == EPOCH_AUDITION_DEFAULT_PROFILE_KEY,
-            }
-        )
+    options = audio_style_profiles(include_auto=True)
+    if options:
+        options[0]["caption_tags"] = "Uses the dataset captions to infer rap, pop, soul, rock, EDM, cinematic, or country."
+        options[0]["lyrics"] = ""
+        options[0]["test_lyrics"] = ""
     return options
 
 
@@ -1297,6 +1559,9 @@ class AceTrainingManager:
             "lyrics_source": lyrics_meta["lyrics_source"],
             "genre": user_genre,
             "genre_profile": lyrics_meta["genre_profile"],
+            "style_profile": lyrics_meta["genre_profile"],
+            "style_caption_tags": str(profile.get("caption_tags") or ""),
+            "lyrics_section_tags": dict(profile.get("lyrics_section_tags") or {}),
             "duration": EPOCH_AUDITION_DURATION_SECONDS,
             "seed": parse_int(payload.get("epoch_audition_seed"), training_seed, 0, 2**31 - 1),
             "bpm": parse_int(payload.get("epoch_audition_bpm"), profile_metadata["bpm"], 0, 300) or None,
@@ -1358,6 +1623,9 @@ class AceTrainingManager:
                     "generation_trigger_tag": safe_trigger,
                     "lyrics_source": lyrics_meta["lyrics_source"],
                     "genre_profile": lyrics_meta["genre_profile"],
+                    "style_profile": lyrics_meta["genre_profile"],
+                    "style_caption_tags": str(profile.get("caption_tags") or ""),
+                    "lyrics_section_tags": dict(profile.get("lyrics_section_tags") or {}),
                     "dataset_caption_source": "labeled_dataset",
                     "bpm": dataset_metadata["bpm"] or audition.get("bpm"),
                     "keyscale": dataset_metadata["keyscale"] or audition.get("keyscale"),
@@ -2795,7 +3063,17 @@ class AceTrainingManager:
     def _run_epoch_audition(self, job_id: str, params: dict[str, Any], checkpoint_path: Path, epoch: int, log_path: Path) -> None:
         config = dict(params.get("epoch_audition") or {})
         duration = parse_int(config.get("duration"), EPOCH_AUDITION_DURATION_SECONDS, 10, 60)
-        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(config.get("lyrics") or ""), duration=duration)
+        audition_lyrics_source = str(config.get("lyrics") or "")
+        if str(config.get("style_profile") or config.get("genre_profile") or "").strip():
+            styled = apply_audio_style_conditioning(
+                {
+                    "style_profile": str(config.get("style_profile") or config.get("genre_profile") or ""),
+                    "caption": str(config.get("caption") or ""),
+                    "lyrics": audition_lyrics_source,
+                }
+            )
+            audition_lyrics_source = str(styled.get("lyrics") or audition_lyrics_source)
+        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(audition_lyrics_source, duration=duration)
         vocal_language = (
             str(config.get("vocal_language") or config.get("language") or params.get("vocal_language") or params.get("language") or "unknown").strip()
             or "unknown"
@@ -2814,6 +3092,9 @@ class AceTrainingManager:
             "lyrics_fit_action": lyrics_fit["action"],
             "lyrics_source": str(config.get("lyrics_source") or "custom"),
             "genre_profile": str(config.get("genre_profile") or ""),
+            "style_profile": str(config.get("style_profile") or config.get("genre_profile") or ""),
+            "style_caption_tags": str(config.get("style_caption_tags") or ""),
+            "lyrics_section_tags": dict(config.get("lyrics_section_tags") or {}),
             "vocal_language": vocal_language,
             "bpm": config.get("bpm"),
             "keyscale": str(config.get("keyscale") or ""),
@@ -2848,6 +3129,9 @@ class AceTrainingManager:
             "lyrics_fit": lyrics_fit,
             "lyrics_source": str(config.get("lyrics_source") or "custom"),
             "genre_profile": str(config.get("genre_profile") or ""),
+            "style_profile": str(config.get("style_profile") or config.get("genre_profile") or ""),
+            "style_caption_tags": str(config.get("style_caption_tags") or ""),
+            "lyrics_section_tags": dict(config.get("lyrics_section_tags") or {}),
             "user_lyrics": str(config.get("user_lyrics") or ""),
             "trigger_tag": str(params.get("trigger_tag") or ""),
             "song_model": song_model,
@@ -2927,6 +3211,11 @@ class AceTrainingManager:
             "model_variant": request.get("model_variant"),
             "inference_steps": result.get("inference_steps") if isinstance(result, dict) else None,
             "shift": result.get("shift") if isinstance(result, dict) else None,
+            "style_profile": request.get("style_profile"),
+            "style_caption_tags": request.get("style_caption_tags"),
+            "lyrics_section_tags": request.get("lyrics_section_tags"),
+            "style_conditioning_audit": result.get("style_conditioning_audit") if isinstance(result, dict) else {},
+            "style_lyric_tags_applied": result.get("style_lyric_tags_applied") if isinstance(result, dict) else [],
         }
         self._record_epoch_audition(job_id, record)
         if failure_reason:

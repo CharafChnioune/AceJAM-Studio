@@ -528,11 +528,257 @@ for _key, _module in GENRE_MODULES.items():
 
 SECTION_TAGS = {
     "song": ["[Intro]", "[Verse]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Post-Chorus]", "[Bridge]", "[Final Chorus]", "[Outro]"],
-    "rap": ["[Intro]", "[Verse - rap]", "[Hook]", "[Chorus - rap]", "[Bridge - spoken]", "[Outro]"],
+    "rap": ["[Intro]", "[Verse - rap]", "[Hook]", "[Hook/Chorus]", "[Chorus - rap]", "[Bridge - spoken]", "[Outro]"],
+    "boom_bap": ["[Intro]", "[Verse - rap]", "[Hook]", "[Verse - rap]", "[Hook]", "[Bridge - spoken]", "[Verse - rap]", "[Hook]", "[Outro]"],
+    "g_funk": ["[Intro - talkbox]", "[Verse - rap]", "[Hook - sung]", "[Verse - rap]", "[Hook - sung]", "[Bridge - g-funk solo]", "[Verse - rap]", "[Hook - sung]", "[Outro - talkbox]"],
+    "trap": ["[Intro]", "[Verse - rap]", "[Hook]", "[Verse - rap]", "[Hook]", "[Bridge - melodic rap]", "[Hook]", "[Outro]"],
+    "drill": ["[Intro - dark]", "[Verse - rap]", "[Hook - chant]", "[Verse - rap]", "[Hook - chant]", "[Outro]"],
     "edm": ["[Intro]", "[Build]", "[Drop]", "[Breakdown]", "[Build-Up]", "[Final Drop]", "[Outro]"],
     "instrumental": ["[Intro]", "[Instrumental]", "[Build]", "[Drop]", "[Breakdown]", "[Climax]", "[Outro]"],
     "performance": ["[Vocal responses]", "[Call and response]", "[Layered vocals]", "[Whispered]", "[Spoken]"],
 }
+
+ACE_STEP_AUTHORING_RULES: list[str] = [
+    "Modifier syntax: write tags as [Section - modifier] with one dash and ONE modifier max. Stacking modifiers confuses ACE-Step and the tag content may be sung as lyrics.",
+    "Lyric meta tags use square brackets only ([Verse], [Hook], [Verse - rap]). Background vocals use parentheses around the words: 'main line (echo)' is rendered as a backing vocal and not as a tag.",
+    "ALL CAPS lines render as shouted intensity. Use sparingly for hook accents or chants, never for whole verses.",
+    "BPM, key/scale, time signature, and duration go ONLY in the dedicated metadata fields, never in the caption prose.",
+    "Caption is sound-only: genre, mood, instruments, timbre, era, production style, vocal type, rhythm, structure energy. No song titles, no producer credits as prose, no lyrics, no JSON, no BPM/key/time text.",
+    "Lyrics are a temporal script: a section tag header per block, then performable lines (rap can run 6-14 syllables/line, sung 6-10). Internal rhyme and ad-libs go inside the lyric text, not as separate tags.",
+    "Producer references: never put a producer or label name in the caption. Map the request to the matching Producer-Format Cookbook entry below and use that tag stack instead. ACE-Step does not recognise producer names; it only responds to genre+era+drum+timbre vocabulary.",
+    "Avoid generic AI phrasing: no 'neon dreams / fire inside / we rise / let it burn / chasing the night' style filler. Concrete scene details and one disciplined metaphor world per song outperform abstract slogans.",
+]
+
+PRODUCER_FORMAT_COOKBOOK: dict[str, str] = {
+    # ACE-Step does NOT recognize producer names directly. These map common producer/era
+    # references to the genre+era+drum+timbre stacks the model actually responds to.
+    "Dr. Dre / G-funk era": (
+        "G-funk, West Coast hip hop, talkbox lead, heavy synthesizer bassline, "
+        "laid-back groove, polished mix, deep low end, syncopated kick, smooth high hat, "
+        "90s G-funk, summer banger polish, head-nod groove"
+    ),
+    "No I.D. / Common-era boom bap": (
+        "boom bap, soul sample chops, dusty drums, jazzy chord loop, vinyl texture, "
+        "warm analog mix, head-nod groove, 90s boom bap, NYC east coast warmth, "
+        "muted piano sample, soft kick, tight snare"
+    ),
+    "Metro Boomin / dark trap": (
+        "modern trap, dark atmospheric, 808 bass, trap hi-hats, sparse melody, "
+        "ominous synth lead, gritty, hard-hitting drums, half-time drums, "
+        "hi-hat rolls, 808 swells, cinematic tension"
+    ),
+    "Quincy Jones / 80s pop polish": (
+        "cinematic strings, lush brass, R&B/funk fusion, 80s pop polish, "
+        "layered backing vocals, wide stereo, studio-polished, "
+        "tight horn stabs, slap bass, gated reverb"
+    ),
+    "Mobb Deep / NYC street rap": (
+        "90s boom bap, gritty, dark, stripped drums, dusty piano sample, "
+        "dry vocal, raw, NYC street rap, ominous strings, head-nod groove"
+    ),
+    "J Dilla / Soulquarian feel": (
+        "boom bap, swung drums, jazzy sample loop, behind-the-beat groove, "
+        "vinyl crackle, warm bass, head-nod groove, dusty mix, neo-soul tinge"
+    ),
+    "Timbaland / early 2000s R&B-rap": (
+        "syncopated rhythm, percussive vocal stabs, beatbox layer, "
+        "sub-bass, sparse drums, exotic percussion, tight snare, "
+        "high vocal flourishes, 2000s R&B polish"
+    ),
+    "Pharrell / Neptunes minimal": (
+        "minimal arrangement, syncopated rhythm, 808 cowbell, "
+        "stripped drums, tight kick, falsetto vocal accents, glossy mix, "
+        "pop-rap polish, 2000s rap"
+    ),
+    "Kanye West / 808s era": (
+        "auto-tune vocal, lush synth pads, 808 drums, sparse melody, "
+        "emotional minimal arrangement, wide stereo, glossy mix, "
+        "2000s rap, syncopated rhythm"
+    ),
+    "Mike Dean / cinematic rap": (
+        "cinematic synth pads, wide stereo, big reverb tail, "
+        "saturated 808 bass, lush production, layered ambience, "
+        "modern trap polish, atmospheric"
+    ),
+    "DJ Premier / 90s boom bap": (
+        "boom bap, scratched samples, gritty drums, soul horn samples, "
+        "dusty piano, raw mix, 90s boom bap, NYC street rap"
+    ),
+    "Rick Rubin / stripped rap-rock": (
+        "stripped drums, raw guitar, minimal arrangement, dry vocal, "
+        "punchy kick, head-nod groove, 90s boom bap, NYC street rap, gritty"
+    ),
+    "Madlib / loop-driven boom bap": (
+        "boom bap, jazz sample loop, dusty mix, loose drums, vinyl crackle, "
+        "warm analog mix, head-nod groove, behind-the-beat groove"
+    ),
+}
+
+RAP_MODE_COOKBOOK: dict[str, str] = {
+    "ad-libs / background vocals": (
+        "Write ad-libs in parentheses on the same line as the main lyric: "
+        "'I came up from the bottom (yeah!) / now they want a feature (uh!)'. "
+        "Common ad-libs: (yeah), (uh), (huh), (skrrt), (woo), (let's go), (alright), (come on)."
+    ),
+    "rap section structure": (
+        "Use [Verse - rap] for rapped verses, [Hook] or [Hook/Chorus] for the main repeating hook, "
+        "[Chorus - rap] only when the chorus is itself rapped. Bridges in rap usually become [Bridge - spoken] "
+        "or [Bridge - melodic rap]. Place 2-3 hook passes total per song."
+    ),
+    "rap line length": (
+        "Rap lines run 6-14 syllables; keep syllable count consistent line-to-line for cadence. "
+        "Internal rhyme inside the lyric text drives flow; do not write 'internal rhyme' as a tag."
+    ),
+    "shouted intensity": (
+        "ALL CAPS = shouted. Use for hook accents like 'WE RUN THIS' or one-word chants. "
+        "Do not capitalise whole verses."
+    ),
+    "language flag": (
+        "Caption-side vocal cue (Rap, Trap Flow, Spoken Word, Melodic Rap) PLUS a section tag like [Verse - rap] "
+        "is the most reliable way to switch ACE-Step into rap mode. Sung captions with [Verse - rap] tags "
+        "produce inconsistent results."
+    ),
+    "rap caption stack template": (
+        "Stack 6-9 caption tags in this order: subgenre (boom bap / G-funk / drill / trap / cloud rap), "
+        "era (90s / 2010s / modern), drum signature (head-nod groove / trap bounce / drill bounce), "
+        "low end (808 bass / heavy synthesizer bassline / sub-bass), melody (soul sample chops / talkbox lead / dark synth lead), "
+        "vocal (male rap vocal / melodic rap vocal / mumble rap), texture (vinyl texture / glossy mix / dusty mix), "
+        "energy (gritty / triumphant / menacing). Do not include BPM, key, or song titles in caption."
+    ),
+}
+
+# Worked examples — concrete request -> caption + lyric structure pairs.
+# These exist because LLMs follow patterns far better than rules. Each example
+# shows the exact shape ACE-Step responds to, including ad-libs in parentheses,
+# section tag modifiers, and how a producer-name request collapses into the
+# Producer-Format Cookbook stack rather than the producer's literal name.
+WORKED_EXAMPLES: list[dict[str, str]] = [
+    {
+        "request": "Make me a Dr. Dre G-funk banger about coming up from nothing",
+        "caption": (
+            "G-funk, West Coast hip hop, talkbox lead, heavy synthesizer bassline, "
+            "laid-back groove, polished mix, deep low end, syncopated kick, smooth high hat, "
+            "head-nod groove, male rap vocal, summer banger polish"
+        ),
+        "lyrics": (
+            "[Intro - talkbox]\n"
+            "From the bottom of the block to the penthouse view\n"
+            "(yeah, yeah, alright)\n"
+            "\n"
+            "[Verse - rap]\n"
+            "I came up where the streetlights flicker through the screen door (uh)\n"
+            "Mama working doubles, I was sleeping on the floor (yeah)\n"
+            "Now the candy paint glide on a Sunday afternoon (skrrt)\n"
+            "Talkbox singing low, I'm conducting my own tune\n"
+            "\n"
+            "[Hook - sung]\n"
+            "We came up, we came up (we came up)\n"
+            "Top down on the West side, we came up\n"
+            "We came up, we came up (we came up)\n"
+            "Whole hood see the shine 'cause we came up\n"
+            "\n"
+            "[Verse - rap]\n"
+            "Used to dream about the keys to a six-fo' Impala (let's go)\n"
+            "Now I'm parking in the lot where the suit-and-tie holler\n"
+            "Bassline kissing concrete, hi-hat skipping in the smoke\n"
+            "Same block I came from, same block I provoke\n"
+            "\n"
+            "[Hook - sung]\n"
+            "We came up, we came up (we came up)\n"
+            "Top down on the West side, we came up\n"
+            "\n"
+            "[Outro - talkbox]\n"
+            "From the bottom (yeah)\n"
+            "From the bottom (alright)"
+        ),
+        "notes": (
+            "Producer name 'Dr. Dre' does NOT appear in caption. The cookbook stack carries the sound. "
+            "Ad-libs are in (parens) on the same line. [Intro - talkbox] and [Outro - talkbox] echo the cookbook's talkbox cue."
+        ),
+    },
+    {
+        "request": "Write something with No I.D. boom-bap soul flip energy, conscious lyrics",
+        "caption": (
+            "boom bap, soul sample chops, dusty drums, jazzy chord loop, vinyl texture, "
+            "warm analog mix, head-nod groove, 90s boom bap, NYC east coast warmth, "
+            "muted piano sample, soft kick, tight snare, male rap vocal, lyrical rap"
+        ),
+        "lyrics": (
+            "[Intro]\n"
+            "Vinyl crackle, muted keys (check it)\n"
+            "\n"
+            "[Verse - rap]\n"
+            "Pulled the curtain back on what they sold us as a dream\n"
+            "Soul flip on the loop, I can hear it through the seam\n"
+            "Pop coloring the lie that we drink up like a stream\n"
+            "I'm the question in the room, I'm the elephant unseen (uh)\n"
+            "\n"
+            "[Hook]\n"
+            "Wake up, wake up, the record's still spinning\n"
+            "Wake up, wake up, the truth in the beginning\n"
+            "\n"
+            "[Verse - rap]\n"
+            "Brother on the corner with a story in his eyes\n"
+            "Sister in the office with a lifetime in disguise\n"
+            "Same beat keep playing 'til we recognise the lies (yeah)\n"
+            "Same kick, same snare, same patient little rise\n"
+            "\n"
+            "[Bridge - spoken]\n"
+            "It's a long road. Keep your head up.\n"
+            "\n"
+            "[Hook]\n"
+            "Wake up, wake up, the record's still spinning\n"
+            "\n"
+            "[Outro]\n"
+            "(wake up, wake up)"
+        ),
+        "notes": (
+            "No I.D. is not in caption. Stack is the cookbook's boom-bap entry. "
+            "[Bridge - spoken] anchors the conscious-rap pause. Hook line is short and repeats verbatim per Tutorial.md hook rule."
+        ),
+    },
+    {
+        "request": "Metro Boomin dark trap with a melodic hook, late-night vibe",
+        "caption": (
+            "modern trap, dark atmospheric, 808 bass, trap hi-hats, sparse melody, "
+            "ominous synth lead, gritty, hard-hitting drums, half-time drums, "
+            "hi-hat rolls, 808 swells, cinematic tension, melodic rap vocal, glossy mix"
+        ),
+        "lyrics": (
+            "[Intro]\n"
+            "(uh, uh) (Metro on the night flight, lights low)\n"
+            "\n"
+            "[Verse - rap]\n"
+            "City sleeping but the 808 awake (yeah)\n"
+            "Hi-hat dancing on the snare like a snake (skrrt)\n"
+            "I been counting all my brothers and the moves they make (uh)\n"
+            "Half the room a mirror and the other half a fake\n"
+            "\n"
+            "[Hook]\n"
+            "Late night, lights low, 808 talk slow (slow)\n"
+            "Late night, lights low, only the real know (real)\n"
+            "Late night, lights low, 808 talk slow (slow)\n"
+            "Late night, lights low, only the real know\n"
+            "\n"
+            "[Verse - rap]\n"
+            "I been on the highway with my dreams in the trunk (woo)\n"
+            "808 keep walking like the city in a funk\n"
+            "Cold side of the moon when the morning come, hunh\n"
+            "Tell 'em hold the silence, leave the rest of it to drum\n"
+            "\n"
+            "[Bridge - melodic rap]\n"
+            "Lights low, lights low, 808 in slow motion\n"
+            "\n"
+            "[Hook]\n"
+            "Late night, lights low, 808 talk slow (slow)\n"
+            "Late night, lights low, only the real know"
+        ),
+        "notes": (
+            "Metro Boomin not in caption. 'Metro on the night flight' is allowed inside lyrics as flavour, not as caption tag. "
+            "Half-time drums + 808 swells + hi-hat rolls captured via cookbook stack."
+        ),
+    },
+]
 
 TROUBLESHOOTING_MATRIX = {
     "muddy_mix": "Reduce conflicting low-end tags, use clearer instrument hierarchy, and avoid piling multiple bass descriptors.",
@@ -567,6 +813,11 @@ DEFAULT_NEGATIVE_CONTROL = [
     "noisy artifacts",
     "contradictory style tags",
     "prompt leakage",
+    "flat drums",
+    "harsh high end",
+    "overcompressed",
+    "boring arrangement",
+    "clichéd AI lyrics",
 ]
 
 ADVANCED_GENERATION_ADVISORY = {
@@ -839,12 +1090,82 @@ def prompt_kit_payload() -> dict[str, Any]:
     }
 
 
+MUSIC_MODES_FOR_RAP_COOKBOOK = {"simple", "custom", "song", "album", "news", "improve"}
+
+
+def _format_tag_taxonomy_block() -> str:
+    from songwriting_toolkit import LYRIC_META_TAGS, TAG_TAXONOMY
+
+    lines: list[str] = ["## ACE-Step Tag Library (full reference)"]
+    lines.append("Caption tag taxonomy — pick a compact stack that covers genre, mood, instruments, vocal, rhythm, era, production, structure energy:")
+    for dimension, tags in TAG_TAXONOMY.items():
+        lines.append(f"- **{dimension}**: {', '.join(tags)}")
+    lines.append("")
+    lines.append("Lyric meta tags — square brackets only; one-section-per-block; modifier syntax `[Section - modifier]` with one dash and ONE modifier max:")
+    for category, tags in LYRIC_META_TAGS.items():
+        lines.append(f"- **{category}**: {', '.join(tags)}")
+    return "\n".join(lines)
+
+
+def _format_authoring_rules_block() -> str:
+    lines = ["## ACE-Step Authoring Rules (must follow)"]
+    for index, rule in enumerate(ACE_STEP_AUTHORING_RULES, 1):
+        lines.append(f"{index}. {rule}")
+    return "\n".join(lines)
+
+
+def _format_section_template_block() -> str:
+    lines = ["## ACE-Step Section Templates (reference structures)"]
+    for family, tags in SECTION_TAGS.items():
+        lines.append(f"- **{family}**: {' -> '.join(tags)}")
+    return "\n".join(lines)
+
+
+def _format_producer_cookbook_block() -> str:
+    lines = [
+        "## Producer-Format Cookbook",
+        "ACE-Step does NOT recognise producer names directly. When the user asks for a producer's sound, "
+        "do NOT put the name in the caption. Translate the request into the matching tag stack below "
+        "and stack 6-9 of those tags in the caption.",
+    ]
+    for label, stack in PRODUCER_FORMAT_COOKBOOK.items():
+        lines.append(f"- **{label}**: {stack}")
+    return "\n".join(lines)
+
+
+def _format_rap_cookbook_block() -> str:
+    lines = ["## Rap-Mode Cookbook"]
+    for label, body in RAP_MODE_COOKBOOK.items():
+        lines.append(f"- **{label}**: {body}")
+    return "\n".join(lines)
+
+
+def _format_worked_examples_block() -> str:
+    lines = [
+        "## Worked Examples (request -> caption + lyrics shape)",
+        "Pattern-match these when the user asks for a producer-format or rap-mode song. "
+        "Notice the producer name NEVER appears in caption, ad-libs sit in (parens) inside lyric lines, "
+        "and section tags follow the single-dash modifier rule.",
+    ]
+    for index, example in enumerate(WORKED_EXAMPLES, 1):
+        lines.append("")
+        lines.append(f"### Example {index}: {example['request']}")
+        lines.append("**caption** (no producer name, no BPM):")
+        lines.append(f"`{example['caption']}`")
+        lines.append("**lyrics** (section tags + ad-libs in parens):")
+        lines.append("```")
+        lines.append(example["lyrics"])
+        lines.append("```")
+        lines.append(f"_Notes: {example['notes']}_")
+    return "\n".join(lines)
+
+
 def prompt_kit_system_block(mode: str = "custom") -> str:
     contract = ", ".join(PROMPT_KIT_OUTPUT_CONTRACT_FIELDS)
     metadata = ", ".join(PROMPT_KIT_METADATA_FIELDS)
     languages = ", ".join(LANGUAGE_PRESETS.keys())
     genres = ", ".join(GENRE_MODULES.keys())
-    return (
+    base = (
         f"ACE-Step Multilingual Hit Prompt Kit\n"
         f"Version: {PROMPT_KIT_VERSION}\n"
         "Use this kit as the final contract for every AceJAM prompt assistant route.\n"
@@ -863,3 +1184,16 @@ def prompt_kit_system_block(mode: str = "custom") -> str:
         "Never hardcode planner_lm_provider to ollama; use the selected local provider and planner_model.\n"
         "Return valid JSON with the existing ACEJAM_PAYLOAD_JSON, ACEJAM_ALBUM_SETTINGS_JSON, or ACEJAM_DATASET_JSON contract plus kit metadata."
     )
+    if str(mode or "").strip().lower() in {"image", "video", "trainer"}:
+        return base
+    blocks = [
+        base,
+        _format_authoring_rules_block(),
+        _format_tag_taxonomy_block(),
+        _format_section_template_block(),
+    ]
+    if str(mode or "").strip().lower() in MUSIC_MODES_FOR_RAP_COOKBOOK:
+        blocks.append(_format_producer_cookbook_block())
+        blocks.append(_format_rap_cookbook_block())
+        blocks.append(_format_worked_examples_block())
+    return "\n\n".join(blocks)

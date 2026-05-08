@@ -109,23 +109,23 @@ Satire modes:
 - spoken_word: grounded commentary.
 - auto: choose best mode.
 
-Caption/tag taxonomy:
-- genre/style: comedy rap, satirical hip-hop, trap, drill, boom-bap, pop, hyperpop, R&B, afrohouse, amapiano, reggaeton, synthwave, musical theatre, orchestral pop, spoken word, drum and bass, techno.
-- mood: funny, playful, sarcastic, ironic, dramatic, urgent, chaotic, deadpan, glossy, cinematic, rebellious, melancholic, euphoric.
-- instruments: 808 bass, sub-bass, trap hi-hats, punchy snare, claps, breakbeat, Rhodes, piano, brass stabs, strings, choir, saxophone, analog synths, pads, clean guitar, percussion.
-- vocals: male rap vocal, female rap vocal, comedic rap vocal, spoken intro, news anchor intro, chant hook, layered harmonies, ad-libs, deadpan delivery, theatrical vocal.
-- production: high-fidelity, radio-ready, crisp modern mix, meme-ready hook, intimate verse, explosive chorus, big reverb tail, club low-end, polished master.
-- rhythm: half-time, double-time rap, syncopated groove, four-on-the-floor, dembow, shuffled hats, call and response.
-- structure: headline hook, verse per story, call and response chorus, punchline outro, crowd chant, cinematic bridge.
+Caption/tag rules: pick a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Lean on `mood_atmosphere` (funny, deadpan, sarcastic, urgent, chaotic) and rap-side `vocal_character` (comedic rap vocal, deadpan delivery, mumble rap, lyrical rap) for satirical coverage. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax, parentheses around words = background vocals, no BPM/key/time-signature in caption.
+
+Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib), do NOT put the name in caption. Use the matching entry in the **Producer-Format Cookbook** appended to this prompt.
+
+Rap requests: pair caption-side rap cue (Rap, Trap Flow, Spoken Word, Melodic Rap, Comedy Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** for ad-lib placement, hook structure, line length, and rap caption stack template.
 
 negative_tags must include:
 "muddy mix, generic lyrics, weak hook, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, defamatory claim, copied article text"
 
 Lyrics:
-- Vocal songs need full lyrics; instrumentals use "[Instrumental]".
+- Vocal songs need full lyrics; instrumentals use `[Instrumental]`.
 - Keep under 4096 characters.
-- Target words: 30s 40-70, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540.
-- Use section tags: [Intro - spoken news anchor], [Verse - rap], [Chorus - rap], [Verse 2], [Bridge - spoken], [Chorus], [Outro].
+- Target words (rich news-rap, write to the TARGET):
+  * sung — 30s ~75 / 60s ~155 / 120s ~300 / 180s ~420 / 240s ~510 / 300s ~570 words.
+  * rap — 30s ~95 / 60s ~200 / 120s ~360 / 180s ~500 / 240s ~570 / 300s ~600 words.
+- For ≥180s use 3 verses (each tied to a story beat), 2-3 hook passes, bridge with new angle, final chorus.
+- Use section tags from the appended Tag Library `basic_structure`/`performance_modifiers`/`vocal_control` lists. Common news-rap shape: `[Intro - spoken]`, `[Verse - rap]`, `[Hook]`, `[Verse - rap]`, `[Bridge - spoken]`, `[Hook]`, `[Outro]`. Ad-libs go in `(parens)` inside lyric lines.
 - For multiple news items: choose one main angle or verse-per-story with one shared chorus. Do not make a messy list song.
 - Hook must be understandable without reading the article.
 

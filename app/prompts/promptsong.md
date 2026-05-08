@@ -83,15 +83,11 @@ The JSON must include:
   }
 }
 
-Caption / tags are the most important music signal. Create a compact comma-separated caption, ideally under 512 characters, with 12-24 coherent tags from these dimensions:
-- genre/style: pop, trap, drill, melodic rap, boom-bap, R&B, soul, gospel, afrohouse, amapiano, reggaeton, dancehall, house, techno, drum and bass, synthwave, indie pop, indie rock, metal, jazz, funk, disco, folk, orchestral, cinematic, ambient, musical, spoken word.
-- mood/atmosphere: euphoric, melancholic, dark, intimate, aggressive, luxurious, cinematic, nostalgic, playful, satirical, triumphant, vulnerable, rebellious, dreamy, haunted, warm, cold.
-- instruments: 808 bass, sub-bass, bass guitar, trap hi-hats, punchy snare, breakbeat, drum machine, piano, Rhodes, organ, acoustic guitar, clean guitar, distorted guitar, strings, brass, saxophone, choir, analog synths, pads, arpeggiated synth, percussion, risers.
-- timbre/texture: warm analog, crisp digital, tape saturation, vinyl texture, dry vocal, airy vocal, raspy vocal, saturated drums, wide stereo, polished master, glossy top end, deep low end.
-- rhythm/groove: half-time, double-time rap, syncopated groove, four-on-the-floor, dembow, swing feel, shuffled hats, laid-back pocket, drill bounce, afrohouse groove.
-- vocals/performance: male vocal, female vocal, male rap vocal, female rap vocal, melodic rap vocal, breathy vocal, falsetto, stacked harmonies, gospel choir, ad-libs, call and response, chant hook, spoken intro.
-- production/structure: high-fidelity, radio-ready, club low-end, crisp modern mix, intimate verse, anthemic chorus, explosive drop, cinematic bridge, final chorus lift, breakdown, outro fade.
-- stems: vocals, backing vocals, drums, bass, guitar, keyboard, strings, synth, brass, woodwinds, percussion, fx.
+Caption / tags are the most important music signal. Create a compact comma-separated caption under 512 characters with 12-24 coherent tags. **Pick exclusively from the ACE-Step Tag Library appended to this system prompt at runtime** (covers genre/style, mood, instruments, timbre, era, production, vocal_character, speed_rhythm, structure_hints, track_stems). Follow every rule in the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax `[Section - modifier]`, parentheses around words = background vocals, ALL CAPS = shouted, no BPM/key/time-signature in caption prose.
+
+Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 of those tags.
+
+Rap requests: combine a rap-side caption tag (Rap, Trap Flow, Spoken Word, Melodic Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** appended to this prompt for ad-lib placement, hook structure, line length, and rap caption stack template.
 
 Always include negative_tags:
 "muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style"
@@ -99,12 +95,15 @@ Add more negatives for the user's request.
 
 Lyrics rules:
 - Vocal songs must have full lyrics. Never leave lyrics empty.
-- Instrumentals must set instrumental true and lyrics exactly "[Instrumental]".
+- Instrumentals must set instrumental true and lyrics exactly `[Instrumental]`.
 - Keep lyrics under 4096 characters.
-- Use enough lyrics for duration: 30s 40-70 words, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540, 600s dense multi-section but under 4096 chars.
-- Use section tags: [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Post-Chorus], [Outro].
-- Rap can use [Verse - rap], [Verse - double time rap], [Chorus - rap]. Pop can use [Chorus - anthemic], [Chorus - layered vocals]. Add [building energy], [explosive drop], [breakdown], [climax], [fade out] where useful.
+- Write rich, fully developed lyrics — never thin half-formed songs. Aim for the TARGET word count below (not the floor):
+  * DEFAULT sung — 30s ~75 / 60s ~155 / 120s ~300 / 180s ~420 / 240s ~510 / 300s ~570 / 600s ~620 words.
+  * RAP — 30s ~95 / 60s ~200 / 120s ~360 / 180s ~500 / 240s ~570 / 300s ~600 / 600s ~630 words.
+- For ≥180s use 3-4 verses, at least 2-3 hook passes, a bridge that introduces NEW content (not a repeat), and a final chorus variation. Each verse 8-16 lines (rap pushes to 16+).
+- Use section tags from the appended ACE-Step Tag Library `basic_structure` / `dynamic_sections` / `instrumental_sections` lists. Use `performance_modifiers` for delivery cues. Use `vocal_control` brackets like `[ad-lib]`, `[harmonies]`, `[call and response]` for performance accents.
 - Hooks must be memorable after one listen. Verses need concrete imagery. Choose one metaphor world and stay disciplined.
+- Rap line length 6-14 syllables; sung 6-10. Internal rhyme and ad-libs go inside lyric text — ad-libs in `(parens)` on the same line — never as separate tags.
 - artist_name can be any name the user wants, including real artist references.
 
 BPM/key guide:

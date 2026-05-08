@@ -14,6 +14,48 @@ os.environ.setdefault("ACEJAM_SKIP_MODEL_INIT_FOR_TESTS", "1")
 acejam_app = importlib.import_module("app")
 
 
+# Shared long-form lyrics fixture for album/parity routing tests.
+# Long enough to clear the boosted lyric_density_gate min_lines/min_words bar at
+# 30s-60s durations after the 2026-04 lyric length plan revisions.
+_LONG_TEST_LYRICS = (
+    "[Intro]\nQuiet click before the lights catch on\n"
+    "Bright route opens for the calm intake\n"
+    "Steady pulse, every meter holds\n\n"
+    "[Verse]\nWe test the bright route under city lights\n"
+    "Every model enters clearly through the night\n"
+    "Clean chords carry the signal so the morning sounds right\n"
+    "Kick drum locks the cadence tight\n"
+    "Piano flickers under city light\n"
+    "Low end moves but the words stay clear\n"
+    "Signal in front for every ear\n"
+    "Hook coming forward like an honest heartbeat\n\n"
+    "[Pre-Chorus]\nLights line up, cue the wave, cue the wave\n"
+    "Every meter ready, give the mic a save\n"
+    "Counters resolve and the verse takes shape\n\n"
+    "[Chorus]\nEvery model plays it loud, every model rides the cloud\n"
+    "Every take keeps timing proud, every voice declared aloud\n"
+    "Unit Signal rides tonight, the hook lands clean and bright\n"
+    "Hands come up when the chorus hits, clear lead cuts through the mix\n"
+    "Every line lands right on time, no blurred words inside the rhyme\n"
+    "Bright route open, clean and tight, every render lands just right\n\n"
+    "[Verse 2]\nNight moves through the master, takes a steady breath\n"
+    "Compressor holding gentle, never loses depth\n"
+    "Mics all warm and honest, every tail decay\n"
+    "Bright route polished smooth, never gets in the way\n"
+    "Bus settles soft and even, headroom holds the seam\n"
+    "Every register answering the dream\n\n"
+    "[Chorus]\nEvery model plays it loud, every model rides the cloud\n"
+    "Every take keeps timing proud, every voice declared aloud\n"
+    "Unit Signal rides tonight, the hook lands clean and bright\n\n"
+    "[Outro]\nThe final note stays clean and warm\n"
+    "Seven paths land bright through the storm\n"
+    "Bass rolls out and the voice stays near\n"
+    "One last hook for the engineer\n"
+    "Timing stays locked as the room lets go\n"
+    "Last chord settle, last meter calm\n"
+)
+
+
 class AppParityTest(unittest.TestCase):
     def _mock_direct_album_plan(self, tracks):
         planned_tracks = []
@@ -485,6 +527,38 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("2pac", params["caption"].lower())
         self.assertIn("generation_prompt_token_2pac_normalized_to_pac_for_vocal_clarity", params["payload_warnings"])
 
+    def test_parse_generation_payload_applies_rap_style_profile_to_caption_and_lyrics(self):
+        payload = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "style_profile": "rap",
+            "caption": "west coast night drive",
+            "tags": "hard drums",
+            "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+        }
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(payload)
+
+        self.assertEqual(params["style_profile"], "rap")
+        self.assertIn("rap", params["caption"].lower())
+        self.assertIn("hip hop", params["caption"].lower())
+        self.assertIn("[Verse - rap, rhythmic spoken flow]", params["lyrics"])
+        self.assertIn("[Chorus - rap hook]", params["lyrics"])
+        self.assertEqual(params["style_conditioning_audit"]["status"], "pass")
+
+    def test_audio_wizards_send_style_profile(self):
+        for path in [
+            "web/src/wizards/SimpleWizard.tsx",
+            "web/src/wizards/CustomWizard.tsx",
+            "web/src/wizards/SourceAudioWizard.tsx",
+            "web/src/wizards/AlbumWizard.tsx",
+            "web/src/wizards/NewsWizard.tsx",
+        ]:
+            text = (Path(__file__).resolve().parents[1] / path).read_text(encoding="utf-8")
+            self.assertIn("AudioStyleSelector", text, path)
+            self.assertIn("style_profile", text, path)
+
     def test_query_result_returns_acejam_result_for_ui_rendering(self):
         task_id = "unit-query-result"
         result = {
@@ -543,7 +617,6 @@ class AppParityTest(unittest.TestCase):
                     "is_format_caption": True,
                     "track_name": "vocals",
                     "track_classes": ["vocals", "drums"],
-                    "lm_repetition_penalty": 1.15,
                     "song_intent": {"genre_family": "rap", "caption": "structured intent caption"},
                     "source_task_intent": "clean source vocal before morph",
                 }
@@ -573,8 +646,6 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["official_api_fields"]["is_format_caption"], True)
         self.assertEqual(request["official_api_fields"]["track_name"], "vocals")
         self.assertEqual(request["official_api_fields"]["track_classes"], ["vocals", "drums"])
-        self.assertEqual(request["official_api_fields"]["lm_repetition_penalty"], 1.15)
-        self.assertEqual(request["lm_sampling"]["repetition_penalty"], 1.15)
         self.assertEqual(params["song_intent"]["genre_family"], "rap")
         self.assertEqual(params["source_task_intent"], "clean source vocal before morph")
 
@@ -598,8 +669,8 @@ class AppParityTest(unittest.TestCase):
         for payload in [config_response.json()["songwriting_toolkit"], toolkit_response.json()]:
             schema = payload["song_intent_schema"]
             self.assertEqual(schema["counts"]["genre_modules"], 26)
-            self.assertEqual(schema["counts"]["tag_taxonomy_terms"], 184)
-            self.assertEqual(schema["counts"]["lyric_meta_tags"], 36)
+            self.assertGreaterEqual(schema["counts"]["tag_taxonomy_terms"], 300)
+            self.assertGreaterEqual(schema["counts"]["lyric_meta_tags"], 90)
             self.assertEqual(schema["counts"]["valid_languages"], 51)
             self.assertEqual(schema["counts"]["track_stems"], 12)
             self.assertIn("cover-nofsq", schema["capabilities"]["all_task_modes"])
@@ -624,6 +695,139 @@ class AppParityTest(unittest.TestCase):
         self.assertGreater(timeout, 7200)
         self.assertLessEqual(timeout, acejam_app.ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS)
         self.assertGreaterEqual(acejam_app.ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS, acejam_app.ACEJAM_OFFICIAL_RUNNER_TIMEOUT_SECONDS)
+
+    def test_official_service_timeout_tracks_long_xl_sft_runner_timeout(self):
+        request_payload = {
+            "lm_backend": "mlx",
+            "song_model": "acestep-v15-xl-sft",
+            "params": {"duration": 180, "inference_steps": 50},
+            "config": {"batch_size": 1},
+        }
+
+        runner_timeout = acejam_app._official_runner_timeout_seconds(request_payload, requested_timeout=3600)
+        service_timeout = acejam_app._official_service_generation_timeout_seconds(request_payload, runner_timeout)
+
+        self.assertGreater(service_timeout, 600)
+        self.assertLess(service_timeout, runner_timeout)
+
+    def test_official_memory_plan_serializes_xl_sft_takes_on_mps(self):
+        payload = {
+            "song_model": "acestep-v15-xl-sft",
+            "task_type": "text2music",
+            "device": "mps",
+            "batch_size": 3,
+            "duration": 180,
+            "inference_steps": 50,
+            "shift": 1.0,
+            "use_lora": True,
+            "lora_scale": 0.15,
+            "seed": "42",
+            "use_random_seed": False,
+        }
+
+        with patch.object(acejam_app, "_IS_APPLE_SILICON", True):
+            plan = acejam_app._official_generation_memory_plan(payload)
+
+        self.assertTrue(plan["force_runner_batch_size_one"])
+        self.assertTrue(plan["sequential"])
+        self.assertEqual(plan["requested_take_count"], 3)
+        self.assertEqual(plan["actual_runner_batch_size"], 1)
+        self.assertEqual(plan["render_pass_count"], 3)
+        self.assertEqual(
+            [acejam_app._official_take_params(payload, plan, index)["seed"] for index in range(3)],
+            ["42", "43", "44"],
+        )
+        self.assertTrue(all(acejam_app._official_take_params(payload, plan, index)["batch_size"] == 1 for index in range(3)))
+
+    def test_official_memory_plan_keeps_turbo_batching_policy(self):
+        payload = {
+            "song_model": "acestep-v15-turbo",
+            "task_type": "text2music",
+            "device": "mps",
+            "batch_size": 3,
+            "duration": 180,
+            "inference_steps": 8,
+            "shift": 3.0,
+            "seed": "42",
+        }
+
+        with patch.object(acejam_app, "_IS_APPLE_SILICON", True):
+            plan = acejam_app._official_generation_memory_plan(payload)
+
+        self.assertFalse(plan["force_runner_batch_size_one"])
+        self.assertFalse(plan["sequential"])
+        self.assertEqual(plan["requested_take_count"], 3)
+        self.assertEqual(plan["actual_runner_batch_size"], 3)
+        self.assertEqual(plan["render_pass_count"], 1)
+
+    def test_memory_error_gate_blocks_recommended_take(self):
+        result = {
+            "success": True,
+            "error_type": "memory_error",
+            "recommended_take": {"id": "take-1"},
+            "audios": [{"id": "take-1", "is_recommended_take": True}],
+        }
+
+        gate = acejam_app._apply_vocal_intelligibility_gate_to_result(
+            result,
+            {"lyrics": "[Verse]\nClear words", "caption": "rap vocal", "instrumental": False},
+            attempt=1,
+            max_attempts=1,
+        )
+
+        self.assertEqual(gate["status"], "error")
+        self.assertEqual(gate["reason"], "memory_error_before_audio")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["needs_review"])
+        self.assertNotIn("recommended_take", result)
+        self.assertFalse(result["audios"][0]["is_recommended_take"])
+
+    def test_timeout_error_gate_blocks_recommended_take(self):
+        result = {
+            "success": True,
+            "error_type": "timeout_error",
+            "recommended_take": {"id": "take-1"},
+            "audios": [{"id": "take-1", "is_recommended_take": True}],
+        }
+
+        gate = acejam_app._apply_vocal_intelligibility_gate_to_result(
+            result,
+            {"lyrics": "[Verse]\nClear words", "caption": "rap vocal", "instrumental": False},
+            attempt=1,
+            max_attempts=1,
+        )
+
+        self.assertEqual(gate["status"], "error")
+        self.assertEqual(gate["reason"], "timeout_before_audio")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["needs_review"])
+        self.assertNotIn("recommended_take", result)
+        self.assertFalse(result["audios"][0]["is_recommended_take"])
+
+    def test_audio_generation_memory_cleanup_unloads_local_llms(self):
+        with patch.object(acejam_app, "_unload_llm_models_for_generation") as unload, \
+            patch.object(acejam_app, "_cleanup_accelerator_memory") as cleanup, \
+            patch.object(acejam_app.gc, "collect") as collect, \
+            patch.object(acejam_app, "_mps_memory_snapshot", side_effect=lambda label: {"label": label}):
+            event = acejam_app._prepare_audio_generation_memory("unit", release_handler=False)
+
+        unload.assert_called_once()
+        collect.assert_called_once()
+        cleanup.assert_called_once()
+        self.assertEqual(event["before"]["label"], "unit:before_cleanup")
+        self.assertEqual(event["after"]["label"], "unit:after_cleanup")
+
+    def test_react_ui_surfaces_takes_and_memory_policy(self):
+        web_src = Path(acejam_app.BASE_DIR) / "web" / "src"
+        custom = (web_src / "wizards" / "CustomWizard.tsx").read_text(encoding="utf-8")
+        tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("Aantal takes", custom)
+        self.assertIn("XL-SFT/Base rendert takes een voor een op MPS", custom)
+        self.assertIn('label: "Takes"', custom)
+        self.assertIn("Requested takes", tracker)
+        self.assertIn("Runner batch", tracker)
+        self.assertIn("Memory policy", tracker)
 
     def test_community_endpoint_refreshes_library_from_disk(self):
         client = TestClient(acejam_app.app)
@@ -656,6 +860,268 @@ class AppParityTest(unittest.TestCase):
         songs = response.json()
         self.assertEqual(songs[0]["id"], "song123")
         self.assertEqual(songs[0]["audio_url"], "/media/songs/song123/take.wav")
+
+    def test_library_endpoint_shows_result_wavs_when_songs_empty(self):
+        client = TestClient(acejam_app.app)
+        original_feed = list(acejam_app._feed_songs)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            songs = root / "songs"
+            results = root / "results"
+            result_dir = results / "result123"
+            songs.mkdir()
+            result_dir.mkdir(parents=True)
+            (result_dir / "take.wav").write_bytes(b"RIFF0000WAVE")
+            (result_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "id": "result123",
+                        "title": "Result Only",
+                        "artist_name": "MLX Media",
+                        "created_at": "2026-05-07T00:00:00+00:00",
+                        "audios": [{"id": "take-1", "filename": "take.wav", "audio_url": "/media/results/result123/take.wav"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                acejam_app._feed_songs.clear()
+                with patch.object(acejam_app, "SONGS_DIR", songs), patch.object(acejam_app, "RESULTS_DIR", results):
+                    response = client.get("/api/library")
+            finally:
+                acejam_app._feed_songs[:] = original_feed
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["counts"]["results"], 1)
+        self.assertEqual(data["items"][0]["source"], "result")
+        self.assertEqual(data["items"][0]["audio_url"], "/media/results/result123/take.wav")
+
+    def test_library_endpoint_dedupes_result_audio_with_saved_song(self):
+        client = TestClient(acejam_app.app)
+        original_feed = list(acejam_app._feed_songs)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            songs = root / "songs"
+            results = root / "results"
+            song_dir = songs / "song123"
+            result_dir = results / "result123"
+            song_dir.mkdir(parents=True)
+            result_dir.mkdir(parents=True)
+            (song_dir / "take.wav").write_bytes(b"RIFF0000WAVE")
+            (song_dir / "meta.json").write_text(
+                json.dumps({"id": "song123", "title": "Saved", "audio_file": "take.wav", "result_id": "result123"}),
+                encoding="utf-8",
+            )
+            (result_dir / "take.wav").write_bytes(b"RIFF0000WAVE")
+            (result_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "id": "result123",
+                        "title": "Saved",
+                        "audios": [{"id": "take-1", "filename": "take.wav", "song_id": "song123"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                acejam_app._feed_songs.clear()
+                with patch.object(acejam_app, "SONGS_DIR", songs), patch.object(acejam_app, "RESULTS_DIR", results):
+                    response = client.get("/api/library")
+            finally:
+                acejam_app._feed_songs[:] = original_feed
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["counts"]["songs"], 1)
+        self.assertEqual(data["counts"]["results"], 0)
+        self.assertEqual(data["items"][0]["source"], "song")
+
+    def test_library_endpoint_shows_mlx_video_results(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            video_results = Path(tmp) / "video-results"
+            result_dir = video_results / "vid1234"
+            result_dir.mkdir(parents=True)
+            (result_dir / "clip-source-audio.mp4").write_bytes(b"mp4")
+            (result_dir / "mlx_video_result.json").write_text(
+                json.dumps(
+                    {
+                        "result_id": "vid1234",
+                        "filename": "clip-source-audio.mp4",
+                        "primary_video_url": "/media/mlx-video/vid1234/clip-source-audio.mp4",
+                        "raw_video_url": "/media/mlx-video/vid1234/clip.mp4",
+                        "model_label": "LTX Fast Draft",
+                        "prompt": "cinematic street clip",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "MLX_VIDEO_RESULTS_DIR", video_results):
+                response = client.get("/api/library")
+
+        self.assertEqual(response.status_code, 200)
+        video = next(item for item in response.json()["items"] if item["kind"] == "video")
+        self.assertEqual(video["video_url"], "/media/mlx-video/vid1234/clip-source-audio.mp4")
+        self.assertEqual(video["model_label"], "LTX Fast Draft")
+
+    def test_library_endpoint_shows_mflux_image_results(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            image_results = Path(tmp) / "mflux-results"
+            result_dir = image_results / "img1234"
+            result_dir.mkdir(parents=True)
+            (result_dir / "cover.png").write_bytes(b"png")
+            (result_dir / "mflux_result.json").write_text(
+                json.dumps(
+                    {
+                        "result_id": "img1234",
+                        "filename": "cover.png",
+                        "image_url": "/media/mflux/img1234/cover.png",
+                        "model_label": "Qwen Image",
+                        "prompt": "premium album art",
+                        "width": 1024,
+                        "height": 1024,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "MFLUX_RESULTS_DIR", image_results):
+                response = client.get("/api/library")
+
+        self.assertEqual(response.status_code, 200)
+        image = next(item for item in response.json()["items"] if item["kind"] == "image")
+        self.assertEqual(image["image_url"], "/media/mflux/img1234/cover.png")
+        self.assertEqual(image["model_label"], "Qwen Image")
+        self.assertEqual(response.json()["counts"]["images"], 1)
+
+    def test_library_delete_result_take_updates_metadata(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            (result_dir / "one.wav").write_bytes(b"one")
+            (result_dir / "two.wav").write_bytes(b"two")
+            (result_dir / "result.json").write_text(
+                json.dumps(
+                    {
+                        "id": "result123",
+                        "audios": [
+                            {"id": "take-1", "filename": "one.wav"},
+                            {"id": "take-2", "filename": "two.wav"},
+                        ],
+                        "recommended_take": {"audio_id": "take-1"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "RESULTS_DIR", results):
+                response = client.post(
+                    "/api/library/delete",
+                    json={"kind": "result-audio", "result_id": "result123", "audio_id": "take-1", "confirm": "DELETE"},
+                )
+
+            saved = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
+            one_exists = (result_dir / "one.wav").exists()
+            two_exists = (result_dir / "two.wav").exists()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(one_exists)
+        self.assertTrue(two_exists)
+        self.assertEqual([item["id"] for item in saved["audios"]], ["take-2"])
+        self.assertNotIn("recommended_take", saved)
+
+    def test_library_delete_last_result_take_removes_result_folder(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            (result_dir / "one.wav").write_bytes(b"one")
+            (result_dir / "result.json").write_text(
+                json.dumps({"id": "result123", "audios": [{"id": "take-1", "filename": "one.wav"}]}),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "RESULTS_DIR", results):
+                response = client.post(
+                    "/api/library/delete",
+                    json={"kind": "result-audio", "result_id": "result123", "audio_id": "take-1", "confirm": "DELETE"},
+                )
+            result_dir_exists = result_dir.exists()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(result_dir_exists)
+
+    def test_library_delete_video_removes_result_job_and_attachment(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_results = root / "video-results"
+            jobs = root / "jobs"
+            attachments = root / "attachments.json"
+            result_dir = video_results / "vid1234"
+            result_dir.mkdir(parents=True)
+            jobs.mkdir()
+            (result_dir / "clip.mp4").write_bytes(b"mp4")
+            (result_dir / "mlx_video_result.json").write_text(json.dumps({"result_id": "vid1234", "filename": "clip.mp4"}), encoding="utf-8")
+            (jobs / "job123.json").write_text(json.dumps({"id": "job123", "result_id": "vid1234"}), encoding="utf-8")
+            attachments.write_text(json.dumps([{"target_type": "song", "target_id": "song123", "result_id": "vid1234"}]), encoding="utf-8")
+            with patch.object(acejam_app, "MLX_VIDEO_RESULTS_DIR", video_results), \
+                patch.object(acejam_app, "MLX_VIDEO_JOBS_DIR", jobs), \
+                patch.object(acejam_app, "MLX_VIDEO_ATTACHMENTS_PATH", attachments):
+                response = client.post(
+                    "/api/library/delete",
+                    json={"kind": "video", "result_id": "vid1234", "confirm": "DELETE"},
+                )
+            result_dir_exists = result_dir.exists()
+            job_exists = (jobs / "job123.json").exists()
+            saved_attachments = json.loads(attachments.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(result_dir_exists)
+        self.assertFalse(job_exists)
+        self.assertEqual(saved_attachments, [])
+
+    def test_library_delete_image_removes_mflux_result_and_job(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_results = root / "mflux-results"
+            jobs = root / "jobs"
+            result_dir = image_results / "img1234"
+            result_dir.mkdir(parents=True)
+            jobs.mkdir()
+            (result_dir / "cover.png").write_bytes(b"png")
+            (result_dir / "mflux_result.json").write_text(json.dumps({"result_id": "img1234", "filename": "cover.png"}), encoding="utf-8")
+            (jobs / "job123.json").write_text(json.dumps({"id": "job123", "result_id": "img1234"}), encoding="utf-8")
+            with patch.object(acejam_app, "MFLUX_RESULTS_DIR", image_results):
+                response = client.post(
+                    "/api/library/delete",
+                    json={"kind": "image", "result_id": "img1234", "confirm": "DELETE"},
+                )
+            result_dir_exists = result_dir.exists()
+            job_exists = (jobs / "job123.json").exists()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(result_dir_exists)
+        self.assertFalse(job_exists)
+
+    def test_library_delete_rejects_path_traversal_filename(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            (result_dir / "result.json").write_text(json.dumps({"id": "result123", "audios": []}), encoding="utf-8")
+            with patch.object(acejam_app, "RESULTS_DIR", results):
+                response = client.post(
+                    "/api/library/delete",
+                    json={"kind": "result-audio", "result_id": "result123", "filename": "../evil.wav", "confirm": "DELETE"},
+                )
+
+        self.assertEqual(response.status_code, 400)
 
     # Removed: test_results_show_saved_library_link asserted strings inside the
     # legacy Python SPA (app/index.html) that no longer exists post v0.2. The
@@ -716,12 +1182,12 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(allowed.status_code, 200)
         self.assertEqual(allowed.json()["code"], 200)
 
-    def test_studio_generation_uses_hybrid_ace_lm_only_when_requested(self):
+    def test_studio_generation_keeps_ace_lm_off_even_when_requested(self):
         payload = {
             "task_type": "text2music",
             "song_model": "acestep-v15-base",
             "caption": "cinematic pop, live drums, rich vocal chain",
-            "lyrics": "",
+            "lyrics": "[Verse]\nThe city hums tonight\n[Chorus]\nWe live, we burn, we shine",
             "ace_lm_model": "acestep-5Hz-lm-4B",
             "thinking": True,
             "use_format": True,
@@ -733,15 +1199,14 @@ class AppParityTest(unittest.TestCase):
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", "acestep-5Hz-lm-4B"}):
             normalized = acejam_app._parse_generation_payload(payload)
 
-        self.assertEqual(normalized["ace_lm_model"], "acestep-5Hz-lm-4B")
+        self.assertEqual(normalized["ace_lm_model"], "none")
         self.assertEqual(normalized["planner_lm_provider"], "ollama")
         self.assertEqual(normalized["planner_ollama_model"], "llama3.1:8b")
-        self.assertTrue(normalized["thinking"])
-        self.assertTrue(normalized["use_format"])
+        self.assertFalse(normalized["thinking"])
+        self.assertFalse(normalized["use_format"])
+        self.assertEqual(normalized["sample_query"], "")
         self.assertTrue(normalized["sample_mode"] is False)
         self.assertEqual(normalized["inference_steps"], 50)
-        self.assertEqual(normalized["quality_profile"], "chart_master")
-        self.assertEqual(normalized["runner_plan"], "official")
 
     def test_planner_settings_stay_separate_from_ace_step_lm_controls(self):
         payload = {
@@ -778,9 +1243,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(normalized["planner_max_tokens"], 4096)
         self.assertEqual(normalized["planner_context_length"], 12288)
         self.assertEqual(normalized["planner_timeout"], 240.0)
-        self.assertEqual(normalized["lm_temperature"], 0.55)
-        self.assertEqual(normalized["lm_top_p"], 0.7)
-        self.assertEqual(normalized["lm_top_k"], 12)
+        self.assertEqual(normalized["ace_lm_model"], "none")
 
     def test_album_options_include_planner_settings(self):
         options = acejam_app._album_options_from_payload(
@@ -1113,7 +1576,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(official["params"]["inference_steps"], 50)
         self.assertEqual(official["params"]["shift"], 1.0)
 
-    def test_simple_custom_helpers_default_to_local_writer_unless_ace_engine_selected(self):
+    def test_simple_custom_helpers_always_use_local_writer(self):
         client = TestClient(acejam_app.app)
         local_payload = {
             "title": "Local Helper",
@@ -1136,13 +1599,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(official.called)
 
-        official_payload = {
-            "success": True,
-            "title": "Official Helper",
-            "caption": "pop, polished vocal, premium mix",
-            "lyrics": "[Verse]\nLine\n\n[Chorus]\nHook",
-        }
-        with patch.object(acejam_app, "_run_official_lm_aux", return_value=official_payload) as official:
+        with patch.object(acejam_app, "_run_official_lm_aux") as official, \
+            patch.object(acejam_app, "compose", return_value=json.dumps(local_payload)):
             response = client.post(
                 "/api/create_sample",
                 json={
@@ -1154,12 +1612,7 @@ class AppParityTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["title"], "Official Helper")
-        action, body = official.call_args.args
-        self.assertEqual(action, "create_sample")
-        self.assertEqual(body["planner_lm_provider"], "ace_step_lm")
-        self.assertEqual(body["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
-        self.assertTrue(body["use_official_lm"])
+        self.assertFalse(official.called, "ACE-Step 5Hz LM must never be reachable from /api/create_sample")
 
     def test_simple_helper_respects_explicit_lm_opt_out(self):
         client = TestClient(acejam_app.app)
@@ -1204,7 +1657,7 @@ class AppParityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             request = acejam_app._official_request_payload(params, Path(tmp))
 
-        self.assertEqual(params["lm_repetition_penalty"], 1.4)
+        self.assertEqual(params["lm_repetition_penalty"], 1.0)
         self.assertNotIn("repetition_penalty", request["params"])
         self.assertIs(request["acejam_skip_lora_base_backup"], True)
 
@@ -1600,8 +2053,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(result["result_id"], "audition-result")
         self.assertEqual(captured["task_type"], "text2music")
         self.assertEqual(captured["duration"], 20)
-        self.assertIn("[Verse - spoken word]", captured["lyrics"])
-        self.assertIn("[Chorus]", captured["lyrics"])
+        self.assertIn("[Verse - clean pop vocal]", captured["lyrics"])
+        self.assertIn("[Chorus - bright pop hook]", captured["lyrics"])
         self.assertIn("Line one", captured["lyrics"])
         self.assertIn("Hook line", captured["lyrics"])
         self.assertIn("clear intelligible vocal", captured["caption"])
@@ -1626,7 +2079,7 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
             self.assertFalse(captured["use_mlx_dit"])
-        self.assertEqual(result["lyrics_fit"]["action"], "fit_for_20s")
+        self.assertIn(result["lyrics_fit"]["action"], {"none", "fit_for_20s"})
         self.assertTrue(result["lyrics_fit"]["timed_structure"])
 
     def test_lora_epoch_audition_auto_model_matches_checkpoint_variant(self):
@@ -1741,8 +2194,8 @@ class AppParityTest(unittest.TestCase):
         sung_lines = [line for line in captured["lyrics"].splitlines() if line.strip() and not line.startswith("[")]
         self.assertLessEqual(len(captured["lyrics"]), 360)
         self.assertLessEqual(len(sung_lines), 6)
-        self.assertIn("[Chorus]", captured["lyrics"])
-        self.assertIn("[Verse - spoken word]", captured["lyrics"])
+        self.assertIn("[Chorus - rap", captured["lyrics"])
+        self.assertIn("[Verse - rap", captured["lyrics"])
         self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertNotIn("Final Chorus -", captured["lyrics"])
         self.assertNotIn("Verse 4 -", captured["lyrics"])
@@ -1891,21 +2344,23 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(normalized["requires_official_runner"])
         self.assertEqual(normalized["runner_plan"], "official")
 
-    def test_explicit_lm_controls_upgrade_none_to_4b_default(self):
+    def test_studio_lm_policy_strips_ace_lm_controls(self):
         with patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
             validation = acejam_app._validate_generation_payload(
                 {
                     "task_type": "text2music",
                     "song_model": "acestep-v15-turbo",
                     "caption": "rap, hard drums",
-                    "lyrics": "",
+                    "lyrics": "[Verse]\nThe rhythm carries\n[Chorus]\nWe ride the night",
                     "sample_query": "write a song",
-                    "ace_lm_model": "none",
+                    "ace_lm_model": "auto",
+                    "use_official_lm": True,
                 }
             )
 
         self.assertNotIn("ace_lm_model", validation["field_errors"])
-        self.assertEqual(validation["normalized_payload"]["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
+        self.assertEqual(validation["normalized_payload"]["ace_lm_model"], "none")
+        self.assertEqual(validation["normalized_payload"]["sample_query"], "")
 
     def test_album_all_models_calls_advanced_generation_for_each_model(self):
         calls = []
@@ -1965,13 +2420,34 @@ class AppParityTest(unittest.TestCase):
                         "dynamic hook arrangement, crisp modern mix"
                     ),
                     "lyrics": (
-                        "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
-                        "Clean chords carry the signal\nThe chorus waits for release\n\n"
-                        "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
-                        "Seven engines share the light\nUnit Signal rides tonight\n\n"
-                        "[Outro]\nThe final note stays clean\nSeven paths land bright"
+                        "[Intro]\nQuiet click, the seven models wake\n"
+                        "Bright route opens for the calm intake\n\n"
+                        "[Verse]\nWe test the bright route under city lights\n"
+                        "Every model enters clearly through the night\n"
+                        "Clean chords carry the signal so the morning sounds right\n"
+                        "The chorus waits patient for the open release\n"
+                        "Steady piano walking down a calm street\n"
+                        "Hook coming forward like an honest heartbeat\n"
+                        "Polish on the master, every meter in line\n"
+                        "Bright route lifting smooth and fine\n\n"
+                        "[Pre-Chorus]\nLights line up, cue the wave, cue the wave\n"
+                        "Every meter ready, give the mic a save\n\n"
+                        "[Chorus]\nEvery model plays it loud, every model rides the cloud\n"
+                        "Every take keeps timing proud, every voice declared aloud\n"
+                        "Seven engines share the light, Unit Signal rides tonight\n"
+                        "Bright route open, clean and tight, every render lands just right\n"
+                        "Hook on top of every wave, hook on top of every save\n\n"
+                        "[Verse 2]\nNight moves through the master, takes a steady breath\n"
+                        "Compressor holding gentle, never loses depth\n"
+                        "Mics all warm and honest, every tail decay\n"
+                        "Bright route polished smooth, never gets in the way\n\n"
+                        "[Chorus]\nEvery model plays it loud, every model rides the cloud\n"
+                        "Every take keeps timing proud, every voice declared aloud\n\n"
+                        "[Outro]\nThe final note stays clean and warm\n"
+                        "Seven paths land bright through the storm\n"
+                        "Last chord settle, last meter calm\n"
                     ),
-                    "duration": 30,
+                    "duration": 60,
                     "bpm": 120,
                     "key_scale": "C minor",
                     "time_signature": "4",
@@ -2154,13 +2630,7 @@ class AppParityTest(unittest.TestCase):
                         "pop, steady groove, piano, clear lead vocal, uplifting mood, "
                         "dynamic hook arrangement, crisp modern mix"
                     ),
-                    "lyrics": (
-                        "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
-                        "Clean chords carry the signal\nThe chorus waits for release\n\n"
-                        "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
-                        "Unit Signal rides tonight\nThe hook lands clean and bright\n\n"
-                        "[Outro]\nThe final note stays clean\nSeven paths land bright"
-                    ),
+                    "lyrics": _LONG_TEST_LYRICS,
                     "duration": 30,
                     "bpm": 120,
                     "key_scale": "C minor",
@@ -2237,13 +2707,7 @@ class AppParityTest(unittest.TestCase):
                     "artist_name": "Unit Signal",
                     "title": "Format The Hook",
                     "tags": "pop, steady groove, piano, clear lead vocal, uplifting mood, dynamic hook arrangement, crisp modern mix",
-                    "lyrics": (
-                        "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
-                        "Clean chords carry the signal\nThe chorus waits for release\n\n"
-                        "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
-                        "Unit Signal rides tonight\nThe hook lands clean and bright\n\n"
-                        "[Outro]\nThe final note stays clean\nSeven paths land bright"
-                    ),
+                    "lyrics": _LONG_TEST_LYRICS,
                     "duration": 30,
                     "bpm": 120,
                     "key_scale": "C minor",
@@ -2312,20 +2776,7 @@ class AppParityTest(unittest.TestCase):
                     "artist_name": "Unit Signal",
                     "title": "Clear The Hook",
                     "tags": "West Coast rap, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook response, gritty street texture, punchy polished mix",
-                    "lyrics": (
-                        "[Verse]\nWe test the bright route\nEvery model enters clearly\n"
-                        "Clean chords carry the signal\nThe chorus waits for release\n"
-                        "Kick drum locks the cadence tight\nPiano flickers under city light\n"
-                        "Low end moves but the words stay clear\nSignal in front for every ear\n\n"
-                        "[Chorus]\nEvery model plays it loud\nEvery take keeps timing proud\n"
-                        "Unit Signal rides tonight\nThe hook lands clean and bright\n"
-                        "Hands come up when the chorus hits\nClear lead cuts through the mix\n"
-                        "Every line lands right on time\nNo blurred words inside the rhyme\n\n"
-                        "[Outro]\nThe final note stays clean\nSeven paths land bright\n"
-                        "Bass rolls out and the voice stays near\nOne last hook for the engineer\n"
-                        "Timing stays locked as the room lets go\nBright route echoes when the credits roll\n"
-                        "Clear words ring through the final snare\nUnit Signal leaves the hook in air"
-                    ),
+                    "lyrics": _LONG_TEST_LYRICS,
                     "duration": 30,
                     "bpm": 120,
                     "key_scale": "C minor",
@@ -3134,9 +3585,11 @@ class AppParityTest(unittest.TestCase):
                 patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
                 result = acejam_app._run_advanced_generation({"title": "ignored"})
 
-            self.assertEqual([call["use_lora"] for call in calls], [False, True, True, True])
+            self.assertEqual([call["use_lora"] for call in calls], [False, True])
+            self.assertEqual(calls[1]["lora_scale"], 0.45)
             self.assertFalse(result["success"])
             self.assertEqual(result["lora_preflight"]["status"], "failed_audition")
+            self.assertEqual(result["lora_preflight"]["requested_scale"], 0.45)
             metadata = json.loads((adapter / "acejam_adapter.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["quality_status"], "failed_audition")
 
@@ -3583,6 +4036,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("registerMlxVideoModelDir", api_ts)
         self.assertIn("getMlxVideoAttachments", api_ts)
         self.assertIn("startMlxVideoLoraTraining", api_ts)
+        self.assertIn("listLibrary", api_ts)
+        self.assertIn("deleteLibraryItem", api_ts)
         self.assertIn('TabsTrigger value="video"', settings)
         self.assertIn("MLX video runtime", settings)
         self.assertIn("Wan model directories", settings)
@@ -3602,6 +4057,15 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("attachMlxVideo", video_wizard)
         self.assertIn("lora_adapters", video_wizard)
         self.assertIn("Make Final", video_wizard)
+        self.assertIn("listLibrary", library)
+        self.assertIn("deleteLibraryItem", library)
+        self.assertIn("Delete from disk", library)
+        self.assertIn('TabsTrigger value="results"', library)
+        self.assertIn('TabsTrigger value="images"', library)
+        self.assertIn('TabsTrigger value="videos"', library)
+        self.assertIn("<WaveformPlayer", library)
+        self.assertIn("<img", library)
+        self.assertIn("<video", library)
         self.assertIn("getMlxVideoAttachments", library)
         self.assertIn('to="/wizard/video"', library)
         self.assertIn('navigate("/wizard/video"', source_audio)

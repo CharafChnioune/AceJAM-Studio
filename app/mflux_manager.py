@@ -93,15 +93,23 @@ def _python_import_status(python: Path, module: str) -> dict[str, Any]:
     if not python.is_file():
         return {"available": False, "version": "", "reason": "mflux-env python is missing"}
     code = (
-        "import importlib.metadata as md; "
-        f"import {module}; "
-        f"print(md.version('{module.replace('_', '-')}'))"
+        "import importlib.metadata as md, importlib.util as util; "
+        f"dist='{module.replace('_', '-')}'; module='{module}'; "
+        "available = util.find_spec(module) is not None; "
+        "version = ''; "
+        "\ntry:\n"
+        "    version = md.version(dist)\n"
+        "except md.PackageNotFoundError:\n"
+        "    pass\n"
+        "print(('1' if available else '0') + '\\n' + version)"
     )
-    ok, out = _run_probe([str(python), "-c", code])
+    ok, out = _run_probe([str(python), "-c", code], timeout=4)
+    lines = [line.strip() for line in out.strip().splitlines() if line.strip()]
+    available = bool(ok and lines and lines[0] == "1")
     return {
-        "available": ok,
-        "version": out.strip().splitlines()[-1] if ok and out.strip() else "",
-        "reason": "" if ok else out,
+        "available": available,
+        "version": lines[1] if available and len(lines) > 1 else "",
+        "reason": "" if available else out,
     }
 
 

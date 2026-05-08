@@ -8,11 +8,12 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/SourceAudioStep";
 import { TagInput } from "@/components/wizard/TagInput";
-import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -72,6 +73,7 @@ interface BaseSourceForm {
   title: string;
   artist_name: string;
   caption: string;
+  style_profile: string;
   tags: string;
   negative_tags: string;
   lyrics: string;
@@ -120,6 +122,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       title: "",
       artist_name: "",
       caption: "",
+      style_profile: "auto",
       tags: "",
       negative_tags: "",
       lyrics: config.variant === "extract" ? "[Instrumental]" : "",
@@ -233,6 +236,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       title: v.title,
       artist_name: v.artist_name,
       caption: v.caption,
+      style_profile: v.style_profile,
       tags: v.tags,
       negative_tags: v.negative_tags,
       lyrics: v.instrumental ? "[Instrumental]" : v.lyrics,
@@ -267,7 +271,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   };
 
   const audioUrl =
-    (lastResult?.audio_url as string | undefined) ||
+    firstGenerationAudioUrl(lastResult) ||
     (typeof lastResult?.audio === "string"
       ? `data:audio/wav;base64,${lastResult.audio}`
       : undefined);
@@ -520,6 +524,10 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
             </div>
           </FieldGroup>
           <FieldGroup title="Caption & tags">
+            <AudioStyleSelector
+              value={values.style_profile}
+              onChange={(value) => form.setValue("style_profile", value, { shouldValidate: true })}
+            />
             <div className="space-y-1.5">
               <Label>Caption</Label>
               <Textarea rows={2} {...form.register("caption")} />
@@ -629,21 +637,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
           (lastResult.artist_name as string | undefined) || values.artist_name;
         return (
           <div className="space-y-4">
-            {audioUrl && (
-              <WaveformPlayer
-                src={audioUrl}
-                title={title}
-                artist={artist}
-                metadata={{
-                  model: lastResult.song_model ?? values.song_model,
-                  duration: lastResult.duration ?? values.duration,
-                  bpm: lastResult.bpm ?? values.bpm,
-                  key: lastResult.key_scale ?? values.key_scale,
-                  seed: lastResult.seed,
-                  resultId,
-                }}
-              />
-            )}
+            <GenerationAudioList result={lastResult} title={title} artist={artist} />
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}

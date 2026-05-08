@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -21,7 +22,32 @@ class PromptAssistantTest(unittest.TestCase):
                 self.assertIn("copy_paste_block", prompt)
                 self.assertNotIn('"planner_lm_provider": "ollama"', prompt)
                 self.assertGreater(len(prompt), 200)
-                self.assertTrue((acejam_app.BASE_DIR.parent / info["file"]).is_file())
+                self.assertTrue((acejam_app.BASE_DIR / "prompts" / info["file"]).is_file())
+
+    def test_music_modes_get_full_acestep_reference_block(self):
+        # Music modes must surface authoring rules + tag library + producer/rap cookbooks
+        # + worked examples so Ollama/LM Studio can pattern-match Dre/No I.D./Metro requests.
+        for mode in ("simple", "custom", "song", "album", "news", "improve"):
+            with self.subTest(mode=mode):
+                prompt = acejam_app._prompt_assistant_system_prompt(mode)
+                self.assertIn("## ACE-Step Authoring Rules", prompt)
+                self.assertIn("## ACE-Step Tag Library", prompt)
+                self.assertIn("## Producer-Format Cookbook", prompt)
+                self.assertIn("## Rap-Mode Cookbook", prompt)
+                self.assertIn("## Worked Examples", prompt)
+                self.assertIn("Dr. Dre / G-funk era", prompt)
+                self.assertIn("[Verse - rap]", prompt)
+                self.assertIn("[Hook]", prompt)
+
+    def test_staged_system_prompt_inherits_acestep_reference_block(self):
+        base = acejam_app._prompt_assistant_system_prompt("custom")
+        staged = acejam_app._prompt_assistant_stage_system_prompt(
+            base, "custom", "stage_one", "Test stage instruction.", 0, 3,
+        )
+        self.assertIn("## Producer-Format Cookbook", staged)
+        self.assertIn("## Worked Examples", staged)
+        self.assertIn("MULTI-PASS AI FILL STAGE 1/3", staged)
+        self.assertIn("stage_one", staged)
 
     def test_prompt_assistant_run_parses_custom_payload_and_preserves_local_provider(self):
         raw = """
@@ -243,22 +269,24 @@ ACEJAM_PAYLOAD_JSON
         self.assertIn("AI Fill response was truncated", data["error"])
         self.assertNotIn("JSON object was not closed", data["error"])
 
-    def test_prompt_assistant_ace_step_writer_routes_to_official_lm(self):
+    def test_prompt_assistant_ace_step_writer_falls_back_to_local(self):
         client = TestClient(acejam_app.app)
-        official_payload = {
-            "success": True,
-            "ace_lm_model": acejam_app.ACE_LM_PREFERRED_MODEL,
-            "title": "Official Writer",
-            "artist_name": "Five Hertz",
-            "caption": "alt pop, live drums, sub bass, clear vocal, polished mix",
-            "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook",
-            "bpm": 108,
-            "key_scale": "C minor",
-            "time_signature": "4",
-        }
+        local_raw = json.dumps(
+            {
+                "ACEJAM_PAYLOAD_JSON": {
+                    "title": "Local Writer",
+                    "artist_name": "Local Artist",
+                    "caption": "alt pop, live drums, clean vocal, polished mix",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook",
+                    "bpm": 108,
+                    "key_scale": "C minor",
+                    "time_signature": "4",
+                }
+            }
+        )
 
-        with patch.object(acejam_app, "_run_official_lm_aux", return_value=official_payload) as official, \
-            patch.object(acejam_app, "_run_prompt_assistant_local") as local:
+        with patch.object(acejam_app, "_run_official_lm_aux") as official, \
+            patch.object(acejam_app, "_run_prompt_assistant_local_staged", return_value=local_raw) as local:
             response = client.post(
                 "/api/prompt-assistant/run",
                 json={
@@ -270,15 +298,10 @@ ACEJAM_PAYLOAD_JSON
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(local.called)
-        action, body = official.call_args.args
-        self.assertEqual(action, "create_sample")
-        self.assertEqual(body["planner_lm_provider"], "ace_step_lm")
-        self.assertEqual(body["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
-        payload = response.json()["payload"]
-        self.assertEqual(payload["planner_lm_provider"], "ace_step_lm")
-        self.assertEqual(payload["ace_lm_model"], acejam_app.ACE_LM_PREFERRED_MODEL)
-        self.assertEqual(payload["title"], "Official Writer")
+        self.assertFalse(official.called, "ACE-Step 5Hz writer must never be reachable from prompt-assistant")
+        self.assertTrue(local.called)
+        provider_passed = local.call_args.args[2]
+        self.assertIn(provider_passed, {"ollama", "lmstudio"})
 
     def test_prompt_assistant_blocks_trainer_mode_and_hides_prompt_listing(self):
         client = TestClient(acejam_app.app)

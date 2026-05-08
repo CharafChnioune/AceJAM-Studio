@@ -78,6 +78,52 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("song_intent", block)
         self.assertIn("concrete sonic portrait", block)
 
+    def test_system_block_appends_acestep_full_reference_for_music_modes(self):
+        block = prompt_kit_system_block("custom")
+        self.assertIn("## ACE-Step Authoring Rules", block)
+        self.assertIn("## ACE-Step Tag Library", block)
+        self.assertIn("## Producer-Format Cookbook", block)
+        self.assertIn("## Rap-Mode Cookbook", block)
+        self.assertIn("## Worked Examples", block)
+        self.assertIn("Dr. Dre / G-funk era", block)
+        self.assertIn("No I.D. / Common-era boom bap", block)
+        self.assertIn("Metro Boomin / dark trap", block)
+        self.assertIn("J Dilla / Soulquarian feel", block)
+        self.assertIn("DJ Premier / 90s boom bap", block)
+        self.assertIn("[Hook]", block)
+        self.assertIn("[Verse - rap]", block)
+        self.assertIn("[ad-lib]", block)
+        self.assertIn("[falsetto]", block)
+        self.assertIn("Modifier syntax", block)
+        self.assertIn("Background vocals use parentheses", block)
+        self.assertIn("ALL CAPS", block)
+        # Worked examples carry concrete ad-lib parens patterns
+        self.assertIn("(yeah)", block)
+        self.assertIn("(skrrt)", block)
+
+    def test_system_block_for_album_includes_producer_cookbook(self):
+        block = prompt_kit_system_block("album")
+        self.assertIn("## Producer-Format Cookbook", block)
+        self.assertIn("## Rap-Mode Cookbook", block)
+        self.assertIn("## Worked Examples", block)
+        self.assertIn("[Verse - rap]", block)
+
+    def test_system_block_skips_cookbook_for_non_music_modes(self):
+        for mode in ("image", "video", "trainer"):
+            block = prompt_kit_system_block(mode)
+            self.assertNotIn("## Producer-Format Cookbook", block)
+            self.assertNotIn("## Rap-Mode Cookbook", block)
+            self.assertNotIn("## Worked Examples", block)
+            self.assertNotIn("## ACE-Step Tag Library", block)
+
+    def test_system_block_for_source_audio_modes_has_taxonomy_but_no_producer(self):
+        for mode in ("cover", "repaint", "extract", "lego", "complete"):
+            block = prompt_kit_system_block(mode)
+            self.assertIn("## ACE-Step Tag Library", block)
+            self.assertIn("## ACE-Step Authoring Rules", block)
+            self.assertNotIn("## Producer-Format Cookbook", block)
+            self.assertNotIn("## Worked Examples", block)
+
 
 if __name__ == "__main__":
     unittest.main()

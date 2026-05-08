@@ -13,6 +13,7 @@ import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
@@ -100,6 +101,7 @@ export function AlbumWizard() {
       song_model: "acestep-v15-xl-sft",
       song_model_strategy: "single_model_album",
       quality_profile: "standard",
+      style_profile: "auto",
       custom_tags: "",
       negative_tags: "",
       use_lora: false,
@@ -149,6 +151,7 @@ export function AlbumWizard() {
       "album_mood",
       "vocal_type",
       "genre_prompt",
+      "style_profile",
       "custom_tags",
       "negative_tags",
       "use_lora",
@@ -215,6 +218,7 @@ export function AlbumWizard() {
         album_mood: values.album_mood,
         vocal_type: values.vocal_type,
         genre_prompt: values.genre_prompt,
+        style_profile: values.style_profile,
         custom_tags: values.custom_tags,
         negative_tags: values.negative_tags,
         auto_song_art: values.auto_song_art,
@@ -412,6 +416,10 @@ export function AlbumWizard() {
             </div>
           </FieldGroup>
           <FieldGroup title="Stijl">
+            <AudioStyleSelector
+              value={values.style_profile}
+              onChange={(value) => form.setValue("style_profile", value, { shouldValidate: true })}
+            />
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>Sfeer</Label>

@@ -2,6 +2,7 @@ import { ExternalLink, Loader2, Music4 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { GenerationAudioList } from "@/components/wizard/GenerationAudioList";
 import type { GenerationJob } from "@/lib/api";
 
 function text(value: unknown, fallback = "—"): string {
@@ -21,6 +22,8 @@ export function GenerationJobStatus({
   const state = text(job?.state, jobId ? "queued" : "idle");
   const progress = Math.max(0, Math.min(100, Number(job?.progress ?? 0) || 0));
   const summary = job?.payload_summary ?? {};
+  const result = job?.result ?? null;
+  const completedCount = Array.isArray(result?.audios) ? result.audios.length : 0;
 
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/10 p-4">
@@ -38,6 +41,7 @@ export function GenerationJobStatus({
               <Badge variant="outline">{state}</Badge>
               {Boolean(summary.song_model) && <Badge variant="secondary">{text(summary.song_model)}</Badge>}
               {Boolean(summary.duration) && <Badge variant="muted">{text(summary.duration)}s</Badge>}
+              {completedCount > 0 && <Badge variant="secondary">{completedCount} take{completedCount === 1 ? "" : "s"} klaar</Badge>}
             </div>
           </div>
         </div>
@@ -49,8 +53,16 @@ export function GenerationJobStatus({
       <Progress value={progress} className="mt-4 h-1.5" />
       <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
         <Music4 className="size-3.5" />
-        Je kunt doorwerken of navigeren; de job blijft in Achtergrond-jobs staan.
+        Complete takes verschijnen hier meteen; de volgende takes renderen door op de achtergrond.
       </div>
+      {result && completedCount > 0 && (
+        <GenerationAudioList
+          result={result}
+          title={text(summary.title, "Song render")}
+          artist={text(summary.artist_name, "")}
+          className="mt-4 space-y-3"
+        />
+      )}
     </div>
   );
 }

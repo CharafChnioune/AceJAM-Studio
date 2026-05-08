@@ -93,6 +93,24 @@ export const promptAssistantRun = (body: PromptAssistantRunRequest) =>
 
 export const getConfig = () => api.get<Record<string, unknown>>("/api/config");
 
+export interface AudioStyleProfile {
+  key: string;
+  style_profile?: string;
+  label?: string;
+  caption_tags?: string;
+  lyrics_section_tags?: Record<string, string>;
+  lyrics?: string;
+  test_lyrics?: string;
+  bpm?: number | null;
+  keyscale?: string;
+  timesignature?: string;
+  vocal_language?: string;
+  default?: boolean;
+}
+
+export const getAudioStyleProfiles = () =>
+  api.get<{ success: boolean; profiles?: AudioStyleProfile[] }>("/api/audio/style-profiles");
+
 // ---- Local LLM catalog ----------------------------------------------------
 //
 // `/api/local-llm/catalog` returns the full mixed catalog: settings, providers,
@@ -351,6 +369,56 @@ export interface SongMeta {
 
 export const listCommunity = () =>
   api.get<{ success: boolean; songs: SongMeta[] }>("/api/community");
+
+export interface LibraryItem extends SongMeta {
+  id: string;
+  kind: "audio" | "image" | "video";
+  source: "song" | "result" | "mlx-video" | string;
+  deletable?: boolean;
+  audio_id?: string;
+  filename?: string;
+  download_url?: string;
+  image_url?: string;
+  thumbnail_url?: string;
+  video_url?: string;
+  url?: string;
+  poster_url?: string;
+  prompt?: string;
+  model_label?: string;
+  action?: string;
+  width?: number;
+  height?: number;
+  recommended?: boolean;
+  use_lora?: boolean;
+  lora_scale?: number;
+  raw?: Record<string, unknown>;
+}
+
+export interface LibraryResponse {
+  success: boolean;
+  items: LibraryItem[];
+  counts: {
+    all: number;
+    songs: number;
+    results: number;
+    images: number;
+    videos: number;
+    audio: number;
+  };
+}
+
+export const listLibrary = () =>
+  api.get<LibraryResponse>("/api/library");
+
+export const deleteLibraryItem = (body: {
+  id: string;
+  kind: "song" | "result-audio" | "image" | "video";
+  result_id?: string;
+  song_id?: string;
+  audio_id?: string;
+  filename?: string;
+  confirm: "DELETE";
+}) => api.post<{ success: boolean; deleted?: Record<string, unknown>; error?: string }>("/api/library/delete", body);
 
 // ---- Uploads ----
 

@@ -77,7 +77,9 @@ interface EpochAuditionGenre {
   key: string;
   label: string;
   caption_tags: string;
+  lyrics_section_tags?: Record<string, string>;
   lyrics: string;
+  test_lyrics?: string;
   bpm?: number | null;
   keyscale?: string;
   timesignature?: string;
@@ -88,9 +90,10 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "rap",
     label: "Rap / Hip-hop",
-    caption_tags: "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
+    caption_tags: "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
+    lyrics_section_tags: { verse: "rap, rhythmic spoken flow", chorus: "rap hook" },
     lyrics:
-      "[Verse]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+      "[Verse - rap, rhythmic spoken flow]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus - rap hook]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
     bpm: 95,
     keyscale: "A minor",
     timesignature: "4",
@@ -99,8 +102,9 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
     key: "pop",
     label: "Pop",
     caption_tags: "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
+    lyrics_section_tags: { verse: "clean pop vocal", chorus: "bright pop hook" },
     lyrics:
-      "[Verse]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+      "[Verse - clean pop vocal]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus - bright pop hook]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
     bpm: 118,
     keyscale: "C major",
     timesignature: "4",
@@ -109,8 +113,9 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
     key: "rnb",
     label: "Soul / R&B",
     caption_tags: "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
+    lyrics_section_tags: { verse: "smooth rnb vocal", chorus: "soulful rnb hook" },
     lyrics:
-      "[Verse]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+      "[Verse - smooth rnb vocal]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus - soulful rnb hook]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
     bpm: 82,
     keyscale: "D minor",
     timesignature: "4",
@@ -119,8 +124,9 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
     key: "rock",
     label: "Rock",
     caption_tags: "driving rock drums, electric guitars, clear lead vocal, strong chorus",
+    lyrics_section_tags: { verse: "rock lead vocal", chorus: "strong rock chorus" },
     lyrics:
-      "[Verse]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+      "[Verse - rock lead vocal]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus - strong rock chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
     bpm: 128,
     keyscale: "E minor",
     timesignature: "4",
@@ -129,8 +135,9 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
     key: "edm",
     label: "EDM / Dance",
     caption_tags: "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
+    lyrics_section_tags: { verse: "dance vocal", chorus: "club vocal hook" },
     lyrics:
-      "[Verse]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+      "[Verse - dance vocal]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus - club vocal hook]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
     bpm: 124,
     keyscale: "F# minor",
     timesignature: "4",
@@ -139,8 +146,9 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
     key: "cinematic",
     label: "Cinematic",
     caption_tags: "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
+    lyrics_section_tags: { verse: "dramatic vocal", chorus: "cinematic anthem" },
     lyrics:
-      "[Verse]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+      "[Verse - dramatic vocal]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus - cinematic anthem]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
     bpm: 88,
     keyscale: "D minor",
     timesignature: "4",
@@ -149,8 +157,9 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
     key: "country",
     label: "Country / Folk",
     caption_tags: "warm acoustic guitars, steady country drums, clear heartfelt vocal",
+    lyrics_section_tags: { verse: "country lead vocal", chorus: "heartfelt country hook" },
     lyrics:
-      "[Verse]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+      "[Verse - country lead vocal]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus - heartfelt country hook]\nTake me home where the porch light shines\nGood hearts gather at closing time",
     bpm: 96,
     keyscale: "G major",
     timesignature: "4",
@@ -330,7 +339,7 @@ export function TrainerWizard() {
   const [form, setForm] = React.useState<TrainerForm>({
     dataset_id: "",
     trigger_tag: "",
-    genre: "hip hop drums, deep bass, clear spoken-word lead vocal, steady groove",
+    genre: "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
     epoch_audition_genre: "rap",
     genre_ratio: 0,
     default_language: "en",
@@ -930,6 +939,15 @@ export function TrainerWizard() {
                   <p className="leading-relaxed text-muted-foreground">
                     {selectedAuditionGenre.caption_tags || "Auto gebruikt de dataset-caption om een passende test te kiezen."}
                   </p>
+                  {selectedAuditionGenre.lyrics_section_tags && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.entries(selectedAuditionGenre.lyrics_section_tags).map(([section, tags]) => (
+                        <Badge key={section} variant="outline" className="text-[10px]">
+                          {section}: {String(tags)}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-black/25 p-3 text-[11px] leading-relaxed text-foreground/85">
                   {selectedAuditionGenre.lyrics || "Auto: MLX Media kiest rap/pop/soul/rock/EDM/cinematic/country op basis van je dataset."}

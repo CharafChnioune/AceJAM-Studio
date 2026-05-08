@@ -244,6 +244,8 @@ from lora_trainer import (
     EPOCH_AUDITION_CLARITY_CAPTION,
     AceTrainingManager,
     adapter_quality_metadata,
+    apply_audio_style_conditioning,
+    audio_style_profiles,
     epoch_audition_genre_options,
     fit_epoch_audition_lyrics,
     infer_adapter_model_metadata,
@@ -269,6 +271,8 @@ from mflux_manager import (
 )
 from mlx_video_manager import (
     MLX_VIDEO_ALLOWED_UPLOAD_EXTENSIONS,
+    MLX_VIDEO_ATTACHMENTS_PATH,
+    MLX_VIDEO_JOBS_DIR,
     MLX_VIDEO_RESULTS_DIR,
     MLX_VIDEO_UPLOADS_DIR,
     mlx_video_attach,
@@ -405,6 +409,66 @@ def _cleanup_accelerator_memory() -> None:
         empty_cache = getattr(mps, "empty_cache", None)
         if callable(empty_cache):
             empty_cache()
+
+
+_official_generation_runner_lock = threading.Lock()
+
+
+def _mps_memory_snapshot(label: str = "") -> dict[str, Any]:
+    mps = getattr(torch, "mps", None)
+    backend = getattr(torch.backends, "mps", None)
+    if not (mps and backend and backend.is_available()):
+        return {"available": False, "label": label}
+
+    def read_int(name: str) -> int | None:
+        fn = getattr(mps, name, None)
+        if not callable(fn):
+            return None
+        try:
+            return int(fn())
+        except Exception:
+            return None
+
+    snapshot: dict[str, Any] = {
+        "available": True,
+        "label": label,
+        "current_allocated_bytes": read_int("current_allocated_memory"),
+        "driver_allocated_bytes": read_int("driver_allocated_memory"),
+        "recommended_max_bytes": read_int("recommended_max_memory"),
+    }
+    for key in ["current_allocated_bytes", "driver_allocated_bytes", "recommended_max_bytes"]:
+        value = snapshot.get(key)
+        if isinstance(value, int):
+            snapshot[key.replace("_bytes", "_gib")] = round(value / (1024 ** 3), 3)
+    return snapshot
+
+
+def _is_mps_oom_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return "mps backend out of memory" in text or ("mps" in text and "out of memory" in text)
+
+
+def _is_acestep_generation_timeout_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return (
+        "music generation timed out" in text
+        or "service_generate exceeded" in text
+        or "official ace-step runner timed out" in text
+        or ("generation" in text and "timed out" in text)
+    )
+
+
+def _prepare_audio_generation_memory(context: str = "", *, release_handler: bool = False) -> dict[str, Any]:
+    before = _mps_memory_snapshot(f"{context}:before_cleanup")
+    _unload_llm_models_for_generation()
+    if release_handler:
+        with handler_lock:
+            _release_handler_state()
+    else:
+        gc.collect()
+        _cleanup_accelerator_memory()
+    after = _mps_memory_snapshot(f"{context}:after_cleanup")
+    return {"context": context, "before": before, "after": after}
 
 
 _accelerator_cleanup_lock = threading.Lock()
@@ -701,20 +765,27 @@ def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
 
 
 def _apply_studio_lm_policy(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep writer metadata, while routing ACE-Step 5Hz LM only when explicitly selected."""
+    """Force the writer onto Ollama/LM Studio and keep the ACE-Step 5Hz LM rewriter off."""
     cleaned = dict(payload or {})
-    provider = _writer_provider_from_payload(cleaned)
+    requested_provider = _writer_provider_from_payload(cleaned)
+    if requested_provider == "ace_step_lm":
+        try:
+            fallback = normalize_provider(_load_local_llm_settings().get("provider") or "ollama")
+        except Exception:
+            fallback = "ollama"
+        if fallback == "ace_step_lm":
+            fallback = "ollama"
+        provider = fallback
+    else:
+        provider = requested_provider
     cleaned["planner_lm_provider"] = provider
+    cleaned.pop("planner_ollama_model", None) if provider == "lmstudio" else None
     if provider == "ollama":
         cleaned.setdefault("planner_ollama_model", str(cleaned.get("planner_model") or cleaned.get("ollama_model") or "").strip())
-    if provider == "ace_step_lm":
-        cleaned.pop("planner_ollama_model", None)
-        cleaned.setdefault(
-            "planner_model",
-            str(cleaned.get("planner_model") or cleaned.get("ace_lm_model") or cleaned.get("lm_model") or ACE_LM_PREFERRED_MODEL).strip(),
-        )
-    else:
-        cleaned.setdefault("planner_model", str(cleaned.get("planner_model") or cleaned.get("planner_ollama_model") or cleaned.get("ollama_model") or "").strip())
+    cleaned.setdefault(
+        "planner_model",
+        str(cleaned.get("planner_model") or cleaned.get("planner_ollama_model") or cleaned.get("ollama_model") or "").strip(),
+    )
     if "sample_query" not in cleaned:
         sample_query = str(get_param(cleaned, "sample_query", "") or "").strip()
         if sample_query:
@@ -724,30 +795,15 @@ def _apply_studio_lm_policy(payload: dict[str, Any]) -> dict[str, Any]:
         if use_format not in [None, ""]:
             cleaned["use_format"] = use_format
     cleaned.update(planner_llm_settings_from_payload(cleaned))
-    requested_raw = str(
-        get_param(cleaned, "ace_lm_model", "")
-        or cleaned.get("lm_model")
-        or cleaned.get("lm_model_path")
-        or (cleaned.get("planner_model") if provider == "ace_step_lm" else "")
-        or ""
-    ).strip()
-    requested = _requested_ace_lm_model(cleaned) if requested_raw else "none"
-    if provider == "ace_step_lm":
-        requested = ACE_LM_PREFERRED_MODEL if requested in {"", "none"} else requested
-    elif requested == "none" and _explicit_ace_lm_controls(cleaned):
-        requested = ACE_LM_PREFERRED_MODEL
-    if requested == "none":
-        cleaned["ace_lm_model"] = "none"
-        cleaned["lm_model"] = "none"
-        cleaned["lm_model_path"] = "none"
-        cleaned["use_official_lm"] = False
-        cleaned["lm_backend"] = _normalize_lm_backend(cleaned.get("lm_backend"))
-        return cleaned
-    cleaned["ace_lm_model"] = requested
-    cleaned["lm_model"] = requested
-    cleaned["lm_model_path"] = requested
+    for field, default in ACE_LM_DISABLED_DEFAULTS.items():
+        cleaned[field] = default
+    cleaned["use_official_lm"] = False
+    cleaned["allow_supplied_lyrics_lm"] = False
+    cleaned["album_use_ace_lm_for_supplied_lyrics"] = False
+    cleaned["album_allow_ace_lm_rewrite"] = False
+    cleaned["sample_mode"] = False
+    cleaned["sample_query"] = ""
     cleaned["lm_backend"] = _normalize_lm_backend(cleaned.get("lm_backend"))
-    cleaned["use_official_lm"] = True
     return cleaned
 
 
@@ -946,11 +1002,12 @@ def _prompt_assistant_mode(value: str) -> str:
 
 def _prompt_assistant_path(mode: str) -> Path:
     info = PROMPT_ASSISTANT_MODES[_prompt_assistant_mode(mode)]
-    path = (BASE_DIR.parent / info["file"]).resolve()
+    prompts_root = (BASE_DIR / "prompts").resolve()
+    path = (prompts_root / info["file"]).resolve()
     if not path.is_file():
-        raise FileNotFoundError(f"Prompt file not found: {info['file']}")
-    if BASE_DIR.parent.resolve() not in path.parents:
-        raise ValueError("Prompt file path escaped project root")
+        raise FileNotFoundError(f"Prompt file not found: app/prompts/{info['file']}")
+    if prompts_root not in path.parents:
+        raise ValueError("Prompt file path escaped app/prompts/")
     return path
 
 
@@ -2078,57 +2135,6 @@ def _run_prompt_assistant_local_staged(
     )
 
 
-def _prompt_assistant_payload_from_official_writer(
-    mode: str,
-    user_prompt: str,
-    current_payload: dict[str, Any],
-    body: dict[str, Any],
-) -> tuple[dict[str, Any], str]:
-    lm_body = {
-        **(current_payload or {}),
-        **(body or {}),
-        "planner_lm_provider": "ace_step_lm",
-        "ace_lm_model": str(body.get("ace_lm_model") or body.get("planner_model") or body.get("lm_model") or "auto"),
-        "use_official_lm": True,
-        "description": str(body.get("description") or current_payload.get("description") or user_prompt or ""),
-        "caption": str(body.get("caption") or current_payload.get("caption") or user_prompt or ""),
-        "sample_query": str(body.get("sample_query") or user_prompt or ""),
-    }
-    action = "format_sample" if str(current_payload.get("lyrics") or body.get("lyrics") or "").strip() else "create_sample"
-    official = _run_official_lm_aux(action, lm_body)
-    payload = dict(current_payload or {})
-    for key in [
-        "title",
-        "artist_name",
-        "caption",
-        "tags",
-        "lyrics",
-        "bpm",
-        "key_scale",
-        "keyscale",
-        "time_signature",
-        "timesignature",
-        "duration",
-        "vocal_language",
-        "language",
-    ]:
-        if official.get(key) not in (None, ""):
-            payload[key] = official.get(key)
-    if payload.get("tags") and not payload.get("caption"):
-        payload["caption"] = payload["tags"]
-    if payload.get("keyscale") and not payload.get("key_scale"):
-        payload["key_scale"] = payload["keyscale"]
-    if payload.get("timesignature") and not payload.get("time_signature"):
-        payload["time_signature"] = payload["timesignature"]
-    payload["planner_lm_provider"] = "ace_step_lm"
-    payload["planner_model"] = str(official.get("ace_lm_model") or lm_body["ace_lm_model"] or ACE_LM_PREFERRED_MODEL)
-    payload["ace_lm_model"] = payload["planner_model"]
-    payload.setdefault("task_type", _prompt_mode_task_type(mode))
-    payload.setdefault("song_model", _prompt_mode_default_model(mode))
-    raw_text = json.dumps({"ACEJAM_PAYLOAD_JSON": payload, "official_writer": official}, ensure_ascii=False, indent=2)
-    return payload, raw_text
-
-
 def _download_job_active(model_name: str) -> bool:
     jobs = globals().get("_model_download_jobs", {})
     job = jobs.get(model_name) if isinstance(jobs, dict) else None
@@ -2384,9 +2390,9 @@ def _unload_llm_models_for_generation() -> None:
                 client.generate(model=model.model, prompt="", keep_alive=0)
             except Exception:
                 pass
-        print("[generate_album] Unloaded Ollama models to free memory.", flush=True)
+        print("[generation] Unloaded Ollama models to free unified memory.", flush=True)
     except Exception as exc:
-        print(f"[generate_album] Ollama unload skipped: {exc}", flush=True)
+        print(f"[generation] Ollama unload skipped: {exc}", flush=True)
     # Unload LM Studio models
     try:
         catalog = lmstudio_model_catalog()
@@ -2396,7 +2402,7 @@ def _unload_llm_models_for_generation() -> None:
             except Exception:
                 pass
         if catalog.get("loaded_models"):
-            print("[generate_album] Unloaded LM Studio models to free memory.", flush=True)
+            print("[generation] Unloaded LM Studio models to free unified memory.", flush=True)
     except Exception:
         pass
 
@@ -2453,11 +2459,20 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
     duration = clamp_int(request.get("duration"), 30, 10, 60)
     request_fit = request.get("lyrics_fit") if isinstance(request.get("lyrics_fit"), dict) else {}
+    style_profile = str(request.get("style_profile") or request.get("genre_profile") or "")
+    source_lyrics = str(request.get("lyrics") or "")
     if request_fit.get("timed_structure"):
-        runtime_lyrics = str(request.get("lyrics") or "")
+        runtime_lyrics = source_lyrics
         lyrics_fit = dict(request_fit)
     else:
-        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(request.get("lyrics") or ""), duration=duration)
+        style_seed = apply_audio_style_conditioning(
+            {
+                "style_profile": style_profile or "auto",
+                "caption": str(request.get("caption") or ""),
+                "lyrics": source_lyrics,
+            }
+        )
+        runtime_lyrics, lyrics_fit = fit_epoch_audition_lyrics(str(style_seed.get("lyrics") or source_lyrics), duration=duration)
     vocal_language = str(request.get("vocal_language") or request.get("language") or "en").strip() or "en"
     seed_value = request.get("seed")
     if seed_value in (None, ""):
@@ -2485,6 +2500,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "title": f"{trigger} epoch {epoch}",
         "caption": caption,
         "lyrics": runtime_lyrics,
+        "style_profile": style_profile,
         "language": vocal_language,
         "vocal_language": vocal_language,
         "lyric_duration_fit": lyrics_fit,
@@ -2546,6 +2562,10 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
             "inference_steps": params.get("inference_steps"),
             "shift": params.get("shift"),
             "lora_scale": params.get("lora_scale"),
+            "style_profile": params.get("style_profile"),
+            "style_caption_tags": params.get("style_caption_tags"),
+            "style_lyric_tags_applied": params.get("style_lyric_tags_applied"),
+            "style_conditioning_audit": params.get("style_conditioning_audit"),
         }
     result = _run_advanced_generation_once(params)
     gate = _apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
@@ -2612,6 +2632,10 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "inference_steps": params.get("inference_steps"),
         "shift": params.get("shift"),
         "lora_scale": params.get("lora_scale"),
+        "style_profile": params.get("style_profile"),
+        "style_caption_tags": params.get("style_caption_tags"),
+        "style_lyric_tags_applied": params.get("style_lyric_tags_applied"),
+        "style_conditioning_audit": params.get("style_conditioning_audit"),
     }
 
 
@@ -3118,7 +3142,10 @@ def _update_lora_adapter_quality_metadata(
         reasons.append(reason)
     meta["quality_reasons"] = list(dict.fromkeys(reasons))
     if recommended_lora_scale is not None:
-        meta["recommended_lora_scale"] = round(float(recommended_lora_scale), 4)
+        # Audit trail only: generation must use the explicit user-selected
+        # lora_scale from the render payload, never a stored recommendation.
+        meta.pop("recommended_lora_scale", None)
+        meta["last_verified_lora_scale"] = round(float(recommended_lora_scale), 4)
     if audition:
         auditions = [dict(item) for item in list(meta.get("epoch_auditions") or []) if isinstance(item, dict)]
         auditions.append(dict(audition))
@@ -3781,6 +3808,419 @@ def _community_feed(limit: int = 100, *, refresh_disk: bool = True) -> list[dict
         disk_songs = _load_feed_from_disk()
         _feed_songs[:] = disk_songs
     return _feed_songs[: max(1, int(limit or 100))]
+
+
+def _library_sort_key(item: dict[str, Any]) -> str:
+    return str(item.get("created_at") or item.get("updated_at") or "")
+
+
+def _library_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"all": len(items), "songs": 0, "results": 0, "videos": 0, "images": 0, "audio": 0}
+    for item in items:
+        kind = str(item.get("kind") or "")
+        source = str(item.get("source") or "")
+        if kind == "video":
+            counts["videos"] += 1
+        elif kind == "image":
+            counts["images"] += 1
+        else:
+            counts["audio"] += 1
+        if source == "song":
+            counts["songs"] += 1
+        elif source == "result":
+            counts["results"] += 1
+    return counts
+
+
+def _library_safe_filename(value: str) -> str:
+    filename = str(value or "").strip()
+    if not filename or Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="Invalid library filename")
+    return filename
+
+
+def _library_song_item(song: dict[str, Any]) -> dict[str, Any] | None:
+    song_id = str(song.get("id") or song.get("song_id") or "").strip()
+    if not song_id:
+        return None
+    audio_url = str(song.get("audio_url") or "").strip()
+    return {
+        "id": f"song:{song_id}",
+        "kind": "audio",
+        "source": "song",
+        "deletable": True,
+        "song_id": song_id,
+        "result_id": str(song.get("result_id") or ""),
+        "audio_id": str(song.get("audio_id") or ""),
+        "title": song.get("title") or "Untitled",
+        "artist_name": song.get("artist_name") or "—",
+        "tags": song.get("tag_list") or song.get("tags") or [],
+        "caption": song.get("caption") or song.get("tags") or "",
+        "lyrics": song.get("lyrics") or "",
+        "duration": song.get("duration"),
+        "bpm": song.get("bpm"),
+        "key_scale": song.get("key_scale") or song.get("keyscale"),
+        "vocal_language": song.get("vocal_language") or song.get("language"),
+        "song_model": song.get("song_model"),
+        "created_at": song.get("created_at"),
+        "audio_url": audio_url,
+        "download_url": audio_url,
+        "art": song.get("art") or song.get("single_art"),
+        "raw": _jsonable(song),
+    }
+
+
+def _library_result_audio_items(song_ids: set[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not RESULTS_DIR.exists():
+        return items
+    for result_dir in sorted(RESULTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+        if not result_dir.is_dir():
+            continue
+        result_id = safe_id(result_dir.name)
+        meta: dict[str, Any] = {}
+        meta_path = result_dir / "result.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+        audios = meta.get("audios") if isinstance(meta.get("audios"), list) else []
+        if not audios:
+            audios = [
+                {
+                    "id": path.stem,
+                    "filename": path.name,
+                    "title": meta.get("title") or path.stem,
+                    "audio_url": _result_public_url(result_id, path.name),
+                    "download_url": _result_public_url(result_id, path.name),
+                }
+                for path in sorted(result_dir.iterdir())
+                if path.is_file() and path.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
+            ]
+        for index, audio in enumerate(audios):
+            if not isinstance(audio, dict):
+                continue
+            filename = str(audio.get("filename") or "").strip()
+            if not filename:
+                url = str(audio.get("audio_url") or audio.get("download_url") or "")
+                if "/media/results/" in url:
+                    filename = url.rsplit("/", 1)[-1]
+            if not filename:
+                continue
+            try:
+                filename = _library_safe_filename(filename)
+            except HTTPException:
+                continue
+            try:
+                audio_path = _resolve_child(RESULTS_DIR, result_id, filename)
+            except HTTPException:
+                continue
+            if not audio_path.is_file():
+                continue
+            linked_song_id = str(audio.get("song_id") or "").strip()
+            if linked_song_id and linked_song_id in song_ids:
+                continue
+            audio_id = str(audio.get("id") or f"take-{index + 1}")
+            audio_url = str(audio.get("audio_url") or audio.get("download_url") or _result_public_url(result_id, filename))
+            items.append(
+                {
+                    "id": f"result-audio:{result_id}:{audio_id}",
+                    "kind": "audio",
+                    "source": "result",
+                    "deletable": True,
+                    "song_id": linked_song_id,
+                    "result_id": result_id,
+                    "audio_id": audio_id,
+                    "filename": filename,
+                    "title": audio.get("title") or meta.get("title") or audio_path.stem,
+                    "artist_name": audio.get("artist_name") or meta.get("artist_name") or "—",
+                    "tags": meta.get("tag_list") or meta.get("tags") or [],
+                    "caption": meta.get("caption") or meta.get("tags") or "",
+                    "lyrics": meta.get("lyrics") or "",
+                    "duration": meta.get("duration"),
+                    "bpm": meta.get("bpm"),
+                    "key_scale": meta.get("key_scale") or meta.get("keyscale"),
+                    "vocal_language": meta.get("vocal_language") or meta.get("language"),
+                    "song_model": meta.get("song_model") or meta.get("active_song_model"),
+                    "created_at": meta.get("created_at") or datetime.fromtimestamp(audio_path.stat().st_mtime, timezone.utc).isoformat(),
+                    "audio_url": audio_url,
+                    "download_url": str(audio.get("download_url") or audio_url),
+                    "art": audio.get("art") or meta.get("art") or meta.get("single_art"),
+                    "use_lora": bool(meta.get("use_lora")),
+                    "lora_scale": meta.get("lora_scale"),
+                    "recommended": bool(audio.get("is_recommended_take") or str((meta.get("recommended_take") or {}).get("audio_id") or "") == audio_id),
+                    "raw": _jsonable({**meta, "audio": audio}),
+                }
+            )
+    return items
+
+
+def _library_video_items() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not MLX_VIDEO_RESULTS_DIR.exists():
+        return items
+    for result_dir in sorted(MLX_VIDEO_RESULTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+        if not result_dir.is_dir():
+            continue
+        result_id = safe_id(result_dir.name)
+        meta_path = result_dir / "mlx_video_result.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+        except Exception:
+            meta = {}
+        filename = str(meta.get("filename") or "").strip()
+        if not filename:
+            candidates = sorted(result_dir.glob("*.mp4")) + sorted(result_dir.glob("*.mov")) + sorted(result_dir.glob("*.webm"))
+            filename = candidates[-1].name if candidates else ""
+        if not filename:
+            continue
+        try:
+            video_path = _resolve_child(MLX_VIDEO_RESULTS_DIR, result_id, filename)
+        except HTTPException:
+            continue
+        if not video_path.is_file():
+            continue
+        primary_url = str(meta.get("primary_video_url") or meta.get("video_url") or meta.get("url") or f"/media/mlx-video/{result_id}/{filename}")
+        items.append(
+            {
+                "id": f"video:{result_id}",
+                "kind": "video",
+                "source": "mlx-video",
+                "deletable": True,
+                "result_id": result_id,
+                "filename": filename,
+                "title": meta.get("title") or meta.get("prompt") or "MLX video",
+                "artist_name": meta.get("artist_name") or "—",
+                "prompt": meta.get("prompt") or "",
+                "created_at": meta.get("created_at") or datetime.fromtimestamp(video_path.stat().st_mtime, timezone.utc).isoformat(),
+                "video_url": primary_url,
+                "url": primary_url,
+                "download_url": primary_url,
+                "poster_url": meta.get("poster_url") or "",
+                "raw_video_url": meta.get("raw_video_url") or "",
+                "muxed_video_url": meta.get("muxed_video_url") or "",
+                "model_label": meta.get("model_label") or meta.get("model_id") or "MLX video",
+                "action": meta.get("action") or "",
+                "target_type": (meta.get("attach_status") or {}).get("target_type") if isinstance(meta.get("attach_status"), dict) else "",
+                "raw": _jsonable(meta),
+            }
+        )
+    return items
+
+
+def _library_image_items() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not MFLUX_RESULTS_DIR.exists():
+        return items
+    for result_dir in sorted(MFLUX_RESULTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+        if not result_dir.is_dir():
+            continue
+        result_id = safe_id(result_dir.name)
+        meta_path = result_dir / "mflux_result.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+        except Exception:
+            meta = {}
+        filename = str(meta.get("filename") or "").strip()
+        if not filename:
+            candidates = [
+                path
+                for path in sorted(result_dir.iterdir())
+                if path.is_file() and path.suffix.lower() in MFLUX_ALLOWED_IMAGE_EXTENSIONS
+            ]
+            filename = candidates[-1].name if candidates else ""
+        if not filename:
+            continue
+        try:
+            image_path = _resolve_child(MFLUX_RESULTS_DIR, result_id, filename)
+        except HTTPException:
+            continue
+        if not image_path.is_file():
+            continue
+        image_url = str(meta.get("image_url") or meta.get("url") or f"/media/mflux/{result_id}/{filename}")
+        items.append(
+            {
+                "id": f"image:{result_id}",
+                "kind": "image",
+                "source": "mflux",
+                "deletable": True,
+                "result_id": result_id,
+                "filename": filename,
+                "title": meta.get("title") or meta.get("prompt") or image_path.stem,
+                "artist_name": meta.get("artist_name") or "MFLUX",
+                "prompt": meta.get("prompt") or "",
+                "caption": meta.get("prompt") or "",
+                "created_at": meta.get("created_at") or datetime.fromtimestamp(image_path.stat().st_mtime, timezone.utc).isoformat(),
+                "image_url": image_url,
+                "url": image_url,
+                "download_url": image_url,
+                "thumbnail_url": meta.get("thumbnail_url") or image_url,
+                "width": meta.get("width"),
+                "height": meta.get("height"),
+                "model_label": meta.get("model_label") or meta.get("model_id") or "MFLUX",
+                "action": meta.get("action") or "",
+                "tags": meta.get("tags") or [],
+                "raw": _jsonable(meta),
+            }
+        )
+    return items
+
+
+def _library_items(limit: int = 500) -> dict[str, Any]:
+    songs = _community_feed(limit=max(limit, 100), refresh_disk=True)
+    song_ids = {str(song.get("id") or song.get("song_id") or "") for song in songs if song.get("id") or song.get("song_id")}
+    items = [item for song in songs if (item := _library_song_item(song))]
+    items.extend(_library_result_audio_items(song_ids))
+    items.extend(_library_image_items())
+    items.extend(_library_video_items())
+    items.sort(key=_library_sort_key, reverse=True)
+    items = items[: max(1, int(limit or 500))]
+    return {"success": True, "items": _jsonable(items), "counts": _library_counts(items)}
+
+
+def _parse_library_item_id(kind: str, item_id: str) -> dict[str, str]:
+    parts = str(item_id or "").split(":")
+    if kind == "song" and len(parts) >= 2 and parts[0] == "song":
+        return {"song_id": parts[1]}
+    if kind == "result-audio" and len(parts) >= 3 and parts[0] == "result-audio":
+        return {"result_id": parts[1], "audio_id": parts[2]}
+    if kind == "image" and len(parts) >= 2 and parts[0] == "image":
+        return {"result_id": parts[1]}
+    if kind == "video" and len(parts) >= 2 and parts[0] == "video":
+        return {"result_id": parts[1]}
+    return {}
+
+
+def _delete_library_song(song_id: str) -> dict[str, Any]:
+    song_id = safe_id(song_id)
+    song_dir = _resolve_child(SONGS_DIR, song_id)
+    if not song_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Song not found")
+    shutil.rmtree(song_dir, ignore_errors=True)
+    _feed_songs[:] = [song for song in _feed_songs if str(song.get("id") or song.get("song_id") or "") != song_id]
+    return {"songs": 1, "results": 0, "videos": 0, "files": 1}
+
+
+def _delete_library_result_audio(result_id: str, audio_id: str = "", filename: str = "") -> dict[str, Any]:
+    result_id = safe_id(result_id)
+    result_dir = _resolve_child(RESULTS_DIR, result_id)
+    if not result_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Result not found")
+    meta_path = result_dir / "result.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    audios = meta.get("audios") if isinstance(meta.get("audios"), list) else []
+    selected: list[dict[str, Any]] = []
+    remaining: list[dict[str, Any]] = []
+    for audio in audios:
+        if not isinstance(audio, dict):
+            continue
+        matches_id = bool(audio_id and str(audio.get("id") or "") == audio_id)
+        matches_file = bool(filename and str(audio.get("filename") or "") == filename)
+        if matches_id or matches_file:
+            selected.append(audio)
+        else:
+            remaining.append(audio)
+    if not selected and filename:
+        selected = [{"filename": filename, "id": audio_id or Path(filename).stem}]
+    if not selected:
+        raise HTTPException(status_code=404, detail="Result audio not found")
+    deleted_files = 0
+    for audio in selected:
+        audio_filename = _library_safe_filename(str(audio.get("filename") or filename or ""))
+        if not audio_filename:
+            continue
+        target = _resolve_child(RESULTS_DIR, result_id, audio_filename)
+        if target.is_file():
+            target.unlink()
+            deleted_files += 1
+    remaining_audio_files = [
+        path
+        for path in result_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
+    ]
+    selected_ids = {str(audio.get("id") or "") for audio in selected}
+    if not remaining and not remaining_audio_files:
+        shutil.rmtree(result_dir, ignore_errors=True)
+        _result_extra_cache.pop(result_id, None)
+        return {"songs": 0, "results": 1, "videos": 0, "files": deleted_files}
+    if meta_path.is_file():
+        meta["audios"] = remaining
+        recommended = meta.get("recommended_take") if isinstance(meta.get("recommended_take"), dict) else {}
+        if str(recommended.get("audio_id") or "") in selected_ids:
+            meta.pop("recommended_take", None)
+        meta_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
+    _result_extra_cache.pop(result_id, None)
+    return {"songs": 0, "results": 0, "videos": 0, "files": deleted_files}
+
+
+def _delete_library_video(result_id: str) -> dict[str, Any]:
+    result_id = safe_id(result_id)
+    result_dir = _resolve_child(MLX_VIDEO_RESULTS_DIR, result_id)
+    if not result_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Video result not found")
+    shutil.rmtree(result_dir, ignore_errors=True)
+    if MLX_VIDEO_JOBS_DIR.exists():
+        for job_file in MLX_VIDEO_JOBS_DIR.glob("*.json"):
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            result_summary = job.get("result_summary") if isinstance(job.get("result_summary"), dict) else {}
+            if str(job.get("result_id") or result_summary.get("result_id") or "") == result_id:
+                job_file.unlink(missing_ok=True)
+    attachments = []
+    if MLX_VIDEO_ATTACHMENTS_PATH.is_file():
+        try:
+            raw = json.loads(MLX_VIDEO_ATTACHMENTS_PATH.read_text(encoding="utf-8"))
+            attachments = raw if isinstance(raw, list) else []
+        except Exception:
+            attachments = []
+        filtered = [item for item in attachments if not (isinstance(item, dict) and str(item.get("result_id") or "") == result_id)]
+        MLX_VIDEO_ATTACHMENTS_PATH.write_text(json.dumps(_jsonable(filtered), indent=2), encoding="utf-8")
+    return {"songs": 0, "results": 0, "videos": 1, "files": 1}
+
+
+def _delete_library_image(result_id: str) -> dict[str, Any]:
+    result_id = safe_id(result_id)
+    result_dir = _resolve_child(MFLUX_RESULTS_DIR, result_id)
+    if not result_dir.is_dir():
+        raise HTTPException(status_code=404, detail="MFLUX image result not found")
+    shutil.rmtree(result_dir, ignore_errors=True)
+    jobs_dir = MFLUX_RESULTS_DIR.parent / "jobs"
+    if jobs_dir.exists():
+        for job_file in jobs_dir.glob("*.json"):
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            result_summary = job.get("result_summary") if isinstance(job.get("result_summary"), dict) else {}
+            if str(job.get("result_id") or result_summary.get("result_id") or "") == result_id:
+                job_file.unlink(missing_ok=True)
+    return {"songs": 0, "results": 0, "videos": 0, "images": 1, "files": 1}
+
+
+def _delete_library_item(body: dict[str, Any]) -> dict[str, Any]:
+    if str(body.get("confirm") or "").strip() != "DELETE":
+        raise HTTPException(status_code=400, detail="confirm must be DELETE")
+    kind = str(body.get("kind") or body.get("type") or "").strip()
+    item_id = str(body.get("id") or body.get("item_id") or "").strip()
+    parsed = _parse_library_item_id(kind, item_id)
+    if kind == "song":
+        deleted = _delete_library_song(str(body.get("song_id") or parsed.get("song_id") or ""))
+    elif kind == "result-audio":
+        deleted = _delete_library_result_audio(
+            str(body.get("result_id") or parsed.get("result_id") or ""),
+            str(body.get("audio_id") or parsed.get("audio_id") or ""),
+            str(body.get("filename") or ""),
+        )
+    elif kind == "image":
+        deleted = _delete_library_image(str(body.get("result_id") or parsed.get("result_id") or ""))
+    elif kind == "video":
+        deleted = _delete_library_video(str(body.get("result_id") or parsed.get("result_id") or ""))
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported library item kind")
+    return {"success": True, "deleted": deleted, "library": _library_items()}
 
 
 class ModelDownloadStarted(RuntimeError):
@@ -4592,10 +5032,10 @@ def _normalize_local_llm_settings(payload: dict[str, Any] | None) -> dict[str, A
     source = payload if isinstance(payload, dict) else {}
     merged = {**defaults, **{key: value for key, value in source.items() if value is not None}}
     provider = normalize_provider(merged.get("provider") or defaults["provider"])
-    if provider not in {"ollama", "lmstudio", "ace_step_lm"}:
+    if provider not in {"ollama", "lmstudio"}:
         provider = "ollama"
     embedding_provider = normalize_provider(merged.get("embedding_provider") or provider)
-    if embedding_provider == "ace_step_lm":
+    if embedding_provider not in {"ollama", "lmstudio"}:
         embedding_provider = "ollama"
     planner = planner_llm_settings_from_payload(merged, default_max_tokens=8192, default_timeout=600.0)
     normalized = {
@@ -5425,6 +5865,77 @@ def _duration_from_payload(payload: dict[str, Any]) -> float:
     return clamp_float(value, 60.0, DURATION_MIN, DURATION_MAX)
 
 
+def _is_standard_ace_step_model(song_model: Any) -> bool:
+    model = str(song_model or "").strip().lower()
+    return bool(model and "turbo" not in model)
+
+
+def _official_generation_memory_plan(params: dict[str, Any]) -> dict[str, Any]:
+    requested_take_count = clamp_int(params.get("batch_size"), 1, 1, MAX_BATCH_SIZE)
+    force_sequential = bool(
+        _IS_APPLE_SILICON
+        and _is_standard_ace_step_model(params.get("song_model"))
+        and str(params.get("task_type") or "text2music") == "text2music"
+        and str(params.get("device") or "auto").strip().lower() in {"auto", "mps", "metal"}
+    )
+    actual_runner_batch_size = 1 if force_sequential else requested_take_count
+    render_pass_count = requested_take_count if force_sequential else 1
+    policy = "mps_standard_model_sequential_takes" if force_sequential else "normal_batch"
+    reason = (
+        "Apple Silicon PyTorch/MPS standard ACE-Step models render one take at a time "
+        "to avoid XL-SFT/Base out-of-memory failures."
+        if force_sequential
+        else "Model/batch can use normal official runner batching."
+    )
+    return {
+        "version": "acejam-official-mps-memory-policy-2026-05-07",
+        "policy": policy,
+        "sequential": force_sequential and requested_take_count > 1,
+        "force_runner_batch_size_one": force_sequential,
+        "requested_take_count": requested_take_count,
+        "actual_runner_batch_size": actual_runner_batch_size,
+        "render_pass_count": render_pass_count,
+        "song_model": str(params.get("song_model") or ""),
+        "duration": params.get("duration"),
+        "inference_steps": params.get("inference_steps"),
+        "shift": params.get("shift"),
+        "use_lora": bool(params.get("use_lora")),
+        "lora_scale": params.get("lora_scale"),
+        "reason": reason,
+    }
+
+
+def _seed_for_official_take(params: dict[str, Any], take_index: int) -> str:
+    if parse_bool(params.get("use_random_seed"), False):
+        return "-1"
+    seed_text = str(params.get("seed") or "").strip()
+    if seed_text in {"", "-1"}:
+        return "-1"
+    seeds = [item.strip() for item in seed_text.split(",") if item.strip()]
+    if not seeds:
+        return "-1"
+    if take_index < len(seeds):
+        return seeds[take_index]
+    try:
+        return str(int(float(seeds[0])) + take_index)
+    except (TypeError, ValueError):
+        return seeds[0]
+
+
+def _official_take_params(params: dict[str, Any], memory_plan: dict[str, Any], take_index: int) -> dict[str, Any]:
+    take_params = dict(params)
+    take_params["batch_size"] = int(memory_plan.get("actual_runner_batch_size") or 1)
+    if memory_plan.get("force_runner_batch_size_one"):
+        take_params["batch_size"] = 1
+    seed = _seed_for_official_take(params, take_index)
+    take_params["seed"] = seed
+    take_params["use_random_seed"] = seed == "-1"
+    take_params["requested_take_count"] = int(memory_plan.get("requested_take_count") or 1)
+    take_params["actual_runner_batch_size"] = int(memory_plan.get("actual_runner_batch_size") or take_params["batch_size"])
+    take_params["memory_policy"] = memory_plan
+    return take_params
+
+
 def _vocal_language_from_payload(payload: dict[str, Any]) -> str:
     if not _metadata_field_locked(payload, "vocal_language"):
         return "unknown"
@@ -5943,6 +6454,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     task_type = normalize_task_type(payload.get("task_type"))
     payload = normalize_generation_text_fields(payload, task_type=task_type)
     payload = _apply_generation_safe_prompt_tokens(payload)
+    payload = apply_audio_style_conditioning(payload)
     overflow_policy = str(payload.get("lyrics_overflow_policy") or "auto_fit").strip().lower() or "auto_fit"
     exact_lyrics = parse_bool(payload.get("exact_lyrics") or payload.get("locked_lyrics"), False)
     raw_lyrics_len = len(str(payload.get("lyrics") or ""))
@@ -6076,6 +6588,10 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "caption": str(payload.get("caption") or ""),
         "global_caption": str(payload.get("global_caption") or ""),
         "lyrics": lyrics_text,
+        "style_profile": str(payload.get("style_profile") or ""),
+        "style_caption_tags": str(payload.get("style_caption_tags") or ""),
+        "style_lyric_tags_applied": list(payload.get("style_lyric_tags_applied") or []),
+        "style_conditioning_audit": payload.get("style_conditioning_audit") if isinstance(payload.get("style_conditioning_audit"), dict) else {},
         "caption_source": str(payload.get("caption_source") or "caption"),
         "lyrics_source": str(payload.get("lyrics_source") or "lyrics"),
         "song_intent": payload.get("song_intent") if isinstance(payload.get("song_intent"), dict) else {},
@@ -6235,6 +6751,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "requires_official_runner": use_official,
         "runner_plan": "official" if use_official else "fast",
     }
+    if parsed.get("style_profile") and parsed.get("style_profile") != "auto":
+        parsed["tag_list"] = split_terms(parsed["caption"])
     _apply_verified_vocal_audio_backend_defaults(parsed, source="parse")
     if vocal_clarity_recovery and task_type == "text2music" and supplied_vocal_lyrics:
         parsed["caption"] = _caption_with_vocal_clarity_traits(parsed["caption"])
@@ -6844,6 +7362,9 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "lora_adapter_name": params.get("lora_adapter_name", ""),
         "lora_scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
+        "requested_take_count": params.get("requested_take_count", params.get("batch_size", 1)),
+        "actual_runner_batch_size": params.get("actual_runner_batch_size", params.get("batch_size", 1)),
+        "memory_policy": _jsonable(params.get("memory_policy") or {}),
         "acejam_skip_lora_base_backup": True,
         "device": params["device"],
         "dtype": params["dtype"],
@@ -7738,6 +8259,33 @@ def _apply_vocal_intelligibility_gate_to_result(
     attempt: int,
     max_attempts: int,
 ) -> dict[str, Any]:
+    if result.get("error_type") in {"memory_error", "timeout_error"}:
+        reason = (
+            "timeout_before_audio"
+            if result.get("error_type") == "timeout_error"
+            else "memory_error_before_audio"
+        )
+        gate = {
+            "version": "acejam-vocal-intelligibility-gate-2026-05-01",
+            "status": "error",
+            "passed": False,
+            "blocking": True,
+            "needs_review": True,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "reason": reason,
+            "transcript_preview": [],
+            "transcripts": [],
+        }
+        result["success"] = False
+        result["needs_review"] = True
+        result["vocal_intelligibility_gate"] = gate
+        result.pop("recommended_take", None)
+        for audio in result.get("audios") or []:
+            if isinstance(audio, dict):
+                audio["is_recommended_take"] = False
+        _persist_result_update(result)
+        return gate
     if not _vocal_gate_required(params):
         gate = {"status": "skipped", "passed": True, "blocking": False, "reason": "not_vocal_text2music"}
         result["vocal_intelligibility_gate"] = gate
@@ -8362,8 +8910,8 @@ def _run_lora_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | Non
     if not _lora_preflight_required(params):
         return None
     adapter_path = str(params.get("lora_adapter_path") or "")
-    scales = tuple(scale for scale in ACEJAM_LORA_PREFLIGHT_SCALES if scale > 0)
-    total_attempts = 1 + len(scales)
+    selected_scale = clamp_float(params.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0)
+    total_attempts = 2
     baseline_params = _lora_preflight_attempt_params(params, use_lora=False, scale=0.0, label="baseline")
     baseline_result, baseline_gate = _run_lora_preflight_attempt(baseline_params, attempt=1, max_attempts=total_attempts)
     preflight = {
@@ -8371,6 +8919,7 @@ def _run_lora_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | Non
         "baseline": baseline_result.get("lora_preflight_attempt"),
         "attempts": [baseline_result.get("lora_preflight_attempt")],
         "adapter_path": adapter_path,
+        "requested_scale": selected_scale,
     }
     if not baseline_gate.get("passed"):
         baseline_gate_status = str(baseline_gate.get("status") or "").strip().lower()
@@ -8387,50 +8936,58 @@ def _run_lora_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | Non
         baseline_result["lora_preflight"] = preflight
         _persist_result_update(baseline_result)
         return baseline_result
-    for index, scale in enumerate(scales, start=2):
-        lora_params = _lora_preflight_attempt_params(params, use_lora=True, scale=scale, label=f"lora_{scale:g}")
-        lora_result, lora_gate = _run_lora_preflight_attempt(lora_params, attempt=index, max_attempts=total_attempts)
-        preflight["attempts"].append(lora_result.get("lora_preflight_attempt"))
-        if lora_gate.get("passed"):
-            preflight["status"] = "passed"
-            preflight["selected_scale"] = scale
-            _update_lora_adapter_quality_metadata(
-                adapter_path,
-                quality_status="verified",
-                reason=f"LoRA preflight passed at scale {scale:g}.",
-                recommended_lora_scale=scale,
-                audition={
-                    "status": "succeeded",
-                    "type": "lora_preflight",
-                    "result_id": lora_result.get("result_id"),
-                    "lora_scale": scale,
-                    "vocal_intelligibility_gate": lora_gate,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            params["lora_scale"] = scale
-            params["adapter_metadata"] = infer_adapter_model_metadata(Path(adapter_path))
-            warnings = list(params.get("payload_warnings") or [])
-            if "lora_preflight_passed" not in warnings:
-                warnings.append("lora_preflight_passed")
-            params["payload_warnings"] = warnings
-            params["lora_preflight"] = preflight
-            return None
+    lora_params = _lora_preflight_attempt_params(
+        params,
+        use_lora=True,
+        scale=selected_scale,
+        label=f"lora_selected_{selected_scale:g}",
+    )
+    lora_result, lora_gate = _run_lora_preflight_attempt(lora_params, attempt=2, max_attempts=total_attempts)
+    preflight["attempts"].append(lora_result.get("lora_preflight_attempt"))
+    if lora_gate.get("passed"):
+        preflight["status"] = "passed"
+        preflight["selected_scale"] = selected_scale
+        _update_lora_adapter_quality_metadata(
+            adapter_path,
+            quality_status="verified",
+            reason=f"LoRA preflight passed at the user-selected scale {selected_scale:g}.",
+            recommended_lora_scale=selected_scale,
+            audition={
+                "status": "succeeded",
+                "type": "lora_preflight",
+                "result_id": lora_result.get("result_id"),
+                "lora_scale": selected_scale,
+                "vocal_intelligibility_gate": lora_gate,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        params["lora_scale"] = selected_scale
+        params["adapter_metadata"] = infer_adapter_model_metadata(Path(adapter_path))
+        warnings = list(params.get("payload_warnings") or [])
+        if "lora_preflight_passed" not in warnings:
+            warnings.append("lora_preflight_passed")
+        params["payload_warnings"] = warnings
+        params["lora_preflight"] = preflight
+        return None
     preflight["status"] = "failed_audition"
     _update_lora_adapter_quality_metadata(
         adapter_path,
         quality_status="failed_audition",
-        reason="LoRA preflight failed at all tested scales while no-LoRA baseline passed.",
+        reason=f"LoRA preflight failed at the user-selected scale {selected_scale:g} while no-LoRA baseline passed.",
         audition={
             "status": "failed",
             "type": "lora_preflight",
+            "requested_scale": selected_scale,
             "baseline_result_id": baseline_result.get("result_id"),
             "attempts": preflight["attempts"],
             "created_at": datetime.now(timezone.utc).isoformat(),
         },
     )
     baseline_result["success"] = False
-    baseline_result["error"] = "LoRA preflight failed; adapter was marked failed_audition and the no-LoRA baseline was kept for review."
+    baseline_result["error"] = (
+        "LoRA preflight failed at the user-selected scale; adapter was marked failed_audition "
+        "and the no-LoRA baseline was kept for review."
+    )
     baseline_result["lora_preflight"] = preflight
     _persist_result_update(baseline_result)
     return baseline_result
@@ -8716,6 +9273,26 @@ def _official_runner_timeout_seconds(request_payload: dict[str, Any], requested_
     return min(max(floor, estimated), ACEJAM_OFFICIAL_RUNNER_MAX_TIMEOUT_SECONDS)
 
 
+def _official_service_generation_timeout_seconds(request_payload: dict[str, Any], runner_timeout: int) -> int:
+    """Timeout passed into ACE-Step's internal service_generate watchdog.
+
+    ACE-Step defaults this to 600s via ACESTEP_GENERATION_TIMEOUT. That is too
+    short for docs-correct XL-SFT/Base full-song renders on PyTorch/MPS, where a
+    single 180s, 50-step take can legitimately take more than ten minutes.
+    Keep the service timeout slightly below the outer subprocess timeout so a
+    true stall still returns a clean error payload instead of being OS-killed.
+    """
+    margin = 60 if runner_timeout > 900 else 10
+    maximum = max(1, runner_timeout - margin)
+    override = str(os.environ.get("ACEJAM_OFFICIAL_SERVICE_TIMEOUT_SECONDS") or "").strip()
+    if override:
+        try:
+            return max(1, min(int(float(override)), maximum))
+        except (TypeError, ValueError):
+            pass
+    return max(1, min(maximum, max(600, maximum)))
+
+
 def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path, timeout: int | None = None) -> dict[str, Any]:
     if not OFFICIAL_ACE_STEP_DIR.exists():
         raise RuntimeError("Official ACE-Step runner requires app/vendor/ACE-Step-1.5. Run Install/Update first.")
@@ -8738,11 +9315,14 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
     stdout_path = work_dir / "official_stdout.log"
     stderr_path = work_dir / "official_stderr.log"
     runner_timeout = _official_runner_timeout_seconds(request_payload, timeout)
+    service_timeout = _official_service_generation_timeout_seconds(request_payload, runner_timeout)
+    env["ACESTEP_GENERATION_TIMEOUT"] = str(service_timeout)
     print(
         f"[official_runner] starting action={request_payload.get('action') or 'generate'} "
-        f"timeout={runner_timeout}s work_dir={work_dir}",
+        f"timeout={runner_timeout}s service_timeout={service_timeout}s work_dir={work_dir}",
         flush=True,
     )
+    memory_before = _mps_memory_snapshot("official_runner:start")
 
     def stream_pipe(pipe: Any, log_path: Path) -> None:
         redaction_state: dict[str, Any] = {}
@@ -8791,6 +9371,7 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
                     pass
         for reader in readers:
             reader.join(timeout=2)
+    memory_after = _mps_memory_snapshot("official_runner:end")
     print(f"[official_runner] finished action={request_payload.get('action') or 'generate'} returncode={returncode}", flush=True)
     if returncode != 0:
         stderr_text = stderr_path.read_text(encoding="utf-8") if stderr_path.is_file() else ""
@@ -8811,7 +9392,10 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
         raise RuntimeError(f"Official ACE-Step runner failed (exit {returncode}): {tail or returncode}")
     if not response_path.is_file():
         raise RuntimeError("Official ACE-Step runner did not write a response file")
-    return json.loads(response_path.read_text(encoding="utf-8"))
+    response = json.loads(response_path.read_text(encoding="utf-8"))
+    if isinstance(response, dict):
+        response["mps_memory"] = {"before": memory_before, "after": memory_after}
+    return response
 
 
 def _official_aux_params(body: dict[str, Any]) -> dict[str, Any]:
@@ -8915,124 +9499,453 @@ def _copy_official_audio(
 
 
 def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
-    params = _enforce_model_correct_render_settings(dict(params), source="official_generation")
+    params = _enforce_model_correct_render_settings(_album_ace_lm_disabled_payload(dict(params)), source="official_generation")
     result_id = uuid.uuid4().hex[:12]
     result_dir = RESULTS_DIR / result_id
     official_dir = result_dir / "official"
     result_dir.mkdir(parents=True, exist_ok=True)
     official_dir.mkdir(parents=True, exist_ok=True)
 
-    with handler_lock:
-        _release_handler_state()
+    memory_plan = _official_generation_memory_plan(params)
+    params["requested_take_count"] = memory_plan["requested_take_count"]
+    params["actual_runner_batch_size"] = memory_plan["actual_runner_batch_size"]
+    params["memory_policy"] = memory_plan
+    if memory_plan.get("sequential"):
+        warning = (
+            f"mps_sequential_takes:{memory_plan['requested_take_count']}"
+            f"x1_for_{params.get('song_model')}"
+        )
+        if warning not in params["payload_warnings"]:
+            params["payload_warnings"].append(warning)
 
-    official_request = _official_request_payload(params, official_dir)
-    metadata_audit = _generation_metadata_audit(params, official_request)
+    metadata_audit: dict[str, Any] = {}
     hit_readiness = params.get("hit_readiness") or hit_readiness_report(
         params,
         task_type=params.get("task_type"),
         song_model=params.get("song_model"),
         runner_plan=params.get("runner_plan"),
     )
-    official = _run_official_runner_request(official_request, result_dir)
-    if not official.get("success"):
-        raise RuntimeError(official.get("error") or "Official ACE-Step generation failed")
-    official_lora_status = official.get("lora_status") or {
+    official_lora_status: dict[str, Any] = {
         "active": bool(params.get("use_lora")),
         "path": params.get("lora_adapter_path", ""),
         "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
     }
-
     audios: list[dict[str, Any]] = []
-    for index, audio in enumerate(official.get("audios", [])):
-        preferred_filename = _preferred_audio_filename(params, params["song_model"], index)
-        path, filename = _copy_official_audio(result_dir, audio, index, params["audio_format"], preferred_filename)
-        audio_id = f"take-{index + 1}"
-        audio_params = audio.get("params") or {}
-        seed_text = str(audio_params.get("seed") or params["seed"] or "-1")
-        audio_audit = _audio_quality_audit(path, params, seed=seed_text)
-        adherence = _metadata_adherence(params, metadata_audit, audio_audit)
-        item = {
-            "id": audio_id,
+    official_runs: list[dict[str, Any]] = []
+    memory_events: list[dict[str, Any]] = []
+    time_costs_by_take: list[dict[str, Any]] = []
+    lm_metadata: Any = None
+    generation_task_id = str(params.get("generation_task_id") or "").strip()
+
+    def publish_completed_takes() -> None:
+        if not generation_task_id or not audios:
+            return
+        requested = max(1, int(memory_plan.get("requested_take_count") or len(audios) or 1))
+        completed = min(len(audios), requested)
+        progress = max(25, min(95, 25 + int(65 * completed / requested)))
+        partial_result = {
+            "success": True,
+            "partial": completed < requested,
+            "in_progress": completed < requested,
             "result_id": result_id,
-            "filename": filename,
-            "audio_url": _result_public_url(result_id, filename),
-            "download_url": _result_public_url(result_id, filename),
-            "artist_name": params["artist_name"],
-            "title": params["title"] if len(official.get("audios", [])) == 1 else f"{params['title']} {index + 1}",
-            "seed": seed_text,
-            "sample_rate": int(audio.get("sample_rate") or 48000),
+            "active_song_model": params["song_model"],
             "runner": "official",
+            "runner_plan": params["runner_plan"],
+            "ui_mode": params["ui_mode"],
+            "title": params["title"],
+            "artist_name": params["artist_name"],
+            "quality_profile": params["quality_profile"],
+            "task_type": params["task_type"],
+            "song_model": params["song_model"],
+            "bpm": params["bpm"],
+            "key_scale": params["key_scale"],
+            "time_signature": params["time_signature"],
+            "duration": params["duration"],
+            "batch_size": params["batch_size"],
+            "requested_take_count": requested,
+            "completed_take_count": completed,
+            "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+            "memory_policy": _jsonable(memory_plan),
+            "official_runs": _jsonable(official_runs),
+            "inference_steps": params["inference_steps"],
+            "guidance_scale": params["guidance_scale"],
+            "shift": params["shift"],
+            "audio_format": params["audio_format"],
+            "lm_backend": params["lm_backend"],
+            "use_lora": params["use_lora"],
+            "lora_adapter_path": params["lora_adapter_path"],
+            "lora_adapter_name": params["lora_adapter_name"],
+            "lora_scale": params["lora_scale"],
+            "adapter_model_variant": params["adapter_model_variant"],
+            "lora_adapter": _jsonable(official_lora_status),
+            "tags": params["caption"],
+            "tag_list": params["tag_list"],
+            "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
             "payload_warnings": params["payload_warnings"],
-            "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
-            "generation_metadata_audit": metadata_audit,
-            "audio_quality_audit": _jsonable(audio_audit),
-            "metadata_adherence": _jsonable(adherence),
+            "style_profile": params.get("style_profile", ""),
+            "style_caption_tags": params.get("style_caption_tags", ""),
+            "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+            "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
+            "generation_metadata_audit": _jsonable(metadata_audit),
             "hit_readiness": _jsonable(hit_readiness),
-            "lora_adapter": {
-                "use_lora": params.get("use_lora", False),
-                "path": params.get("lora_adapter_path", ""),
-                "name": params.get("lora_adapter_name", ""),
-                "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
-                "adapter_model_variant": params.get("adapter_model_variant", ""),
-                "status": _jsonable(official_lora_status),
-            },
+            "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
+            "payload_gate_status": params.get("payload_gate_status") or "",
+            "payload_gate_passed": bool(params.get("payload_gate_passed")),
+            "payload_gate_blocking_issues": _jsonable(params.get("payload_gate_blocking_issues") or []),
+            "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+            "audios": _jsonable(audios),
         }
-        if params["return_audio_codes"] and audio_params.get("audio_codes"):
-            item["audio_codes"] = audio_params["audio_codes"]
-        if params["save_to_library"]:
-            entry = _save_song_entry(
-                {
-                    "artist_name": params["artist_name"],
-                    "title": item["title"],
-                    "description": params["description"],
-                    "tags": params["caption"],
-                    "tag_list": params["tag_list"],
-                    "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
-                    "caption_source": params["caption_source"],
-                    "lyrics_source": params["lyrics_source"],
-                    "payload_warnings": params["payload_warnings"],
-                    "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
-                    "generation_metadata_audit": _jsonable(metadata_audit),
-                    "audio_quality_audit": _jsonable(audio_audit),
-                    "metadata_adherence": _jsonable(adherence),
-                    "hit_readiness": _jsonable(hit_readiness),
-                    "lora_adapter": {
-                        "use_lora": params.get("use_lora", False),
-                        "path": params.get("lora_adapter_path", ""),
-                        "name": params.get("lora_adapter_name", ""),
-                        "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
-                        "adapter_model_variant": params.get("adapter_model_variant", ""),
-                        "status": _jsonable(official_lora_status),
-                    },
-                    "runner_plan": params["runner_plan"],
-                    "ui_mode": params["ui_mode"],
-                    "bpm": params["bpm"],
-                    "key_scale": params["key_scale"],
-                    "time_signature": params["time_signature"],
-                    "language": params["vocal_language"],
-                    "duration": params["duration"],
-                    "task_type": params["task_type"],
-                    "song_model": params["song_model"],
-                    "ace_lm_model": params["ace_lm_model"],
-                    "seed": seed_text,
-                    "parameters": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
-                    "album": _jsonable(params["album_metadata"]),
-                    "album_concept": params["album_metadata"].get("album_concept"),
-                    "album_id": params["album_metadata"].get("album_id"),
-                    "track_number": params["album_metadata"].get("track_number"),
-                    "track_variant": params["album_metadata"].get("track_variant"),
-                    "result_id": result_id,
-                    "runner": "official",
-                    "album_family_id": params["album_metadata"].get("album_family_id"),
-                    "album_model": params["album_metadata"].get("album_model"),
-                    "album_model_label": params["album_metadata"].get("album_model_label"),
-                    "preferred_audio_file": filename,
+        stage = (
+            f"Take {completed}/{requested} klaar; volgende take rendert"
+            if completed < requested
+            else f"Take {completed}/{requested} klaar"
+        )
+        _set_api_generation_task(
+            generation_task_id,
+            state="running",
+            status=0,
+            stage=stage,
+            progress=progress,
+            result=partial_result,
+            logs=[f"Take {completed}/{requested} klaar: {audios[-1].get('filename') or audios[-1].get('audio_url')}"],
+        )
+
+    def memory_failure(error: Any) -> dict[str, Any]:
+        error_text = str(error or "MPS backend out of memory")
+        failure = {
+            "id": result_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "active_song_model": params["song_model"],
+            "success": False,
+            "needs_review": True,
+            "error_type": "memory_error",
+            "error": (
+                "ACE-Step ran out of Apple unified memory for this exact high-quality render. "
+                "The model/steps/shift were preserved; retry after freeing memory or reduce duration/takes."
+            ),
+            "failure_reason": error_text,
+            "runner": "official",
+            "runner_plan": params["runner_plan"],
+            "ui_mode": params["ui_mode"],
+            "title": params["title"],
+            "artist_name": params["artist_name"],
+            "quality_profile": params["quality_profile"],
+            "task_type": params["task_type"],
+            "song_model": params["song_model"],
+            "duration": params["duration"],
+            "batch_size": params["batch_size"],
+            "requested_take_count": memory_plan["requested_take_count"],
+            "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+            "memory_policy": _jsonable(memory_plan),
+            "mps_memory": {
+                "events": _jsonable(memory_events),
+                "failure": _mps_memory_snapshot("official_generation:memory_error"),
+            },
+            "inference_steps": params["inference_steps"],
+            "shift": params["shift"],
+            "audio_format": params["audio_format"],
+            "lm_backend": params["lm_backend"],
+            "use_lora": params["use_lora"],
+            "lora_adapter_path": params["lora_adapter_path"],
+            "lora_adapter_name": params["lora_adapter_name"],
+            "lora_scale": params["lora_scale"],
+            "adapter_model_variant": params["adapter_model_variant"],
+            "lora_adapter": _jsonable(official_lora_status),
+            "payload_warnings": [*params["payload_warnings"], "official_runner_mps_memory_error"],
+            "tags": params["caption"],
+            "tag_list": params["tag_list"],
+            "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+            "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+            "generation_metadata_audit": _jsonable(metadata_audit or _generation_metadata_audit(params)),
+            "hit_readiness": _jsonable(hit_readiness),
+            "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+            "audios": audios,
+            "recommended_take": None,
+            "rerender_suggestions": [
+                "Free memory by closing local LLM/image/video apps, then retry.",
+                "Keep XL-SFT 50 steps and shift 1.0, but render one take at a time.",
+                "If memory still fails at one take, shorten duration for the LoRA test.",
+            ],
+        }
+        (result_dir / "result.json").write_text(json.dumps(_jsonable(failure), indent=2), encoding="utf-8")
+        return {
+            "success": False,
+            "needs_review": True,
+            "error_type": "memory_error",
+            "error": failure["error"],
+            "failure_reason": error_text,
+            "result_id": result_id,
+            "active_song_model": params["song_model"],
+            "runner": "official",
+            "audios": audios,
+            "params": failure["params"],
+            "duration": params["duration"],
+            "song_model": params["song_model"],
+            "quality_profile": params["quality_profile"],
+            "batch_size": params["batch_size"],
+            "requested_take_count": memory_plan["requested_take_count"],
+            "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+            "memory_policy": _jsonable(memory_plan),
+            "mps_memory": failure["mps_memory"],
+            "inference_steps": params["inference_steps"],
+            "guidance_scale": params["guidance_scale"],
+            "shift": params["shift"],
+            "audio_format": params["audio_format"],
+            "payload_warnings": failure["payload_warnings"],
+            "use_lora": params["use_lora"],
+            "lora_adapter_path": params["lora_adapter_path"],
+            "lora_adapter_name": params["lora_adapter_name"],
+            "lora_scale": params["lora_scale"],
+            "adapter_model_variant": params["adapter_model_variant"],
+            "lora_adapter": _jsonable(official_lora_status),
+        }
+
+    def timeout_failure(error: Any) -> dict[str, Any]:
+        error_text = str(error or "ACE-Step generation timed out")
+        failure = {
+            "id": result_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "active_song_model": params["song_model"],
+            "success": False,
+            "needs_review": True,
+            "error_type": "timeout_error",
+            "error": (
+                "ACE-Step took longer than the allowed high-quality render timeout. "
+                "The model/steps/shift were preserved; this is a runtime timeout, not a quality downgrade."
+            ),
+            "failure_reason": error_text,
+            "runner": "official",
+            "runner_plan": params["runner_plan"],
+            "ui_mode": params["ui_mode"],
+            "title": params["title"],
+            "artist_name": params["artist_name"],
+            "quality_profile": params["quality_profile"],
+            "task_type": params["task_type"],
+            "song_model": params["song_model"],
+            "duration": params["duration"],
+            "batch_size": params["batch_size"],
+            "requested_take_count": memory_plan["requested_take_count"],
+            "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+            "memory_policy": _jsonable(memory_plan),
+            "mps_memory": {
+                "events": _jsonable(memory_events),
+                "failure": _mps_memory_snapshot("official_generation:timeout_error"),
+            },
+            "inference_steps": params["inference_steps"],
+            "guidance_scale": params["guidance_scale"],
+            "shift": params["shift"],
+            "audio_format": params["audio_format"],
+            "lm_backend": params["lm_backend"],
+            "use_lora": params["use_lora"],
+            "lora_adapter_path": params["lora_adapter_path"],
+            "lora_adapter_name": params["lora_adapter_name"],
+            "lora_scale": params["lora_scale"],
+            "adapter_model_variant": params["adapter_model_variant"],
+            "lora_adapter": _jsonable(official_lora_status),
+            "payload_warnings": [*params["payload_warnings"], "official_runner_generation_timeout"],
+            "tags": params["caption"],
+            "tag_list": params["tag_list"],
+            "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+            "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+            "generation_metadata_audit": _jsonable(metadata_audit or _generation_metadata_audit(params)),
+            "hit_readiness": _jsonable(hit_readiness),
+            "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+            "audios": audios,
+            "recommended_take": None,
+            "rerender_suggestions": [
+                "Retry after freeing memory; high-quality XL-SFT full-song renders can take a long time on MPS.",
+                "Keep XL-SFT 50 steps and shift 1.0; do not use Turbo as a silent fallback for this primary render.",
+                "If it still exceeds the timeout, shorten duration for the LoRA test before a full-song render.",
+            ],
+        }
+        (result_dir / "result.json").write_text(json.dumps(_jsonable(failure), indent=2), encoding="utf-8")
+        return {
+            "success": False,
+            "needs_review": True,
+            "error_type": "timeout_error",
+            "error": failure["error"],
+            "failure_reason": error_text,
+            "result_id": result_id,
+            "active_song_model": params["song_model"],
+            "runner": "official",
+            "audios": audios,
+            "params": failure["params"],
+            "duration": params["duration"],
+            "song_model": params["song_model"],
+            "quality_profile": params["quality_profile"],
+            "batch_size": params["batch_size"],
+            "requested_take_count": memory_plan["requested_take_count"],
+            "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+            "memory_policy": _jsonable(memory_plan),
+            "mps_memory": failure["mps_memory"],
+            "inference_steps": params["inference_steps"],
+            "guidance_scale": params["guidance_scale"],
+            "shift": params["shift"],
+            "audio_format": params["audio_format"],
+            "payload_warnings": failure["payload_warnings"],
+            "use_lora": params["use_lora"],
+            "lora_adapter_path": params["lora_adapter_path"],
+            "lora_adapter_name": params["lora_adapter_name"],
+            "lora_scale": params["lora_scale"],
+            "adapter_model_variant": params["adapter_model_variant"],
+            "lora_adapter": _jsonable(official_lora_status),
+        }
+
+    total_passes = int(memory_plan.get("render_pass_count") or 1)
+    for pass_index in range(total_passes):
+        take_params = _official_take_params(params, memory_plan, pass_index)
+        take_save_dir = official_dir if pass_index == 0 else result_dir / f"official_take_{pass_index + 1}"
+        take_work_dir = result_dir if pass_index == 0 else result_dir / f"official_runner_take_{pass_index + 1}"
+        take_save_dir.mkdir(parents=True, exist_ok=True)
+        take_work_dir.mkdir(parents=True, exist_ok=True)
+        official_request = _official_request_payload(take_params, take_save_dir)
+        official_request["memory_policy"] = _jsonable(memory_plan)
+        official_request["requested_take_count"] = memory_plan["requested_take_count"]
+        official_request["actual_runner_batch_size"] = memory_plan["actual_runner_batch_size"]
+        if not metadata_audit:
+            metadata_audit = _generation_metadata_audit(take_params, official_request)
+        try:
+            with _official_generation_runner_lock:
+                memory_events.append(
+                    _prepare_audio_generation_memory(
+                        f"official_generation_take_{pass_index + 1}",
+                        release_handler=True,
+                    )
+                )
+                official = _run_official_runner_request(official_request, take_work_dir)
+        except Exception as exc:
+            if _is_mps_oom_error(exc):
+                return memory_failure(exc)
+            if _is_acestep_generation_timeout_error(exc):
+                return timeout_failure(exc)
+            raise
+        if not official.get("success"):
+            error = official.get("error") or official.get("status_message") or "Official ACE-Step generation failed"
+            if _is_mps_oom_error(error):
+                return memory_failure(error)
+            if _is_acestep_generation_timeout_error(error):
+                return timeout_failure(error)
+            raise RuntimeError(error)
+        if official.get("lora_status"):
+            official_lora_status = official.get("lora_status") or official_lora_status
+        if official.get("time_costs"):
+            time_costs_by_take.append(_jsonable(official.get("time_costs") or {}))
+        if lm_metadata is None and official.get("lm_metadata") is not None:
+            lm_metadata = official.get("lm_metadata")
+        official_runs.append(
+            {
+                "take": pass_index + 1,
+                "work_dir": str(take_work_dir),
+                "save_dir": str(take_save_dir),
+                "seed": take_params.get("seed"),
+                "batch_size": take_params.get("batch_size"),
+                "success": True,
+                "mps_memory": _jsonable(official.get("mps_memory") or {}),
+            }
+        )
+        for audio in official.get("audios", []):
+            index = len(audios)
+            preferred_filename = _preferred_audio_filename(params, params["song_model"], index)
+            path, filename = _copy_official_audio(result_dir, audio, index, params["audio_format"], preferred_filename)
+            audio_id = f"take-{index + 1}"
+            audio_params = audio.get("params") or {}
+            seed_text = str(audio_params.get("seed") or take_params["seed"] or params["seed"] or "-1")
+            audio_audit = _audio_quality_audit(path, params, seed=seed_text)
+            adherence = _metadata_adherence(params, metadata_audit, audio_audit)
+            title_total = int(memory_plan.get("requested_take_count") or len(official.get("audios", [])) or 1)
+            item = {
+                "id": audio_id,
+                "result_id": result_id,
+                "filename": filename,
+                "audio_url": _result_public_url(result_id, filename),
+                "download_url": _result_public_url(result_id, filename),
+                "artist_name": params["artist_name"],
+                "title": params["title"] if title_total == 1 else f"{params['title']} {index + 1}",
+                "seed": seed_text,
+                "sample_rate": int(audio.get("sample_rate") or 48000),
+                "runner": "official",
+                "payload_warnings": params["payload_warnings"],
+                "requested_take_count": memory_plan["requested_take_count"],
+                "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+                "memory_policy": _jsonable(memory_plan),
+                "style_profile": params.get("style_profile", ""),
+                "style_caption_tags": params.get("style_caption_tags", ""),
+                "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+                "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
+                "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+                "generation_metadata_audit": metadata_audit,
+                "audio_quality_audit": _jsonable(audio_audit),
+                "metadata_adherence": _jsonable(adherence),
+                "hit_readiness": _jsonable(hit_readiness),
+                "lora_adapter": {
+                    "use_lora": params.get("use_lora", False),
+                    "path": params.get("lora_adapter_path", ""),
+                    "name": params.get("lora_adapter_name", ""),
+                    "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
+                    "adapter_model_variant": params.get("adapter_model_variant", ""),
+                    "status": _jsonable(official_lora_status),
                 },
-                path,
-            )
-            item["song_id"] = entry["id"]
-            item["library_url"] = entry["audio_url"]
-        audios.append(item)
+            }
+            if params["return_audio_codes"] and audio_params.get("audio_codes"):
+                item["audio_codes"] = audio_params["audio_codes"]
+            if params["save_to_library"]:
+                entry = _save_song_entry(
+                    {
+                        "artist_name": params["artist_name"],
+                        "title": item["title"],
+                        "description": params["description"],
+                        "tags": params["caption"],
+                        "tag_list": params["tag_list"],
+                        "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
+                        "caption_source": params["caption_source"],
+                        "lyrics_source": params["lyrics_source"],
+                        "payload_warnings": params["payload_warnings"],
+                        "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
+                        "generation_metadata_audit": _jsonable(metadata_audit),
+                        "audio_quality_audit": _jsonable(audio_audit),
+                        "metadata_adherence": _jsonable(adherence),
+                        "hit_readiness": _jsonable(hit_readiness),
+                        "lora_adapter": {
+                            "use_lora": params.get("use_lora", False),
+                            "path": params.get("lora_adapter_path", ""),
+                            "name": params.get("lora_adapter_name", ""),
+                            "scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
+                            "adapter_model_variant": params.get("adapter_model_variant", ""),
+                            "status": _jsonable(official_lora_status),
+                        },
+                        "runner_plan": params["runner_plan"],
+                        "ui_mode": params["ui_mode"],
+                        "bpm": params["bpm"],
+                        "key_scale": params["key_scale"],
+                        "time_signature": params["time_signature"],
+                        "language": params["vocal_language"],
+                        "duration": params["duration"],
+                        "task_type": params["task_type"],
+                        "song_model": params["song_model"],
+                        "ace_lm_model": params["ace_lm_model"],
+                        "seed": seed_text,
+                        "parameters": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
+                        "album": _jsonable(params["album_metadata"]),
+                        "album_concept": params["album_metadata"].get("album_concept"),
+                        "album_id": params["album_metadata"].get("album_id"),
+                        "track_number": params["album_metadata"].get("track_number"),
+                        "track_variant": params["album_metadata"].get("track_variant"),
+                        "result_id": result_id,
+                        "runner": "official",
+                        "album_family_id": params["album_metadata"].get("album_family_id"),
+                        "album_model": params["album_metadata"].get("album_model"),
+                        "album_model_label": params["album_metadata"].get("album_model_label"),
+                        "preferred_audio_file": filename,
+                    },
+                    path,
+                )
+                item["song_id"] = entry["id"]
+                item["library_url"] = entry["audio_url"]
+            audios.append(item)
+            publish_completed_takes()
+
+    if not audios:
+        raise RuntimeError("Official ACE-Step runner did not return any audio files")
 
     pro_quality_audit = _build_pro_quality_audit(params, audios, metadata_audit, hit_readiness)
     recommended_take = pro_quality_audit.get("recommended_take")
@@ -9054,6 +9967,14 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "time_signature": params["time_signature"],
         "duration": params["duration"],
         "batch_size": params["batch_size"],
+        "requested_take_count": memory_plan["requested_take_count"],
+        "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+        "memory_policy": _jsonable(memory_plan),
+        "official_runs": _jsonable(official_runs),
+        "mps_memory": {
+            "events": _jsonable(memory_events),
+            "after": _mps_memory_snapshot("official_generation:complete"),
+        },
         "inference_steps": params["inference_steps"],
         "guidance_scale": params["guidance_scale"],
         "shift": params["shift"],
@@ -9078,6 +9999,10 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "tag_list": params["tag_list"],
         "lyrics": "[Instrumental]" if params["instrumental"] else params["lyrics"],
         "payload_warnings": params["payload_warnings"],
+        "style_profile": params.get("style_profile", ""),
+        "style_caption_tags": params.get("style_caption_tags", ""),
+        "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+        "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "official_features": params["official_fields"],
         "generation_metadata_audit": _jsonable(metadata_audit),
@@ -9096,8 +10021,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "recommended_take": _jsonable(recommended_take),
         "rerender_suggestions": _jsonable(pro_quality_audit.get("rerender_suggestions") or []),
         "params": {k: _jsonable(v) for k, v in params.items() if k not in {"reference_audio", "src_audio"}},
-        "time_costs": _jsonable(official.get("time_costs", {})),
-        "lm_metadata": _jsonable(official.get("lm_metadata")),
+        "time_costs": _jsonable({"takes": time_costs_by_take} if len(time_costs_by_take) != 1 else time_costs_by_take[0]),
+        "lm_metadata": _jsonable(lm_metadata),
         "audios": audios,
     }
     (result_dir / "result.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -9129,6 +10054,11 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "song_model": params["song_model"],
         "quality_profile": params["quality_profile"],
         "batch_size": params["batch_size"],
+        "requested_take_count": memory_plan["requested_take_count"],
+        "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
+        "memory_policy": _jsonable(memory_plan),
+        "official_runs": _jsonable(official_runs),
+        "mps_memory": meta["mps_memory"],
         "inference_steps": params["inference_steps"],
         "guidance_scale": params["guidance_scale"],
         "shift": params["shift"],
@@ -9150,6 +10080,10 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "recommended_take": recommended_take,
         "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
+        "style_profile": params.get("style_profile", ""),
+        "style_caption_tags": params.get("style_caption_tags", ""),
+        "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+        "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
         "single_art": _jsonable(single_art),
         "ace_step_text_budget": meta["ace_step_text_budget"],
         "use_lora": params["use_lora"],
@@ -9162,12 +10096,13 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
-    params = _enforce_model_correct_render_settings(dict(params), source="runner")
+    params = _enforce_model_correct_render_settings(_album_ace_lm_disabled_payload(dict(params)), source="runner")
     if params["requires_official_runner"]:
         return _run_official_generation(params)
     use_random_seed = bool(params["use_random_seed"])
     result_id = uuid.uuid4().hex[:12]
     result_dir = RESULTS_DIR / result_id
+    _prepare_audio_generation_memory("fast_generation", release_handler=True)
     with handler_lock:
         active_song_model = _ensure_song_model(params["song_model"])
         lora_status = _apply_lora_request(params)
@@ -9247,6 +10182,10 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
             "sample_rate": int(audio_dict["sample_rate"]),
             "runner": "fast",
             "payload_warnings": params["payload_warnings"],
+            "style_profile": params.get("style_profile", ""),
+            "style_caption_tags": params.get("style_caption_tags", ""),
+            "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+            "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
             "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
             "generation_metadata_audit": metadata_audit,
             "audio_quality_audit": _jsonable(audio_audit),
@@ -9346,6 +10285,10 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "tag_list": params["tag_list"],
         "lyrics": params["lyrics"],
         "payload_warnings": params["payload_warnings"],
+        "style_profile": params.get("style_profile", ""),
+        "style_caption_tags": params.get("style_caption_tags", ""),
+        "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+        "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "generation_metadata_audit": _jsonable(metadata_audit),
         "hit_readiness": _jsonable(hit_readiness),
@@ -9418,6 +10361,10 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "recommended_take": recommended_take,
         "rerender_suggestions": pro_quality_audit.get("rerender_suggestions") or [],
         "payload_warnings": params["payload_warnings"],
+        "style_profile": params.get("style_profile", ""),
+        "style_caption_tags": params.get("style_caption_tags", ""),
+        "style_lyric_tags_applied": _jsonable(params.get("style_lyric_tags_applied") or []),
+        "style_conditioning_audit": _jsonable(params.get("style_conditioning_audit") or {}),
         "single_art": _jsonable(single_art),
         "ace_step_text_budget": meta["ace_step_text_budget"],
         "time_costs": meta["time_costs"],
@@ -9426,7 +10373,10 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
 
 def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_training_idle()
+    raw_payload = _album_ace_lm_disabled_payload(raw_payload)
     params = _enforce_model_correct_render_settings(_parse_generation_payload(raw_payload), source="generation")
+    if raw_payload.get("generation_task_id"):
+        params["generation_task_id"] = str(raw_payload.get("generation_task_id") or "").strip()
     if params["instrumental"] and not params["lyrics"].strip():
         params["lyrics"] = "[Instrumental]"
     params = _defer_library_save_until_vocal_pass(params)
@@ -9434,6 +10384,8 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     max_attempts = max(1, min(32, max_attempts))
     if not _vocal_gate_required(params):
         result = _run_advanced_generation_once(params)
+        if result.get("error_type") in {"memory_error", "timeout_error"}:
+            return result
         _apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
         return result
 
@@ -9476,6 +10428,9 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
             else _vocal_retry_params(params, attempt=attempt, last_gate=last_gate, allow_lora_changes=False)
         )
         result = _run_advanced_generation_once(attempt_params)
+        if result.get("error_type") in {"memory_error", "timeout_error"}:
+            _apply_vocal_intelligibility_gate_to_result(result, attempt_params, attempt=attempt, max_attempts=max_attempts)
+            return result
         gate = _apply_vocal_intelligibility_gate_to_result(
             result,
             attempt_params,
@@ -9663,7 +10618,7 @@ def _portfolio_generation_payload(raw_payload: dict[str, Any], model_item: dict[
 
 def _run_model_portfolio_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_training_idle()
-    raw_payload = dict(raw_payload or {})
+    raw_payload = _album_ace_lm_disabled_payload(raw_payload)
     task_type = normalize_task_type(raw_payload.get("task_type") or "text2music")
     if task_type != "text2music":
         raise ValueError("Render all official models is only available for Simple/Custom text2music.")
@@ -10551,6 +11506,7 @@ def generate_album(
                         "caption": track.get("tags") or track.get("caption") or "",
                         "tag_list": track.get("tag_list", []),
                         "lyrics": track.get("lyrics", ""),
+                        "style_profile": track.get("style_profile") or request_payload.get("style_profile") or "",
                         "required_phrases": track.get("required_phrases", []),
                         "style": track.get("style", ""),
                         "vibe": track.get("vibe", ""),
@@ -11667,6 +12623,14 @@ def _generation_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "duration": payload.get("duration") or payload.get("audio_duration"),
             "song_model": str(payload.get("song_model") or "").strip(),
             "quality_profile": str(payload.get("quality_profile") or "").strip(),
+            "batch_size": payload.get("batch_size"),
+            "requested_take_count": payload.get("requested_take_count") or payload.get("batch_size"),
+            "actual_runner_batch_size": payload.get("actual_runner_batch_size"),
+            "memory_policy": payload.get("memory_policy") if isinstance(payload.get("memory_policy"), dict) else {},
+            "style_profile": str(payload.get("style_profile") or "").strip(),
+            "style_caption_tags": str(payload.get("style_caption_tags") or "").strip(),
+            "style_lyric_tags_applied": list(payload.get("style_lyric_tags_applied") or []),
+            "style_conditioning_audit": payload.get("style_conditioning_audit") if isinstance(payload.get("style_conditioning_audit"), dict) else {},
             "seed": payload.get("seed"),
             "bpm": payload.get("bpm"),
             "key_scale": str(payload.get("key_scale") or "").strip(),
@@ -11677,6 +12641,11 @@ def _generation_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "has_lyrics": bool(lyrics.strip() and lyrics.strip() != "[Instrumental]"),
             "has_source_audio": bool(payload.get("src_audio_id") or payload.get("src_result_id") or payload.get("audio_code_string")),
             "has_reference_audio": bool(payload.get("reference_audio_id") or payload.get("reference_result_id")),
+            "with_lora": parse_bool(payload.get("use_lora"), False),
+            "lora_adapter_name": str(payload.get("lora_adapter_name") or "").strip(),
+            "lora_adapter_path": str(payload.get("lora_adapter_path") or "").strip(),
+            "lora_scale": payload.get("lora_scale"),
+            "adapter_model_variant": str(payload.get("adapter_model_variant") or "").strip(),
             "auto_song_art": parse_bool(payload.get("auto_song_art"), False),
             "auto_album_art": parse_bool(payload.get("auto_album_art"), False),
             "auto_video_clip": parse_bool(payload.get("auto_video_clip"), False),
@@ -11689,6 +12658,7 @@ def _generation_result_summary(result: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     audios = result.get("audios") or []
     first_audio = audios[0] if isinstance(audios, list) and audios and isinstance(audios[0], dict) else {}
+    first_lora = first_audio.get("lora_adapter") if isinstance(first_audio.get("lora_adapter"), dict) else {}
     return _jsonable(
         {
             "success": bool(result.get("success", True)),
@@ -11710,13 +12680,24 @@ def _generation_result_summary(result: dict[str, Any] | None) -> dict[str, Any]:
             "actual_song_model": result.get("actual_song_model"),
             "primary_attempt_id": result.get("primary_attempt_id"),
             "attempt_role": result.get("attempt_role"),
-            "with_lora": result.get("with_lora"),
-            "lora_scale": result.get("lora_scale"),
+            "with_lora": result.get("with_lora") if result.get("with_lora") is not None else first_lora.get("use_lora"),
+            "lora_scale": result.get("lora_scale") if result.get("lora_scale") is not None else first_lora.get("scale"),
+            "lora_adapter_name": result.get("lora_adapter_name") or first_lora.get("name"),
+            "lora_adapter_path": result.get("lora_adapter_path") or first_lora.get("path"),
             "lora_quality_status": result.get("lora_quality_status"),
+            "style_profile": result.get("style_profile"),
+            "style_caption_tags": result.get("style_caption_tags"),
+            "style_lyric_tags_applied": result.get("style_lyric_tags_applied"),
+            "style_conditioning_audit": result.get("style_conditioning_audit"),
             "vocal_gate_status": result.get("vocal_gate_status"),
             "transcript_preview": result.get("transcript_preview"),
             "failure_reason": result.get("failure_reason"),
             "diagnostic_attempts": result.get("diagnostic_attempts"),
+            "requested_take_count": result.get("requested_take_count"),
+            "completed_take_count": result.get("completed_take_count"),
+            "actual_runner_batch_size": result.get("actual_runner_batch_size"),
+            "memory_policy": result.get("memory_policy"),
+            "mps_memory": result.get("mps_memory"),
             "recommended_take": result.get("recommended_take"),
             "needs_review": result.get("needs_review"),
             "error": result.get("error"),
@@ -11976,7 +12957,9 @@ def _generation_task_worker(task_id: str, payload: dict[str, Any]) -> None:
     )
     try:
         _generation_job_log(task_id, "ACE-Step render running.", stage="Rendering", progress=25)
-        result = _run_advanced_generation_with_download_retry(payload)
+        worker_payload = dict(payload)
+        worker_payload["generation_task_id"] = task_id
+        result = _run_advanced_generation_with_download_retry(worker_payload)
         success = bool(result.get("success", True)) if isinstance(result, dict) else True
         warnings = [str(item) for item in (result.get("payload_warnings") or [])] if isinstance(result, dict) else []
         if success:
@@ -12791,6 +13774,22 @@ async def api_community():
     return JSONResponse(_community_feed(100))
 
 
+@app.get("/api/library")
+async def api_library(limit: int = 500):
+    return JSONResponse(_library_items(limit=limit))
+
+
+@app.post("/api/library/delete")
+async def api_library_delete(request: Request):
+    try:
+        body = await request.json()
+        return JSONResponse(_delete_library_item(body if isinstance(body, dict) else {}))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
 @app.get("/api/ollama_models")
 async def api_ollama_models():
     return JSONResponse(json.loads(ollama_models()))
@@ -13047,14 +14046,14 @@ async def api_generate_art(request: Request):
 
 
 @app.get("/api/mflux/status")
-async def api_mflux_status():
-    return JSONResponse(mflux_status())
+async def api_mflux_status(check_help: bool = False):
+    return JSONResponse(mflux_status(check_help=check_help))
 
 
 @app.get("/api/mflux/models")
 async def api_mflux_models():
     payload = mflux_models()
-    payload["status"] = mflux_status()
+    payload["status"] = mflux_status(check_help=False)
     return JSONResponse(payload)
 
 
@@ -13363,7 +14362,7 @@ async def api_prompt_assistant_prompts():
     for mode, info in PROMPT_ASSISTANT_MODES.items():
         if mode in PROMPT_ASSISTANT_DISABLED_MODES:
             continue
-        path = BASE_DIR.parent / info["file"]
+        path = BASE_DIR / "prompts" / info["file"]
         prompts.append(
             {
                 "mode": mode,
@@ -13411,34 +14410,25 @@ async def api_prompt_assistant_run(request: Request):
             default_timeout=600.0,
         )
         if planner_provider == "ace_step_lm":
-            if mode == "album":
-                return JSONResponse(
-                    {
-                        "success": False,
-                        "error": "Album AI Fill uses Ollama or LM Studio only. ACE-Step 5Hz LM is disabled for album agents.",
-                        "raw_text": "",
-                        "warnings": [],
-                    },
-                status_code=400,
-            )
-            parsed_payload, raw_text = _prompt_assistant_payload_from_official_writer(mode, user_prompt, current_payload, body)
-            paste_blocks = []
-            structured_warnings: list[str] = []
-        else:
-            system_prompt = _prompt_assistant_system_prompt(mode)
-            raw_text = _run_prompt_assistant_local_staged(
-                system_prompt,
-                user_prompt,
-                planner_provider,
-                planner_model,
-                current_payload,
-                planner_settings,
-                mode=mode,
-            )
-            parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
-            parsed_payload, structured_warnings, structured_paste_blocks = _unwrap_prompt_assistant_structured_payload(parsed_payload)
-            if structured_paste_blocks:
-                paste_blocks = structured_paste_blocks
+            fallback_provider = normalize_provider(global_llm_settings.get("provider") or "ollama")
+            if fallback_provider == "ace_step_lm":
+                fallback_provider = "ollama"
+            planner_provider = fallback_provider
+            planner_model = str(global_llm_settings.get("chat_model") or planner_model or "").strip()
+        system_prompt = _prompt_assistant_system_prompt(mode)
+        raw_text = _run_prompt_assistant_local_staged(
+            system_prompt,
+            user_prompt,
+            planner_provider,
+            planner_model,
+            current_payload,
+            planner_settings,
+            mode=mode,
+        )
+        parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
+        parsed_payload, structured_warnings, structured_paste_blocks = _unwrap_prompt_assistant_structured_payload(parsed_payload)
+        if structured_paste_blocks:
+            paste_blocks = structured_paste_blocks
         payload, warnings = _normalize_prompt_assistant_payload(mode, parsed_payload, body)
         if structured_warnings:
             warnings.extend(structured_warnings)
@@ -13515,19 +14505,8 @@ async def api_delete_album_family(family_id: str, request: Request):
 @app.post("/api/compose")
 async def api_compose(request: Request):
     try:
-        body = await request.json()
+        body = _album_ace_lm_disabled_payload(await request.json())
         provider = _writer_provider_from_payload(body)
-        if provider == "ace_step_lm":
-            official_body = _apply_studio_lm_policy(
-                {
-                    **body,
-                    "planner_lm_provider": "ace_step_lm",
-                    "description": str(body.get("description") or body.get("prompt") or ""),
-                    "duration": body.get("audio_duration") or body.get("duration") or 60.0,
-                    "sample_query": str(body.get("sample_query") or body.get("description") or body.get("prompt") or ""),
-                }
-            )
-            return JSONResponse(_run_official_lm_aux("create_sample", official_body))
         global_llm_settings = _load_local_llm_settings()
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or "").strip()
         planner_settings = planner_llm_settings_from_payload({**global_llm_settings, **body}, default_max_tokens=8192, default_timeout=600.0)
@@ -13551,10 +14530,7 @@ async def api_compose(request: Request):
 @app.post("/api/create_sample")
 async def api_create_sample(request: Request):
     try:
-        body = _apply_studio_lm_policy(await request.json())
-        use_official = parse_bool(body.get("use_official_lm"), _requested_ace_lm_model(body) != "none")
-        if use_official:
-            return JSONResponse(_run_official_lm_aux("create_sample", body))
+        body = _album_ace_lm_disabled_payload(_apply_studio_lm_policy(await request.json()))
         global_llm_settings = _load_local_llm_settings()
         provider = _writer_provider_from_payload(body)
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or "").strip()
@@ -13585,10 +14561,7 @@ async def api_create_sample(request: Request):
 @app.post("/api/format_sample")
 async def api_format_sample(request: Request):
     try:
-        body = _apply_studio_lm_policy(await request.json())
-        use_official = parse_bool(body.get("use_official_lm"), _requested_ace_lm_model(body) != "none")
-        if use_official:
-            return JSONResponse(_run_official_lm_aux("format_sample", body))
+        body = _album_ace_lm_disabled_payload(_apply_studio_lm_policy(await request.json()))
         raw = compose(
             description=str(body.get("caption") or body.get("description") or "custom song"),
             audio_duration=float(body.get("duration") or 60.0),
@@ -14841,6 +15814,11 @@ async def api_lora_jobs():
 @app.get("/api/lora/epoch-audition/genres")
 async def api_lora_epoch_audition_genres():
     return JSONResponse({"success": True, "genres": epoch_audition_genre_options()})
+
+
+@app.get("/api/audio/style-profiles")
+async def api_audio_style_profiles():
+    return JSONResponse({"success": True, "profiles": audio_style_profiles()})
 
 
 @app.get("/api/lora/jobs/{job_id}/log")

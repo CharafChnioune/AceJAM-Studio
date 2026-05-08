@@ -33,6 +33,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/components/ui/sonner";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useJobsStore, type JobEntry, type JobKind } from "@/store/jobs";
@@ -77,6 +78,11 @@ function text(value: unknown, fallback = "—"): string {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : fallback;
   if (typeof value === "boolean") return value ? "yes" : "no";
   return String(value);
+}
+
+function firstRecord(value: unknown): JsonRecord {
+  const items = asArray(value);
+  return items.length > 0 ? asRecord(items[0]) : {};
 }
 
 function shortPath(value: unknown): string {
@@ -370,11 +376,12 @@ function LoraDetails({
       <Section title="Epoch audition">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <InfoRow label="Enabled" value={audition.enabled} />
-          <InfoRow label="Genre" value={audition.genre_profile || audition.genre} />
+          <InfoRow label="Style profile" value={audition.style_profile || audition.genre_profile || audition.genre} />
           <InfoRow label="Duration" value={`${text(audition.duration, "20")}s`} />
           <InfoRow label="Scale" value={audition.scale} />
           <InfoRow label="Lyrics source" value={audition.lyrics_source} />
           <InfoRow label="Caption" value={audition.caption} />
+          <InfoRow label="Caption tags" value={audition.style_caption_tags} />
         </div>
         {auditions.length > 0 && (
           <div className="mt-3 space-y-2">
@@ -385,6 +392,17 @@ function LoraDetails({
                   <Badge variant={text(item.status).toLowerCase() === "succeeded" ? "default" : "outline"}>
                     {text(item.status || item.state || item.success)}
                   </Badge>
+                </div>
+                <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                  <InfoRow label="Style" value={item.style_profile || item.genre_profile} />
+                  <InfoRow
+                    label="Style audit"
+                    value={
+                      typeof item.style_conditioning_audit === "object" && item.style_conditioning_audit
+                        ? (item.style_conditioning_audit as Record<string, unknown>).status
+                        : ""
+                    }
+                  />
                 </div>
                 {Boolean(item.audio_url) && (
                   <div className="mt-2 space-y-2">
@@ -443,13 +461,16 @@ function GenerationDetails({
   log: string;
 }) {
   const summary = asRecord(job.payload_summary);
+  const payload = asRecord(job.payload);
   const resultSummary = asRecord(job.result_summary);
   const result = asRecord(job.result);
+  const primaryAudio = firstRecord(result.audios);
+  const audioLora = asRecord(primaryAudio.lora_adapter);
   const warnings = [
     ...asArray(job.warnings).map((item) => text(item, "")).filter(Boolean),
     ...asArray(result.payload_warnings).map((item) => text(item, "")).filter(Boolean),
   ];
-  const audioUrl = text(resultSummary.audio_url || result.audio_url, "");
+  const audioUrl = firstGenerationAudioUrl(result) || text(resultSummary.audio_url || result.audio_url, "");
   const title = text(resultSummary.title || result.title || summary.title || summary.caption, "Song render");
   const artist = text(resultSummary.artist_name || result.artist_name || summary.artist_name, "");
   const gate = asRecord(result.vocal_intelligibility_gate || resultSummary.vocal_intelligibility_gate);
@@ -461,23 +482,44 @@ function GenerationDetails({
   const diagnosticAttempts = asArray(result.diagnostic_attempts || resultSummary.diagnostic_attempts);
   const requestedModel = text(result.requested_song_model || resultSummary.requested_song_model || summary.song_model, "");
   const actualModel = text(result.actual_song_model || resultSummary.actual_song_model || summary.song_model, "");
+  const memoryPolicy = asRecord(result.memory_policy || resultSummary.memory_policy || summary.memory_policy);
+  const requestedTakeCount =
+    result.requested_take_count ||
+    resultSummary.requested_take_count ||
+    summary.requested_take_count ||
+    summary.batch_size;
+  const actualRunnerBatchSize =
+    result.actual_runner_batch_size ||
+    resultSummary.actual_runner_batch_size ||
+    summary.actual_runner_batch_size;
+  const loraActive =
+    result.with_lora ??
+    resultSummary.with_lora ??
+    audioLora.use_lora ??
+    summary.with_lora ??
+    payload.use_lora;
+  const loraScale =
+    result.lora_scale ??
+    resultSummary.lora_scale ??
+    audioLora.scale ??
+    summary.lora_scale ??
+    payload.lora_scale;
+  const loraAdapterName =
+    result.lora_adapter_name ||
+    resultSummary.lora_adapter_name ||
+    audioLora.name ||
+    summary.lora_adapter_name ||
+    payload.lora_adapter_name ||
+    shortPath(result.lora_adapter_path || resultSummary.lora_adapter_path || audioLora.path || summary.lora_adapter_path || payload.lora_adapter_path);
+  const requestedLoraScale = payload.lora_scale ?? summary.lora_scale;
 
   return (
     <div className="space-y-4">
       {audioUrl && (
-        <WaveformPlayer
-          src={audioUrl}
+        <GenerationAudioList
+          result={Object.keys(result).length ? result : resultSummary}
           title={title}
           artist={artist}
-          metadata={{
-            model: summary.song_model,
-            quality: summary.quality_profile,
-            duration: resultSummary.duration || summary.duration,
-            bpm: resultSummary.bpm || summary.bpm,
-            key: resultSummary.key_scale || summary.key_scale,
-            seed: summary.seed,
-            resultId: resultSummary.result_id,
-          }}
         />
       )}
 
@@ -489,14 +531,30 @@ function GenerationDetails({
           <InfoRow label="Actual model" value={actualModel || "auto"} />
           <InfoRow label="Quality" value={summary.quality_profile || "auto"} />
           <InfoRow label="Duration" value={summary.duration ? `${text(summary.duration)}s` : "auto"} />
+          <InfoRow label="Requested takes" value={requestedTakeCount} />
+          <InfoRow label="Runner batch" value={actualRunnerBatchSize} />
+          <InfoRow label="Memory policy" value={memoryPolicy.policy || result.error_type} />
           <InfoRow label="Instrumental" value={summary.instrumental} />
           <InfoRow label="Lyrics words" value={summary.lyrics_word_count} />
           <InfoRow label="Seed" value={summary.seed} />
           <InfoRow label="BPM / key" value={`${text(summary.bpm, "auto")} / ${text(summary.key_scale, "auto")}`} />
           <InfoRow label="Source audio" value={summary.has_source_audio} />
           <InfoRow label="Attempt role" value={result.attempt_role || resultSummary.attempt_role || "primary"} />
-          <InfoRow label="LoRA active" value={result.with_lora ?? resultSummary.with_lora} />
-          <InfoRow label="LoRA scale" value={result.lora_scale ?? resultSummary.lora_scale} />
+          <InfoRow label="LoRA active" value={loraActive} />
+          <InfoRow label="LoRA adapter" value={loraAdapterName} />
+          <InfoRow label="LoRA scale" value={loraScale} />
+          <InfoRow label="Requested LoRA scale" value={requestedLoraScale} />
+          <InfoRow label="Style profile" value={result.style_profile ?? resultSummary.style_profile} />
+          <InfoRow
+            label="Style audit"
+            value={
+              typeof result.style_conditioning_audit === "object" && result.style_conditioning_audit
+                ? (result.style_conditioning_audit as Record<string, unknown>).status
+                : typeof resultSummary.style_conditioning_audit === "object" && resultSummary.style_conditioning_audit
+                  ? (resultSummary.style_conditioning_audit as Record<string, unknown>).status
+                  : ""
+            }
+          />
         </div>
       </Section>
 

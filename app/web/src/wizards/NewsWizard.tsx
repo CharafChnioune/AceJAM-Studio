@@ -8,11 +8,12 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
+import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { TagInput } from "@/components/wizard/TagInput";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
-import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -49,6 +50,7 @@ interface NewsForm {
   news_angle: string;
   satire_mode: string;
   caption: string;
+  style_profile: string;
   tags: string;
   negative_tags: string;
   lyrics: string;
@@ -88,6 +90,7 @@ export function NewsWizard() {
       news_angle: "",
       satire_mode: "auto",
       caption: "",
+      style_profile: "auto",
       tags: "",
       negative_tags: "",
       lyrics: "",
@@ -154,6 +157,7 @@ export function NewsWizard() {
       news_angle: v.news_angle,
       satire_mode: v.satire_mode,
       caption: v.caption,
+      style_profile: v.style_profile,
       tags: v.tags,
       negative_tags: v.negative_tags,
       lyrics: v.lyrics,
@@ -199,7 +203,7 @@ export function NewsWizard() {
   };
 
   const audioUrl =
-    (lastResult?.audio_url as string | undefined) ||
+    firstGenerationAudioUrl(lastResult) ||
     (typeof lastResult?.audio === "string"
       ? `data:audio/wav;base64,${lastResult.audio}`
       : undefined);
@@ -359,6 +363,10 @@ export function NewsWizard() {
             </div>
           </FieldGroup>
           <FieldGroup title="Tags">
+            <AudioStyleSelector
+              value={values.style_profile}
+              onChange={(value) => form.setValue("style_profile", value, { shouldValidate: true })}
+            />
             <Controller
               control={form.control}
               name="tags"
@@ -424,21 +432,7 @@ export function NewsWizard() {
         const artist = (lastResult.artist_name as string) || values.artist_name;
         return (
           <div className="space-y-4">
-            {audioUrl && (
-              <WaveformPlayer
-                src={audioUrl}
-                title={title}
-                artist={artist}
-                metadata={{
-                  model: lastResult.song_model ?? values.song_model,
-                  duration: lastResult.duration ?? values.duration,
-                  bpm: lastResult.bpm ?? values.bpm,
-                  key: lastResult.key_scale ?? values.key_scale,
-                  seed: lastResult.seed,
-                  resultId,
-                }}
-              />
-            )}
+            <GenerationAudioList result={lastResult} title={title} artist={artist} />
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}

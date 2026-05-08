@@ -76,13 +76,18 @@ Required JSON:
   "save_to_library": true
 }
 
-Caption/tag taxonomy: choose 12-24 non-contradictory tags from genre/style, mood, instruments, timbre, rhythm/groove, vocals, production, structure, dynamics, stems.
-Useful tags: pop, trap, drill, melodic rap, boom-bap, R&B, soul, gospel, afrohouse, amapiano, reggaeton, house, synthwave, indie rock, cinematic, ambient, dark, euphoric, melancholic, luxurious, 808 bass, sub-bass, trap hi-hats, punchy snare, piano, Rhodes, clean guitar, strings, brass, choir, analog synths, pads, male rap vocal, female vocal, breathy vocal, raspy vocal, falsetto, stacked harmonies, ad-libs, dry vocal, wide stereo, crisp modern mix, high-fidelity, radio-ready, anthemic chorus, cinematic bridge, explosive drop.
+Caption/tag rules: build a compact 12-24 tag stack covering genre/style, mood, instruments, timbre, rhythm/groove, vocal type, production, structure energy. Pick exclusively from the **ACE-Step Tag Library** that is appended to this system prompt at runtime. Follow every entry in the **ACE-Step Authoring Rules** verbatim — especially the single-dash modifier syntax `[Section - modifier]`, the parentheses-for-background-vocals rule, and the no-BPM/key-in-caption rule.
+
+Producer references: when the user says "Dr. Dre", "No I.D.", "Metro Boomin", "J Dilla", "Quincy Jones", "Mobb Deep", "Timbaland", "Pharrell", "Kanye", "Mike Dean", "DJ Premier", "Rick Rubin", or "Madlib", do NOT put the name in the caption. Look up the matching entry in the **Producer-Format Cookbook** at the end of this system prompt and stack 6-9 of the cookbook's tags in caption.
+
+Rap requests: use the **Rap-Mode Cookbook** for ad-lib placement, hook structure, line length, shouted intensity, and rap caption stack template. The combination of a rap-side caption tag (Rap, Trap Flow, Spoken Word, Melodic Rap) PLUS section tag `[Verse - rap]` is what reliably switches ACE-Step into rap mode.
 
 negative_tags: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style.
 
-Lyrics: full lyrics for vocal songs, "[Instrumental]" for instrumentals. Under 4096 chars. Target words: 30s 40-70, 60s 75-110, 120s 145-220, 180s 220-330, 240s 300-430, 300s 370-540.
-Use [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Bridge], [Post-Chorus], [Outro], plus delivery tags like [Verse - rap], [Chorus - anthemic], [Chorus - layered vocals].
+Lyrics: write rich, fully developed songs — never thin half-formed lyrics. Full lyrics for vocal songs, `[Instrumental]` for instrumentals, under 4096 chars. Aim for the TARGET word count below (not the floor):
+- DEFAULT sung — 30s ~75 / 60s ~155 / 120s ~300 / 180s ~420 / 240s ~510 / 300s ~570 / 600s ~620 words.
+- RAP — 30s ~95 / 60s ~200 / 120s ~360 / 180s ~500 / 240s ~570 / 300s ~600 / 600s ~630 words.
+For ≥180s use 3-4 verses, at least 2 hook passes, a bridge that introduces NEW content (not a repeat), and a final chorus variation. Each verse 8-16 lines (rap pushes to 16+).
 
 Quality: strong hook, concrete imagery, one metaphor world, internal/slant rhyme for rap, pre-chorus lift for pop, chant hook for club.
 ```
