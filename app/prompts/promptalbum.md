@@ -139,9 +139,16 @@ Album arc rules:
 - Vary BPM, key, density, instrumentation, vocal delivery, and hook shape while keeping one sonic identity.
 - Make titles specific and memorable. Make hooks simple enough to remember.
 
-Caption/tag rules: per track build a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Vary the stacks across tracks while keeping one sonic identity. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax, parentheses-for-background-vocals, no BPM/key/time-signature in caption.
+User-provided album spec — LOCK these fields verbatim, do not paraphrase:
+- If the user gives a track list with `Track N: "Title" (Producer-style | BPM)`, use those exact titles and BPMs.
+- If the user pastes a Hook block under a track, use those exact hook lines verbatim in every chorus/hook pass. Do NOT rewrite, shorten, translate, or "improve" them.
+- If the user gives a Narrative line or Verse concept, use it as the verse content brief — write fresh verses around that angle, but never replace the locked hook.
+- If the user specifies tempo transitions (e.g. "92→70 BPM"), set `bpm` to the starting tempo and add the deceleration as a `[Beat Switch]` section in the lyrics + a `tempo transition` tag in caption.
+- `num_tracks` MUST equal the user's track count. If they list 10 tracks, set `num_tracks: 10` and produce all 10 in `tracks[]`.
 
-Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 tags from that entry.
+Caption/tag rules: per track build a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Vary the stacks across tracks while keeping one sonic identity. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax in lyrics only, parentheses-for-background-vocals, no BPM/key/time-signature in caption, no standalone vocal-technique or energy/emotion brackets in lyrics (those words go comma-separated in the tags field).
+
+Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 tags from that entry. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each cookbook entry and merge.
 
 Rap requests: pair caption-side rap cue (Rap, Trap Flow, Spoken Word, Melodic Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** appended to this prompt for ad-lib placement, hook structure, line length, and rap caption stack template.
 
@@ -155,7 +162,9 @@ Lyrics rules:
   * RAP — 30s ~95 / 60s ~200 / 120s ~360 / 180s ~500 / 240s ~570 / 300s ~600 / 600s ~630 words.
 - For ≥180s tracks use 3-4 verses, 2-3 hook passes, bridge with NEW content, and a final chorus variation. Each verse 8-16 lines (rap pushes to 16+).
 - Use section tags from the appended Tag Library `basic_structure`/`dynamic_sections`/`performance_modifiers` lists. Rap line length 6-14 syllables; sung 6-10. Ad-libs go in `(parens)` inside lyric lines, never as separate tags.
+- Vocal-technique words (whispered, ad-libs, harmonies, falsetto, call-and-response, layered vocals) and energy/emotion descriptors (high energy, melancholic, explosive, building energy) go COMMA-SEPARATED in the caption. Inside lyrics they are valid ONLY as section modifiers like `[Verse - whispered]`, `[Chorus - layered vocals]`, `[Climax - powerful]`. Never write `[whispered]` or `[high energy]` as a standalone bracket line.
 - Use concrete imagery, one metaphor world per track, strong hook contrast, internal/slant/multisyllabic rhyme for rap, pre-chorus lift for pop, chant hooks for club songs.
+- When the user pastes a hook block, repeat it VERBATIM across all chorus/hook passes. The bridge can deliver new lines, but the hook returns to the locked text.
 
-Before output: JSON valid, all tracks complete, enough lyrics, captions compact, album arc clear.
+Before output: JSON valid, all tracks complete (num_tracks matches user spec), user-locked titles/BPMs/hooks preserved verbatim, enough lyrics, captions compact, album arc clear.
 ```

@@ -111,7 +111,7 @@ Satire modes:
 
 Caption/tag rules: pick a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Lean on `mood_atmosphere` (funny, deadpan, sarcastic, urgent, chaotic) and rap-side `vocal_character` (comedic rap vocal, deadpan delivery, mumble rap, lyrical rap) for satirical coverage. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax, parentheses around words = background vocals, no BPM/key/time-signature in caption.
 
-Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib), do NOT put the name in caption. Use the matching entry in the **Producer-Format Cookbook** appended to this prompt.
+Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Use the matching entry in the **Producer-Format Cookbook** appended to this prompt.
 
 Rap requests: pair caption-side rap cue (Rap, Trap Flow, Spoken Word, Melodic Rap, Comedy Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** for ad-lib placement, hook structure, line length, and rap caption stack template.
 

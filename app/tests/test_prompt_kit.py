@@ -92,11 +92,17 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("DJ Premier / 90s boom bap", block)
         self.assertIn("[Hook]", block)
         self.assertIn("[Verse - rap]", block)
-        self.assertIn("[ad-lib]", block)
-        self.assertIn("[falsetto]", block)
+        self.assertIn("[Verse - whispered]", block)
         self.assertIn("Modifier syntax", block)
         self.assertIn("Background vocals use parentheses", block)
         self.assertIn("ALL CAPS", block)
+        # Vocal-technique words live in caption tags (taxonomy), section
+        # modifiers like [Verse - whispered] are still valid in lyrics.
+        self.assertIn("ad-libs", block)
+        self.assertIn("falsetto", block)
+        self.assertIn("call-and-response", block)
+        # Authoring rule explicitly states standalone brackets are wrong.
+        self.assertIn("standalone bracket lines", block)
         # Worked examples carry concrete ad-lib parens patterns
         self.assertIn("(yeah)", block)
         self.assertIn("(skrrt)", block)

@@ -173,6 +173,8 @@ TAG_TAXONOMY: dict[str, list[str]] = {
         "motivational", "inspirational", "empowering", "cheerful", "deadpan", "sarcastic",
         "ironic", "menacing", "triumphant", "vulnerable", "rebellious", "haunted",
         "pulsating", "urban", "bold", "playful", "dramatic", "urgent", "chaotic",
+        "high energy", "low energy", "explosive", "building energy", "calm", "intense",
+        "exciting", "soulful", "sad", "happy", "energetic",
     ],
     "instruments": [
         "piano", "grand piano", "Rhodes", "electric piano", "organ", "clavinet", "mellotron",
@@ -227,14 +229,17 @@ TAG_TAXONOMY: dict[str, list[str]] = {
         "pitched-down vocal", "ad-libs", "shouted vocal", "narration", "spoken word",
         "auto-tune trap vocal", "Chinese-language vocal", "Spanish-language vocal",
         "Dutch-language vocal", "Arabic-language vocal",
+        "whispered", "shouted", "harmonies", "harmonized", "call-and-response",
+        "layered vocals", "raspy", "breathy", "soft", "powerful belting",
+        "soft vocal", "powerful vocal",
     ],
     "speed_rhythm": [
-        "slow tempo", "mid-tempo", "fast-paced", "groovy", "driving rhythm",
+        "slow tempo", "mid-tempo", "fast-paced", "fast", "groovy", "driving rhythm",
         "laid-back groove", "swing feel", "four-on-the-floor", "half-time drums",
         "syncopated rhythm", "head-nod groove", "trap bounce", "drill bounce",
         "double-time hi-hats", "shuffled hi-hats", "swung sixteenths",
         "behind-the-beat groove", "ahead-of-the-beat groove", "dembow groove",
-        "afrohouse groove",
+        "afrohouse groove", "building tempo",
     ],
     "structure_hints": [
         "building intro", "catchy chorus", "anthemic hook", "dramatic bridge",
@@ -263,19 +268,6 @@ LYRIC_META_TAGS: dict[str, list[str]] = {
         "[Instrumental]", "[inst]", "[Instrumental Break]",
         "[Synth Solo]", "[Guitar Solo]", "[Piano Solo]", "[Piano Interlude]",
         "[Brass Break]", "[Saxophone Solo]", "[Violin Solo]", "[Drum Break]",
-    ],
-    "vocal_control": [
-        "[whispered]", "[falsetto]", "[powerful belting]", "[spoken word]",
-        "[raspy vocal]", "[harmonies]", "[call and response]", "[ad-lib]",
-        "[shouted]", "[layered vocals]",
-    ],
-    "energy_markers": [
-        "[high energy]", "[low energy]", "[building energy]", "[explosive]",
-        "[explosive drop]", "[calm]", "[intense]", "[Final chord fades out]",
-    ],
-    "emotion_markers": [
-        "[melancholic]", "[euphoric]", "[dreamy]", "[aggressive]", "[tense]",
-        "[hopeful]", "[bittersweet]",
     ],
     "performance_modifiers": [
         "[Verse - rap]", "[Verse - melodic rap]", "[Verse - double time rap]",

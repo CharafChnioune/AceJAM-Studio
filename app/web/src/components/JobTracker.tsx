@@ -491,7 +491,13 @@ function GenerationDetails({
   const actualRunnerBatchSize =
     result.actual_runner_batch_size ||
     resultSummary.actual_runner_batch_size ||
-    summary.actual_runner_batch_size;
+    summary.actual_runner_batch_size ||
+    memoryPolicy.actual_runner_batch_size ||
+    (memoryPolicy.force_runner_batch_size_one ? 1 : "");
+  const memoryPolicyLabel =
+    memoryPolicy.policy ||
+    result.error_type ||
+    (actualRunnerBatchSize ? "planned" : "");
   const loraActive =
     result.with_lora ??
     resultSummary.with_lora ??
@@ -516,15 +522,35 @@ function GenerationDetails({
     resultSummary.lora_trigger_tag ||
     summary.lora_trigger_tag ||
     payload.lora_trigger_tag;
+  const loraTriggerAudit = asRecord(
+    result.lora_trigger_conditioning_audit ||
+      resultSummary.lora_trigger_conditioning_audit ||
+      summary.lora_trigger_conditioning_audit ||
+      payload.lora_trigger_conditioning_audit,
+  );
   const loraTriggerSource =
     result.lora_trigger_source ||
     resultSummary.lora_trigger_source ||
     summary.lora_trigger_source ||
     payload.lora_trigger_source ||
-    (typeof result.lora_trigger_conditioning_audit === "object" && result.lora_trigger_conditioning_audit
-      ? (result.lora_trigger_conditioning_audit as Record<string, unknown>).trigger_source
-      : "");
+    loraTriggerAudit.trigger_source ||
+    (loraTriggerTag ? "metadata" : "");
   const requestedLoraScale = payload.lora_scale ?? summary.lora_scale;
+  const styleAudit = asRecord(
+    result.style_conditioning_audit ||
+      resultSummary.style_conditioning_audit ||
+      summary.style_conditioning_audit ||
+      payload.style_conditioning_audit,
+  );
+  const styleProfile =
+    result.style_profile ||
+    resultSummary.style_profile ||
+    summary.style_profile ||
+    payload.style_profile ||
+    (summary.caption || summary.tags || payload.caption || payload.tags ? "manual caption/tags" : "auto");
+  const styleAuditLabel =
+    styleAudit.status ||
+    (styleProfile === "manual caption/tags" ? "manual" : styleProfile ? "pending" : "");
 
   return (
     <div className="space-y-4">
@@ -546,7 +572,7 @@ function GenerationDetails({
           <InfoRow label="Duration" value={summary.duration ? `${text(summary.duration)}s` : "auto"} />
           <InfoRow label="Requested takes" value={requestedTakeCount} />
           <InfoRow label="Runner batch" value={actualRunnerBatchSize} />
-          <InfoRow label="Memory policy" value={memoryPolicy.policy || result.error_type} />
+          <InfoRow label="Memory policy" value={memoryPolicyLabel} />
           <InfoRow label="Instrumental" value={summary.instrumental} />
           <InfoRow label="Lyrics words" value={summary.lyrics_word_count} />
           <InfoRow label="Seed" value={summary.seed} />
@@ -559,17 +585,8 @@ function GenerationDetails({
           <InfoRow label="LoRA trigger source" value={loraTriggerSource} />
           <InfoRow label="LoRA scale" value={loraScale} />
           <InfoRow label="Requested LoRA scale" value={requestedLoraScale} />
-          <InfoRow label="Style profile" value={result.style_profile ?? resultSummary.style_profile} />
-          <InfoRow
-            label="Style audit"
-            value={
-              typeof result.style_conditioning_audit === "object" && result.style_conditioning_audit
-                ? (result.style_conditioning_audit as Record<string, unknown>).status
-                : typeof resultSummary.style_conditioning_audit === "object" && resultSummary.style_conditioning_audit
-                  ? (resultSummary.style_conditioning_audit as Record<string, unknown>).status
-                  : ""
-            }
-          />
+          <InfoRow label="Style profile" value={styleProfile} />
+          <InfoRow label="Style audit" value={styleAuditLabel} />
         </div>
       </Section>
 

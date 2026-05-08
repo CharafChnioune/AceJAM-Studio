@@ -12867,43 +12867,122 @@ def _set_api_generation_task(task_id: str, **updates: Any) -> dict[str, Any]:
 
 
 def _generation_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    lyrics = str(payload.get("lyrics") or "")
-    caption = str(payload.get("caption") or payload.get("song_description") or payload.get("simple_description") or "")
-    task_type = str(payload.get("task_type") or "text2music").strip() or "text2music"
+    payload = dict(payload or {})
+    try:
+        display_payload = apply_audio_style_conditioning(payload)
+    except Exception:
+        display_payload = dict(payload)
+    lyrics = str(display_payload.get("lyrics") or payload.get("lyrics") or "")
+    caption = str(
+        display_payload.get("caption")
+        or payload.get("caption")
+        or payload.get("song_description")
+        or payload.get("simple_description")
+        or ""
+    )
+    task_type = str(display_payload.get("task_type") or payload.get("task_type") or "text2music").strip() or "text2music"
+    memory_policy = payload.get("memory_policy") if isinstance(payload.get("memory_policy"), dict) else {}
+    actual_runner_batch_size = payload.get("actual_runner_batch_size")
+    requested_take_count = payload.get("requested_take_count") or payload.get("batch_size")
+    if not memory_policy or actual_runner_batch_size in (None, ""):
+        try:
+            plan = _official_generation_memory_plan(
+                {
+                    "batch_size": payload.get("batch_size") or requested_take_count,
+                    "song_model": display_payload.get("song_model") or payload.get("song_model"),
+                    "task_type": task_type,
+                    "device": payload.get("device") or "auto",
+                    "duration": display_payload.get("duration") or payload.get("duration") or payload.get("audio_duration"),
+                    "inference_steps": display_payload.get("inference_steps") or payload.get("inference_steps") or payload.get("infer_step"),
+                    "shift": display_payload.get("shift") or payload.get("shift"),
+                    "use_lora": parse_bool(payload.get("use_lora"), False),
+                    "lora_scale": payload.get("lora_scale"),
+                }
+            )
+            if not memory_policy:
+                memory_policy = plan
+            actual_runner_batch_size = actual_runner_batch_size or plan.get("actual_runner_batch_size")
+            requested_take_count = requested_take_count or plan.get("requested_take_count")
+        except Exception:
+            memory_policy = memory_policy or {}
+    lora_trigger_tag = str(payload.get("lora_trigger_tag") or payload.get("lora_trigger") or "").strip()
+    lora_trigger_source = str(payload.get("lora_trigger_source") or "").strip()
+    lora_trigger_aliases = list(payload.get("lora_trigger_aliases") or [])
+    lora_trigger_candidates = list(payload.get("lora_trigger_candidates") or [])
+    lora_adapter_path = str(payload.get("lora_adapter_path") or payload.get("lora_path") or payload.get("lora_name_or_path") or "").strip()
+    if lora_adapter_path and (not lora_trigger_tag or not lora_trigger_source):
+        try:
+            adapter_metadata = infer_adapter_model_metadata(Path(lora_adapter_path).expanduser())
+        except Exception:
+            adapter_metadata = {}
+        if adapter_metadata:
+            lora_trigger_tag = lora_trigger_tag or str(
+                adapter_metadata.get("generation_trigger_tag")
+                or adapter_metadata.get("trigger_tag")
+                or ""
+            ).strip()
+            lora_trigger_source = lora_trigger_source or str(adapter_metadata.get("trigger_source") or "metadata").strip()
+            lora_trigger_aliases = lora_trigger_aliases or list(adapter_metadata.get("trigger_aliases") or [])
+            lora_trigger_candidates = lora_trigger_candidates or list(adapter_metadata.get("trigger_candidates") or [])
+    lora_trigger_tag = safe_generation_trigger_tag(lora_trigger_tag)
+    trigger_explicitly_disabled = (
+        ("use_lora_trigger" in payload or "lora_use_trigger" in payload)
+        and not parse_bool(payload.get("use_lora_trigger", payload.get("lora_use_trigger")), True)
+    )
+    use_lora = parse_bool(payload.get("use_lora"), bool(lora_adapter_path))
+    use_lora_trigger = bool(use_lora and lora_trigger_tag and not trigger_explicitly_disabled)
+    if not use_lora_trigger:
+        lora_trigger_source = "disabled" if use_lora and lora_trigger_tag and trigger_explicitly_disabled else ""
+    lora_trigger_audit = payload.get("lora_trigger_conditioning_audit") if isinstance(payload.get("lora_trigger_conditioning_audit"), dict) else {}
+    if use_lora and lora_trigger_tag and not lora_trigger_audit:
+        lora_trigger_audit = {
+            "status": "planned" if use_lora_trigger else "disabled",
+            "caption_only": True,
+            "trigger_tag": lora_trigger_tag,
+            "trigger_source": lora_trigger_source,
+            "trigger_aliases": lora_trigger_aliases,
+            "trigger_candidates": lora_trigger_candidates,
+            "applied": False,
+            "already_present": False,
+            "in_lyrics": bool(_caption_contains_lora_trigger(lyrics, lora_trigger_tag)),
+        }
     return _jsonable(
         {
             "task_type": task_type,
-            "title": str(payload.get("title") or "").strip(),
-            "artist_name": str(payload.get("artist_name") or "").strip(),
+            "title": str(display_payload.get("title") or payload.get("title") or "").strip(),
+            "artist_name": str(display_payload.get("artist_name") or payload.get("artist_name") or "").strip(),
             "caption": caption.strip(),
-            "tags": str(payload.get("tags") or "").strip(),
-            "duration": payload.get("duration") or payload.get("audio_duration"),
-            "song_model": str(payload.get("song_model") or "").strip(),
-            "quality_profile": str(payload.get("quality_profile") or "").strip(),
+            "tags": str(display_payload.get("tags") or payload.get("tags") or "").strip(),
+            "duration": display_payload.get("duration") or payload.get("duration") or payload.get("audio_duration"),
+            "song_model": str(display_payload.get("song_model") or payload.get("song_model") or "").strip(),
+            "quality_profile": str(display_payload.get("quality_profile") or payload.get("quality_profile") or "").strip(),
             "batch_size": payload.get("batch_size"),
-            "requested_take_count": payload.get("requested_take_count") or payload.get("batch_size"),
-            "actual_runner_batch_size": payload.get("actual_runner_batch_size"),
-            "memory_policy": payload.get("memory_policy") if isinstance(payload.get("memory_policy"), dict) else {},
-            "style_profile": str(payload.get("style_profile") or "").strip(),
-            "style_caption_tags": str(payload.get("style_caption_tags") or "").strip(),
-            "style_lyric_tags_applied": list(payload.get("style_lyric_tags_applied") or []),
-            "style_conditioning_audit": payload.get("style_conditioning_audit") if isinstance(payload.get("style_conditioning_audit"), dict) else {},
+            "requested_take_count": requested_take_count,
+            "actual_runner_batch_size": actual_runner_batch_size,
+            "memory_policy": memory_policy,
+            "style_profile": str(display_payload.get("style_profile") or "").strip(),
+            "style_caption_tags": str(display_payload.get("style_caption_tags") or "").strip(),
+            "style_lyric_tags_applied": list(display_payload.get("style_lyric_tags_applied") or []),
+            "style_conditioning_audit": display_payload.get("style_conditioning_audit") if isinstance(display_payload.get("style_conditioning_audit"), dict) else {},
             "seed": payload.get("seed"),
-            "bpm": payload.get("bpm"),
-            "key_scale": str(payload.get("key_scale") or "").strip(),
-            "time_signature": str(payload.get("time_signature") or "").strip(),
-            "vocal_language": str(payload.get("vocal_language") or "").strip(),
+            "bpm": display_payload.get("bpm") or payload.get("bpm"),
+            "key_scale": str(display_payload.get("key_scale") or payload.get("key_scale") or "").strip(),
+            "time_signature": str(display_payload.get("time_signature") or payload.get("time_signature") or "").strip(),
+            "vocal_language": str(display_payload.get("vocal_language") or payload.get("vocal_language") or "").strip(),
             "instrumental": parse_bool(payload.get("instrumental"), lyrics.strip() == "[Instrumental]"),
             "lyrics_word_count": len(re.findall(r"\b\w+\b", lyrics)) if lyrics and lyrics != "[Instrumental]" else 0,
             "has_lyrics": bool(lyrics.strip() and lyrics.strip() != "[Instrumental]"),
             "has_source_audio": bool(payload.get("src_audio_id") or payload.get("src_result_id") or payload.get("audio_code_string")),
             "has_reference_audio": bool(payload.get("reference_audio_id") or payload.get("reference_result_id")),
-            "with_lora": parse_bool(payload.get("use_lora"), False),
+            "with_lora": use_lora,
             "lora_adapter_name": str(payload.get("lora_adapter_name") or "").strip(),
-            "lora_adapter_path": str(payload.get("lora_adapter_path") or "").strip(),
-            "use_lora_trigger": parse_bool(payload.get("use_lora_trigger"), False),
-            "lora_trigger_tag": str(payload.get("lora_trigger_tag") or "").strip(),
-            "lora_trigger_conditioning_audit": payload.get("lora_trigger_conditioning_audit") if isinstance(payload.get("lora_trigger_conditioning_audit"), dict) else {},
+            "lora_adapter_path": lora_adapter_path,
+            "use_lora_trigger": use_lora_trigger,
+            "lora_trigger_tag": lora_trigger_tag if use_lora_trigger else "",
+            "lora_trigger_source": lora_trigger_source,
+            "lora_trigger_aliases": lora_trigger_aliases,
+            "lora_trigger_candidates": lora_trigger_candidates,
+            "lora_trigger_conditioning_audit": lora_trigger_audit,
             "lora_scale": payload.get("lora_scale"),
             "adapter_model_variant": str(payload.get("adapter_model_variant") or "").strip(),
             "auto_song_art": parse_bool(payload.get("auto_song_art"), False),
@@ -12945,6 +13024,11 @@ def _generation_result_summary(result: dict[str, Any] | None) -> dict[str, Any]:
             "lora_adapter_name": result.get("lora_adapter_name") or first_lora.get("name"),
             "lora_adapter_path": result.get("lora_adapter_path") or first_lora.get("path"),
             "lora_quality_status": result.get("lora_quality_status"),
+            "use_lora_trigger": result.get("use_lora_trigger"),
+            "lora_trigger_tag": result.get("lora_trigger_tag"),
+            "lora_trigger_source": result.get("lora_trigger_source"),
+            "lora_trigger_applied": result.get("lora_trigger_applied"),
+            "lora_trigger_conditioning_audit": result.get("lora_trigger_conditioning_audit"),
             "style_profile": result.get("style_profile"),
             "style_caption_tags": result.get("style_caption_tags"),
             "style_lyric_tags_applied": result.get("style_lyric_tags_applied"),

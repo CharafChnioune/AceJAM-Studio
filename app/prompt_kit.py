@@ -535,17 +535,19 @@ SECTION_TAGS = {
     "drill": ["[Intro - dark]", "[Verse - rap]", "[Hook - chant]", "[Verse - rap]", "[Hook - chant]", "[Outro]"],
     "edm": ["[Intro]", "[Build]", "[Drop]", "[Breakdown]", "[Build-Up]", "[Final Drop]", "[Outro]"],
     "instrumental": ["[Intro]", "[Instrumental]", "[Build]", "[Drop]", "[Breakdown]", "[Climax]", "[Outro]"],
-    "performance": ["[Vocal responses]", "[Call and response]", "[Layered vocals]", "[Whispered]", "[Spoken]"],
+    "performance": ["[Verse - whispered]", "[Chorus - layered vocals]", "[Chorus - call and response]", "[Bridge - spoken]", "[Outro - acapella]"],
 }
 
 ACE_STEP_AUTHORING_RULES: list[str] = [
     "Modifier syntax: write tags as [Section - modifier] with one dash and ONE modifier max. Stacking modifiers confuses ACE-Step and the tag content may be sung as lyrics.",
-    "Lyric meta tags use square brackets only ([Verse], [Hook], [Verse - rap]). Background vocals use parentheses around the words: 'main line (echo)' is rendered as a backing vocal and not as a tag.",
-    "ALL CAPS lines render as shouted intensity. Use sparingly for hook accents or chants, never for whole verses.",
-    "BPM, key/scale, time signature, and duration go ONLY in the dedicated metadata fields, never in the caption prose.",
+    "Lyric meta tags use square brackets only for sections ([Verse], [Verse - rap], [Hook], [Bridge], [Outro], [inst]). Background vocals use parentheses around the words: 'main line (echo)' is rendered as a backing vocal and not as a tag.",
+    "Vocal techniques (whispered, ad-libs, harmonies, falsetto, spoken word, call-and-response, powerful belting, shouted, layered vocals, narration) and energy/emotion descriptors (high energy, low energy, melancholic, explosive, building energy, euphoric, dreamy, calm, intense) go in the comma-separated tags field. Use them inside square brackets ONLY as section modifiers like [Verse - whispered], [Chorus - layered vocals], [Climax - powerful], not as standalone bracket lines in the lyrics. ACE-Step's official examples never use standalone vocal-technique or energy brackets.",
+    "ALL CAPS lyric lines render as shouted intensity. Use sparingly for hook accents like 'WE RUN THIS!' or one-word chants, never for whole verses.",
+    "BPM, key/scale, time signature, and duration go in the dedicated metadata fields. ACE-Step also reads them from tag prose ('130 bpm', 'G major'), but our policy keeps them only in metadata to avoid double sources.",
     "Caption is sound-only: genre, mood, instruments, timbre, era, production style, vocal type, rhythm, structure energy. No song titles, no producer credits as prose, no lyrics, no JSON, no BPM/key/time text.",
-    "Lyrics are a temporal script: a section tag header per block, then performable lines (rap can run 6-14 syllables/line, sung 6-10). Internal rhyme and ad-libs go inside the lyric text, not as separate tags.",
+    "Lyrics are a temporal script: a section tag header per block, then performable lines (rap can run 6-14 syllables/line, sung 6-10). Internal rhyme and ad-libs go inside the lyric text or in (parens) on the same line, not as separate tags.",
     "Producer references: never put a producer or label name in the caption. Map the request to the matching Producer-Format Cookbook entry below and use that tag stack instead. ACE-Step does not recognise producer names; it only responds to genre+era+drum+timbre vocabulary.",
+    "Section modifier dash: use ASCII hyphen `-` ([Verse - rap]). The model also accepts em-dash `–` (canonical in official examples like [Intro – Spoken], [Hook/Chorus – Reprise]). Pick one style per song; do not mix.",
     "Avoid generic AI phrasing: no 'neon dreams / fire inside / we rise / let it burn / chasing the night' style filler. Concrete scene details and one disciplined metaphor world per song outperform abstract slogans.",
 ]
 
@@ -611,6 +613,16 @@ PRODUCER_FORMAT_COOKBOOK: dict[str, str] = {
     "Madlib / loop-driven boom bap": (
         "boom bap, jazz sample loop, dusty mix, loose drums, vinyl crackle, "
         "warm analog mix, head-nod groove, behind-the-beat groove"
+    ),
+    "Just Blaze / triumphant soul hip-hop": (
+        "soulful hip-hop, triumphant horns, chopped soul sample, big drum break, "
+        "anthemic energy, layered backing vocals, polished mix, NYC east coast warmth, "
+        "marching snare, brass swells, head-nod groove, 2000s rap"
+    ),
+    "Stoupe / cinematic hardcore hip-hop": (
+        "cinematic hip-hop, orchestral strings, dramatic sample chop, hard-hitting drums, "
+        "filmic atmosphere, dark, dusty piano, taiko drums, choir vocals, "
+        "boom bap, gritty, ominous strings, big reverb tail"
     ),
 }
 

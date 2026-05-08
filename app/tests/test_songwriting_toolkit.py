@@ -1259,7 +1259,7 @@ kill all the rivals
         self.assertEqual(schema["counts"]["genre_modules"], 26)
         self.assertEqual(schema["counts"]["tag_taxonomy_groups"], 10)
         self.assertGreaterEqual(schema["counts"]["tag_taxonomy_terms"], 300)
-        self.assertGreaterEqual(schema["counts"]["lyric_meta_tags"], 90)
+        self.assertGreaterEqual(schema["counts"]["lyric_meta_tags"], 60)
         # Rap delivery sub-styles + producer-relevant genres must be available so
         # the LLM can reach for the right caption stack on Dre / No I.D. / Metro requests.
         for term in ("boom bap", "G-funk", "drill UK", "cloud rap", "phonk", "trap"):
@@ -1270,13 +1270,24 @@ kill all the rivals
             self.assertIn(term, TAG_TAXONOMY["instruments"])
         for term in ("90s G-funk", "90s boom bap", "modern trap"):
             self.assertIn(term, TAG_TAXONOMY["era_reference"])
+        # Vocal techniques live in vocal_character (tags-side), not as standalone
+        # bracket tags in lyrics — that matches how ACE-Step's official examples place them.
+        for term in ("whispered", "harmonies", "call-and-response", "powerful belting", "layered vocals"):
+            self.assertIn(term, TAG_TAXONOMY["vocal_character"])
+        # Energy/emotion descriptors live in mood_atmosphere, not as standalone brackets.
+        for term in ("high energy", "low energy", "explosive", "building energy", "melancholic", "euphoric"):
+            self.assertIn(term, TAG_TAXONOMY["mood_atmosphere"])
         self.assertIn("[Hook]", LYRIC_META_TAGS["basic_structure"])
         self.assertIn("[Hook/Chorus]", LYRIC_META_TAGS["basic_structure"])
-        self.assertIn("[ad-lib]", LYRIC_META_TAGS["vocal_control"])
-        self.assertIn("[falsetto]", LYRIC_META_TAGS["vocal_control"])
         self.assertIn("[Verse - rap]", LYRIC_META_TAGS["performance_modifiers"])
+        self.assertIn("[Verse - whispered]", LYRIC_META_TAGS["performance_modifiers"])
         self.assertIn("[Verse - double time rap]", LYRIC_META_TAGS["performance_modifiers"])
         self.assertIn("[Hook - sung]", LYRIC_META_TAGS["performance_modifiers"])
+        # Standalone vocal/energy/emotion bracket categories were removed —
+        # those words now live in TAG_TAXONOMY (caption-side).
+        self.assertNotIn("vocal_control", LYRIC_META_TAGS)
+        self.assertNotIn("energy_markers", LYRIC_META_TAGS)
+        self.assertNotIn("emotion_markers", LYRIC_META_TAGS)
         self.assertEqual(schema["counts"]["valid_languages"], 51)
         self.assertEqual(schema["counts"]["valid_keyscales"], 70)
         self.assertEqual(schema["counts"]["official_tasks"], 6)

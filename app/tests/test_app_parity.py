@@ -671,7 +671,7 @@ class AppParityTest(unittest.TestCase):
             schema = payload["song_intent_schema"]
             self.assertEqual(schema["counts"]["genre_modules"], 26)
             self.assertGreaterEqual(schema["counts"]["tag_taxonomy_terms"], 300)
-            self.assertGreaterEqual(schema["counts"]["lyric_meta_tags"], 90)
+            self.assertGreaterEqual(schema["counts"]["lyric_meta_tags"], 60)
             self.assertEqual(schema["counts"]["valid_languages"], 51)
             self.assertEqual(schema["counts"]["track_stems"], 12)
             self.assertIn("cover-nofsq", schema["capabilities"]["all_task_modes"])
