@@ -829,6 +829,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Requested takes", tracker)
         self.assertIn("Runner batch", tracker)
         self.assertIn("Memory policy", tracker)
+        self.assertIn("Volledige tracks klaar", tracker)
+        self.assertIn("Elke kaart hieronder is een volledig gerenderde track/take", tracker)
 
     def test_community_endpoint_refreshes_library_from_disk(self):
         client = TestClient(acejam_app.app)
@@ -2685,6 +2687,102 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Failed tracks", data["error"])
         self.assertEqual(data["model_albums"][0]["tracks"][0]["planning_status"], "failed")
         self.assertTrue(data["model_albums"][0]["tracks"][1]["generated"])
+
+    def test_album_job_publishes_full_tracks_as_they_finish(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            result_id = f"album-progress-{len(calls)}"
+            return {
+                "success": True,
+                "result_id": result_id,
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": payload,
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": "take-1",
+                        "result_id": result_id,
+                        "filename": "take.wav",
+                        "audio_url": f"/media/results/{result_id}/take.wav",
+                        "download_url": f"/media/results/{result_id}/take.wav",
+                        "title": payload["title"],
+                        "seed": payload["seed"],
+                    }
+                ],
+            }
+
+        request_payload = {
+            "album_job_id": "album-progress-job",
+            "agent_engine": "editable_plan",
+            "toolbelt_only": True,
+            "song_model_strategy": "selected",
+            "song_model": "acestep-v15-turbo",
+            "ace_lm_model": "none",
+            "track_variants": 1,
+            "save_to_library": False,
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "title": "First Full Track",
+                    "tags": "rap, hip hop, rhythmic spoken-word vocal, hard drums",
+                    "lyrics": _LONG_TEST_LYRICS,
+                    "duration": 30,
+                    "bpm": 92,
+                    "key_scale": "A minor",
+                    "time_signature": "4",
+                },
+                {
+                    "track_number": 2,
+                    "title": "Second Full Track",
+                    "tags": "rap, hip hop, rhythmic spoken-word vocal, hard drums",
+                    "lyrics": _LONG_TEST_LYRICS,
+                    "duration": 30,
+                    "bpm": 92,
+                    "key_scale": "A minor",
+                    "time_signature": "4",
+                },
+            ],
+        }
+        updates = []
+        original_set_album_job = acejam_app._set_album_job
+
+        def capture_album_job(job_id, **kwargs):
+            updates.append((job_id, kwargs))
+            return original_set_album_job(job_id, **kwargs)
+
+        try:
+            with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo"}), \
+                patch.object(album_crew_module, "plan_album", return_value=self._mock_direct_album_plan(request_payload["tracks"])), \
+                patch.object(acejam_app, "_validate_direct_album_agent_payload", return_value={"gate_passed": True, "status": "pass", "issues": [], "blocking_issues": []}), \
+                patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+                patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+                patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}), \
+                patch.object(acejam_app, "_set_album_job", side_effect=capture_album_job):
+                raw = acejam_app.generate_album(
+                    concept="unit test album",
+                    num_tracks=2,
+                    track_duration=30,
+                    request_json=json.dumps(request_payload),
+                )
+        finally:
+            acejam_app._album_jobs.pop("album-progress-job", None)
+
+        data = json.loads(raw)
+        self.assertTrue(data["success"])
+        progress_results = [
+            kwargs["result"]
+            for _, kwargs in updates
+            if isinstance(kwargs.get("result"), dict) and kwargs["result"].get("full_tracks_ready")
+        ]
+        self.assertGreaterEqual(len(progress_results), 2)
+        self.assertEqual(progress_results[0]["full_tracks_ready"], 1)
+        self.assertEqual(progress_results[0]["completed_audio_count"], 1)
+        self.assertEqual(progress_results[0]["audios"][0]["audio_url"], "/media/results/album-progress-1/take.wav")
+        self.assertEqual(progress_results[-1]["full_tracks_ready"], 2)
+        self.assertEqual(progress_results[-1]["completed_audio_count"], 2)
 
     def test_album_supplied_vocal_lyrics_can_explicitly_disable_ace_lm_formatting(self):
         calls = []

@@ -296,12 +296,12 @@ export function AlbumWizard() {
           metadata: j as Record<string, unknown>,
           error: j.error,
         });
-        if (state === "complete" && j.result) {
+        if (["complete", "completed", "succeeded", "success"].includes(state) && j.result) {
           setResult(MODE, j.result);
           toast.success("Album klaar.");
           updateJob(jobId, {
             status: "complete",
-            state,
+            state: "complete",
             progress: 100,
             metadata: j as Record<string, unknown>,
           });

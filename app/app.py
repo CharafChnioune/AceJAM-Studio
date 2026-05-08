@@ -9150,7 +9150,7 @@ def _run_vocal_preflight_verifier(params: dict[str, Any]) -> dict[str, Any] | No
     result["success"] = False
     result["needs_review"] = True
     result["error"] = (
-        "Selected ACE-Step model failed the 30s vocal preflight; long render was not started."
+        "Selected ACE-Step model failed the short vocal preflight; long render was not started."
     )
     _annotate_generation_attempt_result(
         result,
@@ -9659,6 +9659,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "success": True,
             "partial": completed < requested,
             "in_progress": completed < requested,
+            "full_takes_ready": completed,
+            "total_take_count": requested,
+            "completed_full_takes": _jsonable(audios),
             "result_id": result_id,
             "active_song_model": params["song_model"],
             "runner": "official",
@@ -9711,9 +9714,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "audios": _jsonable(audios),
         }
         stage = (
-            f"Take {completed}/{requested} klaar; volgende take rendert"
+            f"Volledige take {completed}/{requested} klaar; volgende take rendert"
             if completed < requested
-            else f"Take {completed}/{requested} klaar"
+            else f"Volledige take {completed}/{requested} klaar"
         )
         _set_api_generation_task(
             generation_task_id,
@@ -9722,7 +9725,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             stage=stage,
             progress=progress,
             result=partial_result,
-            logs=[f"Take {completed}/{requested} klaar: {audios[-1].get('filename') or audios[-1].get('audio_url')}"],
+            logs=[f"Volledige take {completed}/{requested} klaar: {audios[-1].get('filename') or audios[-1].get('audio_url')}"],
         )
 
     def memory_failure(error: Any) -> dict[str, Any]:
@@ -11480,6 +11483,73 @@ def generate_album(
             base_track["model_results"] = []
             base_track["audios"] = []
 
+        def publish_album_progress(
+            *,
+            current_album_id: str = "",
+            current_album_model: str = "",
+            current_album_model_label: str = "",
+            current_album_tracks: list[dict[str, Any]] | None = None,
+            current_album_audios: list[dict[str, Any]] | None = None,
+        ) -> None:
+            if not album_job_id:
+                return
+            expected = max(1, len(tracks) * len(album_models))
+            completed_renders = sum(
+                1
+                for base_track in tracks
+                for model_result in (base_track.get("model_results") or [])
+                if isinstance(model_result, dict) and model_result.get("generated")
+            )
+            progress = max(10, min(95, 10 + int(85 * completed_renders / expected)))
+            progress_model_albums = list(model_albums)
+            if current_album_id:
+                partial_tracks = list(current_album_tracks or [])
+                partial_audios = list(current_album_audios or [])
+                progress_model_albums.append(
+                    {
+                        "album_id": current_album_id,
+                        "album_family_id": album_family_id,
+                        "album_model": current_album_model,
+                        "album_model_label": current_album_model_label or model_label(current_album_model),
+                        "album_status": "running",
+                        "track_count": len(tracks),
+                        "generated_count": sum(1 for item in partial_tracks if item.get("generated")),
+                        "failed_count": sum(1 for item in partial_tracks if not item.get("generated")),
+                        "tracks": _jsonable(partial_tracks),
+                        "audios": _jsonable(partial_audios),
+                    }
+                )
+            _set_album_job(
+                album_job_id,
+                status=f"{completed_renders}/{expected} volledige track-render(s) klaar",
+                progress=progress,
+                generated_count=completed_renders,
+                completed_track_count=completed_renders,
+                completed_audio_count=len(generated_audios),
+                expected_count=expected,
+                album_family_id=album_family_id,
+                result={
+                    "success": False,
+                    "in_progress": completed_renders < expected,
+                    "partial": completed_renders < expected,
+                    "album_family_id": album_family_id,
+                    "album_status": "running" if completed_renders < expected else "completed",
+                    "track_count": len(tracks),
+                    "expected_renders": expected,
+                    "generated_count": completed_renders,
+                    "completed_track_count": completed_renders,
+                    "completed_audio_count": len(generated_audios),
+                    "full_tracks_ready": completed_renders,
+                    "tracks": _jsonable(tracks),
+                    "audios": _jsonable(generated_audios),
+                    "model_albums": _jsonable(progress_model_albums),
+                    "album_model_portfolio": _jsonable(album_models),
+                    "album_debug_dir": str(album_debug.root),
+                    "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
+                    "logs": logs[-200:],
+                },
+            )
+
         for model_index, model_item in enumerate(album_models, start=1):
             track_model = str(model_item["model"])
             album_model_slug = safe_filename(str(model_item.get("slug") or _model_slug(track_model)), _model_slug(track_model))
@@ -12000,6 +12070,13 @@ def generate_album(
                     _cleanup_accelerator_memory()
 
                 album_tracks.append(track)
+                publish_album_progress(
+                    current_album_id=album_id,
+                    current_album_model=track_model,
+                    current_album_model_label=str(model_item.get("label") or track_model),
+                    current_album_tracks=album_tracks,
+                    current_album_audios=album_audios,
+                )
 
             album_failed_tracks = [
                 {

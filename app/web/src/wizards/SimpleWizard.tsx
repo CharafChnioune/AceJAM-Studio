@@ -63,7 +63,7 @@ const SONG_MODELS = [
 ] as const;
 
 const QUALITY_PROFILES = [
-  ["draft", "Laag (docs-correcte preview)"],
+  ["draft", "Laag (docs-correct, volledig)"],
   ["standard", "Middel (docs standaard)"],
   ["chart_master", "Hoog (beste standaardkwaliteit)"],
 ] as const;

@@ -41,7 +41,7 @@ export function GenerationJobStatus({
               <Badge variant="outline">{state}</Badge>
               {Boolean(summary.song_model) && <Badge variant="secondary">{text(summary.song_model)}</Badge>}
               {Boolean(summary.duration) && <Badge variant="muted">{text(summary.duration)}s</Badge>}
-              {completedCount > 0 && <Badge variant="secondary">{completedCount} take{completedCount === 1 ? "" : "s"} klaar</Badge>}
+              {completedCount > 0 && <Badge variant="secondary">{completedCount} volledige take{completedCount === 1 ? "" : "s"} klaar</Badge>}
             </div>
           </div>
         </div>
@@ -53,7 +53,7 @@ export function GenerationJobStatus({
       <Progress value={progress} className="mt-4 h-1.5" />
       <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
         <Music4 className="size-3.5" />
-        Complete takes verschijnen hier meteen; de volgende takes renderen door op de achtergrond.
+        Volledige takes verschijnen hier meteen; de volgende takes renderen door op de achtergrond.
       </div>
       {result && completedCount > 0 && (
         <GenerationAudioList

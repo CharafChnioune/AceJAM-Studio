@@ -790,6 +790,134 @@ function MlxVideoDetails({ job }: { job: JsonRecord }) {
   );
 }
 
+function albumPlayableTracks(result: JsonRecord): JsonRecord[] {
+  const seen = new Set<string>();
+  const rows: JsonRecord[] = [];
+
+  const push = (raw: unknown) => {
+    const track = asRecord(raw);
+    const audios = asArray(track.audios).map(asRecord);
+    if (!audios.some((audio) => text(audio.audio_url || audio.download_url || audio.library_url, ""))) return;
+    const firstAudio = audios[0] || {};
+    const key = [
+      track.album_id || firstAudio.album_id,
+      track.result_id || firstAudio.result_id,
+      track.track_number,
+      track.album_model || track.active_song_model || firstAudio.album_model || firstAudio.song_model,
+      track.title || firstAudio.title,
+    ].map((item) => text(item, "")).join("::");
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(track);
+  };
+
+  asArray(result.tracks).forEach((rawTrack) => {
+    const track = asRecord(rawTrack);
+    const modelResults = asArray(track.model_results);
+    if (modelResults.length) {
+      modelResults.forEach(push);
+    } else {
+      push(track);
+    }
+  });
+
+  if (!rows.length) {
+    asArray(result.model_albums).forEach((rawAlbum) => {
+      const album = asRecord(rawAlbum);
+      asArray(album.tracks).forEach((rawTrack) => {
+        const track = { ...asRecord(rawTrack) };
+        if (!track.album_id) track.album_id = album.album_id;
+        if (!track.album_model) track.album_model = album.album_model;
+        if (!track.album_model_label) track.album_model_label = album.album_model_label;
+        push(track);
+      });
+    });
+  }
+
+  return rows;
+}
+
+function AlbumDetails({ job }: { job: JsonRecord }) {
+  const payload = asRecord(job.payload);
+  const result = asRecord(job.result);
+  const playableTracks = albumPlayableTracks(result);
+  const logs = asArray(job.logs || result.logs).map((item) => text(item, "")).filter(Boolean);
+  const familyDownload = text(result.family_download_url || job.download_url, "");
+  const albumDownload = text(result.download_url, "");
+  return (
+    <div className="space-y-4">
+      <Section title="Album setup" icon={Disc3}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <InfoRow label="Status" value={job.status || result.album_status || job.state} />
+          <InfoRow label="Progress" value={`${text(job.progress, "0")}%`} />
+          <InfoRow label="Tracks" value={payload.num_tracks || result.track_count || asArray(result.tracks).length} />
+          <InfoRow label="Full tracks ready" value={result.full_tracks_ready || result.completed_track_count || playableTracks.length} />
+          <InfoRow label="Audio files ready" value={result.completed_audio_count || asArray(result.audios).length} />
+          <InfoRow label="Expected renders" value={job.expected_count || result.expected_renders} />
+          <InfoRow label="Album family" value={result.album_family_id || job.album_family_id} />
+          <InfoRow label="Error" value={job.error || result.error} />
+        </div>
+        {(familyDownload || albumDownload) && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {familyDownload && (
+              <Button asChild variant="outline" size="sm">
+                <a href={familyDownload} download>
+                  <Download className="size-3.5" />
+                  Download family ZIP
+                </a>
+              </Button>
+            )}
+            {albumDownload && (
+              <Button asChild variant="outline" size="sm">
+                <a href={albumDownload} download>
+                  <Download className="size-3.5" />
+                  Download album ZIP
+                </a>
+              </Button>
+            )}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Volledige tracks klaar" icon={Music4}>
+        {playableTracks.length ? (
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Elke kaart hieronder is een volledig gerenderde track/take. Nieuwe tracks verschijnen hier zodra ze klaar zijn.
+            </p>
+            {playableTracks.map((track, index) => (
+              <div key={`${text(track.result_id, "track")}-${index}`} className="rounded-lg border bg-background/35 p-3">
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+                  <Badge variant="secondary">Track {text(track.track_number || index + 1)}</Badge>
+                  {Boolean(track.album_model_label || track.album_model || track.active_song_model) && (
+                    <Badge variant="outline">{text(track.album_model_label || track.album_model || track.active_song_model)}</Badge>
+                  )}
+                  {Boolean(track.result_id) && <Badge variant="muted">{text(track.result_id)}</Badge>}
+                </div>
+                <GenerationAudioList
+                  result={track}
+                  title={text(track.title, `Track ${index + 1}`)}
+                  artist={text(track.artist_name, "")}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Nog geen volledige track klaar. Zodra de eerste track klaar is, verschijnt hier direct een speler terwijl de rest doorrendert.
+          </p>
+        )}
+      </Section>
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -1084,6 +1212,8 @@ function JobDetailsDialog({
             <LoraDetails job={remote} log={log} />
           ) : job.kind === "generation" ? (
             <GenerationDetails job={remote} log={log} />
+          ) : job.kind === "album" ? (
+            <AlbumDetails job={remote} />
           ) : job.kind === "mflux" ? (
             <MfluxDetails job={remote} />
           ) : job.kind === "mlx-video" ? (
