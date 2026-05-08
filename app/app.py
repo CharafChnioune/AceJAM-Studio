@@ -3062,20 +3062,37 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
     adapter_song_model = str(payload.get("adapter_song_model") or "").strip()
     payload_trigger_tag = str(payload.get("lora_trigger_tag") or payload.get("lora_trigger") or "").strip()
     trigger_tag = payload_trigger_tag
+    trigger_source = "payload" if payload_trigger_tag else ""
+    trigger_aliases: list[Any] = []
+    trigger_candidates: list[Any] = []
     adapter_metadata: dict[str, Any] = {}
     if path:
-        adapter_metadata = infer_adapter_model_metadata(Path(path))
+        adapter_path = Path(path).expanduser()
+        adapter_metadata = infer_adapter_model_metadata(adapter_path) if adapter_path.exists() else {}
         model_variant = model_variant or str(adapter_metadata.get("model_variant") or "").strip()
         adapter_song_model = adapter_song_model or str(adapter_metadata.get("song_model") or "").strip()
-        name = name or str(adapter_metadata.get("display_name") or adapter_metadata.get("trigger_tag") or "").strip()
+        name = name or str(
+            adapter_metadata.get("display_name")
+            or adapter_metadata.get("trigger_tag_raw")
+            or adapter_metadata.get("generation_trigger_tag")
+            or adapter_metadata.get("trigger_tag")
+            or ""
+        ).strip()
         trigger_tag = trigger_tag or str(
             adapter_metadata.get("generation_trigger_tag")
             or adapter_metadata.get("trigger_tag")
             or ""
         ).strip()
+        if not trigger_source and trigger_tag:
+            trigger_source = str(adapter_metadata.get("trigger_source") or "metadata").strip() or "metadata"
+        trigger_aliases = list(adapter_metadata.get("trigger_aliases") or [])
+        trigger_candidates = list(adapter_metadata.get("trigger_candidates") or [])
     safe_trigger = safe_generation_trigger_tag(trigger_tag)
     trigger_toggle = payload.get("use_lora_trigger", payload.get("lora_use_trigger"))
-    trigger_explicitly_disabled = payload_trigger_tag and not parse_bool(trigger_toggle, True)
+    trigger_explicitly_disabled = (
+        ("use_lora_trigger" in payload or "lora_use_trigger" in payload)
+        and not parse_bool(trigger_toggle, True)
+    )
     use_trigger = bool(
         use_lora
         and safe_trigger
@@ -3091,6 +3108,9 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
         "adapter_model_variant": model_variant,
         "adapter_song_model": adapter_song_model,
         "adapter_metadata": adapter_metadata,
+        "lora_trigger_source": trigger_source if use_trigger else "",
+        "lora_trigger_aliases": trigger_aliases,
+        "lora_trigger_candidates": trigger_candidates,
     }
 
 
@@ -3118,6 +3138,9 @@ def _apply_lora_trigger_conditioning(params: dict[str, Any]) -> None:
         "status": "disabled",
         "caption_only": True,
         "trigger_tag": trigger,
+        "trigger_source": str(params.get("lora_trigger_source") or ""),
+        "trigger_aliases": list(params.get("lora_trigger_aliases") or []),
+        "trigger_candidates": list(params.get("lora_trigger_candidates") or []),
         "applied": False,
         "already_present": False,
         "in_lyrics": False,
@@ -7474,6 +7497,9 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "lora_adapter_name": params.get("lora_adapter_name", ""),
         "use_lora_trigger": params.get("use_lora_trigger", False),
         "lora_trigger_tag": params.get("lora_trigger_tag", ""),
+        "lora_trigger_source": params.get("lora_trigger_source", ""),
+        "lora_trigger_aliases": _jsonable(params.get("lora_trigger_aliases") or []),
+        "lora_trigger_candidates": _jsonable(params.get("lora_trigger_candidates") or []),
         "lora_scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
         "requested_take_count": params.get("requested_take_count", params.get("batch_size", 1)),
@@ -7664,6 +7690,7 @@ def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
         "lora_adapter_path",
         "use_lora_trigger",
         "lora_trigger_tag",
+        "lora_trigger_source",
         "lora_trigger_applied",
         "lora_scale",
         "adapter_model_variant",
@@ -11694,6 +11721,9 @@ def generate_album(
                         "lora_adapter_name",
                         "use_lora_trigger",
                         "lora_trigger_tag",
+                        "lora_trigger_source",
+                        "lora_trigger_aliases",
+                        "lora_trigger_candidates",
                         "lora_scale",
                         "adapter_model_variant",
                         "adapter_song_model",
@@ -11796,6 +11826,9 @@ def generate_album(
                         "lora_adapter_name": track_lora_request["lora_adapter_name"],
                         "use_lora_trigger": track_lora_request["use_lora_trigger"],
                         "lora_trigger_tag": track_lora_request["lora_trigger_tag"],
+                        "lora_trigger_source": track_lora_request.get("lora_trigger_source", ""),
+                        "lora_trigger_aliases": track_lora_request.get("lora_trigger_aliases", []),
+                        "lora_trigger_candidates": track_lora_request.get("lora_trigger_candidates", []),
                         "lora_scale": track_lora_request["lora_scale"],
                         "adapter_model_variant": track_lora_request["adapter_model_variant"],
                         "album_metadata": {

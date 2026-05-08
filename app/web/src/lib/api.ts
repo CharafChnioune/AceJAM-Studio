@@ -291,6 +291,11 @@ export interface LoraAdapter {
   path: string;
   adapter_type?: string;
   trigger_tag?: string;
+  trigger_tag_raw?: string;
+  generation_trigger_tag?: string;
+  trigger_aliases?: string[];
+  trigger_source?: string;
+  trigger_candidates?: string[];
   language?: string;
   model_variant?: string;
   song_model?: string;

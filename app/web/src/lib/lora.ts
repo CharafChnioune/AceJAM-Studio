@@ -40,6 +40,7 @@ export function songModelFromLoraVariant(variant: string | undefined): string {
 export function loraAdapterLabel(adapter: Partial<LoraAdapter>): string {
   return String(
     adapter.display_name ||
+      adapter.generation_trigger_tag ||
       adapter.trigger_tag ||
       adapter.label ||
       adapter.name ||
@@ -61,11 +62,23 @@ function metadataText(adapter: Partial<LoraAdapter>, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function metadataList(adapter: Partial<LoraAdapter>, key: string): string[] {
+  const value = adapter.metadata?.[key];
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
 export function loraTriggerOptions(adapter: Partial<LoraAdapter>): string[] {
   const raw = [
-    adapter.trigger_tag,
+    adapter.generation_trigger_tag,
     metadataText(adapter, "generation_trigger_tag"),
+    adapter.trigger_tag,
     metadataText(adapter, "trigger_tag"),
+    adapter.trigger_tag_raw,
+    metadataText(adapter, "trigger_tag_raw"),
+    adapter.trigger_aliases,
+    metadataList(adapter, "trigger_aliases"),
+    adapter.trigger_candidates,
+    metadataList(adapter, "trigger_candidates"),
   ];
   const seen = new Set<string>();
   const options: string[] = [];

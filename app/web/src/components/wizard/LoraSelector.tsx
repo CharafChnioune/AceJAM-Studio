@@ -166,6 +166,11 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
             {selected.trigger_tag && (
               <Badge variant="outline">{selected.trigger_tag}</Badge>
             )}
+            {selected.trigger_source && (
+              <Badge variant={selected.trigger_source === "missing" ? "destructive" : "secondary"}>
+                trigger: {selected.trigger_source}
+              </Badge>
+            )}
           </div>
         )}
       </div>
@@ -183,7 +188,7 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
                 onCheckedChange={setUseTrigger}
               />
             </div>
-            {triggerOptions.length > 0 ? (
+            {triggerOptions.length > 1 ? (
               <Select
                 value={effectiveTrigger || NO_TRIGGER}
                 onValueChange={setTriggerTag}
@@ -200,6 +205,10 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
                   ))}
                 </SelectContent>
               </Select>
+            ) : triggerOptions.length === 1 ? (
+              <div className="rounded-md border bg-background/40 px-3 py-2 text-sm font-mono">
+                {triggerOptions[0]}
+              </div>
             ) : (
               <p className="text-xs text-muted-foreground">
                 Deze adapter heeft geen trigger-tag metadata.

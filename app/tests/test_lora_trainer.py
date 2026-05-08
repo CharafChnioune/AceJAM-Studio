@@ -1360,6 +1360,9 @@ class LoraTrainerTest(unittest.TestCase):
             metadata = json.loads((Path(first["path"]) / "acejam_adapter.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["display_name"], "charaf hook")
             self.assertEqual(metadata["trigger_tag"], "charaf hook")
+            self.assertEqual(metadata["generation_trigger_tag"], "charaf hook")
+            self.assertEqual(metadata["trigger_tag_raw"], "charaf hook")
+            self.assertIn("charaf hook", metadata["trigger_aliases"])
             self.assertEqual(metadata["adapter_type"], "lora")
             self.assertEqual(metadata["model_variant"], "xl_sft")
             self.assertEqual(metadata["job_id"], "job-one")
@@ -1371,6 +1374,30 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertTrue(all(item["quality_status"] == "needs_review" for item in exported))
             self.assertFalse(any(item["is_loadable"] for item in exported))
             self.assertTrue(all(item["trigger_tag"] == "charaf hook" for item in exported))
+            self.assertTrue(all(item["generation_trigger_tag"] == "charaf hook" for item in exported))
+
+    def test_register_adapter_stores_raw_and_generation_trigger_for_numeric_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            source = self.make_peft_adapter(root / "training" / "final")
+
+            registered = manager.register_adapter(
+                source,
+                trigger_tag="2pac",
+                adapter_type="lora",
+                model_variant="xl_sft",
+                song_model="acestep-v15-xl-sft",
+            )
+
+            self.assertEqual(Path(registered["path"]).name, "pac")
+            metadata = json.loads((Path(registered["path"]) / "acejam_adapter.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["trigger_tag_raw"], "2pac")
+            self.assertEqual(metadata["generation_trigger_tag"], "pac")
+            self.assertEqual(metadata["trigger_tag"], "pac")
+            self.assertEqual(metadata["trigger_source"], "training")
+            self.assertIn("2pac", metadata["trigger_aliases"])
+            self.assertIn("pac", metadata["trigger_aliases"])
 
     def test_lokr_adapter_is_listed_but_not_generation_loadable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1405,6 +1432,8 @@ class LoraTrainerTest(unittest.TestCase):
 
             self.assertEqual(adapters[0]["model_variant"], "xl_sft")
             self.assertEqual(adapters[0]["song_model"], "acestep-v15-xl-sft")
+            self.assertEqual(adapters[0]["generation_trigger_tag"], "copied xl sft")
+            self.assertEqual(adapters[0]["trigger_source"], "folder")
             self.assertTrue((adapter_dir / "acejam_adapter.json").is_file())
 
     def test_lora_registry_quarantines_xl_sft_shift3_adapter(self):

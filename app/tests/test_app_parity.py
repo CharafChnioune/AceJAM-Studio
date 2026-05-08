@@ -1853,7 +1853,11 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("getLoraAdapters", selector)
         self.assertIn("isGenerationLoraAdapter", selector)
         self.assertIn("loraTriggerOptions", lora_lib)
+        self.assertIn("adapter.generation_trigger_tag", lora_lib)
+        self.assertIn("adapter.trigger_aliases", lora_lib)
         self.assertIn("Trigger tag activeren", selector)
+        self.assertIn("Wordt opgeslagen/gebruikt als", (web_src / "wizards" / "TrainerWizard.tsx").read_text(encoding="utf-8"))
+        self.assertIn("LoRA trigger source", (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8"))
         self.assertIn("songModelFromLoraVariant", lora_lib)
         self.assertIn('return "acestep-v15-xl-sft"', lora_lib)
 
@@ -2085,6 +2089,54 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["lora_scale"], 0.65)
         self.assertEqual(request["params"]["seed"], 314)
         self.assertEqual(request["config"]["seeds"], "314")
+
+    def test_lora_metadata_trigger_is_auto_applied_without_ui_trigger_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter_dir = Path(tmp) / "adapter"
+            adapter_dir.mkdir()
+            (adapter_dir / "adapter_config.json").write_text(
+                json.dumps({"base_model_name_or_path": "/models/acestep-v15-xl-sft"}),
+                encoding="utf-8",
+            )
+            (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+            (adapter_dir / "acejam_adapter.json").write_text(
+                json.dumps(
+                    {
+                        "display_name": "2Pac Epoch",
+                        "trigger_tag_raw": "2pac",
+                        "generation_trigger_tag": "pac",
+                        "trigger_aliases": ["pac", "2pac"],
+                        "trigger_source": "training",
+                        "adapter_type": "lora",
+                        "model_variant": "xl_sft",
+                        "song_model": "acestep-v15-xl-sft",
+                        "quality_status": "ready",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+                patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+                params = acejam_app._parse_generation_payload(
+                    {
+                        "task_type": "text2music",
+                        "song_model": "acestep-v15-xl-sft",
+                        "caption": "rap, west coast drums",
+                        "lyrics": "[Verse - rap]\nLine one",
+                        "duration": 30,
+                        "use_lora": True,
+                        "lora_adapter_path": str(adapter_dir),
+                        "lora_scale": 1.0,
+                    }
+                )
+
+        self.assertTrue(params["use_lora_trigger"])
+        self.assertEqual(params["lora_trigger_tag"], "pac")
+        self.assertEqual(params["lora_trigger_source"], "training")
+        self.assertRegex(params["caption"], r"(?i)(?<![a-z0-9])pac(?![a-z0-9])")
+        self.assertNotRegex(params["lyrics"], r"(?i)(?<![a-z0-9])pac(?![a-z0-9])")
+        self.assertEqual(params["lora_trigger_conditioning_audit"]["trigger_source"], "training")
 
     def test_lora_trigger_tag_is_not_duplicated_in_caption(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \

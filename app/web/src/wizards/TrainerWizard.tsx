@@ -73,6 +73,17 @@ interface TrainJobState {
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
 
+function safeGenerationTriggerTag(trigger: string): string {
+  const cleaned = String(trigger || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  const compact = cleaned.replace(/[^A-Za-z0-9]+/g, "").toLowerCase();
+  if (compact === "2pac") return "pac";
+  if (/^\d+[A-Za-z][A-Za-z0-9_-]*$/.test(cleaned)) {
+    return cleaned.replace(/^\d+/, "").replace(/[_-]+/g, " ").trim() || cleaned;
+  }
+  return cleaned;
+}
+
 interface EpochAuditionGenre {
   key: string;
   label: string;
@@ -370,6 +381,7 @@ export function TrainerWizard() {
     auditionGenres.find((item) => item.key === form.epoch_audition_genre) ??
     auditionGenres.find((item) => item.key === "rap") ??
     auditionGenres[0];
+  const generationTriggerPreview = safeGenerationTriggerTag(form.trigger_tag);
 
   const setAuditionGenre = (value: string) => {
     const selected = auditionGenres.find((item) => item.key === value);
@@ -749,6 +761,12 @@ export function TrainerWizard() {
                   }
                   placeholder="char_aurora"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Wordt opgeslagen/gebruikt als:{" "}
+                  <code className="rounded bg-background/60 px-1 py-0.5">
+                    {generationTriggerPreview || "nog geen trigger"}
+                  </code>
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label>Default taal</Label>

@@ -617,6 +617,104 @@ def safe_generation_trigger_tag(trigger_tag: str | None) -> str:
     return trigger
 
 
+def _split_trigger_aliases(value: Any) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: Any) -> None:
+        if isinstance(item, (list, tuple, set)):
+            for child in item:
+                add(child)
+            return
+        for part in re.split(r"[,;\n]+", str(item or "")):
+            cleaned = re.sub(r"\s+", " ", part).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            aliases.append(cleaned)
+
+    add(value)
+    return aliases
+
+
+def _clean_trigger_fallback_text(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").replace("_", " ").strip())
+    if not text:
+        return ""
+    text = re.sub(r"-(?:[0-9a-f]{8,32})$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+(?:[0-9a-f]{8,32})$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+", " ", text.replace("-", " ")).strip()
+    if re.match(r"^epoch[\s_-]*\d+\b", text, flags=re.IGNORECASE):
+        return ""
+    if text.lower() in {"final", "checkpoints", "checkpoint", "adapter", "lora", "lokr", "exports"}:
+        return ""
+    return text
+
+
+def adapter_path_trigger_candidates(adapter_path: Path | str) -> list[str]:
+    path = Path(adapter_path)
+    candidates: list[str] = []
+    if path.name == "final":
+        candidates.append(path.parent.name)
+    elif re.match(r"^epoch[_\s-]*\d+", path.name, flags=re.IGNORECASE):
+        candidates.append(path.parent.parent.name if path.parent.name == "checkpoints" else path.parent.name)
+    candidates.append(path.name)
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = _clean_trigger_fallback_text(candidate)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+    return cleaned
+
+
+def lora_trigger_metadata_fields(
+    *,
+    raw_trigger: Any = "",
+    generation_trigger: Any = "",
+    aliases: Any = None,
+    fallback_candidates: Any = None,
+    source: str = "",
+) -> dict[str, Any]:
+    raw = re.sub(r"\s+", " ", str(raw_trigger or "").strip())
+    generation = safe_generation_trigger_tag(str(generation_trigger or raw or "").strip())
+    trigger_source = str(source or "").strip().lower()
+    candidates = _split_trigger_aliases(fallback_candidates)
+
+    if not generation:
+        for candidate in candidates:
+            fallback = _clean_trigger_fallback_text(candidate)
+            if not fallback:
+                continue
+            raw = raw or fallback
+            generation = safe_generation_trigger_tag(fallback)
+            trigger_source = trigger_source or "folder"
+            break
+
+    alias_list = _split_trigger_aliases([generation, raw, aliases, candidates])
+    if not generation:
+        trigger_source = "missing"
+    elif not trigger_source:
+        trigger_source = "metadata"
+
+    return {
+        "trigger_tag_raw": raw,
+        "generation_trigger_tag": generation,
+        "trigger_tag": generation,
+        "trigger_aliases": alias_list,
+        "trigger_source": trigger_source,
+        "trigger_candidates": candidates,
+    }
+
+
 def build_epoch_audition_caption(
     caption: str | None = "",
     *,
@@ -1126,7 +1224,14 @@ def infer_adapter_model_metadata(adapter_path: Path | str) -> dict[str, Any]:
     if metadata.get("song_model") or metadata.get("model_variant"):
         variant = model_to_variant(str(metadata.get("model_variant") or metadata.get("song_model") or ""))
         song_model = model_from_variant(variant, normalize_training_song_model(str(metadata.get("song_model") or "")))
-        return {**metadata, "model_variant": variant, "song_model": song_model}
+        trigger_fields = lora_trigger_metadata_fields(
+            raw_trigger=metadata.get("trigger_tag_raw") or metadata.get("trigger_tag") or "",
+            generation_trigger=metadata.get("generation_trigger_tag") or metadata.get("trigger_tag") or "",
+            aliases=metadata.get("trigger_aliases"),
+            fallback_candidates=[metadata.get("display_name"), *adapter_path_trigger_candidates(path)],
+            source=str(metadata.get("trigger_source") or ("metadata" if metadata.get("generation_trigger_tag") or metadata.get("trigger_tag") else "")),
+        )
+        return {**metadata, **trigger_fields, "model_variant": variant, "song_model": song_model}
 
     config_path = path / "adapter_config.json"
     if config_path.is_file():
@@ -1144,6 +1249,14 @@ def infer_adapter_model_metadata(adapter_path: Path | str) -> dict[str, Any]:
                     "base_model_name_or_path": base_model,
                 }
             )
+    trigger_fields = lora_trigger_metadata_fields(
+        raw_trigger=metadata.get("trigger_tag_raw") or metadata.get("trigger_tag") or "",
+        generation_trigger=metadata.get("generation_trigger_tag") or metadata.get("trigger_tag") or "",
+        aliases=metadata.get("trigger_aliases"),
+        fallback_candidates=[metadata.get("display_name"), *adapter_path_trigger_candidates(path)],
+        source=str(metadata.get("trigger_source") or ("metadata" if metadata.get("generation_trigger_tag") or metadata.get("trigger_tag") else "")),
+    )
+    metadata.update(trigger_fields)
     return metadata
 
 
@@ -1483,7 +1596,8 @@ class AceTrainingManager:
         genre_ratio: int | float | str = 0,
     ) -> list[dict[str, Any]]:
         """Create ACE-Step training labels without language detection or LM guessing."""
-        trigger = str(trigger_tag or "").strip()
+        trigger_raw = str(trigger_tag or "").strip()
+        trigger = safe_generation_trigger_tag(trigger_raw)
         fixed_language = str(language or "unknown").strip() or "unknown"
         position = str(tag_position or "prepend").strip().lower()
         if position not in {"prepend", "append", "replace"}:
@@ -1506,6 +1620,8 @@ class AceTrainingManager:
                     "language": fixed_language,
                     "custom_tag": trigger,
                     "trigger_tag": trigger,
+                    "trigger_tag_raw": trigger_raw,
+                    "generation_trigger_tag": trigger,
                     "tag_position": position,
                     "genre_ratio": ratio,
                     "label_source": entry.get("label_source")
@@ -1638,7 +1754,8 @@ class AceTrainingManager:
 
     def start_one_click_train(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.require_ready()
-        trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        trigger_tag_raw = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        trigger_tag = safe_generation_trigger_tag(trigger_tag_raw)
         language = str(payload.get("language") or payload.get("vocal_language") or "").strip()
         if not trigger_tag:
             raise ValueError("trigger_tag is required")
@@ -1778,7 +1895,8 @@ class AceTrainingManager:
         variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
         song_model = model_from_variant(variant, requested_song_model)
         inference_defaults = training_inference_defaults(variant)
-        trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        trigger_tag_raw = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        trigger_tag = safe_generation_trigger_tag(trigger_tag_raw)
         epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         epoch_audition = self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed)
@@ -1892,7 +2010,10 @@ class AceTrainingManager:
                 "model_variant": variant,
                 "song_model": song_model,
                 "trigger_tag": trigger_tag,
-                "display_name": trigger_tag,
+                "trigger_tag_raw": trigger_tag_raw,
+                "generation_trigger_tag": trigger_tag,
+                "trigger_aliases": _split_trigger_aliases([trigger_tag, trigger_tag_raw]),
+                "display_name": trigger_tag_raw or trigger_tag,
                 "epochs": epochs,
                 "save_every_n_epochs": 1,
                 "epoch_audition": epoch_audition,
@@ -2106,19 +2227,47 @@ class AceTrainingManager:
                 for key, value in inferred_meta.items():
                     meta.setdefault(key, value)
                 adapter_type = str(meta.get("adapter_type") or ("lokr" if has_lokr and not has_lora else "lora")).strip().lower()
-                display_name = str(meta.get("display_name") or meta.get("trigger_tag") or "").strip()
+                display_name = str(meta.get("display_name") or meta.get("trigger_tag_raw") or meta.get("trigger_tag") or "").strip()
                 if not display_name:
                     display_name = child.parent.name if child.name == "final" and root == self.training_dir else child.name
+                trigger_fields = lora_trigger_metadata_fields(
+                    raw_trigger=meta.get("trigger_tag_raw") or meta.get("trigger_tag") or "",
+                    generation_trigger=meta.get("generation_trigger_tag") or meta.get("trigger_tag") or "",
+                    aliases=meta.get("trigger_aliases"),
+                    fallback_candidates=[display_name, *adapter_path_trigger_candidates(child)],
+                    source=str(meta.get("trigger_source") or ("metadata" if meta.get("generation_trigger_tag") or meta.get("trigger_tag") else "")),
+                )
+                for key, value in trigger_fields.items():
+                    meta.setdefault(key, value)
+                if trigger_fields.get("generation_trigger_tag") and meta.get("trigger_tag") != trigger_fields["generation_trigger_tag"]:
+                    meta["trigger_tag"] = trigger_fields["generation_trigger_tag"]
+                if trigger_fields.get("trigger_tag_raw"):
+                    meta.setdefault("trigger_tag_raw", trigger_fields["trigger_tag_raw"])
+                display_name = str(meta.get("display_name") or meta.get("trigger_tag_raw") or meta.get("trigger_tag") or display_name).strip()
                 quality = adapter_quality_metadata(meta, adapter_type=adapter_type)
                 meta.setdefault("quality_status", quality["quality_status"])
                 meta.setdefault("quality_reasons", quality["quality_reasons"])
                 blocked_statuses = {"quarantined", "needs_review", "failed_audition", "not_generation_loadable"}
                 quality_status = str(quality.get("quality_status") or "").lower()
                 loadable = bool(has_lora and adapter_type == "lora" and quality_status not in blocked_statuses)
-                if has_lora and adapter_type == "lora" and not meta_path.is_file():
+                should_backfill_metadata = bool(
+                    has_lora
+                    and adapter_type == "lora"
+                    and (
+                        not meta_path.is_file()
+                        or not meta.get("generation_trigger_tag")
+                        or not meta.get("trigger_source")
+                    )
+                )
+                if should_backfill_metadata:
                     generated_meta = {
                         "display_name": display_name,
                         "trigger_tag": str(meta.get("trigger_tag") or ""),
+                        "trigger_tag_raw": str(meta.get("trigger_tag_raw") or ""),
+                        "generation_trigger_tag": str(meta.get("generation_trigger_tag") or ""),
+                        "trigger_aliases": list(meta.get("trigger_aliases") or []),
+                        "trigger_source": str(meta.get("trigger_source") or "missing"),
+                        "trigger_candidates": list(meta.get("trigger_candidates") or []),
                         "adapter_type": adapter_type,
                         "model_variant": str(meta.get("model_variant") or ""),
                         "song_model": str(meta.get("song_model") or ""),
@@ -2147,6 +2296,11 @@ class AceTrainingManager:
                         "source": "exports" if root == self.exports_dir else "training",
                         "updated_at": datetime.fromtimestamp(child.stat().st_mtime, timezone.utc).isoformat(),
                         "trigger_tag": meta.get("trigger_tag", ""),
+                        "trigger_tag_raw": meta.get("trigger_tag_raw", ""),
+                        "generation_trigger_tag": meta.get("generation_trigger_tag", ""),
+                        "trigger_aliases": meta.get("trigger_aliases", []),
+                        "trigger_source": meta.get("trigger_source", "missing"),
+                        "trigger_candidates": meta.get("trigger_candidates", []),
                         "language": meta.get("language", ""),
                         "model_variant": meta.get("model_variant", ""),
                         "song_model": meta.get("song_model", ""),
@@ -2226,8 +2380,26 @@ class AceTrainingManager:
                 source_meta = json.loads(source_meta_path.read_text(encoding="utf-8"))
             except Exception:
                 source_meta = {}
-        trigger_tag = str(trigger_tag or source_meta.get("trigger_tag") or "").strip()
-        display_name = str(display_name or source_meta.get("display_name") or trigger_tag or name or source.name).strip()
+        merged_metadata = dict(source_meta)
+        merged_metadata.update(metadata or {})
+        trigger_fields = lora_trigger_metadata_fields(
+            raw_trigger=merged_metadata.get("trigger_tag_raw") or source_meta.get("trigger_tag_raw") or trigger_tag or source_meta.get("trigger_tag") or "",
+            generation_trigger=merged_metadata.get("generation_trigger_tag") or trigger_tag or source_meta.get("generation_trigger_tag") or source_meta.get("trigger_tag") or "",
+            aliases=[merged_metadata.get("trigger_aliases"), source_meta.get("trigger_aliases")],
+            fallback_candidates=[
+                merged_metadata.get("display_name"),
+                display_name,
+                name,
+                *adapter_path_trigger_candidates(source),
+            ],
+            source=str(
+                merged_metadata.get("trigger_source")
+                or ("training" if trigger_tag else ("metadata" if source_meta.get("generation_trigger_tag") or source_meta.get("trigger_tag") else ""))
+            ),
+        )
+        trigger_tag = str(trigger_fields.get("generation_trigger_tag") or "").strip()
+        raw_trigger = str(trigger_fields.get("trigger_tag_raw") or "").strip()
+        display_name = str(display_name or source_meta.get("display_name") or raw_trigger or trigger_tag or name or source.name).strip()
         adapter_type = self._detect_adapter_type(source, adapter_type or str(source_meta.get("adapter_type") or "lora"))
         target = self._unique_export_target(trigger_tag or display_name or name or source.name)
         if source.is_dir():
@@ -2235,8 +2407,6 @@ class AceTrainingManager:
         else:
             target.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target / source.name)
-        merged_metadata = dict(source_meta)
-        merged_metadata.update(metadata or {})
         source_paths = dict(merged_metadata.get("source_paths") or {})
         source_paths.update(
             {
@@ -2246,6 +2416,7 @@ class AceTrainingManager:
         )
         adapter_metadata = {
             **merged_metadata,
+            **trigger_fields,
             "display_name": display_name or trigger_tag or target.name,
             "trigger_tag": trigger_tag,
             "adapter_type": adapter_type,
@@ -2276,6 +2447,7 @@ class AceTrainingManager:
             "adapter": target.name,
             "display_name": adapter_metadata["display_name"],
             "trigger_tag": trigger_tag,
+            "generation_trigger_tag": trigger_tag,
             "metadata": adapter_metadata,
         }
 
@@ -2285,7 +2457,8 @@ class AceTrainingManager:
     def _one_click_params(self, payload: dict[str, Any], *, dataset_id: str, import_root: Path) -> dict[str, Any]:
         sample_count = parse_int(payload.get("sample_count"), 0, 0, None)
         epochs = payload.get("train_epochs", payload.get("epochs"))
-        trigger_tag = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        trigger_tag_raw = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
+        trigger_tag = safe_generation_trigger_tag(trigger_tag_raw)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         device = default_training_device(payload.get("device"))
         requested_song_model = normalize_training_song_model(str(payload.get("song_model") or ""))
@@ -2296,6 +2469,9 @@ class AceTrainingManager:
             "dataset_id": dataset_id,
             "import_root": str(import_root),
             "trigger_tag": trigger_tag,
+            "trigger_tag_raw": trigger_tag_raw,
+            "generation_trigger_tag": trigger_tag,
+            "trigger_aliases": _split_trigger_aliases([trigger_tag, trigger_tag_raw]),
             "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
             "adapter_type": str(payload.get("adapter_type") or "lora").strip().lower(),
             "tag_position": str(payload.get("tag_position") or "prepend").strip().lower(),
@@ -2333,6 +2509,7 @@ class AceTrainingManager:
             import_root = Path(params["import_root"]).expanduser()
             dataset_id = str(params["dataset_id"])
             trigger = str(params["trigger_tag"])
+            trigger_raw = str(params.get("trigger_tag_raw") or trigger)
             language = str(params["language"])
             adapter_type = str(params.get("adapter_type") or "lora").lower()
             if adapter_type not in {"lora", "lokr"}:
@@ -2522,6 +2699,9 @@ class AceTrainingManager:
                 dataset_id=dataset_id,
                 metadata={
                     "custom_tag": trigger,
+                    "trigger_tag_raw": trigger_raw,
+                    "generation_trigger_tag": trigger,
+                    "trigger_aliases": list(params.get("trigger_aliases") or _split_trigger_aliases([trigger, trigger_raw])),
                     "tag_position": params.get("tag_position") or "prepend",
                     "genre_ratio": params.get("genre_ratio") or 0,
                     "language": language,
@@ -2684,7 +2864,7 @@ class AceTrainingManager:
             registered_info = self.register_adapter(
                 final_adapter,
                 trigger_tag=trigger,
-                display_name=trigger,
+                display_name=trigger_raw or trigger,
                 adapter_type=adapter_type,
                 model_variant=str(params["model_variant"]),
                 song_model=str(params["song_model"]),
@@ -2694,6 +2874,10 @@ class AceTrainingManager:
                 epochs=int(epochs),
                 language=language,
                 metadata={
+                    "trigger_tag_raw": trigger_raw,
+                    "generation_trigger_tag": trigger,
+                    "trigger_aliases": list(params.get("trigger_aliases") or _split_trigger_aliases([trigger, trigger_raw])),
+                    "trigger_source": "training",
                     "epoch_audition": params.get("epoch_audition") or {},
                     "epoch_auditions": list(pre_register_result.get("epoch_auditions") or []),
                     "dataset_warnings": params.get("dataset_warnings") or {},
@@ -2736,8 +2920,11 @@ class AceTrainingManager:
                     "final_adapter": str(final_adapter),
                     "registered_adapter_path": str(registered),
                     "adapter_name": registered_info.get("adapter", registered.name),
-                    "display_name": registered_info.get("display_name", trigger),
+                    "display_name": registered_info.get("display_name", trigger_raw or trigger),
                     "trigger_tag": registered_info.get("trigger_tag", trigger),
+                    "trigger_tag_raw": trigger_raw,
+                    "generation_trigger_tag": registered_info.get("generation_trigger_tag", trigger),
+                    "trigger_aliases": list(params.get("trigger_aliases") or _split_trigger_aliases([trigger, trigger_raw])),
                     "sample_count": len(labels),
                     "epochs": epochs,
                     "auto_load": bool(params.get("auto_load")),
@@ -3134,6 +3321,8 @@ class AceTrainingManager:
             "lyrics_section_tags": dict(config.get("lyrics_section_tags") or {}),
             "user_lyrics": str(config.get("user_lyrics") or ""),
             "trigger_tag": str(params.get("trigger_tag") or ""),
+            "trigger_tag_raw": str(params.get("trigger_tag_raw") or params.get("trigger_tag") or ""),
+            "generation_trigger_tag": str(params.get("generation_trigger_tag") or params.get("trigger_tag") or ""),
             "song_model": song_model,
             "model_variant": variant,
             "adapter_type": str(params.get("adapter_type") or "lora"),
@@ -3578,21 +3767,27 @@ class AceTrainingManager:
                 result["epoch_auditions_skipped_reason"] = existing_result["epoch_auditions_skipped_reason"]
             if result["adapter_exists"]:
                 params = dict(job.params or {})
+                generation_trigger = str(params.get("generation_trigger_tag") or params.get("trigger_tag") or "").strip()
+                raw_trigger = str(params.get("trigger_tag_raw") or generation_trigger).strip()
                 registered = self.register_adapter(
                     Path(final_adapter),
-                    trigger_tag=str(params.get("trigger_tag") or ""),
-                    display_name=str(params.get("display_name") or params.get("trigger_tag") or ""),
+                    trigger_tag=generation_trigger,
+                    display_name=str(params.get("display_name") or raw_trigger or generation_trigger or ""),
                     adapter_type=str(params.get("adapter_type") or "lora"),
                     model_variant=str(params.get("model_variant") or ""),
                     song_model=str(params.get("song_model") or ""),
                     job_id=job.id,
                     epochs=parse_int(params.get("epochs") or params.get("train_epochs") or existing_result.get("epochs"), 0, 0, None) or None,
-	                    metadata={
-	                        "epoch_audition": params.get("epoch_audition") or {},
-	                        "epoch_auditions": list(existing_result.get("epoch_auditions") or []),
-	                        "dataset_warnings": params.get("dataset_warnings") or existing_result.get("dataset_warnings") or {},
-	                        "training_shift": params.get("training_shift"),
-	                        "num_inference_steps": params.get("num_inference_steps"),
+                    metadata={
+                        "trigger_tag_raw": raw_trigger,
+                        "generation_trigger_tag": generation_trigger,
+                        "trigger_aliases": list(params.get("trigger_aliases") or _split_trigger_aliases([generation_trigger, raw_trigger])),
+                        "trigger_source": "training",
+                        "epoch_audition": params.get("epoch_audition") or {},
+                        "epoch_auditions": list(existing_result.get("epoch_auditions") or []),
+                        "dataset_warnings": params.get("dataset_warnings") or existing_result.get("dataset_warnings") or {},
+                        "training_shift": params.get("training_shift"),
+                        "num_inference_steps": params.get("num_inference_steps"),
                         "lora_scale": params.get("lora_scale"),
                         "source_paths": {
                             "dataset_dir": job.paths.get("dataset_dir", ""),
@@ -3608,6 +3803,9 @@ class AceTrainingManager:
                         "adapter_name": registered["adapter"],
                         "display_name": registered.get("display_name", ""),
                         "trigger_tag": registered.get("trigger_tag", ""),
+                        "trigger_tag_raw": raw_trigger,
+                        "generation_trigger_tag": registered.get("generation_trigger_tag", ""),
+                        "trigger_aliases": list(params.get("trigger_aliases") or _split_trigger_aliases([generation_trigger, raw_trigger])),
                     }
                 )
             return result

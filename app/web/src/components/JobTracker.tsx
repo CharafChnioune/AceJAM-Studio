@@ -516,6 +516,14 @@ function GenerationDetails({
     resultSummary.lora_trigger_tag ||
     summary.lora_trigger_tag ||
     payload.lora_trigger_tag;
+  const loraTriggerSource =
+    result.lora_trigger_source ||
+    resultSummary.lora_trigger_source ||
+    summary.lora_trigger_source ||
+    payload.lora_trigger_source ||
+    (typeof result.lora_trigger_conditioning_audit === "object" && result.lora_trigger_conditioning_audit
+      ? (result.lora_trigger_conditioning_audit as Record<string, unknown>).trigger_source
+      : "");
   const requestedLoraScale = payload.lora_scale ?? summary.lora_scale;
 
   return (
@@ -548,6 +556,7 @@ function GenerationDetails({
           <InfoRow label="LoRA active" value={loraActive} />
           <InfoRow label="LoRA adapter" value={loraAdapterName} />
           <InfoRow label="LoRA trigger" value={loraTriggerTag} />
+          <InfoRow label="LoRA trigger source" value={loraTriggerSource} />
           <InfoRow label="LoRA scale" value={loraScale} />
           <InfoRow label="Requested LoRA scale" value={requestedLoraScale} />
           <InfoRow label="Style profile" value={result.style_profile ?? resultSummary.style_profile} />
