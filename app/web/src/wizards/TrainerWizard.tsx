@@ -72,6 +72,33 @@ interface TrainJobState {
 }
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
+const ALLOWED_SIDECAR = /\.(txt|json|csv)$/i;
+
+interface TrainerUploadItem {
+  file: File;
+  relativePath: string;
+}
+
+interface FileSystemEntryLike {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+}
+
+interface FileSystemFileEntryLike extends FileSystemEntryLike {
+  file: (success: (file: File) => void, error?: (error: DOMException) => void) => void;
+}
+
+interface FileSystemDirectoryReaderLike {
+  readEntries: (
+    success: (entries: FileSystemEntryLike[]) => void,
+    error?: (error: DOMException) => void,
+  ) => void;
+}
+
+interface FileSystemDirectoryEntryLike extends FileSystemEntryLike {
+  createReader: () => FileSystemDirectoryReaderLike;
+}
 
 function safeGenerationTriggerTag(trigger: string): string {
   const cleaned = String(trigger || "").replace(/\s+/g, " ").trim();
@@ -82,6 +109,72 @@ function safeGenerationTriggerTag(trigger: string): string {
     return cleaned.replace(/^\d+/, "").replace(/[_-]+/g, " ").trim() || cleaned;
   }
   return cleaned;
+}
+
+function uploadRelativePath(file: File): string {
+  const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/") || file.name;
+}
+
+function isTrainerUploadSupported(path: string): boolean {
+  return ALLOWED_AUDIO.test(path) || ALLOWED_SIDECAR.test(path);
+}
+
+function fileFromEntry(entry: FileSystemFileEntryLike): Promise<File> {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+function readAllDirectoryEntries(reader: FileSystemDirectoryReaderLike): Promise<FileSystemEntryLike[]> {
+  return new Promise((resolve, reject) => {
+    const all: FileSystemEntryLike[] = [];
+    const readBatch = () => {
+      reader.readEntries(
+        (entries) => {
+          if (entries.length === 0) {
+            resolve(all);
+            return;
+          }
+          all.push(...entries);
+          readBatch();
+        },
+        reject,
+      );
+    };
+    readBatch();
+  });
+}
+
+async function uploadItemsFromEntry(
+  entry: FileSystemEntryLike,
+  parentPath = "",
+): Promise<TrainerUploadItem[]> {
+  const relativePath = [parentPath, entry.name].filter(Boolean).join("/");
+  if (entry.isFile) {
+    const file = await fileFromEntry(entry as FileSystemFileEntryLike);
+    return [{ file, relativePath }];
+  }
+  if (!entry.isDirectory) return [];
+  const reader = (entry as FileSystemDirectoryEntryLike).createReader();
+  const entries = await readAllDirectoryEntries(reader);
+  const nested = await Promise.all(entries.map((child) => uploadItemsFromEntry(child, relativePath)));
+  return nested.flat();
+}
+
+async function uploadItemsFromDataTransfer(dataTransfer: DataTransfer): Promise<TrainerUploadItem[]> {
+  const entries: FileSystemEntryLike[] = [];
+  for (const item of Array.from(dataTransfer.items || [])) {
+    const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => unknown }).webkitGetAsEntry?.();
+    if (entry) entries.push(entry as FileSystemEntryLike);
+  }
+  if (entries.length > 0) {
+    const nested = await Promise.all(entries.map((entry) => uploadItemsFromEntry(entry)));
+    return nested.flat();
+  }
+  return Array.from(dataTransfer.files || []).map((file) => ({ file, relativePath: uploadRelativePath(file) }));
 }
 
 interface EpochAuditionGenre {
@@ -340,9 +433,10 @@ function LiveLabelRow({ label }: { label: LoraAutolabelLabel }) {
 export function TrainerWizard() {
   const navigate = useNavigate();
   const [step, setStep] = React.useState(0);
-  const [files, setFiles] = React.useState<File[]>([]);
+  const [files, setFiles] = React.useState<TrainerUploadItem[]>([]);
   const [drag, setDrag] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const folderInputRef = React.useRef<HTMLInputElement>(null);
   const [dataset, setDataset] = React.useState<DatasetState | null>(null);
   const [autolabelJob, setAutolabelJob] = React.useState<LoraAutolabelJob | null>(null);
   const [autolabelSkipped, setAutolabelSkipped] = React.useState(false);
@@ -395,21 +489,49 @@ export function TrainerWizard() {
 
   // ---- File selection ----------------------------------------------------
 
-  const onPickFiles = (incoming: FileList | File[] | null) => {
-    if (!incoming) return;
-    const arr = Array.from(incoming).filter(
-      (f) => ALLOWED_AUDIO.test(f.name) || /\.(txt|json|csv)$/i.test(f.name),
-    );
+  React.useEffect(() => {
+    const input = folderInputRef.current;
+    if (!input) return;
+    input.setAttribute("webkitdirectory", "");
+    input.setAttribute("directory", "");
+  }, []);
+
+  const addUploadItems = (incoming: TrainerUploadItem[]) => {
+    const arr = incoming.filter((item) => isTrainerUploadSupported(item.relativePath || item.file.name));
     if (arr.length === 0) {
-      toast.error("Geen audio-bestanden geselecteerd (wav/mp3/flac/ogg/m4a/aac)");
+      toast.error("Geen audio of sidecar-bestanden gevonden (wav/mp3/flac/ogg/m4a/aac/txt/json/csv)");
       return;
     }
-    // Dedupe by name
-    const merged = [
-      ...files,
-      ...arr.filter((f) => !files.some((p) => p.name === f.name)),
-    ];
-    setFiles(merged);
+    setFiles((prev) => {
+      const seen = new Set(prev.map((item) => item.relativePath));
+      return [
+        ...prev,
+        ...arr.filter((item) => {
+          const key = item.relativePath || item.file.name;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }),
+      ];
+    });
+  };
+
+  const onPickFiles = (incoming: FileList | File[] | null) => {
+    if (!incoming) return;
+    addUploadItems(
+      Array.from(incoming).map((file) => ({
+        file,
+        relativePath: uploadRelativePath(file),
+      })),
+    );
+  };
+
+  const onDropUpload = async (dataTransfer: DataTransfer) => {
+    try {
+      addUploadItems(await uploadItemsFromDataTransfer(dataTransfer));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Folder lezen mislukt");
+    }
   };
 
   const removeFile = (idx: number) =>
@@ -420,7 +542,7 @@ export function TrainerWizard() {
   const importMutation = useMutation({
     mutationFn: async () => {
       const fd = new FormData();
-      for (const f of files) fd.append("files", f);
+      for (const item of files) fd.append("files", item.file, item.relativePath || item.file.name);
       if (form.dataset_id) fd.append("dataset_id", form.dataset_id);
       if (form.trigger_tag) fd.append("trigger_tag", form.trigger_tag);
       if (form.default_language) fd.append("language", form.default_language);
@@ -735,14 +857,22 @@ export function TrainerWizard() {
     },
     {
       key: "files",
-      title: "Audio-bestanden uploaden",
+      title: "Audio-bestanden of folders uploaden",
       description:
-        "Sleep je audio hierheen of klik om te bladeren. Optioneel: voeg .txt/.json/.csv sidecar-files toe voor handmatige labels.",
+        "Sleep losse bestanden of complete folders hierheen. Subfolders en .txt/.json/.csv sidecars blijven gekoppeld aan hun audio.",
       isValid: !!dataset?.dataset_id,
       render: () => (
         <div className="space-y-4">
           <input
             ref={inputRef}
+            type="file"
+            multiple
+            accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.txt,.json,.csv,audio/*"
+            className="hidden"
+            onChange={(e) => onPickFiles(e.target.files)}
+          />
+          <input
+            ref={folderInputRef}
             type="file"
             multiple
             accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.txt,.json,.csv,audio/*"
@@ -791,7 +921,7 @@ export function TrainerWizard() {
             onDrop={(e) => {
               e.preventDefault();
               setDrag(false);
-              onPickFiles(e.dataTransfer.files);
+              void onDropUpload(e.dataTransfer);
             }}
             onClick={() => inputRef.current?.click()}
             role="button"
@@ -805,10 +935,32 @@ export function TrainerWizard() {
               <Upload className="size-5" />
             </div>
             <div className="space-y-1">
-              <p className="font-medium">Sleep audio hierheen</p>
+              <p className="font-medium">Sleep audio, sidecars of folders hierheen</p>
               <p className="text-xs text-muted-foreground">
-                of klik om te bladeren — wav, mp3, flac, ogg, m4a, aac
+                klik voor losse bestanden, of kies een hele map met subfolders
               </p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  inputRef.current?.click();
+                }}
+              >
+                Bestanden kiezen
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  folderInputRef.current?.click();
+                }}
+              >
+                Map kiezen
+              </Button>
             </div>
           </motion.div>
 
@@ -818,18 +970,18 @@ export function TrainerWizard() {
             >
               <div className="max-h-48 space-y-1 overflow-y-auto pr-1">
                 <AnimatePresence initial={false}>
-                  {files.map((f, idx) => (
+                  {files.map((item, idx) => (
                     <motion.div
-                      key={f.name + idx}
+                      key={item.relativePath + idx}
                       initial={{ opacity: 0, x: -4 }}
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -4 }}
                       className="flex items-center gap-2 rounded-md border bg-background/40 px-2 py-1.5 text-xs"
                     >
                       <FileMusic className="size-3.5 shrink-0 text-primary" />
-                      <span className="flex-1 truncate font-mono">{f.name}</span>
+                      <span className="flex-1 truncate font-mono">{item.relativePath}</span>
                       <span className="text-[10px] text-muted-foreground">
-                        {(f.size / 1024 / 1024).toFixed(1)} MB
+                        {(item.file.size / 1024 / 1024).toFixed(1)} MB
                       </span>
                       <Button
                         size="icon-sm"

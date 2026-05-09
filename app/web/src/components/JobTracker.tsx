@@ -537,12 +537,39 @@ function GenerationDetails({
     loraTriggerAudit.trigger_source ||
     (loraTriggerTag ? "metadata" : "");
   const requestedLoraScale = payload.lora_scale ?? summary.lora_scale;
-  const audioBackend =
+  const audioBackendStatus = asRecord(
+    result.audio_backend_status ||
+      resultSummary.audio_backend_status ||
+      summary.audio_backend_status ||
+      payload.audio_backend_status,
+  );
+  const requestedAudioBackend =
+    audioBackendStatus.requested_audio_backend ||
+    result.requested_audio_backend ||
+    resultSummary.requested_audio_backend ||
+    payload.audio_backend ||
+    summary.audio_backend;
+  const effectiveAudioBackend =
+    audioBackendStatus.effective_audio_backend ||
+    result.effective_audio_backend ||
+    resultSummary.effective_audio_backend ||
     result.audio_backend ||
     resultSummary.audio_backend ||
-    summary.audio_backend ||
+    summary.audio_backend;
+  const effectiveMlxActive = audioBackendStatus.effective_mlx_dit_active;
+  const audioBackendFallback = text(audioBackendStatus.fallback_reason, "");
+  const audioBackend =
+    effectiveAudioBackend ||
     payload.audio_backend ||
     (result.use_mlx_dit === true || resultSummary.use_mlx_dit === true || payload.use_mlx_dit === true ? "mlx" : "");
+  const audioBackendDisplay =
+    effectiveMlxActive === true
+      ? "MLX active"
+      : requestedAudioBackend === "mlx" && effectiveMlxActive === false
+        ? `MLX requested; ${audioBackendFallback || "runner did not confirm MLX"}`
+        : audioBackend
+          ? audioBackendLabel(audioBackend)
+          : "auto";
   const styleAudit = asRecord(
     result.style_conditioning_audit ||
       resultSummary.style_conditioning_audit ||
@@ -575,7 +602,8 @@ function GenerationDetails({
           <InfoRow label="Model" value={summary.song_model || "auto"} />
           <InfoRow label="Requested model" value={requestedModel || "auto"} />
           <InfoRow label="Actual model" value={actualModel || "auto"} />
-          <InfoRow label="Audio backend" value={audioBackend ? audioBackendLabel(audioBackend) : "auto"} />
+          <InfoRow label="Audio backend" value={audioBackendDisplay} />
+          <InfoRow label="Requested backend" value={requestedAudioBackend ? audioBackendLabel(requestedAudioBackend) : "auto"} />
           <InfoRow label="Quality" value={summary.quality_profile || "auto"} />
           <InfoRow label="Duration" value={summary.duration ? `${text(summary.duration)}s` : "auto"} />
           <InfoRow label="Requested takes" value={requestedTakeCount} />

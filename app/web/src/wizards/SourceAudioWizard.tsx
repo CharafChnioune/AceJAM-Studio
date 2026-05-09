@@ -135,7 +135,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       duration: 60,
       vocal_language: "en",
       song_model: config.defaultModel ?? "acestep-v15-xl-sft",
-      audio_backend: "mlx",
+      audio_backend: "mps_torch",
       audio_cover_strength: 0.6,
       cover_noise_strength: 0.2,
       repainting_start: 0,

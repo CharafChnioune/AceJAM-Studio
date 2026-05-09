@@ -90,12 +90,43 @@ def _resolve_backend(requested: str) -> str:
     value = (requested or "auto").strip().lower()
     apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
     if value == "auto":
-        return "mlx" if apple_silicon else "pt"
+        return "pt"
     if value == "mlx":
         return "mlx" if apple_silicon else "pt"
     if value in {"pt", "vllm"}:
         return value
-    return "mlx" if apple_silicon else "pt"
+    return "pt"
+
+
+def _audio_backend_status(
+    request: dict[str, Any],
+    handler: Any | None = None,
+    *,
+    requested_mlx_dit: bool,
+    initialize_status: str = "",
+) -> dict[str, Any]:
+    requested_audio_backend = str(request.get("audio_backend") or ("mlx" if requested_mlx_dit else "mps_torch"))
+    effective_use_mlx_dit = bool(getattr(handler, "use_mlx_dit", False)) if handler is not None else False
+    mlx_decoder_active = bool(getattr(handler, "mlx_decoder", None) is not None) if handler is not None else False
+    mlx_vae_active = bool(getattr(handler, "use_mlx_vae", False) and getattr(handler, "mlx_vae", None) is not None) if handler is not None else False
+    effective_mlx_dit_active = bool(effective_use_mlx_dit and mlx_decoder_active)
+    fallback_reason = ""
+    if requested_mlx_dit and not effective_mlx_dit_active:
+        fallback_reason = (
+            "MLX DiT was requested, but ACE-Step did not activate the native MLX decoder."
+            + (f" initialize_status={initialize_status}" if initialize_status else "")
+        )
+    return {
+        "requested_audio_backend": requested_audio_backend,
+        "requested_use_mlx_dit": requested_mlx_dit,
+        "effective_audio_backend": "mlx" if effective_mlx_dit_active else "mps_torch",
+        "effective_use_mlx_dit": effective_use_mlx_dit,
+        "effective_mlx_dit_active": effective_mlx_dit_active,
+        "mlx_decoder_active": mlx_decoder_active,
+        "mlx_vae_active": mlx_vae_active,
+        "initialize_status": initialize_status,
+        "fallback_reason": fallback_reason,
+    }
 
 
 def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
@@ -386,7 +417,7 @@ def _run(request_path: Path, response_path: Path) -> None:
     from acestep.llm_inference import LLMHandler
 
     _is_apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
-    requested_mlx_dit = _bool_or_auto(request.get("use_mlx_dit", _is_apple_silicon))
+    requested_mlx_dit = _bool_or_auto(request.get("use_mlx_dit", False))
     use_mlx_dit = bool(_is_apple_silicon and requested_mlx_dit)
     if not use_mlx_dit:
         _disable_acestep_mlx_backends(AceStepHandler)
@@ -470,6 +501,14 @@ def _run(request_path: Path, response_path: Path) -> None:
     )
     if not ready:
         raise RuntimeError(status)
+    audio_backend_status = _audio_backend_status(
+        request,
+        dit_handler,
+        requested_mlx_dit=use_mlx_dit,
+        initialize_status=str(status or ""),
+    )
+    if use_mlx_dit and not audio_backend_status["effective_mlx_dit_active"]:
+        raise RuntimeError(audio_backend_status["fallback_reason"] or "MLX audio backend requested but not active.")
 
     lora_status = _apply_lora_request(dit_handler, request)
 
@@ -595,6 +634,7 @@ def _run(request_path: Path, response_path: Path) -> None:
                 "time_costs": _jsonable((result_data.get("extra_outputs") or {}).get("time_costs", {})),
                 "lm_metadata": _jsonable((result_data.get("extra_outputs") or {}).get("lm_metadata")),
                 "lora_status": _jsonable(lora_status),
+                "audio_backend_status": _jsonable(audio_backend_status),
                 "official_api_fields": _jsonable(request.get("official_api_fields") or {}),
                 "guarded_api_fields": _jsonable(request.get("guarded_api_fields") or {}),
             },

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { DEFAULT_AUDIO_BACKEND } from "@/lib/audioBackend";
 
 export interface PasteBlock {
   label?: string;
@@ -67,6 +68,33 @@ interface WizardSlice {
   reset: (mode: string) => void;
 }
 
+function migrateAudioBackendDefaults(record: unknown): unknown {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  const next = { ...(record as Record<string, unknown>) };
+  const hasAceStepModel = String(next.song_model ?? "").startsWith("acestep-v15-");
+  if (hasAceStepModel || "audio_backend" in next || "use_mlx_dit" in next) {
+    next.audio_backend = DEFAULT_AUDIO_BACKEND;
+    next.use_mlx_dit = false;
+  }
+  return next;
+}
+
+function migratePersistedAudioDefaults(state: unknown): unknown {
+  if (!state || typeof state !== "object") return state;
+  const next = { ...(state as Record<string, unknown>) };
+  for (const key of ["drafts", "payloads"]) {
+    const bucket = next[key];
+    if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) continue;
+    next[key] = Object.fromEntries(
+      Object.entries(bucket as Record<string, unknown>).map(([mode, value]) => [
+        mode,
+        migrateAudioBackendDefaults(value),
+      ]),
+    );
+  }
+  return next;
+}
+
 export const useWizardStore = create<WizardSlice>()(
   persist(
     (set) => ({
@@ -102,6 +130,8 @@ export const useWizardStore = create<WizardSlice>()(
     }),
     {
       name: "acejam-wizard-state",
+      version: 2,
+      migrate: (state) => migratePersistedAudioDefaults(state) as WizardSlice,
       partialize: (state) => ({
         prompts: state.prompts,
         payloads: state.payloads,

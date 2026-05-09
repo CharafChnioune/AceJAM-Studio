@@ -24,12 +24,12 @@ export function AudioBackendSelector({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="mlx">MLX (aanbevolen)</SelectItem>
-          <SelectItem value="mps_torch">MPS/Torch</SelectItem>
+          <SelectItem value="mps_torch">MPS/Torch (aanbevolen kwaliteit)</SelectItem>
+          <SelectItem value="mlx">MLX (sneller / experimenteel)</SelectItem>
         </SelectContent>
       </Select>
       <p className="text-xs text-muted-foreground">
-        MLX is standaard; MPS/Torch blijft beschikbaar als fallback.
+        MPS/Torch is standaard voor betere audio; MLX blijft beschikbaar als snelle test-backend.
       </p>
     </div>
   );

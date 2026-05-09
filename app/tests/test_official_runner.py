@@ -148,17 +148,55 @@ class OfficialRunnerTest(unittest.TestCase):
         self.assertEqual((status, ready), ("ready", True))
         self.assertEqual(calls, {"project_root": "/tmp/project", "config_path": "acestep-v15-turbo", "device": "auto"})
 
-    def test_resolve_backend_preserves_mlx_on_apple_silicon(self):
+    def test_resolve_backend_defaults_to_pt_and_preserves_explicit_mlx_on_apple_silicon(self):
         with patch.object(official_runner.sys, "platform", "darwin"), \
             patch.object(official_runner.platform, "machine", return_value="arm64"):
             self.assertEqual(official_runner._resolve_backend("mlx"), "mlx")
-            self.assertEqual(official_runner._resolve_backend("auto"), "mlx")
+            self.assertEqual(official_runner._resolve_backend("auto"), "pt")
 
     def test_resolve_backend_downgrades_mlx_off_apple_silicon(self):
         with patch.object(official_runner.sys, "platform", "linux"), \
             patch.object(official_runner.platform, "machine", return_value="x86_64"):
             self.assertEqual(official_runner._resolve_backend("mlx"), "pt")
             self.assertEqual(official_runner._resolve_backend("auto"), "pt")
+
+    def test_audio_backend_status_reports_effective_mlx_activation(self):
+        class Handler:
+            use_mlx_dit = True
+            mlx_decoder = object()
+            use_mlx_vae = True
+            mlx_vae = object()
+
+        status = official_runner._audio_backend_status(
+            {"audio_backend": "mlx"},
+            Handler(),
+            requested_mlx_dit=True,
+            initialize_status="ready",
+        )
+
+        self.assertEqual(status["requested_audio_backend"], "mlx")
+        self.assertTrue(status["requested_use_mlx_dit"])
+        self.assertTrue(status["effective_mlx_dit_active"])
+        self.assertEqual(status["effective_audio_backend"], "mlx")
+        self.assertEqual(status["fallback_reason"], "")
+
+    def test_audio_backend_status_explains_mlx_fallback(self):
+        class Handler:
+            use_mlx_dit = False
+            mlx_decoder = None
+            use_mlx_vae = False
+            mlx_vae = None
+
+        status = official_runner._audio_backend_status(
+            {"audio_backend": "mlx"},
+            Handler(),
+            requested_mlx_dit=True,
+            initialize_status="MLX unavailable",
+        )
+
+        self.assertFalse(status["effective_mlx_dit_active"])
+        self.assertEqual(status["effective_audio_backend"], "mps_torch")
+        self.assertIn("MLX DiT was requested", status["fallback_reason"])
 
     def test_mlx_progress_patch_runs_service_generate_inline(self):
         GenerateMusicExecuteMixin, saved = self._fake_generate_music_execute_module()

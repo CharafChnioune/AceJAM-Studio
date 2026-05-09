@@ -563,7 +563,7 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("audio_backend", text, path)
             self.assertIn("use_mlx_dit", text, path)
 
-    def test_audio_backend_defaults_to_mlx_and_allows_mps_torch_fallback(self):
+    def test_audio_backend_defaults_to_mps_torch_and_allows_explicit_mlx(self):
         with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -576,23 +576,84 @@ class AppParityTest(unittest.TestCase):
                     "duration": 30,
                 }
             )
-            fallback = acejam_app._parse_generation_payload(
+            explicit_mlx = acejam_app._parse_generation_payload(
                 {
                     "task_type": "text2music",
                     "song_model": "acestep-v15-xl-sft",
                     "caption": "rap, hard drums",
                     "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
                     "duration": 30,
-                    "audio_backend": "mps_torch",
+                    "audio_backend": "mlx",
                 }
             )
 
-        self.assertEqual(defaulted["audio_backend"], "mlx")
-        self.assertTrue(defaulted["use_mlx_dit"])
+        self.assertEqual(defaulted["audio_backend"], "mps_torch")
+        self.assertFalse(defaulted["use_mlx_dit"])
         self.assertEqual(defaulted["device"], "mps")
         self.assertEqual(defaulted["dtype"], "float32")
-        self.assertEqual(fallback["audio_backend"], "mps_torch")
-        self.assertFalse(fallback["use_mlx_dit"])
+        self.assertEqual(explicit_mlx["audio_backend"], "mlx")
+        self.assertTrue(explicit_mlx["use_mlx_dit"])
+
+    def test_official_request_forces_mlx_backend_even_with_stale_flag(self):
+        with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
+            patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "audio_backend": "mlx",
+                    "use_mlx_dit": False,
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+
+        self.assertEqual(request["audio_backend"], "mlx")
+        self.assertTrue(request["use_mlx_dit"])
+        self.assertEqual(request["requested_audio_backend"], "mlx")
+        self.assertTrue(request["requested_use_mlx_dit"])
+        self.assertEqual(request["audio_backend_contract"]["enforced_at"], "official_request")
+
+    def test_mlx_runner_response_must_confirm_active_mlx(self):
+        request = {"audio_backend": "mlx", "use_mlx_dit": True}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+            patch.object(acejam_app, "OFFICIAL_ACE_STEP_DIR", Path(tmp)), \
+            patch.object(acejam_app, "OFFICIAL_RUNNER_SCRIPT", Path(tmp) / "runner.py"), \
+            patch.object(acejam_app, "_official_runner_timeout_seconds", return_value=5), \
+            patch.object(acejam_app, "_official_service_generation_timeout_seconds", return_value=5), \
+            patch.object(acejam_app, "subprocess") as subprocess_mock:
+            runner = Path(tmp) / "runner.py"
+            runner.write_text("# runner", encoding="utf-8")
+
+            class DummyPipe:
+                def readline(self):
+                    return ""
+
+                def close(self):
+                    return None
+
+            class DummyProcess:
+                stdout = DummyPipe()
+                stderr = DummyPipe()
+
+                def wait(self, timeout=None):
+                    response_path = Path(subprocess_mock.Popen.call_args.args[0][3])
+                    response_path.write_text(
+                        json.dumps({"success": True, "audio_backend_status": {"effective_mlx_dit_active": False}}),
+                        encoding="utf-8",
+                    )
+                    return 0
+
+            subprocess_mock.Popen.return_value = DummyProcess()
+
+            with self.assertRaisesRegex(RuntimeError, "did not activate MLX DiT"):
+                acejam_app._run_official_runner_request(request, Path(tmp) / "work")
 
     def test_query_result_returns_acejam_result_for_ui_rendering(self):
         task_id = "unit-query-result"
@@ -661,8 +722,8 @@ class AppParityTest(unittest.TestCase):
             request = acejam_app._official_request_payload(params, Path(tmp))
 
         official_params = request["params"]
-        self.assertEqual(request["audio_backend"], "mlx" if acejam_app._IS_APPLE_SILICON else "mps_torch")
-        self.assertEqual(request["use_mlx_dit"], acejam_app._IS_APPLE_SILICON)
+        self.assertEqual(request["audio_backend"], "mps_torch")
+        self.assertFalse(request["use_mlx_dit"])
         self.assertFalse(official_params["dcw_enabled"])
         self.assertEqual(official_params["dcw_mode"], "low")
         self.assertEqual(official_params["dcw_scaler"], 0.07)
@@ -722,6 +783,8 @@ class AppParityTest(unittest.TestCase):
 
     def test_official_runner_timeout_expands_for_long_mlx_generations(self):
         request_payload = {
+            "audio_backend": "mlx",
+            "use_mlx_dit": True,
             "lm_backend": "mlx",
             "params": {"duration": 365, "inference_steps": 64},
             "config": {"batch_size": 3},
@@ -1871,6 +1934,11 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Test-WAV genre", trainer)
         self.assertIn("Rap / Hip-hop", trainer)
         self.assertIn("Soul / R&B", trainer)
+        self.assertIn("folderInputRef", trainer)
+        self.assertIn('setAttribute("webkitdirectory"', trainer)
+        self.assertIn("Map kiezen", trainer)
+        self.assertIn('fd.append("files", item.file, item.relativePath', trainer)
+        self.assertIn("uploadItemsFromDataTransfer", trainer)
         self.assertIn("WaveformPlayer", tracker)
         self.assertIn("Epoch ${text(item.epoch)} test-WAV", tracker)
 
@@ -2270,8 +2338,8 @@ class AppParityTest(unittest.TestCase):
         if acejam_app._IS_APPLE_SILICON:
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
-            self.assertEqual(captured["audio_backend"], "mlx")
-            self.assertTrue(captured["use_mlx_dit"])
+            self.assertEqual(captured["audio_backend"], "mps_torch")
+            self.assertFalse(captured["use_mlx_dit"])
         self.assertIn(result["lyrics_fit"]["action"], {"none", "fit_for_20s"})
         self.assertTrue(result["lyrics_fit"]["timed_structure"])
 
@@ -2397,13 +2465,37 @@ class AppParityTest(unittest.TestCase):
         if acejam_app._IS_APPLE_SILICON:
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
-            self.assertEqual(captured["audio_backend"], "mlx")
-            self.assertTrue(captured["use_mlx_dit"])
+            self.assertEqual(captured["audio_backend"], "mps_torch")
+            self.assertFalse(captured["use_mlx_dit"])
         self.assertEqual(result["lyrics_fit"]["action"], "fit_for_30s")
 
     def test_lora_upload_path_sanitizer_preserves_relative_folders(self):
         self.assertEqual(str(acejam_app._safe_lora_upload_relative_path("dataset/sub/song.wav")), "dataset/sub/song.wav")
         self.assertEqual(str(acejam_app._safe_lora_upload_relative_path("../evil.wav")), "evil.wav")
+
+    def test_lora_dataset_import_accepts_nested_folder_uploads(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "dataset"
+            labels = [{"filename": "artist/session/song.wav", "caption": "rap", "lyrics": "lyrics"}]
+            with patch.object(acejam_app.training_manager, "import_root_for", return_value=target), \
+                patch.object(acejam_app.training_manager, "scan_dataset", return_value={"files": labels}), \
+                patch.object(acejam_app.training_manager, "label_entries", return_value=labels):
+                response = client.post(
+                    "/api/lora/dataset/import-folder",
+                    data={"dataset_id": "nested-dataset", "trigger_tag": "pac", "language": "en"},
+                    files=[
+                        ("files", ("artist/session/song.wav", b"RIFF....WAVE", "audio/wav")),
+                        ("files", ("artist/session/song.txt", b"[Verse]\nlyrics", "text/plain")),
+                    ],
+                )
+
+            data = response.json()
+            self.assertTrue(data["success"])
+            self.assertIn("artist/session/song.wav", data["copied_files"])
+            self.assertIn("artist/session/song.txt", data["copied_files"])
+            self.assertTrue((target / "artist" / "session" / "song.wav").exists())
+            self.assertTrue((target / "artist" / "session" / "song.txt").exists())
 
     def test_official_runner_stream_keeps_conditioning_prompt_blocks_by_default(self):
         state = {}
@@ -2515,6 +2607,8 @@ class AppParityTest(unittest.TestCase):
                     "caption": "rap, hip hop, rhythmic spoken-word vocal",
                     "lyrics": "[Verse - rap]\nLine one lands in the pocket\n\n[Chorus - rap hook]\nHook line repeats clean",
                     "duration": 30,
+                    "audio_backend": "mlx",
+                    "use_mlx_dit": True,
                     "lm_backend": "mlx",
                     "dcw_enabled": True,
                     "audio_cover_strength": 1.0,

@@ -135,7 +135,7 @@ export function AlbumWizard() {
       album_writer_mode: "per_track_writer_loop",
       language: "en",
       song_model: "acestep-v15-xl-sft",
-      audio_backend: "mlx",
+      audio_backend: "mps_torch",
       song_model_strategy: "single_model_album",
       quality_profile: "standard",
       style_profile: "auto",

@@ -85,7 +85,7 @@ LOCAL_LLM_SETTINGS_PATH = DATA_DIR / "local_llm_settings.json"
 OFFICIAL_ACE_STEP_DIR = BASE_DIR / "vendor" / "ACE-Step-1.5"
 OFFICIAL_RUNNER_SCRIPT = BASE_DIR / "official_runner.py"
 PINOKIO_START_LOG = BASE_DIR.parent / "logs" / "api" / "start.js" / "latest"
-APP_UI_VERSION = "0.0.1"
+APP_UI_VERSION = "0.6"
 PAYLOAD_CONTRACT_VERSION = "2026-04-26"
 ACE_STEP_VENDOR_SYNC_CONFIRM = "SYNC_ACE_STEP_VENDOR_PATCH_PRESERVING"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
@@ -733,7 +733,7 @@ def _normalize_lm_backend(value: Any) -> str:
 
 
 def _default_audio_backend() -> str:
-    return "mlx" if _IS_APPLE_SILICON else "mps_torch"
+    return "mps_torch"
 
 
 ACE_AUDIO_BACKEND_DEFAULT = _default_audio_backend()
@@ -756,8 +756,8 @@ def _normalize_audio_backend(value: Any = None, use_mlx_dit: Any = None) -> str:
     """Normalize the user-facing audio runtime choice.
 
     `lm_backend` controls ACE-Step's language model path. Audio DiT/VAE runtime
-    needs a separate switch so the UI can default to native MLX while keeping a
-    PyTorch/MPS fallback available.
+    needs a separate switch so the UI can default to PyTorch/MPS quality while
+    keeping native MLX available as an explicit fast/experimental choice.
     """
     raw = str(value or "").strip().lower().replace("-", "_")
     if raw in {"mlx", "native_mlx", "mlx_dit", "mlx_audio"}:
@@ -801,6 +801,26 @@ def _apply_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dic
             warnings.append(warning)
         params["payload_warnings"] = warnings
     return params
+
+
+def _finalize_official_audio_backend_request(params: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    """Make the user-facing audio backend choice authoritative for the runner."""
+    backend = _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit"))
+    use_mlx_dit = backend == "mlx"
+    params["audio_backend"] = backend
+    params["use_mlx_dit"] = use_mlx_dit
+    request["audio_backend"] = backend
+    request["use_mlx_dit"] = use_mlx_dit
+    request["requested_audio_backend"] = backend
+    request["requested_use_mlx_dit"] = use_mlx_dit
+    request["audio_backend_contract"] = {
+        "requested_audio_backend": backend,
+        "requested_use_mlx_dit": use_mlx_dit,
+        "enforced_at": "official_request",
+    }
+    if backend == "mlx" and request.get("use_mlx_dit") is not True:
+        raise RuntimeError("MLX audio backend was requested but the official request was not configured for MLX DiT.")
+    return request
 
 
 VOCAL_CLARITY_CAPTION_TRAITS = [
@@ -1080,7 +1100,8 @@ def _apply_mac_mlx_xl_repetition_guard(params: dict[str, Any], *, source: str) -
 
     ACE-Step issue #1191 reports severe Mac XL Turbo/SFT artifacts when DCW and
     LM-code conditioning strength are both active. Keep this as an app-side guard
-    until upstream lands a real model/runtime fix.
+    until upstream lands a real model/runtime fix. MPS/Torch is the default
+    quality backend; this only protects explicit MLX selections.
     """
     if not parse_bool(os.environ.get("ACEJAM_MAC_MLX_XL_REPETITION_GUARD"), True):
         return params
@@ -8135,6 +8156,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
     params = _enforce_model_correct_render_settings(dict(params), source="official_request")
+    _apply_audio_backend_defaults(params, source="official_request")
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
     seed_text = str(params.get("seed") or "-1").strip()
@@ -8328,6 +8350,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "mp3_sample_rate": params["mp3_sample_rate"],
         },
     }
+    request = _finalize_official_audio_backend_request(params, request)
     _print_ace_step_terminal_payload(params, request, save_dir)
     return request
 
@@ -10171,6 +10194,22 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
     if not OFFICIAL_RUNNER_SCRIPT.exists():
         raise RuntimeError("Official ACE-Step runner script is missing.")
 
+    if "audio_backend" in request_payload or "use_mlx_dit" in request_payload:
+        backend = _normalize_audio_backend(request_payload.get("audio_backend"), request_payload.get("use_mlx_dit"))
+        request_payload = dict(request_payload)
+        request_payload["audio_backend"] = backend
+        request_payload["use_mlx_dit"] = backend == "mlx"
+        request_payload["requested_audio_backend"] = backend
+        request_payload["requested_use_mlx_dit"] = backend == "mlx"
+        request_payload.setdefault(
+            "audio_backend_contract",
+            {
+                "requested_audio_backend": backend,
+                "requested_use_mlx_dit": backend == "mlx",
+                "enforced_at": "runner_launch",
+            },
+        )
+
     work_dir.mkdir(parents=True, exist_ok=True)
     request_path = work_dir / "official_request.json"
     response_path = work_dir / "official_response.json"
@@ -10267,6 +10306,12 @@ def _run_official_runner_request(request_payload: dict[str, Any], work_dir: Path
     response = json.loads(response_path.read_text(encoding="utf-8"))
     if isinstance(response, dict):
         response["mps_memory"] = {"before": memory_before, "after": memory_after}
+        backend = _normalize_audio_backend(request_payload.get("audio_backend"), request_payload.get("use_mlx_dit"))
+        if backend == "mlx":
+            status = response.get("audio_backend_status") if isinstance(response.get("audio_backend_status"), dict) else {}
+            if status.get("effective_mlx_dit_active") is not True:
+                fallback = status.get("fallback_reason") or "official runner did not confirm active native MLX DiT"
+                raise RuntimeError(f"MLX audio backend was requested, but the runner did not activate MLX DiT: {fallback}")
     return response
 
 
@@ -10450,6 +10495,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "lm_backend": params["lm_backend"],
             "audio_backend": params["audio_backend"],
             "use_mlx_dit": params.get("use_mlx_dit"),
+            "audio_backend_status": _jsonable(
+                (official_runs[-1].get("audio_backend_status") if official_runs else {}) or {}
+            ),
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
@@ -10742,6 +10790,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 "batch_size": take_params.get("batch_size"),
                 "success": True,
                 "mps_memory": _jsonable(official.get("mps_memory") or {}),
+                "audio_backend_status": _jsonable(official.get("audio_backend_status") or {}),
             }
         )
         for audio in official.get("audios", []):
@@ -10767,6 +10816,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 "runner": "official",
                 "audio_backend": params["audio_backend"],
                 "use_mlx_dit": params.get("use_mlx_dit"),
+                "audio_backend_status": _jsonable(official.get("audio_backend_status") or {}),
                 "payload_warnings": params["payload_warnings"],
                 "requested_take_count": memory_plan["requested_take_count"],
                 "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
@@ -10897,6 +10947,9 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "lm_backend": params["lm_backend"],
         "audio_backend": params["audio_backend"],
         "use_mlx_dit": params.get("use_mlx_dit"),
+        "audio_backend_status": _jsonable(
+            (official_runs[-1].get("audio_backend_status") if official_runs else {}) or {}
+        ),
         "thinking": params["thinking"],
         "use_format": params["use_format"],
         "use_cot_metas": params["use_cot_metas"],
