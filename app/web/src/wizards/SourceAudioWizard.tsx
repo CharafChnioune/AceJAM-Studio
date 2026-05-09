@@ -14,6 +14,7 @@ import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/SourceAudioStep";
 import { TagInput } from "@/components/wizard/TagInput";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
+import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { type WizardMode, api } from "@/lib/api";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
+import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
@@ -83,6 +85,7 @@ interface BaseSourceForm {
   key_scale?: string;
   vocal_language: string;
   song_model: string;
+  audio_backend: "mlx" | "mps_torch";
   // Mode-specific:
   audio_cover_strength?: number;
   cover_noise_strength?: number;
@@ -132,6 +135,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       duration: 60,
       vocal_language: "en",
       song_model: config.defaultModel ?? "acestep-v15-xl-sft",
+      audio_backend: "mlx",
       audio_cover_strength: 0.6,
       cover_noise_strength: 0.2,
       repainting_start: 0,
@@ -253,6 +257,8 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       key_scale: v.key_scale,
       vocal_language: v.vocal_language,
       song_model: v.song_model,
+      audio_backend: v.audio_backend,
+      use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
       src_audio_id: source?.uploadId,
       ...normalizeLoraSelection(v),
     };
@@ -473,26 +479,32 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       isValid: true,
       render: () => (
         <div className="space-y-4">
-          <FieldGroup title="Song model">
-            <div className="space-y-1.5">
-              <Label>Song model</Label>
-              <Controller
-                control={form.control}
-                name="song_model"
-                render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {SONG_MODELS.map(([id, label]) => (
-                        <SelectItem key={id} value={id}>{label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+          <FieldGroup title="Model & backend">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Song model</Label>
+                <Controller
+                  control={form.control}
+                  name="song_model"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {SONG_MODELS.map(([id, label]) => (
+                          <SelectItem key={id} value={id}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                {baseOnlyModelError && (
+                  <p className="text-xs text-amber-500">{baseOnlyModelError}</p>
                 )}
+              </div>
+              <AudioBackendSelector
+                value={values.audio_backend}
+                onChange={(value) => form.setValue("audio_backend", value, { shouldValidate: true })}
               />
-              {baseOnlyModelError && (
-                <p className="text-xs text-amber-500">{baseOnlyModelError}</p>
-              )}
             </div>
           </FieldGroup>
           {renderModeStep()}
@@ -610,6 +622,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
               { key: "task_type", label: "Modus" },
               { key: "title", label: "Titel" },
               { key: "song_model", label: "Model" },
+              { key: "audio_backend", label: "Backend", format: audioBackendLabel },
               { key: "lora_adapter_name", label: "LoRA" },
               { key: "lora_trigger_tag", label: "LoRA trigger" },
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },

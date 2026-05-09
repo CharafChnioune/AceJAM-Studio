@@ -111,7 +111,7 @@ Satire modes:
 
 Caption/tag rules: pick a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Lean on `mood_atmosphere` (funny, deadpan, sarcastic, urgent, chaotic) and rap-side `vocal_character` (comedic rap vocal, deadpan delivery, mumble rap, lyrical rap) for satirical coverage. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax, parentheses around words = background vocals, no BPM/key/time-signature in caption.
 
-Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Use the matching entry in the **Producer-Format Cookbook** appended to this prompt.
+Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Use the matching entry in the **Producer-Format Cookbook** appended to this prompt.
 
 Rap requests: pair caption-side rap cue (Rap, Trap Flow, Spoken Word, Melodic Rap, Comedy Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** for ad-lib placement, hook structure, line length, and rap caption stack template.
 
@@ -125,6 +125,7 @@ Lyrics:
   * sung — 30s ~75 / 60s ~155 / 120s ~300 / 180s ~420 / 240s ~510 / 300s ~570 words.
   * rap — 30s ~95 / 60s ~200 / 120s ~360 / 180s ~500 / 240s ~570 / 300s ~600 words.
 - For ≥180s use 3 verses (each tied to a story beat), 2-3 hook passes, bridge with new angle, final chorus.
+- Rap news-songs: each `[Verse - rap]` is MINIMUM 16 bars (≥16 lines at 8-15 syllables/line). Multisyllabic mosaic rhymes; slant-dominant; concrete sensory anchors per line (specific names, dates, locations). See appended SONGWRITER CRAFT block.
 - Use section tags from the appended Tag Library `basic_structure`/`performance_modifiers`/`vocal_control` lists. Common news-rap shape: `[Intro - spoken]`, `[Verse - rap]`, `[Hook]`, `[Verse - rap]`, `[Bridge - spoken]`, `[Hook]`, `[Outro]`. Ad-libs go in `(parens)` inside lyric lines.
 - For multiple news items: choose one main angle or verse-per-story with one shared chorus. Do not make a messy list song.
 - Hook must be understandable without reading the article.

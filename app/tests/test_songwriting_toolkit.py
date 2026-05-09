@@ -395,7 +395,14 @@ Lyrics:
             _AgentPatch(),
         )
 
-    def test_album_prompt_library_is_compact_and_does_not_inject_full_md(self):
+    def test_album_prompt_library_injects_full_acestep_reference_block(self):
+        """Album agents must receive the full prompt_kit album-mode block so
+        producer-format requests, songwriter craft, and 16-bar floor enforcement
+        actually reach the LLM. Previously the album rules were intentionally
+        compact and stripped of the rich knowledge layer; that left fields blank
+        and lyrics weak. The user explicitly requested the agents get all the
+        knowledge so the wizard fills high-quality values across all fields.
+        """
         library = album_crew_module.AlbumAgentPromptLibrary(
             {
                 "album_agent_genre_prompt": "West Coast rap with boom-bap drums",
@@ -408,16 +415,176 @@ Lyrics:
 
         rules = library.system_rules()
 
-        self.assertLess(len(rules), 2600)
+        # Album rules now carry the full reference block (much larger than the
+        # old 2600-char ceiling). The tag library + cookbooks + craft + worked
+        # examples easily exceed 20k chars.
+        self.assertGreater(len(rules), 20000)
+        # Compact base rules still present
         self.assertIn("caption<512 sound-only", rules)
-        self.assertIn("MD reference not injected", rules)
-        self.assertNotIn("Prompt kit excerpt source", rules)
-        self.assertNotIn("FULL_TAG_LIBRARY", rules)
+        # 16-bar floor reminder explicitly in the album rules
+        self.assertIn("16 bars", rules)
+        # Anti-pattern guard surfaces
+        self.assertIn("neon dreams", rules)
+        # Producer cookbook surfaces
+        self.assertIn("Producer-Format Cookbook", rules)
+        self.assertIn("Dr. Dre / G-funk era", rules)
+        self.assertIn("Dr. Dre / Chronic 2001 + Get Rich era", rules)
+        # Songwriter craft surfaces
+        self.assertIn("Songwriter Craft Cookbook", rules)
+        self.assertIn("nas signature", rules)
+        # Worked examples surface
+        self.assertIn("Worked Examples", rules)
 
-    def test_album_agent_engine_normalizes_legacy_to_crewai_micro(self):
-        self.assertEqual(album_crew_module.normalize_album_agent_engine(None), "acejam_agents")
-        self.assertEqual(album_crew_module.normalize_album_agent_engine("acejam_direct"), "acejam_agents")
+    def test_per_agent_personas_specialise_role_goal_backstory(self):
+        """CrewAI agents must get specialist personas with 2024-2026 chart-craft
+        framing — lyric agent reads as topline writer for modern hits, tag agent
+        as sonic engineer chart-aware, hook agent as hit songwriter trained on
+        Espresso / Not Like Us / Birds of a Feather era."""
+        lyric_role, lyric_goal, lyric_backstory = album_crew_module._agent_persona(
+            "Track Lyrics Agent Part 1", "lyrics_part_1_payload"
+        )
+        self.assertIn("Lyric Writer", lyric_role)
+        self.assertIn("2024-2026", lyric_role)
+        # Modern rap = 12-bar minimum (storytelling = 16+); both numbers must surface
+        self.assertIn("12 bars", lyric_goal)
+        self.assertIn("multisyllabic", lyric_goal.lower())
+        # Backstory references modern chart-toppers, not just classic
+        self.assertIn("Sabrina Carpenter", lyric_backstory)
+        self.assertIn("Kendrick", lyric_backstory)
+        self.assertIn("Billie Eilish", lyric_backstory)
+        # Classic floor still mentioned
+        self.assertIn("Eminem", lyric_backstory)
+
+        hook_role, hook_goal, hook_backstory = album_crew_module._agent_persona(
+            "Hook Agent", "hook_payload"
+        )
+        self.assertIn("Hook Writer", hook_role)
+        self.assertIn("hum-test", hook_goal.lower())
+        self.assertIn("TikTok 30-second test", hook_goal)
+        # Backstory cites at least one modern hook example verbatim
+        self.assertIn("espresso", hook_backstory.lower())
+        self.assertIn("they not like us", hook_backstory.lower())
+
+        tag_role, tag_goal, tag_backstory = album_crew_module._agent_persona(
+            "Tag Agent", "tag_agent_payload"
+        )
+        self.assertIn("Sonic Tags", tag_role)
+        self.assertIn("six dimensions", tag_goal.lower())
+        self.assertIn("MODERN era", tag_goal)
+        # Modern producer references in backstory
+        self.assertIn("Mustard", tag_backstory)
+        self.assertIn("Central Cee", tag_backstory)
+        self.assertIn("Finneas", tag_backstory)
+        # Pete Rock kept as classic anchor
+        self.assertIn("Pete Rock", tag_backstory)
+
+        # Wildcard fallback for Track Lyrics Agent Part 4+ should reuse Part 2 voice
+        part4 = album_crew_module._agent_persona("Track Lyrics Agent Part 4", "lyrics_part_4_payload")
+        self.assertIn("Lyric Writer", part4[0])
+
+        # Generic fallback path still avoids the old "tiny worker" framing.
+        unknown_role, unknown_goal, unknown_backstory = album_crew_module._agent_persona(
+            "Brand New Future Agent", "new_payload"
+        )
+        self.assertNotIn("tiny", unknown_backstory.lower())
+        self.assertIn("hit-album", unknown_backstory)
+        self.assertIn("award-level", unknown_goal)
+
+    def test_creative_agents_get_higher_max_iter_than_metadata_agents(self):
+        # Creative work needs iteration room; metadata answers are one-shot.
+        self.assertEqual(album_crew_module._agent_max_iter("Track Lyrics Agent Part 1"), 4)
+        self.assertEqual(album_crew_module._agent_max_iter("Hook Agent"), 4)
+        self.assertEqual(album_crew_module._agent_max_iter("Caption Agent"), 4)
+        self.assertEqual(album_crew_module._agent_max_iter("Section Map Agent"), 4)
+        self.assertEqual(album_crew_module._agent_max_iter("Tag Agent"), 4)
+        self.assertEqual(album_crew_module._agent_max_iter("BPM Agent"), 1)
+        self.assertEqual(album_crew_module._agent_max_iter("Key Agent"), 1)
+        self.assertEqual(album_crew_module._agent_max_iter("Time Signature Agent"), 1)
+        self.assertEqual(album_crew_module._agent_max_iter("Duration Agent"), 1)
+
+    def test_cliche_scan_flags_ai_slop_in_lyrics_and_hooks(self):
+        # Cliche image bank phrases must be detected so validators force a
+        # rewrite instead of shipping AI-slop verses to the user.
+        cliche_text = "I see neon dreams, fire inside; we rise from shattered dreams in the endless night"
+        hits = album_crew_module._scan_for_cliche_phrases(cliche_text)
+        self.assertTrue(any("neon dreams" in hit for hit in hits))
+        self.assertTrue(any("fire inside" in hit for hit in hits))
+        self.assertTrue(any("we rise" in hit for hit in hits))
+        self.assertTrue(any("shattered dreams" in hit for hit in hits))
+        # Telling-not-showing labels are caught
+        telling_hits = album_crew_module._scan_for_cliche_phrases("I feel sad and my heart is broken")
+        self.assertTrue(any("telling:i feel sad" in hit for hit in telling_hits))
+        self.assertTrue(any("telling:my heart is broken" in hit for hit in telling_hits))
+        # Generic POV
+        pov_hits = album_crew_module._scan_for_cliche_phrases("we all live in the world today")
+        self.assertTrue(any("generic_pov:we all" in hit for hit in pov_hits))
+        # Clean lyric passes
+        clean = album_crew_module._scan_for_cliche_phrases(
+            "Mama's stove ticks at six, kettle whistle on the floor / "
+            "Brother counting nickels by the screen door"
+        )
+        self.assertEqual(clean, [])
+
+    def test_hook_validator_rejects_short_lines_and_cliches(self):
+        # Hook with cliche image bank phrase fails validation
+        issues = album_crew_module._validate_hook_payload(
+            {"hook_lines": ["We rise from neon dreams tonight", "Endless night, endless flight"], "hook_promise": "About light"}
+        )
+        self.assertTrue(any("hook_contains_cliche_phrases" in issue for issue in issues))
+        # Short hook promise fails
+        self.assertTrue(any("hook_promise_too_short" in issue for issue in issues))
+        # Clean concrete hook passes
+        clean = album_crew_module._validate_hook_payload(
+            {
+                "hook_lines": [
+                    "Mama clock ticks past six in the cold",
+                    "Brother counting nickels in the dark",
+                ],
+                "hook_promise": "A working-class wake-up call about who pays the bills first",
+            }
+        )
+        self.assertEqual(clean, [])
+
+    def test_caption_validator_rejects_bare_sample_token(self):
+        # Bare 'sample' without source genre triggers production-grade rule
+        issues = album_crew_module._validate_caption_payload(
+            {"caption": "boom bap, sample, dusty drums, head-nod groove, 90s"}
+        )
+        self.assertIn("caption_bare_sample_token_missing_source_genre", issues)
+        # Pairing with origin genre passes
+        clean = album_crew_module._validate_caption_payload(
+            {"caption": "boom bap, soul sample chops, dusty drums, head-nod groove, 90s"}
+        )
+        self.assertNotIn("caption_bare_sample_token_missing_source_genre", clean)
+
+    def test_performance_validator_enforces_minimum_brief_length(self):
+        short = album_crew_module._validate_performance_payload({"performance_brief": "soulful"})
+        self.assertTrue(any("performance_brief_too_short" in issue for issue in short))
+        rich = album_crew_module._validate_performance_payload(
+            {
+                "performance_brief": (
+                    "Persona: late-night working-class storyteller. Cadence: laid-back pocket on verses, "
+                    "front-of-beat on hook. Ad-libs (yeah!) on bar 4 of verse 2; (woo) on second hook entry. "
+                    "Mix: ducks the synth pad on verse, brings stacked harmonies up on hook."
+                )
+            }
+        )
+        self.assertNotIn(
+            next((i for i in rich if "performance_brief_too_short" in i), None),
+            rich,
+        )
+
+    def test_album_agent_engine_defaults_to_crewai_micro(self):
+        # CrewAI Micro Tasks is the album-wizard default — empty/None values
+        # route to the real crewai library flow so users get a visible
+        # multi-agent run instead of silent direct-Ollama calls.
+        self.assertEqual(album_crew_module.normalize_album_agent_engine(None), "crewai_micro")
+        self.assertEqual(album_crew_module.normalize_album_agent_engine(""), "crewai_micro")
+        self.assertEqual(album_crew_module.normalize_album_agent_engine("crewai"), "crewai_micro")
         self.assertEqual(album_crew_module.normalize_album_agent_engine("legacy_crewai"), "crewai_micro")
+        # AceJAM Direct stays available as an explicit opt-in for diagnostic use.
+        self.assertEqual(album_crew_module.normalize_album_agent_engine("acejam_direct"), "acejam_agents")
+        self.assertEqual(album_crew_module.normalize_album_agent_engine("acejam_agents"), "acejam_agents")
         self.assertEqual(album_crew_module.album_agent_engine_label("crewai_micro"), "CrewAI Micro Tasks")
 
     def test_crewai_micro_llm_kwargs_use_planner_settings(self):
@@ -878,6 +1045,10 @@ Lyrics:
         self.assertNotIn("Morning Market", caption)
         self.assertTrue(any("Agent deterministic fallback: Caption Agent" in line for line in result["logs"]))
 
+    def test_album_agent_debug_prints_ignore_closed_stdout(self):
+        with patch.object(album_crew_module.builtins, "print", side_effect=BrokenPipeError):
+            album_crew_module._print_agent_io({"print_agent_io": True}, "unit", {"ok": True})
+
     def test_director_performance_falls_back_when_planner_connection_breaks(self):
         performance_calls = 0
 
@@ -951,7 +1122,7 @@ Lyrics:
         self.assertTrue(result["success"])
         self.assertGreaterEqual(gate_calls, 2)
         self.assertGreater(lyrics_calls, len(album_crew_module._director_section_groups(["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Bridge]", "[Final Chorus]", "[Outro]"])))
-        self.assertTrue(any("Final gate repair retry: track 1 attempt 1/8: duplicate_section_tags:[Verse 1]" in line for line in result["logs"]))
+        self.assertTrue(any("Final gate repair retry: track 1 attempt 1/3: duplicate_section_tags:[Verse 1]" in line for line in result["logs"]))
 
     def test_final_gate_arrangement_leakage_uses_deterministic_sanitizer(self):
         original_gate = album_crew_module._director_minimal_validate
@@ -1475,6 +1646,27 @@ kill all the rivals
         self.assertLess(plan["target_words"], 180)
         self.assertIn("Drop", " ".join(plan["sections"]))
 
+    def test_lyric_length_plan_includes_bars_per_section_with_16_bar_rap_floor(self):
+        plan = lyric_length_plan(180, "dense", genre_hint="rap")
+        self.assertIn("bars_per_section", plan)
+        bars = plan["bars_per_section"]
+        # 16-bar floor for rap verses on tracks >=120s
+        self.assertGreaterEqual(bars["Verse_rap"], 16)
+        self.assertEqual(plan["min_bars_per_rap_verse"], bars["Verse_rap"])
+        # Bars per line factor: 1.0 for rap (1 line ~ 1 bar)
+        self.assertEqual(plan["bars_per_line_factor"], 1.0)
+        # Hook gets 8 bars on tracks >120s
+        self.assertEqual(bars["Hook"], 8)
+
+    def test_lyric_length_plan_sung_uses_higher_bars_per_line_factor(self):
+        plan = lyric_length_plan(180, "balanced", genre_hint="indie pop")
+        self.assertIn("bars_per_section", plan)
+        # Sung tracks: 1.4 lines per bar (longer phrases)
+        self.assertEqual(plan["bars_per_line_factor"], 1.4)
+        # Sung verses fit a flexible 8-16 bar window
+        self.assertGreaterEqual(plan["bars_per_section"]["Verse_sung"], 4)
+        self.assertLessEqual(plan["bars_per_section"]["Verse_sung"], 16)
+
     def test_duration_parser_accepts_minute_second_strings(self):
         self.assertEqual(parse_duration_seconds("2:55"), 175)
         self.assertEqual(parse_duration_seconds("3 min 15 sec"), 195)
@@ -1611,6 +1803,7 @@ kill all the rivals
                 num_tracks=1,
                 track_duration=60,
                 options={
+                    "agent_engine": "acejam_agents",
                     "installed_models": ["acestep-v15-turbo", "acestep-v15-sft"],
                     "song_model_strategy": "best_installed",
                 },
@@ -1649,6 +1842,7 @@ kill all the rivals
                 num_tracks=1,
                 track_duration=45,
                 options={
+                    "agent_engine": "acejam_agents",
                     "installed_models": ["acestep-v15-turbo", "acestep-v15-sft"],
                     "song_model_strategy": "best_installed",
                 },
@@ -1734,6 +1928,7 @@ kill all the rivals
                 track_duration=75,
                 language="en",
                 options={
+                    "agent_engine": "acejam_agents",
                     "installed_models": ["acestep-v15-turbo"],
                     "song_model_strategy": "best_installed",
                     "lyric_density": "balanced",
@@ -1758,7 +1953,7 @@ kill all the rivals
                 num_tracks=1,
                 track_duration=45,
                 language="en",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"agent_engine": "acejam_agents", "installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
                 use_crewai=False,
                 log_callback=streamed.append,
             )
@@ -1778,7 +1973,7 @@ kill all the rivals
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"agent_engine": "acejam_agents", "installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
                 use_crewai=True,
                 planner_provider="ollama",
                 embedding_provider="ollama",
@@ -1814,7 +2009,7 @@ kill all the rivals
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"agent_engine": "acejam_agents", "installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
                 use_crewai=True,
                 planner_provider="ollama",
                 embedding_provider="ollama",
@@ -1902,7 +2097,7 @@ The Narrative: friends read old letters on a roof as the lights come back.
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
+                options={"agent_engine": "acejam_agents", "installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed"},
                 use_crewai=True,
                 planner_provider="ollama",
                 embedding_provider="ollama",
@@ -2176,6 +2371,94 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertGreaterEqual(report["lyric_duration_fit"]["min_words"], 340)
         self.assertGreaterEqual(report["lyric_duration_fit"]["min_lines"], 36)
 
+    def test_director_rap_section_minimums_use_16_bar_floor_for_full_songs(self):
+        minimums = album_crew_module._director_section_line_minimums(
+            ["[Verse - rap]", "[Chorus - rap hook]", "[Verse 2 - rap]"],
+            duration=180,
+            genre_hint="West Coast rap",
+        )
+
+        self.assertEqual(minimums["[Verse - rap]"], 16)
+        self.assertEqual(minimums["[Verse 2 - rap]"], 16)
+        self.assertLess(minimums["[Chorus - rap hook]"], 16)
+
+    def test_director_lyrics_quality_reports_rap_bar_counts(self):
+        verse_one = [f"Brick by brick the city rhythm sharpens every motive {idx}" for idx in range(16)]
+        verse_two = [f"Night by night the bassline pushes pressure through the corridor {idx}" for idx in range(16)]
+        lyrics = "\n".join(
+            [
+                "[Intro]",
+                "Needle drops and the block gets quiet",
+                "[Verse - rap]",
+                *verse_one,
+                "[Chorus - rap hook]",
+                "We ride the pressure till the whole street knows",
+                "We ride the pressure till the whole street knows",
+                "[Verse 2 - rap]",
+                *verse_two,
+                "[Bridge]",
+                "Sirens fade while the truth keeps breathing",
+                "[Final Chorus - rap hook]",
+                "We ride the pressure till the whole street knows",
+                "We ride the pressure till the whole street knows",
+            ]
+        )
+
+        quality = album_crew_module._director_lyrics_quality(
+            {
+                "title": "Pressure Route",
+                "duration": 180,
+                "caption": "West Coast rap, hip hop drums, rhythmic spoken-word vocal",
+                "lyrics": lyrics,
+            },
+            {"album_agent_genre_prompt": "West Coast rap"},
+        )
+
+        self.assertTrue(quality["is_rap"])
+        self.assertGreaterEqual(quality["rap_bar_counts"]["[Verse - rap]"], 16)
+        self.assertGreaterEqual(quality["rap_bar_counts"]["[Verse 2 - rap]"], 16)
+        self.assertEqual(quality["gate_status"], "pass")
+
+    def test_director_minimal_gate_flags_rap_verses_under_16_bars(self):
+        sections = ["[Intro]", "[Verse - rap]", "[Chorus - rap hook]", "[Verse 2 - rap]", "[Bridge]", "[Final Chorus - rap hook]", "[Outro]"]
+        short_verse = [f"Concrete truth keeps knocking on the city door {idx}" for idx in range(8)]
+        lyrics = "\n".join(
+            [
+                "[Intro]",
+                "The block exhales before the drums arrive",
+                "[Verse - rap]",
+                *short_verse,
+                "[Chorus - rap hook]",
+                "We keep the line alive until the sunrise",
+                "We keep the line alive until the sunrise",
+                "[Verse 2 - rap]",
+                *short_verse,
+                "[Bridge]",
+                "Every scar becomes a map we can follow",
+                "[Final Chorus - rap hook]",
+                "We keep the line alive until the sunrise",
+                "We keep the line alive until the sunrise",
+                "[Outro]",
+                "Fade the lights but keep the cadence moving",
+            ]
+        )
+
+        report = album_crew_module._director_minimal_validate(
+            {
+                "title": "Short Bars",
+                "duration": 180,
+                "caption": "West Coast rap, hip hop drums, rhythmic spoken-word vocal, hard drums",
+                "style": "West Coast rap",
+                "lyrics": lyrics,
+            },
+            sections,
+            {"album_agent_genre_prompt": "West Coast rap"},
+        )
+
+        self.assertFalse(report["gate_passed"])
+        self.assertTrue(any(str(issue).startswith("rap_verses_underfilled:") for issue in report["issues"]))
+        self.assertIn("lyrics_quality", report)
+
     def test_director_minimal_gate_blocks_non_rap_payload_for_rap_request(self):
         sections = ["[Intro]", "[Verse 1]", "[Hook]", "[Verse 2]", "[Final Hook]", "[Outro]"]
         lyrics = "\n".join(
@@ -2341,7 +2624,7 @@ Lyrics:
         self.assertTrue(result["input_contract_applied"])
         self.assertTrue(result["crewai_used"])
 
-    def test_crewai_blueprint_duration_is_clamped_to_requested_track_duration(self):
+    def test_crewai_blueprint_duration_is_clamped_to_requested_track_duration_when_fixed(self):
         class FakeCrew:
             def __init__(self, output):
                 self.output = output
@@ -2383,7 +2666,12 @@ Lyrics:
                 track_duration=45,
                 ollama_model="qwen-local",
                 embedding_model="embed-local",
-                options={"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "agent_engine": "legacy_crewai"},
+                options={
+                    "installed_models": ["acestep-v15-turbo"],
+                    "song_model_strategy": "best_installed",
+                    "agent_engine": "legacy_crewai",
+                    "duration_mode": "fixed",
+                },
                 use_crewai=True,
                 planner_provider="lmstudio",
                 embedding_provider="lmstudio",

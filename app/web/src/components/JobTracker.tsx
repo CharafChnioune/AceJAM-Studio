@@ -35,6 +35,7 @@ import { toast } from "@/components/ui/sonner";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { api } from "@/lib/api";
+import { audioBackendLabel } from "@/lib/audioBackend";
 import { cn } from "@/lib/utils";
 import { useJobsStore, type JobEntry, type JobKind } from "@/store/jobs";
 
@@ -536,6 +537,12 @@ function GenerationDetails({
     loraTriggerAudit.trigger_source ||
     (loraTriggerTag ? "metadata" : "");
   const requestedLoraScale = payload.lora_scale ?? summary.lora_scale;
+  const audioBackend =
+    result.audio_backend ||
+    resultSummary.audio_backend ||
+    summary.audio_backend ||
+    payload.audio_backend ||
+    (result.use_mlx_dit === true || resultSummary.use_mlx_dit === true || payload.use_mlx_dit === true ? "mlx" : "");
   const styleAudit = asRecord(
     result.style_conditioning_audit ||
       resultSummary.style_conditioning_audit ||
@@ -568,6 +575,7 @@ function GenerationDetails({
           <InfoRow label="Model" value={summary.song_model || "auto"} />
           <InfoRow label="Requested model" value={requestedModel || "auto"} />
           <InfoRow label="Actual model" value={actualModel || "auto"} />
+          <InfoRow label="Audio backend" value={audioBackend ? audioBackendLabel(audioBackend) : "auto"} />
           <InfoRow label="Quality" value={summary.quality_profile || "auto"} />
           <InfoRow label="Duration" value={summary.duration ? `${text(summary.duration)}s` : "auto"} />
           <InfoRow label="Requested takes" value={requestedTakeCount} />

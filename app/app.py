@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import builtins
+import errno
 import gc
 import hashlib
 import html as html_lib
@@ -29,6 +31,18 @@ from typing import Any, Callable
 
 import numpy as np
 import soundfile as sf
+
+
+def _safe_print(*args: Any, **kwargs: Any) -> None:
+    try:
+        builtins.print(*args, **kwargs)
+    except (BrokenPipeError, OSError) as exc:
+        if isinstance(exc, BrokenPipeError) or getattr(exc, "errno", None) == errno.EPIPE:
+            return
+        raise
+
+
+print = _safe_print
 
 for name in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:
     os.environ.pop(name, None)
@@ -683,6 +697,77 @@ def _normalize_lm_backend(value: Any) -> str:
     return backend if backend in {"pt", "vllm", "mlx"} else ACE_LM_BACKEND_DEFAULT
 
 
+def _default_audio_backend() -> str:
+    return "mlx" if _IS_APPLE_SILICON else "mps_torch"
+
+
+ACE_AUDIO_BACKEND_DEFAULT = _default_audio_backend()
+
+
+def _truthy_backend_flag(value: Any) -> bool | None:
+    if value in [None, ""]:
+        return None
+    text = str(value).strip().lower()
+    if text in {"", "auto"}:
+        return None
+    if text in {"true", "1", "yes", "on", "mlx"}:
+        return True
+    if text in {"false", "0", "no", "off", "pt", "torch", "mps", "mps_torch", "pytorch"}:
+        return False
+    return None
+
+
+def _normalize_audio_backend(value: Any = None, use_mlx_dit: Any = None) -> str:
+    """Normalize the user-facing audio runtime choice.
+
+    `lm_backend` controls ACE-Step's language model path. Audio DiT/VAE runtime
+    needs a separate switch so the UI can default to native MLX while keeping a
+    PyTorch/MPS fallback available.
+    """
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if raw in {"mlx", "native_mlx", "mlx_dit", "mlx_audio"}:
+        return "mlx" if _IS_APPLE_SILICON else "mps_torch"
+    if raw in {"mps", "mps_torch", "torch", "pytorch", "pt"}:
+        return "mps_torch"
+    flag = _truthy_backend_flag(use_mlx_dit)
+    if flag is True:
+        return "mlx" if _IS_APPLE_SILICON else "mps_torch"
+    if flag is False:
+        return "mps_torch"
+    return _default_audio_backend()
+
+
+def _audio_backend_uses_mlx(params: dict[str, Any] | None) -> bool:
+    if not isinstance(params, dict):
+        return False
+    return _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit")) == "mlx"
+
+
+def _apply_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    backend = _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit"))
+    changed: list[str] = []
+    if params.get("audio_backend") != backend:
+        params["audio_backend"] = backend
+        changed.append(f"audio_backend={backend}")
+    desired_mlx = backend == "mlx"
+    if params.get("use_mlx_dit") is not desired_mlx:
+        params["use_mlx_dit"] = desired_mlx
+        changed.append(f"use_mlx_dit={str(desired_mlx).lower()}")
+    if _IS_APPLE_SILICON and str(params.get("device") or "auto").strip().lower() in {"", "auto"}:
+        params["device"] = "mps"
+        changed.append("device=mps")
+    if _IS_APPLE_SILICON and str(params.get("dtype") or "auto").strip().lower() in {"", "auto"}:
+        params["dtype"] = "float32"
+        changed.append("dtype=float32")
+    if changed:
+        warnings = list(params.get("payload_warnings") or [])
+        warning = f"audio_backend_defaults:{source}:{','.join(changed)}"
+        if warning not in warnings:
+            warnings.append(warning)
+        params["payload_warnings"] = warnings
+    return params
+
+
 VOCAL_CLARITY_CAPTION_TRAITS = [
     "clear intelligible English rap vocal",
     "dry upfront lead vocal",
@@ -955,6 +1040,43 @@ def _enforce_model_correct_render_settings(params: dict[str, Any], *, source: st
     return params
 
 
+def _apply_mac_mlx_xl_repetition_guard(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Avoid the upstream-reported Mac XL repetition trap for MLX-backed text2music.
+
+    ACE-Step issue #1191 reports severe Mac XL Turbo/SFT artifacts when DCW and
+    LM-code conditioning strength are both active. Keep this as an app-side guard
+    until upstream lands a real model/runtime fix.
+    """
+    if not parse_bool(os.environ.get("ACEJAM_MAC_MLX_XL_REPETITION_GUARD"), True):
+        return params
+    if not _IS_APPLE_SILICON:
+        return params
+    if normalize_task_type(params.get("task_type")) != "text2music":
+        return params
+    song_model = str(params.get("song_model") or "").strip().lower()
+    if "xl" not in song_model or not any(part in song_model for part in ["turbo", "sft", "base"]):
+        return params
+    if not _audio_backend_uses_mlx(params):
+        return params
+
+    before_dcw = parse_bool(params.get("dcw_enabled"), True)
+    before_cover = clamp_float(params.get("audio_cover_strength"), 1.0, 0.0, 1.0)
+    changed = before_dcw or before_cover != 0.0
+    params["dcw_enabled"] = False
+    params["audio_cover_strength"] = 0.0
+    if changed:
+        warnings = list(params.get("payload_warnings") or [])
+        warning = (
+            "mac_mlx_xl_repetition_guard:"
+            f"{source}:dcw_enabled={before_dcw}->False,"
+            f"audio_cover_strength={before_cover:g}->0"
+        )
+        if warning not in warnings:
+            warnings.append(warning)
+        params["payload_warnings"] = warnings
+    return params
+
+
 PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
     "simple": {"label": "Simple", "file": "promptsimple.md", "description": "Fast prompt-to-song fields."},
     "custom": {"label": "Custom", "file": "promptcustom.md", "description": "Full Custom Studio song payload."},
@@ -1013,6 +1135,11 @@ def _prompt_assistant_path(mode: str) -> Path:
 
 
 def _prompt_assistant_system_prompt(mode: str) -> str:
+    # Album mode is handled by the CrewAI Micro Tasks director in
+    # _run_prompt_assistant_album_crew before this function is reached. The
+    # legacy single-Ollama-call album system prompt was deleted because each
+    # wizard field is now filled by a specialised crew agent (Topline Hook
+    # Writer, Tier-1 Lyric Writer, Sonic Tags Engineer, etc.).
     text = _prompt_assistant_path(mode).read_text(encoding="utf-8")
     match = re.search(r"## System Prompt\s*```(?:text)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
     if match:
@@ -1205,6 +1332,8 @@ def _compact_prompt_assistant_current_payload(payload: dict[str, Any], mode: str
         "concept",
         "num_tracks",
         "track_duration",
+        "duration_mode",
+        "tracks",
         "album_agent_genre_prompt",
         "album_agent_mood_vibe",
         "album_agent_vocal_type",
@@ -1254,23 +1383,7 @@ def _prompt_assistant_user_content(user_prompt: str, current_payload: dict[str, 
 def _prompt_assistant_stage_specs(mode: str) -> list[tuple[str, str]]:
     mode = _prompt_assistant_mode(mode)
     if mode == "album":
-        return [
-            (
-                "album_intent",
-                "Plan the album-level sonic identity only. Return a compact payload with concept, album_title when known, "
-                "global style/caption/tags, and a reusable song_intent palette. Do not write full track lyrics yet.",
-            ),
-            (
-                "album_tracks",
-                "Use previous_ai_payload as fixed creative direction. Return tracks with title, artist_name, caption, "
-                "lyrics or lyric direction, bpm/key/time metadata, and keep the album palette consistent.",
-            ),
-            (
-                "album_render",
-                "Finalize the album payload for MLX Media. Preserve previous tracks and palette; add only model strategy, "
-                "quality, language, and generation defaults needed by the UI.",
-            ),
-        ]
+        return []
     if mode in PROMPT_KIT_SOURCE_AUDIO_MODES:
         return [
             (
@@ -1691,6 +1804,91 @@ def _apply_prompt_kit_metadata(mode: str, payload: dict[str, Any]) -> None:
         payload["use_format"] = False
 
 
+ALBUM_DURATION_MODE_AI = "ai_per_track"
+ALBUM_DURATION_MODE_FIXED = "fixed"
+
+
+def _normalize_album_duration_mode(value: Any) -> str:
+    return ALBUM_DURATION_MODE_FIXED if str(value or "").strip().lower() == ALBUM_DURATION_MODE_FIXED else ALBUM_DURATION_MODE_AI
+
+
+def _album_track_role_hint(track: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("role", "album_arc_role", "title", "description", "narrative", "caption", "tags"):
+        value = track.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if str(item).strip())
+        elif value not in (None, "", []):
+            parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def _album_default_duration_for_role(track: dict[str, Any], fallback: float) -> float:
+    text = _album_track_role_hint(track)
+    if any(token in text for token in ("intro", "outro", "skit", "interlude", "breather")):
+        default = 90.0
+    elif any(token in text for token in ("extended", "epic", "cinematic")):
+        default = 270.0
+    elif any(token in text for token in ("single", "full_song", "full song", "opener", "climax", "closer")):
+        default = 210.0
+    else:
+        default = fallback or 180.0
+    return clamp_float(default, 180.0, 30.0, 600.0)
+
+
+def _clean_album_caption_metadata(value: Any) -> str:
+    terms: list[str] = []
+    for raw in split_terms(value):
+        term = str(raw or "").strip()
+        if not term:
+            continue
+        if re.search(
+            r"\b(?:\d{2,3}\s*bpm|bpm\s*[:=]|\d+\/\d+|"
+            r"[A-G](?:#|b|♯|♭)?\s+(?:major|minor)|"
+            r"time\s*signature|duration|seconds?|minutes?)\b",
+            term,
+            re.I,
+        ):
+            continue
+        key = term.lower()
+        if key not in {existing.lower() for existing in terms}:
+            terms.append(term)
+    return ", ".join(terms)[:ACE_STEP_CAPTION_CHAR_LIMIT].strip(" ,.")
+
+
+def _normalize_album_track_durations(
+    tracks: list[Any],
+    fallback_duration: float,
+    duration_mode: str,
+) -> list[dict[str, Any]]:
+    fallback = parse_duration_seconds(fallback_duration or 180.0, 180.0)
+    fixed = _normalize_album_duration_mode(duration_mode) == ALBUM_DURATION_MODE_FIXED
+    normalized_tracks: list[dict[str, Any]] = []
+    for index, raw in enumerate(tracks or []):
+        if not isinstance(raw, dict):
+            continue
+        track = dict(raw)
+        track.setdefault("track_number", index + 1)
+        explicit = track.get("duration")
+        if fixed:
+            duration = fallback
+            track["duration_source"] = "fixed_duration_mode"
+        elif explicit not in (None, "", []):
+            duration = parse_duration_seconds(explicit, fallback)
+            track["duration_source"] = track.get("duration_source") or "ai_per_track"
+        else:
+            duration = _album_default_duration_for_role(track, fallback)
+            track["duration_source"] = "role_default"
+        track["duration"] = clamp_float(duration, fallback, 30.0, 600.0)
+        caption = _clean_album_caption_metadata(track.get("caption") or track.get("tags") or "")
+        if caption:
+            track["caption"] = caption
+            if track.get("tags"):
+                track["tags"] = caption
+        normalized_tracks.append(track)
+    return normalized_tracks
+
+
 def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     normalized = dict(payload or {})
     warnings: list[str] = []
@@ -1784,8 +1982,9 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             normalized["planner_lm_provider"] = "ollama"
             normalized["planner_model"] = str(body.get("ollama_model") or body.get("planner_ollama_model") or normalized.get("planner_ollama_model") or "")
         normalized = _album_ace_lm_disabled_payload(normalized)
-        normalized.setdefault("song_model_strategy", "all_models_album")
-        normalized.setdefault("final_song_model", "all_models_album")
+        normalized.setdefault("song_model_strategy", "single_model_album")
+        normalized.setdefault("song_model", ALBUM_FINAL_MODEL)
+        normalized.setdefault("final_song_model", ALBUM_FINAL_MODEL)
         contract_source = _album_contract_source_from_payload(normalized, body)
         user_album_contract = normalized.get("user_album_contract")
         if not isinstance(user_album_contract, dict):
@@ -1817,16 +2016,31 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["thinking"] = False
         normalized["use_format"] = False
         normalized["use_cot_lyrics"] = False
+        normalized["album_writer_mode"] = "per_track_writer_loop"
+        normalized["max_track_repair_rounds"] = clamp_int(
+            normalized.get("max_track_repair_rounds") or body.get("max_track_repair_rounds"),
+            3,
+            0,
+            3,
+        )
+        duration_mode = _normalize_album_duration_mode(normalized.get("duration_mode") or body.get("duration_mode"))
+        fallback_duration = parse_duration_seconds(
+            normalized.get("track_duration") or body.get("track_duration") or normalized.get("duration") or body.get("duration") or 180,
+            180,
+        )
+        normalized["duration_mode"] = duration_mode
+        normalized["track_duration"] = clamp_float(fallback_duration, 180.0, 30.0, 600.0)
         normalized.setdefault("track_variants", 1)
         normalized.setdefault("save_to_library", True)
         tracks = normalized.get("tracks")
         if not isinstance(tracks, list) or not tracks:
             contract_tracks = tracks_from_user_album_contract(user_album_contract)
-            normalized["tracks"] = contract_tracks if contract_tracks else []
+            normalized["tracks"] = _normalize_album_track_durations(contract_tracks, normalized["track_duration"], duration_mode) if contract_tracks else []
             if not contract_tracks:
                 warnings.append("Album prompt did not return tracks; use Plan Album or ask again with more detail.")
         else:
-            normalized["tracks"] = apply_user_album_contract_to_tracks(tracks, user_album_contract)
+            contracted_tracks = apply_user_album_contract_to_tracks(tracks, user_album_contract)
+            normalized["tracks"] = _normalize_album_track_durations(contracted_tracks, normalized["track_duration"], duration_mode)
         for track in normalized.get("tracks") or []:
             if isinstance(track, dict):
                 track.setdefault(
@@ -2136,6 +2350,184 @@ def _run_prompt_assistant_local_staged(
     )
 
 
+def _album_wizard_track_dict(track: Any) -> dict[str, Any]:
+    """Lift a single album-crew track payload into the JSON-clean dict the
+    wizard UI expects. Empty strings beat None so the wizard textareas
+    render editable rather than null."""
+    if not isinstance(track, dict):
+        return {}
+    role = str(track.get("role") or "").strip() or "single"
+    return {
+        "track_number": int(track.get("track_number") or 0),
+        "title": str(track.get("title") or "").strip(),
+        "role": role,
+        "duration": float(track.get("duration") or 0) or 180.0,
+        "artist_name": str(track.get("artist_name") or "").strip(),
+        "producer_credit": str(track.get("producer_credit") or "").strip(),
+        "caption": str(track.get("caption") or track.get("tags") or "").strip(),
+        "tags": str(track.get("tags") or track.get("caption") or "").strip(),
+        "tag_list": list(track.get("tag_list") or []),
+        "negative_tags": str(track.get("negative_tags") or "").strip(),
+        "lyrics": str(track.get("lyrics") or "").strip(),
+        "lyrics_lines": list(track.get("lyrics_lines") or []),
+        "bpm": int(track.get("bpm") or 0) or 120,
+        "key_scale": str(track.get("key_scale") or "C major"),
+        "time_signature": str(track.get("time_signature") or "4"),
+        "vocal_language": str(track.get("vocal_language") or track.get("language") or "en"),
+        "instrumental": bool(track.get("instrumental")),
+        "song_model": str(track.get("song_model") or "acestep-v15-xl-sft"),
+        "quality_profile": str(track.get("quality_profile") or "chart_master"),
+        "ace_lm_model": "none",
+        "inference_steps": int(track.get("inference_steps") or 50),
+        "guidance_scale": float(track.get("guidance_scale") or 8.0),
+        "shift": float(track.get("shift") or 1.0),
+        "infer_method": str(track.get("infer_method") or "ode"),
+        "audio_format": str(track.get("audio_format") or "wav32"),
+        "seed": str(track.get("seed") or "-1"),
+        "use_random_seed": bool(track.get("use_random_seed", True)),
+        "auto_score": bool(track.get("auto_score", False)),
+        "auto_lrc": bool(track.get("auto_lrc", False)),
+        "return_audio_codes": bool(track.get("return_audio_codes", True)),
+        "save_to_library": bool(track.get("save_to_library", True)),
+        "production_team": dict(track.get("production_team") or {}),
+        "quality_report": dict(track.get("quality_report") or {}),
+        "section_plan": list(
+            (track.get("quality_report") or {}).get("section_plan")
+            or track.get("section_plan")
+            or []
+        ),
+        "hook_promise": str(track.get("hook_promise") or ""),
+        "hook_lines": list(track.get("hook_lines") or []),
+        "style": str(track.get("style") or ""),
+        "vibe": str(track.get("vibe") or ""),
+        "narrative": str(track.get("narrative") or track.get("description") or ""),
+        "description": str(track.get("description") or ""),
+    }
+
+
+def _run_prompt_assistant_album_crew(
+    body: dict[str, Any],
+    user_prompt: str,
+    current_payload: dict[str, Any],
+    planner_provider: str,
+    planner_model: str,
+) -> dict[str, Any]:
+    """Album wizard AI Fill — replaces the old single-Ollama-call planner
+    with the existing CrewAI Micro Tasks director (`plan_album`). Each track
+    field gets filled by a specialised CrewAI agent (Topline Hook Writer,
+    Tier-1 Lyric Writer, Sonic Tags Engineer, etc.) instead of one cramped
+    JSON-schema completion. Output shape mirrors what the previous wizard
+    response returned so the UI keeps rendering.
+
+    The user can edit every wizard field after fill; ACE-Step audio render
+    happens separately when the user clicks Generate (track-by-track,
+    outside the crew)."""
+    from album_crew import plan_album as _plan_album
+
+    concept_text = (user_prompt or "").strip() or str(current_payload.get("concept") or "").strip()
+    if not concept_text:
+        return {
+            "success": False,
+            "error": "Album concept is empty. Paste an album idea or fill the concept field before AI Fill.",
+            "payload": {},
+            "warnings": [],
+            "raw_text": "",
+        }
+
+    try:
+        num_tracks = int(current_payload.get("num_tracks") or body.get("num_tracks") or 7)
+    except (TypeError, ValueError):
+        num_tracks = 7
+    num_tracks = max(1, min(20, num_tracks))
+    try:
+        track_duration = float(current_payload.get("track_duration") or body.get("track_duration") or 180.0)
+    except (TypeError, ValueError):
+        track_duration = 180.0
+    language = str(current_payload.get("language") or body.get("language") or "en").strip() or "en"
+
+    # Pass the user's current payload through as options so locked fields,
+    # producer credits, lyric density etc. survive the crew run. Force the
+    # CrewAI Micro engine so the wizard fill is always a multi-agent run
+    # (matches user's explicit directive: "het invullen moet door crewai
+    # gedaan worden").
+    options: dict[str, Any] = {}
+    if isinstance(current_payload, dict):
+        options.update({k: v for k, v in current_payload.items() if k not in {"tracks"}})
+    options["agent_engine"] = "crewai_micro"
+    options.setdefault("album_writer_mode", "per_track_writer_loop")
+    options.setdefault("quality_profile", "chart_master")
+    options.setdefault("song_model_strategy", "single_model_album")
+    options.setdefault("final_song_model", "acestep-v15-xl-sft")
+    options.setdefault("duration_mode", "ai_per_track")
+    options["planner_lm_provider"] = planner_provider
+    options["planner_model"] = planner_model
+    options["planner_ollama_model"] = planner_model
+    options["concept"] = concept_text
+    options["user_prompt"] = user_prompt
+
+    input_tracks = _json_list(body.get("tracks") or current_payload.get("tracks")) or None
+
+    logs_buffer: list[str] = []
+    result = _plan_album(
+        concept=concept_text,
+        num_tracks=num_tracks,
+        track_duration=track_duration,
+        ollama_model=planner_model,
+        language=language,
+        options=options,
+        use_crewai=True,
+        input_tracks=input_tracks,
+        planner_provider=planner_provider,
+        embedding_provider="ollama",
+        log_callback=logs_buffer.append,
+    )
+
+    raw_tracks = result.get("tracks") or []
+    wizard_tracks = [_album_wizard_track_dict(track) for track in raw_tracks if isinstance(track, dict)]
+
+    payload: dict[str, Any] = {
+        "concept": str(result.get("concept") or concept_text),
+        "album_title": str(result.get("album_title") or ""),
+        "num_tracks": int(result.get("num_tracks") or len(wizard_tracks) or num_tracks),
+        "language": language,
+        "duration_mode": str(options.get("duration_mode") or "ai_per_track"),
+        "track_duration": int(track_duration),
+        "album_writer_mode": str(options.get("album_writer_mode") or "per_track_writer_loop"),
+        "quality_profile": str(options.get("quality_profile") or "chart_master"),
+        "song_model_strategy": str(options.get("song_model_strategy") or "single_model_album"),
+        "final_song_model": str(options.get("final_song_model") or "acestep-v15-xl-sft"),
+        "planner_lm_provider": planner_provider,
+        "planner_model": planner_model,
+        "ace_lm_model": "none",
+        "use_official_lm": False,
+        "vocal_language": language,
+        "tracks": wizard_tracks,
+        "negative_tags": "muddy mix, weak hook, unclear vocal, noisy artifacts, flat drums, boring arrangement, generic lyrics, contradictory style",
+        "prompt_kit_version": PROMPT_KIT_VERSION,
+        "max_track_repair_rounds": int(options.get("max_track_repair_rounds") or 3),
+        "agent_engine": "crewai_micro",
+        "planning_engine": "crewai_micro",
+        "crewai_used": True,
+    }
+
+    warnings: list[str] = []
+    if not bool(result.get("success", True)):
+        warnings.append(str(result.get("error") or "Album crew planning did not complete; partial results may be incomplete."))
+    for entry in result.get("warnings") or []:
+        warnings.append(str(entry))
+    # Surface the crew log lines so the wizard can show progress / which
+    # agents ran. Trimmed to keep the response payload compact.
+    if logs_buffer:
+        warnings.extend(str(line) for line in logs_buffer[-12:])
+
+    return {
+        "success": bool(result.get("success", True) and wizard_tracks),
+        "payload": payload,
+        "warnings": warnings,
+        "raw_text": json.dumps({"payload": payload}, ensure_ascii=False, default=str),
+    }
+
+
 def _download_job_active(model_name: str) -> bool:
     jobs = globals().get("_model_download_jobs", {})
     job = jobs.get(model_name) if isinstance(jobs, dict) else None
@@ -2411,43 +2803,14 @@ def _unload_llm_models_for_generation() -> None:
 EPOCH_AUDITION_INFERENCE_STEPS = 50
 
 
-def _use_pytorch_mps_for_vocal_sft_audio(song_model: Any, *, task_type: str = "text2music", instrumental: bool = False) -> bool:
-    """Prefer the verified PyTorch/MPS path for vocal SFT/Base audio on Apple Silicon."""
-    model = str(song_model or "").strip().lower()
-    return bool(
-        _IS_APPLE_SILICON
-        and task_type == "text2music"
-        and not instrumental
-        and model
-        and "turbo" not in model
-    )
-
-
 def _apply_verified_vocal_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dict[str, Any]:
-    """Avoid native MLX-DiT for vocal SFT/Base renders until it passes the same gate locally."""
-    if not _use_pytorch_mps_for_vocal_sft_audio(
-        params.get("song_model"),
-        task_type=str(params.get("task_type") or "text2music"),
-        instrumental=parse_bool(params.get("instrumental"), False),
-    ):
-        return params
-    changed: list[str] = []
-    if str(params.get("use_mlx_dit") or "auto").strip().lower() in {"", "auto", "true", "1", "yes", "on"}:
-        params["use_mlx_dit"] = False
-        changed.append("use_mlx_dit=false")
-    if str(params.get("device") or "auto").strip().lower() in {"", "auto"}:
-        params["device"] = "mps"
-        changed.append("device=mps")
-    if str(params.get("dtype") or "auto").strip().lower() in {"", "auto"}:
-        params["dtype"] = "float32"
-        changed.append("dtype=float32")
-    if changed:
-        warnings = list(params.get("payload_warnings") or [])
-        warning = f"verified_vocal_audio_backend:{source}:{','.join(changed)}"
-        if warning not in warnings:
-            warnings.append(warning)
-        params["payload_warnings"] = warnings
-    return params
+    """Backwards-compatible wrapper for old callers.
+
+    Earlier builds forced vocal SFT/Base renders onto PyTorch/MPS here. The UI
+    now exposes the audio runtime explicitly, with MLX as default and MPS/Torch
+    as the fallback.
+    """
+    return _apply_audio_backend_defaults(params, source=source)
 
 
 def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
@@ -2514,6 +2877,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "use_random_seed": False,
         "device": backend_defaults.get("device", "auto"),
         "dtype": backend_defaults.get("dtype", "auto"),
+        "audio_backend": backend_defaults.get("audio_backend", _default_audio_backend()),
         "use_mlx_dit": backend_defaults.get("use_mlx_dit", "auto"),
         "inference_steps": inference_steps,
         "shift": shift,
@@ -3559,6 +3923,8 @@ def _direct_ace_step_debug_request(params: dict[str, Any], save_dir: Path, activ
         "device": params.get("device", "handler"),
         "dtype": params.get("dtype", "handler"),
         "lm_backend": params.get("lm_backend", ACE_LM_BACKEND_DEFAULT),
+        "audio_backend": params.get("audio_backend", _default_audio_backend()),
+        "use_mlx_dit": params.get("use_mlx_dit", "auto"),
         "params": params_payload,
         "config": {
             "batch_size": params.get("batch_size", 1),
@@ -5801,6 +6167,7 @@ def _album_agent_engine_label_value(value: Any) -> str:
 
 def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto") -> dict[str, Any]:
     strategy = str(payload.get("song_model_strategy") or "all_models_album")
+    selection_strategy = "selected" if strategy in {"selected", "single_model_album"} else strategy
     quality_profile = _default_quality_profile_for_payload({**payload, "ui_mode": "album"}, "text2music")
     payload_song_model = str(payload.get("requested_song_model") or payload.get("song_model") or "").strip()
     selected_song_model = str(song_model or "").strip()
@@ -5809,10 +6176,10 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         if selected_song_model and selected_song_model != "auto"
         else payload_song_model
     )
-    if strategy != "selected":
+    if selection_strategy != "selected":
         requested_song_model = "auto"
     installed_models = sorted(_installed_acestep_models())
-    default_model = ALBUM_FINAL_MODEL if strategy != "selected" else (requested_song_model or ALBUM_FINAL_MODEL)
+    default_model = ALBUM_FINAL_MODEL if selection_strategy != "selected" else (requested_song_model or ALBUM_FINAL_MODEL)
     model_defaults = quality_profile_model_settings(default_model, quality_profile)
     contract_source = _album_contract_source_from_payload(payload)
     user_album_contract = payload.get("user_album_contract")
@@ -5833,6 +6200,8 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "planner_model": str(payload.get("planner_model") or payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         **planner_settings,
         "agent_engine": _normalize_album_agent_engine_value(payload.get("agent_engine")),
+        "album_writer_mode": str(payload.get("album_writer_mode") or "per_track_writer_loop").strip() or "per_track_writer_loop",
+        "max_track_repair_rounds": clamp_int(payload.get("max_track_repair_rounds"), 3, 0, 3),
         "user_prompt": str(payload.get("user_prompt") or payload.get("prompt") or payload.get("concept") or ""),
         "raw_user_prompt": str(payload.get("raw_user_prompt") or payload.get("user_prompt") or payload.get("prompt") or payload.get("concept") or ""),
         "album_agent_genre_prompt": str(payload.get("album_agent_genre_prompt") or payload.get("genre_prompt") or payload.get("custom_tags") or ""),
@@ -5847,6 +6216,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "album_model_portfolio": album_model_portfolio(installed_models),
         "quality_target": str(payload.get("quality_target") or "hit"),
         "quality_profile": quality_profile,
+        "duration_mode": _normalize_album_duration_mode(payload.get("duration_mode")),
         "tag_packs": _json_list(payload.get("tag_packs")),
         "custom_tags": payload.get("custom_tags") or "",
         "negative_tags": payload.get("negative_tags") or "",
@@ -6625,7 +6995,13 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     requested_lm_model = _requested_ace_lm_model(payload)
     official_used = _active_official_fields(payload, task_type, official_fields_used(payload))
     profile_requires_official = quality_profile in {QUALITY_PROFILE_DOCS_DAILY, DEFAULT_QUALITY_PROFILE}
-    use_official = profile_requires_official or bool(official_used) or _quality_lm_controls_enabled(payload, task_type)
+    audio_backend_requested = "audio_backend" in payload or "use_mlx_dit" in payload
+    use_official = (
+        profile_requires_official
+        or bool(official_used)
+        or _quality_lm_controls_enabled(payload, task_type)
+        or audio_backend_requested
+    )
     requested_format = str(payload.get("audio_format") or (model_defaults["audio_format"] if use_official else "wav")).strip().lower().lstrip(".")
     if use_official and requested_format == "ogg":
         raise ValueError("OGG is only available in the fast MLX Media runner. Use wav/flac/mp3/opus/aac/wav32 with official ACE-Step controls.")
@@ -6873,6 +7249,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "latent_rescale": clamp_float(payload.get("latent_rescale"), 1.0, 0.1, 3.0),
         "device": str(payload.get("device") or "auto").strip() or "auto",
         "dtype": str(payload.get("dtype") or "auto").strip() or "auto",
+        "audio_backend": _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit")),
         "use_flash_attention": payload.get("use_flash_attention", "auto"),
         "use_mlx_dit": payload.get("use_mlx_dit", "auto"),
         "compile_model": parse_bool(payload.get("compile_model"), False),
@@ -6887,7 +7264,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if parsed.get("style_profile") and parsed.get("style_profile") != "auto":
         parsed["tag_list"] = split_terms(parsed["caption"])
-    _apply_verified_vocal_audio_backend_defaults(parsed, source="parse")
+    _apply_audio_backend_defaults(parsed, source="parse")
     if vocal_clarity_recovery and task_type == "text2music" and supplied_vocal_lyrics:
         parsed["caption"] = _caption_with_vocal_clarity_traits(parsed["caption"])
         parsed["tag_list"] = split_terms(parsed["caption"])
@@ -6895,6 +7272,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
             parsed["payload_warnings"].append("vocal_clarity_recovery_caption_traits")
     _apply_lora_trigger_conditioning(parsed)
     _enforce_model_correct_render_settings(parsed, source="parse")
+    _apply_mac_mlx_xl_repetition_guard(parsed, source="parse")
     settings_compliance = ace_step_settings_compliance(
         parsed,
         task_type=task_type,
@@ -7141,7 +7519,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
     flow_edit_n_max = clamp_float(payload.get("flow_edit_n_max"), 1.0, 0.0, 1.0)
     if flow_edit_n_max < flow_edit_n_min:
         flow_edit_n_min, flow_edit_n_max = flow_edit_n_max, flow_edit_n_min
-    return {
+    preview = {
         "ui_mode": str(payload.get("ui_mode") or task_type),
         "quality_profile": quality_profile,
         "task_type": task_type,
@@ -7215,6 +7593,7 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "requires_official_runner": use_official,
         "runner_plan": "official" if use_official else "fast",
     }
+    return _apply_mac_mlx_xl_repetition_guard(preview, source="preview")
 
 
 def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -7425,6 +7804,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         f"thinking={params.get('thinking')}, cot_metas={params.get('use_cot_metas')}, "
         f"cot_caption={params.get('use_cot_caption')}, cot_lyrics={params.get('use_cot_lyrics')}, "
         f"steps={params.get('inference_steps')}, guidance={params.get('guidance_scale')}, "
+        f"audio_backend={params.get('audio_backend')}, use_mlx_dit={params.get('use_mlx_dit')}, "
         f"duration={params.get('duration')}, caption={str(params.get('caption',''))[:80]}",
         flush=True,
     )
@@ -7508,6 +7888,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "acejam_skip_lora_base_backup": True,
         "device": params["device"],
         "dtype": params["dtype"],
+        "audio_backend": params.get("audio_backend", _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit"))),
         "use_flash_attention": params["use_flash_attention"],
         "use_mlx_dit": params.get("use_mlx_dit", "auto"),
         "compile_model": params["compile_model"],
@@ -7587,6 +7968,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
             "use_format": params["use_format"],
         },
         "lm_backend": params["lm_backend"],
+        "audio_backend": params.get("audio_backend", _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit"))),
         "config": {
             "batch_size": params["batch_size"],
             "allow_lm_batch": params["allow_lm_batch"],
@@ -7628,6 +8010,8 @@ def _generation_metadata_audit(params: dict[str, Any], official_request: dict[st
         "timesignature": {"value": effective.get("timesignature"), "present": effective.get("timesignature") not in [None, ""]},
         "song_model": params.get("song_model"),
         "lm_backend": params.get("lm_backend"),
+        "audio_backend": params.get("audio_backend"),
+        "use_mlx_dit": params.get("use_mlx_dit"),
         "inference_steps": params.get("inference_steps"),
         "guidance_scale": params.get("guidance_scale"),
         "shift": params.get("shift"),
@@ -7653,6 +8037,8 @@ def _effective_settings_summary(params: dict[str, Any]) -> dict[str, Any]:
         "ace_lm_model",
         "lm_model_path",
         "lm_backend",
+        "audio_backend",
+        "use_mlx_dit",
         "lm_repetition_penalty",
         "duration",
         "bpm",
@@ -9403,8 +9789,8 @@ def _official_runner_timeout_seconds(request_payload: dict[str, Any], requested_
     steps = clamp_int(params.get("inference_steps") or params.get("infer_steps"), 32, 1, 200)
     duration = clamp_float(params.get("duration") or params.get("audio_duration"), 180.0, DURATION_MIN, DURATION_MAX)
     batch_size = clamp_int(config.get("batch_size"), 1, 1, 16)
-    backend = str(request_payload.get("lm_backend") or "").strip().lower()
-    is_mlx = backend == "mlx" or (_IS_APPLE_SILICON and backend in {"", "auto"})
+    backend = _normalize_audio_backend(request_payload.get("audio_backend"), request_payload.get("use_mlx_dit"))
+    is_mlx = backend == "mlx"
 
     seconds_per_step_per_minute = 18.0 if is_mlx else 8.0
     batch_factor = 1.0 + max(0, batch_size - 1) * (0.35 if is_mlx else 0.2)
@@ -9639,6 +10025,7 @@ def _copy_official_audio(
 
 def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     params = _enforce_model_correct_render_settings(_album_ace_lm_disabled_payload(dict(params)), source="official_generation")
+    _apply_audio_backend_defaults(params, source="official_generation")
     result_id = uuid.uuid4().hex[:12]
     result_dir = RESULTS_DIR / result_id
     official_dir = result_dir / "official"
@@ -9714,6 +10101,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "shift": params["shift"],
             "audio_format": params["audio_format"],
             "lm_backend": params["lm_backend"],
+            "audio_backend": params["audio_backend"],
+            "use_mlx_dit": params.get("use_mlx_dit"),
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
@@ -9790,6 +10179,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "shift": params["shift"],
             "audio_format": params["audio_format"],
             "lm_backend": params["lm_backend"],
+            "audio_backend": params["audio_backend"],
+            "use_mlx_dit": params.get("use_mlx_dit"),
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
@@ -9840,6 +10231,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "shift": params["shift"],
             "audio_format": params["audio_format"],
             "payload_warnings": failure["payload_warnings"],
+            "audio_backend": params["audio_backend"],
+            "use_mlx_dit": params.get("use_mlx_dit"),
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
@@ -9887,6 +10280,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "shift": params["shift"],
             "audio_format": params["audio_format"],
             "lm_backend": params["lm_backend"],
+            "audio_backend": params["audio_backend"],
+            "use_mlx_dit": params.get("use_mlx_dit"),
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
@@ -9937,6 +10332,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "shift": params["shift"],
             "audio_format": params["audio_format"],
             "payload_warnings": failure["payload_warnings"],
+            "audio_backend": params["audio_backend"],
+            "use_mlx_dit": params.get("use_mlx_dit"),
             "use_lora": params["use_lora"],
             "lora_adapter_path": params["lora_adapter_path"],
             "lora_adapter_name": params["lora_adapter_name"],
@@ -10021,6 +10418,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 "seed": seed_text,
                 "sample_rate": int(audio.get("sample_rate") or 48000),
                 "runner": "official",
+                "audio_backend": params["audio_backend"],
+                "use_mlx_dit": params.get("use_mlx_dit"),
                 "payload_warnings": params["payload_warnings"],
                 "requested_take_count": memory_plan["requested_take_count"],
                 "actual_runner_batch_size": memory_plan["actual_runner_batch_size"],
@@ -10149,6 +10548,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "lora_adapter": _jsonable(official_lora_status),
         "audio_format": params["audio_format"],
         "lm_backend": params["lm_backend"],
+        "audio_backend": params["audio_backend"],
+        "use_mlx_dit": params.get("use_mlx_dit"),
         "thinking": params["thinking"],
         "use_format": params["use_format"],
         "use_cot_metas": params["use_cot_metas"],
@@ -10224,6 +10625,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         "shift": params["shift"],
         "audio_format": params["audio_format"],
         "lm_backend": params["lm_backend"],
+        "audio_backend": params["audio_backend"],
+        "use_mlx_dit": params.get("use_mlx_dit"),
         "generation_metadata_audit": metadata_audit,
         "hit_readiness": hit_readiness,
         "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
@@ -10260,6 +10663,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
 
 def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
     params = _enforce_model_correct_render_settings(_album_ace_lm_disabled_payload(dict(params)), source="runner")
+    _apply_audio_backend_defaults(params, source="runner")
     if params["requires_official_runner"]:
         return _run_official_generation(params)
     use_random_seed = bool(params["use_random_seed"])
@@ -10344,6 +10748,8 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
             "seed": seed_text,
             "sample_rate": int(audio_dict["sample_rate"]),
             "runner": "fast",
+            "audio_backend": params["audio_backend"],
+            "use_mlx_dit": params.get("use_mlx_dit"),
             "payload_warnings": params["payload_warnings"],
             "style_profile": params.get("style_profile", ""),
             "style_caption_tags": params.get("style_caption_tags", ""),
@@ -10447,6 +10853,8 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "adapter_model_variant": params["adapter_model_variant"],
         "lora_adapter": _jsonable(lora_status),
         "audio_format": params["audio_format"],
+        "audio_backend": params["audio_backend"],
+        "use_mlx_dit": params.get("use_mlx_dit"),
         "tags": params["caption"],
         "tag_list": params["tag_list"],
         "lyrics": params["lyrics"],
@@ -10511,6 +10919,8 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
         "guidance_scale": params["guidance_scale"],
         "shift": params["shift"],
         "audio_format": params["audio_format"],
+        "audio_backend": params["audio_backend"],
+        "use_mlx_dit": params.get("use_mlx_dit"),
         "generation_metadata_audit": metadata_audit,
         "hit_readiness": hit_readiness,
         "payload_quality_gate": _jsonable(params.get("payload_quality_gate") or {}),
@@ -11299,6 +11709,7 @@ def generate_album(
         request_payload.setdefault("num_tracks", num_tracks)
         request_payload.setdefault("track_duration", track_duration)
         request_payload.setdefault("language", language)
+        request_payload.setdefault("album_writer_mode", "per_track_writer_loop")
         recovered_concept = _recover_album_request_concept(concept, request_payload)
         if recovered_concept:
             concept = recovered_concept
@@ -11322,6 +11733,7 @@ def generate_album(
                 "language": language,
                 "song_model": song_model,
                 "request_payload": request_payload,
+                "album_writer_mode": request_payload.get("album_writer_mode"),
             },
         )
         logs.append(f"Album debug log dir: {album_debug.root}")
@@ -11384,17 +11796,44 @@ def generate_album(
                     album_model_portfolio=album_models,
                 )
             )
+        album_lora_request = _lora_adapter_request(request_payload)
+        if album_lora_request.get("use_lora"):
+            for item in album_models:
+                _validate_lora_request_for_song_model(album_lora_request, str(item["model"]))
+            request_payload.update(
+                {
+                    "use_lora": album_lora_request["use_lora"],
+                    "lora_adapter_path": album_lora_request["lora_adapter_path"],
+                    "lora_adapter_name": album_lora_request["lora_adapter_name"],
+                    "use_lora_trigger": album_lora_request["use_lora_trigger"],
+                    "lora_trigger_tag": album_lora_request["lora_trigger_tag"],
+                    "lora_trigger_source": album_lora_request.get("lora_trigger_source", ""),
+                    "lora_trigger_aliases": album_lora_request.get("lora_trigger_aliases", []),
+                    "lora_trigger_candidates": album_lora_request.get("lora_trigger_candidates", []),
+                    "lora_scale": album_lora_request["lora_scale"],
+                    "adapter_model_variant": album_lora_request["adapter_model_variant"],
+                    "adapter_song_model": album_lora_request["adapter_song_model"],
+                }
+            )
+            logs.append(
+                "Album LoRA: "
+                f"{album_lora_request.get('lora_adapter_name') or Path(str(album_lora_request.get('lora_adapter_path') or '')).name}; "
+                f"scale={album_lora_request.get('lora_scale')}; "
+                f"trigger={album_lora_request.get('lora_trigger_tag') or 'off'}."
+            )
 
         _ensure_album_agent_modules_current()
         from album_crew import plan_album as _plan_album
 
         logs.append(f"Phase 1: Planning album with {planning_engine_label} and deterministic gates...")
+        logs.append(f"Album writer mode: {album_options.get('album_writer_mode')}; per-track AI writing, audit, repair and debug before render.")
         _album_job_log(
             album_job_id,
             f"Phase 1: Planning album with {planning_engine_label} and deterministic gates.",
             status="Planning album",
             progress=3,
             planning_engine=planning_engine,
+            album_writer_mode=album_options.get("album_writer_mode"),
             crewai_used=planning_engine == "crewai_micro",
         )
         result = _plan_album(
@@ -11427,6 +11866,7 @@ def generate_album(
                 embedding_model=embedding_model,
                 embedding_provider=embedding_lm_provider,
                 planning_engine=str(result.get("planning_engine") or ""),
+                album_writer_mode=str(result.get("album_writer_mode") or album_options.get("album_writer_mode") or "per_track_writer_loop"),
                 custom_agents_used=bool(result.get("custom_agents_used")),
                 crewai_used=bool(result.get("crewai_used")),
                 toolbelt_fallback=bool(result.get("toolbelt_fallback")),
@@ -11731,6 +12171,28 @@ def generate_album(
                         if lora_key in track and track.get(lora_key) not in (None, ""):
                             lora_source[lora_key] = track.get(lora_key)
                     track_lora_request = _lora_adapter_request(lora_source)
+                    _validate_lora_request_for_song_model(track_lora_request, track_model)
+                    track_lora_trigger_applied = bool(
+                        track_lora_request.get("use_lora")
+                        and track_lora_request.get("use_lora_trigger")
+                        and track_lora_request.get("lora_trigger_tag")
+                    )
+                    track.update(
+                        {
+                            "use_lora": track_lora_request["use_lora"],
+                            "lora_adapter_path": track_lora_request["lora_adapter_path"],
+                            "lora_adapter_name": track_lora_request["lora_adapter_name"],
+                            "use_lora_trigger": track_lora_request["use_lora_trigger"],
+                            "lora_trigger_tag": track_lora_request["lora_trigger_tag"],
+                            "lora_trigger_source": track_lora_request.get("lora_trigger_source", ""),
+                            "lora_trigger_aliases": track_lora_request.get("lora_trigger_aliases", []),
+                            "lora_trigger_candidates": track_lora_request.get("lora_trigger_candidates", []),
+                            "lora_scale": track_lora_request["lora_scale"],
+                            "adapter_model_variant": track_lora_request["adapter_model_variant"],
+                            "adapter_song_model": track_lora_request["adapter_song_model"],
+                            "lora_trigger_applied": track_lora_trigger_applied,
+                        }
+                    )
                     quality_profile = _default_quality_profile_for_payload({**request_payload, **track}, "text2music")
                     model_defaults = quality_profile_model_settings(track_model, quality_profile)
                     request_key_scale = request_payload.get("key_scale") or request_payload.get("keyscale") or request_payload.get("key")
@@ -11802,6 +12264,8 @@ def generate_album(
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
                         "allow_supplied_lyrics_lm": bool(track_has_vocal_lyrics and track_lm_enabled),
                         "lm_backend": _normalize_lm_backend(track.get("lm_backend") or request_payload.get("lm_backend") or ACE_LM_BACKEND_DEFAULT),
+                        "audio_backend": _normalize_audio_backend(track.get("audio_backend") or request_payload.get("audio_backend"), track.get("use_mlx_dit", request_payload.get("use_mlx_dit"))),
+                        "use_mlx_dit": _normalize_audio_backend(track.get("audio_backend") or request_payload.get("audio_backend"), track.get("use_mlx_dit", request_payload.get("use_mlx_dit"))) == "mlx",
                         "thinking": _album_lm_switch("thinking", DOCS_BEST_LM_DEFAULTS["thinking"] if track_lm_enabled else False),
                         "sample_mode": False,
                         "sample_query": "",
@@ -11831,6 +12295,8 @@ def generate_album(
                         "lora_trigger_candidates": track_lora_request.get("lora_trigger_candidates", []),
                         "lora_scale": track_lora_request["lora_scale"],
                         "adapter_model_variant": track_lora_request["adapter_model_variant"],
+                        "adapter_song_model": track_lora_request["adapter_song_model"],
+                        "lora_trigger_applied": track_lora_trigger_applied,
                         "album_metadata": {
                             "album_family_id": album_family_id,
                             "album_family_title": album_family_title,
@@ -11851,6 +12317,11 @@ def generate_album(
                             "model_render_settings": _jsonable(model_render_settings),
                             "final_model_policy": _jsonable(track.get("final_model_policy", {})),
                             "tag_list": track.get("tag_list", []),
+                            "lora_adapter_name": track_lora_request["lora_adapter_name"],
+                            "lora_scale": track_lora_request["lora_scale"],
+                            "lora_trigger_tag": track_lora_request["lora_trigger_tag"],
+                            "lora_trigger_applied": track_lora_trigger_applied,
+                            "audio_backend": _normalize_audio_backend(track.get("audio_backend") or request_payload.get("audio_backend"), track.get("use_mlx_dit", request_payload.get("use_mlx_dit"))),
                             "album_debug_dir": str(album_debug.root),
                             "payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                         },
@@ -11894,6 +12365,13 @@ def generate_album(
                         "key_scale",
                         "time_signature",
                         "vocal_language",
+                        "lyrics_quality",
+                        "use_lora",
+                        "lora_adapter_name",
+                        "lora_scale",
+                        "lora_trigger_tag",
+                        "lora_trigger_applied",
+                        "adapter_song_model",
                     ]:
                         if public_field in generation_payload:
                             track[public_field] = generation_payload[public_field]
@@ -11904,6 +12382,7 @@ def generate_album(
                     track["tag_coverage"] = gate.get("tag_coverage")
                     track["caption_integrity"] = gate.get("caption_integrity")
                     track["lyric_duration_fit"] = gate.get("lyric_duration_fit")
+                    track["lyrics_quality"] = generation_payload.get("lyrics_quality") or gate.get("lyrics_quality") or track.get("lyrics_quality") or {}
                     track["repair_actions"] = [] if direct_agent_payload else (gate.get("repair_actions") or [])
                     if model_index == 1:
                         for public_field in [
@@ -11919,7 +12398,14 @@ def generate_album(
                             "tag_coverage",
                             "caption_integrity",
                             "lyric_duration_fit",
+                            "lyrics_quality",
                             "repair_actions",
+                            "use_lora",
+                            "lora_adapter_name",
+                            "lora_scale",
+                            "lora_trigger_tag",
+                            "lora_trigger_applied",
+                            "adapter_song_model",
                         ]:
                             base_track[public_field] = _jsonable(track.get(public_field))
                     album_debug.append_jsonl(
@@ -12021,6 +12507,9 @@ def generate_album(
                     track["payload_warnings"] = generation_result.get("payload_warnings", [])
                     track["runner"] = generation_result.get("runner")
                     track["generation_params"] = generation_result.get("params", {})
+                    rendered_params = track["generation_params"] if isinstance(track.get("generation_params"), dict) else {}
+                    track["lora_trigger_applied"] = bool(rendered_params.get("lora_trigger_applied", track.get("lora_trigger_applied")))
+                    track["lora_trigger_conditioning_audit"] = rendered_params.get("lora_trigger_conditioning_audit") or track.get("lora_trigger_conditioning_audit") or {}
                     track["album_id"] = album_id
                     track["album_family_id"] = album_family_id
                     if track["audios"]:
@@ -12038,6 +12527,10 @@ def generate_album(
                             audio["vocal_intelligibility_rescue_model"] = rescue_model
                         audio["payload_gate_status"] = track.get("payload_gate_status")
                         audio["payload_gate_passed"] = track.get("payload_gate_passed")
+                        audio["lora_adapter_name"] = track.get("lora_adapter_name")
+                        audio["lora_scale"] = track.get("lora_scale")
+                        audio["lora_trigger_tag"] = track.get("lora_trigger_tag")
+                        audio["lora_trigger_applied"] = track.get("lora_trigger_applied")
                         if audio.get("song_id"):
                             _merge_song_album_metadata(
                                 audio["song_id"],
@@ -12057,6 +12550,11 @@ def generate_album(
                                     "production_team": track.get("production_team", {}),
                                     "final_model_policy": track.get("final_model_policy", {}),
                                     "tag_list": track.get("tag_list", []),
+                                    "lyrics_quality": track.get("lyrics_quality", {}),
+                                    "lora_adapter_name": track.get("lora_adapter_name"),
+                                    "lora_scale": track.get("lora_scale"),
+                                    "lora_trigger_tag": track.get("lora_trigger_tag"),
+                                    "lora_trigger_applied": track.get("lora_trigger_applied"),
                                 },
                             )
                     generated_audios.extend(track["audios"])
@@ -12140,6 +12638,7 @@ def generate_album(
                     "audios": album_audios,
                     "toolkit_report": result.get("toolkit_report", {}),
                     "album_options": album_options,
+                    "album_writer_mode": album_options.get("album_writer_mode"),
                     "album_debug_dir": str(album_debug.root),
                     "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                     "download_url": f"/api/albums/{album_id}/download",
@@ -12198,6 +12697,7 @@ def generate_album(
                 "album_model_portfolio": album_models,
                 "toolkit_report": result.get("toolkit_report", {}),
                 "album_options": album_options,
+                "album_writer_mode": album_options.get("album_writer_mode"),
                 "album_debug_dir": str(album_debug.root),
                 "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                 "download_url": f"/api/album-families/{album_family_id}/download",
@@ -12253,6 +12753,7 @@ def generate_album(
             "embedding_model": embedding_model,
             "embedding_provider": embedding_lm_provider,
             "planning_engine": str(result.get("planning_engine") or ""),
+            "album_writer_mode": str(result.get("album_writer_mode") or album_options.get("album_writer_mode") or "per_track_writer_loop"),
             "custom_agents_used": bool(result.get("custom_agents_used")),
             "crewai_used": bool(result.get("crewai_used")),
             "toolbelt_fallback": bool(result.get("toolbelt_fallback")),
@@ -13553,6 +14054,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
     embedding_model = str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL)
     planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
     planning_engine_label = _album_agent_engine_label_value(planning_engine)
+    album_writer_mode = str(body.get("album_writer_mode") or "per_track_writer_loop").strip() or "per_track_writer_loop"
     started = datetime.now(timezone.utc).isoformat()
     _set_album_job(
         job_id,
@@ -13567,12 +14069,14 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
         planning_engine=planning_engine,
+        album_writer_mode=album_writer_mode,
         custom_agents_used=True,
         crewai_used=planning_engine == "crewai_micro",
         memory_enabled=False,
         logs=[
             f"Album job {job_id} started.",
             f"Planning Engine: {planning_engine_label} ({planning_engine})",
+            f"Album writer mode: {album_writer_mode}",
             f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})",
             f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled.",
             "ACE-Step Audio Models render final music after local text/settings planning.",
@@ -13596,6 +14100,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         request_body["planner_lm_provider"] = planner_provider
         request_body["embedding_lm_provider"] = embedding_provider
         request_body["planner_model"] = planner_model
+        request_body["album_writer_mode"] = album_writer_mode
         request_body["ollama_model"] = planner_model if planner_provider == "ollama" else body.get("ollama_model", "")
         request_body["embedding_model"] = embedding_model
         request_body["track_duration"] = track_duration
@@ -13631,6 +14136,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
             expected_count=int(result.get("expected_renders") or expected_count),
             planner_model=planner_model,
             embedding_model=embedding_model,
+            album_writer_mode=str(result.get("album_writer_mode") or album_writer_mode),
             memory_enabled=bool(result.get("memory_enabled") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("enabled")) if isinstance(result.get("toolkit_report"), dict) else bool(result.get("memory_enabled")),
             context_chunks=int(result.get("context_chunks") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("context_chunks") or 0) if isinstance(result.get("toolkit_report"), dict) else int(result.get("context_chunks") or 0),
             retrieval_rounds=int(result.get("retrieval_rounds") or ((result.get("toolkit_report") or {}).get("memory") or {}).get("retrieval_rounds") or 0) if isinstance(result.get("toolkit_report"), dict) else int(result.get("retrieval_rounds") or 0),
@@ -14759,6 +15265,37 @@ async def api_prompt_assistant_run(request: Request):
                 fallback_provider = "ollama"
             planner_provider = fallback_provider
             planner_model = str(global_llm_settings.get("chat_model") or planner_model or "").strip()
+        # Album wizard fill goes through the CrewAI Micro Tasks director
+        # instead of a single Ollama call. Each track field is filled by a
+        # specialised agent (Topline Hook Writer, Tier-1 Lyric Writer, Sonic
+        # Tags Engineer, etc.) via plan_album. The user can edit every field
+        # afterwards; ACE-Step audio render runs separately track-by-track
+        # when the user clicks Generate.
+        if mode == "album":
+            crew_result = _run_prompt_assistant_album_crew(
+                body,
+                user_prompt,
+                current_payload,
+                planner_provider,
+                planner_model,
+            )
+            crew_payload = crew_result.get("payload") or {}
+            crew_warnings = list(crew_result.get("warnings") or [])
+            crew_paste_blocks = _server_paste_blocks_from_payload(crew_payload, mode)
+            return JSONResponse(
+                {
+                    "success": bool(crew_result.get("success", False)),
+                    "mode": mode,
+                    "prompt_kit_version": PROMPT_KIT_VERSION,
+                    "prompt_file": PROMPT_ASSISTANT_MODES[mode]["file"],
+                    "payload": _jsonable(crew_payload),
+                    "paste_blocks": crew_paste_blocks,
+                    "warnings": crew_warnings,
+                    "validation": None,
+                    "raw_text": str(crew_result.get("raw_text") or ""),
+                    "error": str(crew_result.get("error") or "") or None,
+                }
+            )
         system_prompt = _prompt_assistant_system_prompt(mode)
         raw_text = _run_prompt_assistant_local_staged(
             system_prompt,

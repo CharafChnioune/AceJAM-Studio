@@ -315,7 +315,10 @@ export interface AlbumPlanJobRequest extends Record<string, unknown> {
   concept: string;
   num_tracks?: number;
   track_duration?: number;
+  duration_mode?: "ai_per_track" | "fixed";
+  album_writer_mode?: "per_track_writer_loop";
   language?: string;
+  tracks?: Record<string, unknown>[];
 }
 
 export interface AlbumPlanJobResponse {

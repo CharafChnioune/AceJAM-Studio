@@ -735,6 +735,23 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
     if sparse_genre:
         target_lines = max(len(sections), min(len(sections) * 3, target_lines))
         min_lines = max(0 if min_words == 0 else len(sections), int(target_lines * 0.5))
+    # Bar allocation per section type. 1 bar = 4 beats. Rap verses lock to a
+    # 16-bar floor on tracks >=120s (the standard hip-hop verse length); on
+    # shorter tracks fall back to a target_lines-derived practical floor.
+    rap_verse_bar_target = 16 if dur >= 120 else max(8, min(16, target_lines // max(1, len(sections) - 1)))
+    sung_verse_bar_target = max(8, min(16, target_words // 60)) if not sparse_genre else max(4, min(8, target_lines // 2))
+    hook_bar_target = 8 if dur > 120 else 4
+    bars_per_section_template = {
+        "Verse_rap": rap_verse_bar_target,
+        "Verse_sung": sung_verse_bar_target,
+        "Hook": hook_bar_target,
+        "Chorus": hook_bar_target,
+        "Pre-Chorus": 4,
+        "Bridge": 4,
+        "Intro": 2,
+        "Outro": 2,
+        "Instrumental": 4,
+    }
     return {
         "duration": dur,
         "density": density,
@@ -746,6 +763,9 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         "max_words": max_words,
         "target_lines": target_lines,
         "min_lines": min_lines,
+        "bars_per_section": bars_per_section_template,
+        "min_bars_per_rap_verse": rap_verse_bar_target,
+        "bars_per_line_factor": 1.0 if rap else 1.4,
         "max_lyrics_chars": 4096,
         "safe_lyrics_char_target": ACE_STEP_LYRICS_SOFT_TARGET_MAX,
         "warning_lyrics_chars": ACE_STEP_LYRICS_WARNING_CHAR_LIMIT,
@@ -826,7 +846,8 @@ def album_models_for_strategy(
     if strategy == "xl_sft_final":
         return [item for item in album_model_portfolio(installed_models) if item["model"] == ALBUM_FINAL_MODEL]
     requested = str(requested_model or "").strip()
-    info = choose_song_model(installed_models or [], strategy, requested if strategy == "selected" else "auto")
+    selection_strategy = "selected" if strategy in {"selected", "single_model_album"} else strategy
+    info = choose_song_model(installed_models or [], selection_strategy, requested if selection_strategy == "selected" else "auto")
     model = str(info.get("model") or "").strip()
     if not model:
         return []

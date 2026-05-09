@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -27,7 +28,7 @@ class PromptAssistantTest(unittest.TestCase):
     def test_music_modes_get_full_acestep_reference_block(self):
         # Music modes must surface authoring rules + tag library + producer/rap cookbooks
         # + worked examples so Ollama/LM Studio can pattern-match Dre/No I.D./Metro requests.
-        for mode in ("simple", "custom", "song", "album", "news", "improve"):
+        for mode in ("simple", "custom", "song", "news", "improve"):
             with self.subTest(mode=mode):
                 prompt = acejam_app._prompt_assistant_system_prompt(mode)
                 self.assertIn("## ACE-Step Authoring Rules", prompt)
@@ -38,6 +39,112 @@ class PromptAssistantTest(unittest.TestCase):
                 self.assertIn("Dr. Dre / G-funk era", prompt)
                 self.assertIn("[Verse - rap]", prompt)
                 self.assertIn("[Hook]", prompt)
+
+    def test_album_wizard_fill_dispatches_through_crewai_micro(self):
+        """Album mode in the prompt-assistant handler must route through the
+        CrewAI Micro Tasks director (`plan_album`) instead of the legacy
+        single-Ollama-call planner. Each wizard field is filled by a
+        specialised agent (Topline Hook Writer, Tier-1 Lyric Writer, Sonic
+        Tags Engineer, etc.). The legacy 'MLX Media's Album AI Fill planner'
+        prompt was deleted; this test pins the new contract.
+        """
+        # The legacy single-call album system-prompt builder is removed.
+        self.assertFalse(hasattr(acejam_app, "_album_prompt_assistant_system_prompt"))
+
+        # Album mode is dispatched to the crew before reaching the staged
+        # path, so plan_album receives crewai_micro engine + the user's
+        # concept + the input_tracks list (when present).
+        captured: dict[str, Any] = {}
+
+        def fake_plan_album(**kwargs):
+            captured.update(kwargs)
+            return {
+                "tracks": [
+                    {
+                        "track_number": 1,
+                        "title": "Concrete Canyons",
+                        "role": "opener",
+                        "duration": 210.0,
+                        "artist_name": "Ada North",
+                        "producer_credit": "Dr. Dre",
+                        "caption": "G-funk, 90s G-funk, talkbox lead, head-nod groove",
+                        "tags": "G-funk, 90s G-funk, talkbox lead, head-nod groove",
+                        "tag_list": ["G-funk", "talkbox lead"],
+                        "lyrics": "[Intro]\nFrom the bottom (yeah)\n[Verse - rap]\nMama working doubles I was sleeping on the floor",
+                        "lyrics_lines": ["[Intro]", "From the bottom (yeah)", "[Verse - rap]", "Mama working doubles I was sleeping on the floor"],
+                        "bpm": 78,
+                        "key_scale": "A minor",
+                        "time_signature": "4",
+                        "vocal_language": "en",
+                        "production_team": {"executive_producer": "AceJAM Director"},
+                        "quality_report": {"hit_angle": "low-end opener", "section_plan": ["[Intro]", "[Verse - rap]"]},
+                    }
+                ],
+                "album_title": "Test Album",
+                "concept": "test concept",
+                "num_tracks": 1,
+                "success": True,
+                "warnings": [],
+                "planning_engine": "crewai_micro",
+                "crewai_used": True,
+            }
+
+        with patch("album_crew.plan_album", fake_plan_album):
+            result = acejam_app._run_prompt_assistant_album_crew(
+                body={"mode": "album", "user_prompt": "Album about systems and ledgers"},
+                user_prompt="Album about systems and ledgers",
+                current_payload={"num_tracks": 1, "track_duration": 210, "language": "en"},
+                planner_provider="ollama",
+                planner_model="qwen-test",
+            )
+
+        # CrewAI engine was forced regardless of input
+        self.assertEqual(captured["options"]["agent_engine"], "crewai_micro")
+        self.assertEqual(captured["concept"], "Album about systems and ledgers")
+        self.assertEqual(captured["language"], "en")
+        self.assertTrue(captured["use_crewai"])
+
+        # Wizard payload shape: top-level metadata + tracks[] with edit-ready fields
+        self.assertTrue(result["success"])
+        payload = result["payload"]
+        self.assertEqual(payload["agent_engine"], "crewai_micro")
+        self.assertTrue(payload["crewai_used"])
+        self.assertEqual(payload["concept"], "test concept")
+        self.assertEqual(payload["album_title"], "Test Album")
+        self.assertEqual(payload["num_tracks"], 1)
+        self.assertEqual(payload["language"], "en")
+        self.assertEqual(payload["album_writer_mode"], "per_track_writer_loop")
+        self.assertEqual(payload["song_model_strategy"], "single_model_album")
+        self.assertEqual(payload["final_song_model"], "acestep-v15-xl-sft")
+        self.assertEqual(payload["quality_profile"], "chart_master")
+
+        # First track is fully populated (artist, producer, caption, lyrics, BPM, etc.)
+        track = payload["tracks"][0]
+        self.assertEqual(track["title"], "Concrete Canyons")
+        self.assertEqual(track["artist_name"], "Ada North")
+        self.assertEqual(track["producer_credit"], "Dr. Dre")
+        self.assertEqual(track["bpm"], 78)
+        self.assertEqual(track["key_scale"], "A minor")
+        self.assertIn("talkbox lead", track["caption"])
+        self.assertIn("Mama working doubles", track["lyrics"])
+        # Inference defaults are pre-filled so the wizard is not blank
+        self.assertEqual(track["inference_steps"], 50)
+        self.assertEqual(track["audio_format"], "wav32")
+        # Production team is exposed in the wizard so user sees the crew makeup
+        self.assertIn("executive_producer", track["production_team"])
+        # Quality report mirrors the crew gate output for visibility
+        self.assertIn("hit_angle", track["quality_report"])
+
+    def test_album_wizard_fill_rejects_empty_concept(self):
+        result = acejam_app._run_prompt_assistant_album_crew(
+            body={"mode": "album"},
+            user_prompt="",
+            current_payload={},
+            planner_provider="ollama",
+            planner_model="qwen-test",
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("Album concept is empty", result["error"])
 
     def test_staged_system_prompt_inherits_acestep_reference_block(self):
         base = acejam_app._prompt_assistant_system_prompt("custom")
@@ -377,87 +484,60 @@ ACEJAM_PAYLOAD_JSON
         self.assertEqual(data["payload"]["audio_policy"], "replace_with_source")
         self.assertTrue(data["payload"]["mux_audio"])
 
-    def test_prompt_assistant_run_parses_album_payload(self):
-        raw = """
-ACEJAM_ALBUM_SETTINGS_JSON
-{
-  "concept": "A focused test album",
-  "song_model_strategy": "xl_sft_final",
-  "ace_lm_model": "auto",
-  "tracks": [
-    {
-	      "track_number": 1,
-	      "artist_name": "Track Signal",
-	      "title": "Track One",
-      "caption": "pop, piano, female vocal, radio-ready",
-      "lyrics": "[Verse]\\nLine one\\n\\n[Chorus]\\nHook"
-    }
-  ]
-}
-"""
-        client = TestClient(acejam_app.app)
-        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
-            response = client.post(
-                "/api/prompt-assistant/run",
-                json={"mode": "album", "user_prompt": "album", "ollama_model": "llama3.2"},
-            )
+    # NOTE: tests `test_prompt_assistant_run_parses_album_payload` and
+    # `test_prompt_assistant_album_preserves_role_aware_track_durations` were
+    # removed when the legacy single-Ollama-call album planner was deleted.
+    # Album wizard fill now dispatches to the CrewAI Micro Tasks director
+    # via `_run_prompt_assistant_album_crew` — covered by
+    # `test_album_wizard_fill_dispatches_through_crewai_micro` above. The
+    # `_normalize_prompt_assistant_payload` helpers below still cover the
+    # role-aware duration + fixed-duration shape because they are unit-level
+    # contracts independent of the wire protocol.
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()["payload"]
-        self.assertEqual(payload["ace_lm_model"], "none")
-        self.assertEqual(payload["planner_lm_provider"], "ollama")
-        self.assertFalse(payload["thinking"])
-        self.assertFalse(payload["use_format"])
-        self.assertFalse(payload["use_cot_lyrics"])
-        self.assertEqual(payload["prompt_kit_version"], acejam_app.PROMPT_KIT_VERSION)
-        self.assertIn("section_map", payload["tracks"][0])
-        self.assertIn("quality_checks", payload["tracks"][0])
-        self.assertEqual(payload["tracks"][0]["ace_lm_model"], "none")
-        self.assertEqual(payload["song_model_strategy"], "xl_sft_final")
-        self.assertEqual(payload["tracks"][0]["artist_name"], "Track Signal")
-        self.assertEqual(payload["tracks"][0]["title"], "Track One")
+    def test_prompt_assistant_album_fills_missing_durations_from_role(self):
+        payload, warnings = acejam_app._normalize_prompt_assistant_payload(
+            "album",
+            {
+                "concept": "Role defaults",
+                "duration_mode": "ai_per_track",
+                "track_duration": 180,
+                "tracks": [
+                    {"track_number": 1, "title": "Door Opens", "role": "intro", "caption": "cinematic intro"},
+                    {"track_number": 2, "title": "Big Hook", "role": "single", "caption": "radio single"},
+                    {"track_number": 3, "title": "Credits", "role": "outro", "caption": "soft outro"},
+                ],
+            },
+            {"planner_lm_provider": "ollama", "ollama_model": "llama3.2"},
+        )
 
-    def test_prompt_assistant_album_contract_repairs_returned_titles(self):
-        raw = """
-ACEJAM_ALBUM_SETTINGS_JSON
-{
-  "concept": "A safe repair album",
-  "tracks": [
-    {
-      "track_number": 1,
-      "artist_name": "Track Signal",
-      "title": "Generated Season",
-      "caption": "pop, piano, female vocal",
-      "lyrics": "[Verse]\\nWe open doors"
-    }
-  ]
-}
-"""
-        user_prompt = """
-Album: Exact Assistant Brief
-Concept: A safe repair album.
-Track 1: "Lantern Keys" (Produced by Ada North)
-(BPM: 88 | Style: warm boom-bap)
-The Vibe: dusty piano and soft brass.
-The Narrative: a locksmith helps everyone back into their apartments.
-Lyrics:
-"Turn the lantern keys"
-"""
-        client = TestClient(acejam_app.app)
-        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
-            response = client.post(
-                "/api/prompt-assistant/run",
-                json={"mode": "album", "user_prompt": user_prompt, "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
-            )
+        self.assertEqual(warnings, [])
+        self.assertEqual(payload["album_writer_mode"], "per_track_writer_loop")
+        self.assertEqual([track["duration"] for track in payload["tracks"]], [90.0, 210.0, 90.0])
+        self.assertEqual([track["duration_source"] for track in payload["tracks"]], ["role_default", "role_default", "role_default"])
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()["payload"]
-        self.assertTrue(payload["input_contract_applied"])
-        self.assertEqual(payload["album_title"], "Exact Assistant Brief")
-        self.assertEqual(payload["tracks"][0]["title"], "Lantern Keys")
-        self.assertEqual(payload["tracks"][0]["producer_credit"], "Ada North")
-        self.assertEqual(payload["tracks"][0]["bpm"], 88)
-        self.assertIn("Turn the lantern keys", payload["tracks"][0]["lyrics"])
+    def test_prompt_assistant_album_fixed_duration_forces_all_tracks(self):
+        payload, _warnings = acejam_app._normalize_prompt_assistant_payload(
+            "album",
+            {
+                "concept": "Fixed duration",
+                "duration_mode": "fixed",
+                "track_duration": 180,
+                "tracks": [
+                    {"track_number": 1, "title": "Intro", "role": "intro", "duration": 75},
+                    {"track_number": 2, "title": "Single", "role": "single", "duration": 230},
+                ],
+            },
+            {"planner_lm_provider": "ollama", "ollama_model": "llama3.2"},
+        )
+
+        self.assertEqual(payload["duration_mode"], "fixed")
+        self.assertEqual([track["duration"] for track in payload["tracks"]], [180.0, 180.0])
+
+    # NOTE: `test_prompt_assistant_album_contract_repairs_returned_titles`
+    # was removed with the legacy single-call album path. The CrewAI bridge
+    # passes user paste content through `extract_user_album_contract` to
+    # `plan_album` via `input_tracks`, where contract repair already runs in
+    # the album crew (covered by tests in test_songwriting_toolkit.py).
 
     def test_prompt_assistant_malformed_json_returns_raw_text(self):
         client = TestClient(acejam_app.app)

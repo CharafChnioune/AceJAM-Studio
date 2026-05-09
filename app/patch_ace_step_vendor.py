@@ -211,6 +211,224 @@ def patch_mps_training_auto_precision() -> bool:
     return changed
 
 
+def patch_mlx_single_seed_propagation() -> bool:
+    path = VENDOR_DIR / "acestep" / "llm_inference.py"
+    text = path.read_text(encoding="utf-8")
+    changed = False
+
+    phase2_original = (
+        '                    "generation_phase": "codes",\n'
+        "                    # Pass context for building unconditional prompt in codes phase\n"
+    )
+    phase2_patched = (
+        '                    "generation_phase": "codes",\n'
+        '                    "seeds": seeds,\n'
+        "                    # Pass context for building unconditional prompt in codes phase\n"
+    )
+    if phase2_patched not in text:
+        if phase2_original not in text:
+            raise RuntimeError(f"Could not find MLX phase-2 seed cfg anchor in {path}")
+        text = text.replace(phase2_original, phase2_patched, 1)
+        changed = True
+
+    cfg_original = (
+        '        generation_phase = cfg.get("generation_phase", "cot")  # "cot" or "codes"\n'
+        "        # Additional context for codes phase unconditional prompt building\n"
+    )
+    cfg_patched = (
+        '        generation_phase = cfg.get("generation_phase", "cot")  # "cot" or "codes"\n'
+        '        seeds = cfg.get("seeds")\n'
+        "        # Additional context for codes phase unconditional prompt building\n"
+    )
+    if cfg_patched not in text:
+        if cfg_original not in text:
+            raise RuntimeError(f"Could not find MLX cfg seed anchor in {path}")
+        text = text.replace(cfg_original, cfg_patched, 1)
+        changed = True
+
+    mlx_call_original = (
+        '            elif self.llm_backend == "mlx":\n'
+        "                # MLX backend (Apple Silicon native)\n"
+        "                output_text = self._run_mlx(\n"
+        "                    formatted_prompts=formatted_prompt,\n"
+        "                    temperature=temperature,\n"
+        "                    cfg_scale=cfg_scale,\n"
+        "                    negative_prompt=negative_prompt,\n"
+        "                    top_k=top_k,\n"
+        "                    top_p=top_p,\n"
+        "                    repetition_penalty=repetition_penalty,\n"
+        "                    use_constrained_decoding=use_constrained_decoding,\n"
+        "                    constrained_decoding_debug=constrained_decoding_debug,\n"
+        "                    target_duration=target_duration,\n"
+        "                    user_metadata=user_metadata,\n"
+        "                    stop_at_reasoning=stop_at_reasoning,\n"
+        "                    skip_genres=skip_genres,\n"
+        "                    skip_caption=skip_caption,\n"
+        "                    skip_language=skip_language,\n"
+        "                    generation_phase=generation_phase,\n"
+        "                    caption=caption,\n"
+    )
+    mlx_call_patched = (
+        '            elif self.llm_backend == "mlx":\n'
+        "                # MLX backend (Apple Silicon native)\n"
+        "                output_text = self._run_mlx(\n"
+        "                    formatted_prompts=formatted_prompt,\n"
+        "                    temperature=temperature,\n"
+        "                    cfg_scale=cfg_scale,\n"
+        "                    negative_prompt=negative_prompt,\n"
+        "                    top_k=top_k,\n"
+        "                    top_p=top_p,\n"
+        "                    repetition_penalty=repetition_penalty,\n"
+        "                    use_constrained_decoding=use_constrained_decoding,\n"
+        "                    constrained_decoding_debug=constrained_decoding_debug,\n"
+        "                    target_duration=target_duration,\n"
+        "                    user_metadata=user_metadata,\n"
+        "                    stop_at_reasoning=stop_at_reasoning,\n"
+        "                    skip_genres=skip_genres,\n"
+        "                    skip_caption=skip_caption,\n"
+        "                    skip_language=skip_language,\n"
+        "                    generation_phase=generation_phase,\n"
+        "                    seeds=seeds,\n"
+        "                    caption=caption,\n"
+    )
+    if mlx_call_patched not in text:
+        if mlx_call_original not in text:
+            raise RuntimeError(f"Could not find generate_from_formatted_prompt MLX call anchor in {path}")
+        text = text.replace(mlx_call_original, mlx_call_patched, 1)
+        changed = True
+
+    signature_original = (
+        "        caption: str,\n"
+        "        lyrics: str,\n"
+        "        cot_text: str,\n"
+        "    ) -> str:\n"
+    )
+    signature_patched = (
+        "        caption: str,\n"
+        "        lyrics: str,\n"
+        "        cot_text: str,\n"
+        "        seed: Optional[int] = None,\n"
+        "    ) -> str:\n"
+    )
+    if text.count(signature_patched) < 2:
+        if text.count(signature_original) < 2:
+            raise RuntimeError(f"Could not find both MLX single signature anchors in {path}")
+        text = text.replace(signature_original, signature_patched, 2)
+        changed = True
+
+    native_call_original = (
+        "                caption=caption,\n"
+        "                lyrics=lyrics,\n"
+        "                cot_text=cot_text,\n"
+        "            )\n"
+    )
+    native_call_patched = (
+        "                caption=caption,\n"
+        "                lyrics=lyrics,\n"
+        "                cot_text=cot_text,\n"
+        "                seed=seed,\n"
+        "            )\n"
+    )
+    if native_call_patched not in text:
+        if native_call_original not in text:
+            raise RuntimeError(f"Could not find native MLX single call anchor in {path}")
+        text = text.replace(native_call_original, native_call_patched, 1)
+        changed = True
+
+    decode_original = (
+        "        decode_start = time.time()\n\n"
+        '        pbar = tqdm(total=max_new_tokens, desc=tqdm_desc, unit="tok")\n'
+    )
+    decode_patched = (
+        "        decode_start = time.time()\n"
+        "        try:\n"
+        "            seed_base = int(seed) if seed is not None and int(seed) >= 0 else None\n"
+        "        except (TypeError, ValueError):\n"
+        "            seed_base = None\n\n"
+        '        pbar = tqdm(total=max_new_tokens, desc=tqdm_desc, unit="tok")\n'
+    )
+    if text.count(decode_patched) < 2:
+        if text.count(decode_original) < 2:
+            raise RuntimeError(f"Could not find both MLX decode seed anchors in {path}")
+        text = text.replace(decode_original, decode_patched, 2)
+        changed = True
+
+    native_loop_original = (
+        "        for step in range(max_new_tokens):\n"
+        "            # ---- Combine logits (CFG formula in MLX, lazy) ----\n"
+    )
+    native_loop_patched = (
+        "        for step in range(max_new_tokens):\n"
+        "            if seed_base is not None:\n"
+        "                mx.random.seed(seed_base + step * 1000003)\n\n"
+        "            # ---- Combine logits (CFG formula in MLX, lazy) ----\n"
+    )
+    if native_loop_patched not in text:
+        if native_loop_original not in text:
+            raise RuntimeError(f"Could not find native MLX loop seed anchor in {path}")
+        text = text.replace(native_loop_original, native_loop_patched, 1)
+        changed = True
+
+    hybrid_loop_original = (
+        "        for step in range(max_new_tokens):\n"
+        "            # Apply CFG formula in MLX\n"
+    )
+    hybrid_loop_patched = (
+        "        for step in range(max_new_tokens):\n"
+        "            if seed_base is not None:\n"
+        "                mx.random.seed(seed_base + step * 1000003)\n"
+        "                torch.manual_seed(seed_base + step * 1000003)\n\n"
+        "            # Apply CFG formula in MLX\n"
+    )
+    if hybrid_loop_patched not in text:
+        if hybrid_loop_original not in text:
+            raise RuntimeError(f"Could not find hybrid MLX loop seed anchor in {path}")
+        text = text.replace(hybrid_loop_original, hybrid_loop_patched, 1)
+        changed = True
+
+    sequential_call_original = (
+        "                    caption=caption,\n"
+        "                    lyrics=lyrics,\n"
+        "                    cot_text=cot_text,\n"
+        "                )\n"
+    )
+    sequential_call_patched = (
+        "                    caption=caption,\n"
+        "                    lyrics=lyrics,\n"
+        "                    cot_text=cot_text,\n"
+        "                    seed=seeds[i] if seeds and i < len(seeds) else None,\n"
+        "                )\n"
+    )
+    if sequential_call_patched not in text:
+        if sequential_call_original not in text:
+            raise RuntimeError(f"Could not find sequential MLX single seed anchor in {path}")
+        text = text.replace(sequential_call_original, sequential_call_patched, 1)
+        changed = True
+
+    single_call_original = (
+        "            caption=caption,\n"
+        "            lyrics=lyrics,\n"
+        "            cot_text=cot_text,\n"
+        "        )\n"
+    )
+    single_call_patched = (
+        "            caption=caption,\n"
+        "            lyrics=lyrics,\n"
+        "            cot_text=cot_text,\n"
+        "            seed=seeds[0] if seeds else None,\n"
+        "        )\n"
+    )
+    if single_call_patched not in text:
+        if single_call_original not in text:
+            raise RuntimeError(f"Could not find single MLX seed anchor in {path}")
+        text = text.replace(single_call_original, single_call_patched, 1)
+        changed = True
+
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main() -> None:
     if not (VENDOR_DIR / "train.py").is_file():
         raise SystemExit(f"ACE-Step vendor checkout is missing: {VENDOR_DIR}")
@@ -220,6 +438,7 @@ def main() -> None:
         "chunked_training_scheduler_epochs" if patch_chunked_training_scheduler_epochs() else "",
         "lora_adapter_name_sanitizer" if patch_lora_adapter_name_sanitizer() else "",
         "mps_training_auto_precision" if patch_mps_training_auto_precision() else "",
+        "mlx_single_seed_propagation" if patch_mlx_single_seed_propagation() else "",
     ]
     applied = [item for item in changed if item]
     if applied:

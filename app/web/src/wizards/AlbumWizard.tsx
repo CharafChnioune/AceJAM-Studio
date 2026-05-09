@@ -14,6 +14,7 @@ import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
+import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import {
   getAlbumPlanJob,
 } from "@/lib/api";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
+import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useSettingsStore } from "@/store/settings";
@@ -62,11 +64,19 @@ interface AlbumTrack {
   artist_name?: string;
   duration?: number;
   caption?: string;
-  tags?: string;
+  tags: string;
   lyrics?: string;
   bpm?: number;
   key_scale?: string;
+  time_signature?: string;
   role?: string;
+  payload_gate_status?: string;
+  lyrics_quality?: Record<string, unknown>;
+  debug_paths?: Record<string, unknown>;
+  lora_adapter_name?: string;
+  lora_scale?: number;
+  lora_trigger_tag?: string;
+  lora_trigger_applied?: boolean;
   result_id?: string;
   audio_url?: string;
   art?: { url?: string };
@@ -84,6 +94,30 @@ interface AlbumPlan {
   album_family_id?: string;
 }
 
+function normalizeAlbumTracks(input: unknown, fallbackDuration = 180): AlbumTrack[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((item, idx) => {
+      const rawDuration = Number(item.duration);
+      const rawBpm = Number(item.bpm);
+      return {
+        ...item,
+        track_number: Number(item.track_number) || idx + 1,
+        title: String(item.title ?? `Track ${idx + 1}`),
+        artist_name: item.artist_name ? String(item.artist_name) : undefined,
+        role: item.role ? String(item.role) : undefined,
+        duration: Number.isFinite(rawDuration) ? Math.max(30, Math.min(600, rawDuration)) : fallbackDuration,
+        caption: item.caption ? String(item.caption) : "",
+        tags: item.tags ? String(item.tags) : "",
+        lyrics: item.lyrics ? String(item.lyrics) : "",
+        bpm: Number.isFinite(rawBpm) ? rawBpm : undefined,
+        key_scale: item.key_scale ? String(item.key_scale) : undefined,
+        time_signature: item.time_signature ? String(item.time_signature) : undefined,
+      } as AlbumTrack;
+    });
+}
+
 export function AlbumWizard() {
   const navigate = useNavigate();
   const setResult = useWizardStore((s) => s.setResult);
@@ -97,8 +131,11 @@ export function AlbumWizard() {
       concept: "",
       num_tracks: 7,
       track_duration: 180,
+      duration_mode: "ai_per_track",
+      album_writer_mode: "per_track_writer_loop",
       language: "en",
       song_model: "acestep-v15-xl-sft",
+      audio_backend: "mlx",
       song_model_strategy: "single_model_album",
       quality_profile: "standard",
       style_profile: "auto",
@@ -117,6 +154,7 @@ export function AlbumWizard() {
       auto_video_clip: false,
       art_prompt: "",
       video_prompt: "",
+      tracks: [],
     }),
     [],
   );
@@ -147,8 +185,11 @@ export function AlbumWizard() {
       "artist_name",
       "num_tracks",
       "track_duration",
+      "duration_mode",
+      "album_writer_mode",
       "language",
       "song_model",
+      "audio_backend",
       "song_model_strategy",
       "album_mood",
       "vocal_type",
@@ -175,18 +216,22 @@ export function AlbumWizard() {
         next[k] = payload[k];
       }
     }
+    if (Array.isArray(payload.tracks)) {
+      const hydratedTracks = normalizeAlbumTracks(payload.tracks, Number(next.track_duration ?? values.track_duration ?? 180));
+      next.tracks = hydratedTracks;
+      next.num_tracks = next.num_tracks ?? hydratedTracks.length;
+    }
     const merged = { ...form.getValues(), ...next };
     form.reset(merged);
-    if (Array.isArray(payload.tracks)) {
+    if (Array.isArray(merged.tracks) && merged.tracks.length) {
       setPlan({
-        concept: (payload.concept as string) ?? values.concept,
-        album_title: payload.album_title as string,
-        artist_name: payload.artist_name as string,
-        num_tracks:
-          typeof payload.num_tracks === "number" ? payload.num_tracks : undefined,
-        language: payload.language as string,
-        song_model: payload.song_model as string,
-        tracks: payload.tracks as AlbumTrack[],
+        concept: (merged.concept as string) ?? values.concept,
+        album_title: merged.album_title as string,
+        artist_name: merged.artist_name as string,
+        num_tracks: merged.num_tracks,
+        language: merged.language as string,
+        song_model: merged.song_model as string,
+        tracks: merged.tracks as AlbumTrack[],
       });
     }
     draftState.saveNow(merged);
@@ -206,7 +251,48 @@ export function AlbumWizard() {
       form.setValue("song_model", selection.adapter_song_model, { shouldValidate: true });
       form.setValue("song_model_strategy", "single_model_album", { shouldValidate: true });
     }
+    draftState.saveNow({
+      ...form.getValues(),
+      ...selection,
+      ...(selection.use_lora && selection.adapter_song_model
+        ? { song_model: selection.adapter_song_model, song_model_strategy: "single_model_album" as const }
+        : {}),
+    });
   };
+
+  const updatePlanTracks = React.useCallback(
+    (tracks: AlbumTrack[]) => {
+      const normalized = normalizeAlbumTracks(tracks, Number(form.getValues("track_duration") || 180));
+      setPlan((current) => ({
+        ...(current ?? {}),
+        concept: form.getValues("concept"),
+        album_title: form.getValues("album_title"),
+        artist_name: form.getValues("artist_name"),
+        num_tracks: normalized.length || form.getValues("num_tracks"),
+        language: form.getValues("language"),
+        song_model: form.getValues("song_model"),
+        tracks: normalized,
+      }));
+      form.setValue("tracks", normalized as never, { shouldDirty: true, shouldValidate: true });
+      form.setValue("num_tracks", Math.max(1, normalized.length || form.getValues("num_tracks")), { shouldDirty: true, shouldValidate: true });
+      draftState.saveNow({ ...form.getValues(), tracks: normalized, num_tracks: normalized.length || form.getValues("num_tracks") });
+    },
+    [draftState, form],
+  );
+
+  React.useEffect(() => {
+    const draftTracks = normalizeAlbumTracks(values.tracks, Number(values.track_duration || 180));
+    if (!draftTracks.length || (plan?.tracks?.length ?? 0) > 0) return;
+    setPlan({
+      concept: values.concept,
+      album_title: values.album_title,
+      artist_name: values.artist_name,
+      num_tracks: values.num_tracks,
+      language: values.language,
+      song_model: values.song_model,
+      tracks: draftTracks,
+    });
+  }, [plan?.tracks?.length, values.album_title, values.artist_name, values.concept, values.language, values.num_tracks, values.song_model, values.track_duration, values.tracks]);
 
   // ---- Async generate ----
   const startJob = useMutation({
@@ -217,8 +303,12 @@ export function AlbumWizard() {
         artist_name: values.artist_name,
         num_tracks: values.num_tracks,
         track_duration: values.track_duration,
+        duration_mode: values.duration_mode,
+        album_writer_mode: values.album_writer_mode,
         language: values.language,
         song_model: values.song_model,
+        audio_backend: values.audio_backend,
+        use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
         song_model_strategy: values.song_model_strategy,
         quality_profile: values.quality_profile,
         album_mood: values.album_mood,
@@ -236,7 +326,7 @@ export function AlbumWizard() {
         planner_lm_provider: "ollama",
         ollama_model: plannerModel || undefined,
         planner_model: plannerModel || undefined,
-        tracks: plan?.tracks,
+        tracks: normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration),
       };
       return startAlbumPlanJob(body);
     },
@@ -273,6 +363,7 @@ export function AlbumWizard() {
         concept: values.concept,
         num_tracks: values.num_tracks,
         track_duration: values.track_duration,
+        duration_mode: values.duration_mode,
       },
       startedAt: Date.now(),
     });
@@ -322,9 +413,13 @@ export function AlbumWizard() {
         setTimeout(poll, 2500);
       } catch (e) {
         if (!cancelled) {
-          toast.error(`Polling-fout: ${(e as Error).message}`);
-          updateJob(jobId, { status: "error", state: "error", error: (e as Error).message });
-          setJobId(null);
+          const message = (e as Error).message;
+          updateJob(jobId, {
+            status: "Albumstatus tijdelijk niet bereikbaar",
+            state: "running",
+            error: message,
+          });
+          setTimeout(poll, 4000);
         }
       }
     };
@@ -408,7 +503,7 @@ export function AlbumWizard() {
               </div>
               <div className="space-y-3">
                 <div className="flex items-baseline justify-between">
-                  <Label>Duur per track</Label>
+                  <Label>Gemiddelde/fallback duur</Label>
                   <span className="font-mono text-sm">{formatDuration(values.track_duration)}</span>
                 </div>
                 <Controller
@@ -419,6 +514,25 @@ export function AlbumWizard() {
                   )}
                 />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Duurbeleid</Label>
+              <Controller
+                control={form.control}
+                name="duration_mode"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ai_per_track">AI per track</SelectItem>
+                      <SelectItem value="fixed">Vaste duur voor alle tracks</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                AI per track houdt intro’s, interludes en outro’s korter en laat singles/full songs langer ademen.
+              </p>
             </div>
           </FieldGroup>
           <FieldGroup title="Stijl">
@@ -463,19 +577,23 @@ export function AlbumWizard() {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
-              {plan?.tracks?.length ?? 0} tracks gepland
+              {normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration).length} tracks gepland
             </p>
             <Button
               variant="outline"
               size="sm"
               onClick={() => {
-                const next = [...(plan?.tracks ?? [])];
+                const currentTracks = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                const next = [...currentTracks];
                 next.push({
                   track_number: next.length + 1,
                   title: `Track ${next.length + 1}`,
                   duration: values.track_duration,
+                  caption: "",
+                  tags: "",
+                  lyrics: "",
                 });
-                setPlan({ ...(plan ?? {}), tracks: next });
+                updatePlanTracks(next);
               }}
               className="gap-1.5"
             >
@@ -483,7 +601,7 @@ export function AlbumWizard() {
             </Button>
           </div>
           <AnimatePresence initial={false}>
-            {(plan?.tracks ?? []).map((t, idx) => (
+            {normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration).map((t, idx) => (
               <motion.div
                 key={`${t.title}-${idx}`}
                 layout
@@ -500,9 +618,9 @@ export function AlbumWizard() {
                     <Input
                       value={t.title ?? ""}
                       onChange={(e) => {
-                        const next = [...(plan?.tracks ?? [])];
+                        const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
                         next[idx] = { ...next[idx], title: e.target.value };
-                        setPlan({ ...(plan ?? {}), tracks: next });
+                        updatePlanTracks(next);
                       }}
                       placeholder="Tracktitel"
                     />
@@ -510,12 +628,93 @@ export function AlbumWizard() {
                       rows={2}
                       value={t.caption ?? ""}
                       onChange={(e) => {
-                        const next = [...(plan?.tracks ?? [])];
+                        const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
                         next[idx] = { ...next[idx], caption: e.target.value };
-                        setPlan({ ...(plan ?? {}), tracks: next });
+                        updatePlanTracks(next);
                       }}
                       placeholder="Caption / vibe"
                     />
+                    <div className="grid gap-2 sm:grid-cols-4">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Rol</Label>
+                        <Input
+                          value={t.role ?? ""}
+                          onChange={(e) => {
+                            const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                            next[idx] = { ...next[idx], role: e.target.value };
+                            updatePlanTracks(next);
+                          }}
+                          placeholder="single"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Duur</Label>
+                        <Input
+                          type="number"
+                          min={30}
+                          max={600}
+                          value={t.duration ?? values.track_duration}
+                          onChange={(e) => {
+                            const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                            next[idx] = { ...next[idx], duration: Number(e.target.value) || values.track_duration };
+                            updatePlanTracks(next);
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">BPM</Label>
+                        <Input
+                          type="number"
+                          value={t.bpm ?? ""}
+                          onChange={(e) => {
+                            const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                            next[idx] = { ...next[idx], bpm: Number(e.target.value) || undefined };
+                            updatePlanTracks(next);
+                          }}
+                          placeholder="92"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Key</Label>
+                        <Input
+                          value={t.key_scale ?? ""}
+                          onChange={(e) => {
+                            const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                            next[idx] = { ...next[idx], key_scale: e.target.value };
+                            updatePlanTracks(next);
+                          }}
+                          placeholder="D minor"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Time signature</Label>
+                      <Input
+                        value={t.time_signature ?? ""}
+                        onChange={(e) => {
+                          const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                          next[idx] = { ...next[idx], time_signature: e.target.value };
+                          updatePlanTracks(next);
+                        }}
+                        placeholder="4"
+                      />
+                    </div>
+                    <details className="rounded-lg border bg-background/40 p-2">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        Lyrics-preview / bewerken
+                      </summary>
+                      <Textarea
+                        className="mt-2"
+                        rows={6}
+                        value={t.lyrics ?? ""}
+                        onChange={(e) => {
+                          const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                          next[idx] = { ...next[idx], lyrics: e.target.value };
+                          updatePlanTracks(next);
+                        }}
+                        placeholder="[Verse]..."
+                      />
+                    </details>
                     <div className="flex flex-wrap gap-1.5">
                       {typeof t.bpm === "number" && (
                         <Badge variant="muted" className="text-[10px]">{t.bpm} bpm</Badge>
@@ -529,14 +728,50 @@ export function AlbumWizard() {
                       {typeof t.duration === "number" && (
                         <Badge variant="muted" className="text-[10px]">{formatDuration(t.duration)}</Badge>
                       )}
+                      <Badge variant="muted" className="text-[10px]">
+                        {trackQuality(t).wordCount} woorden
+                      </Badge>
+                      <Badge variant="muted" className="text-[10px]">
+                        {trackQuality(t).lineCount} regels · {trackQuality(t).sectionCount} secties
+                      </Badge>
+                      <Badge variant={trackQuality(t).hookCount > 0 ? "muted" : "destructive"} className="text-[10px]">
+                        hooks {trackQuality(t).hookCount}
+                      </Badge>
+                      {Object.keys(trackQuality(t).rapBarCounts).length > 0 && (
+                        <Badge variant="outline" className="text-[10px]">
+                          rap bars {Object.values(trackQuality(t).rapBarCounts).map((count) => String(count)).join("/")}
+                        </Badge>
+                      )}
+                      {(t.payload_gate_status || trackQuality(t).gateStatus) && (
+                        <Badge variant={(t.payload_gate_status || trackQuality(t).gateStatus) === "pass" ? "default" : "destructive"} className="text-[10px]">
+                          gate {t.payload_gate_status || trackQuality(t).gateStatus}
+                        </Badge>
+                      )}
+                      {values.use_lora && (
+                        <Badge variant="outline" className="text-[10px]">
+                          LoRA {values.lora_adapter_name || t.lora_adapter_name || "actief"}
+                          {values.lora_trigger_tag ? ` · ${values.lora_trigger_tag}` : ""}
+                          {typeof values.lora_scale === "number" ? ` · ${Math.round(values.lora_scale * 100)}%` : ""}
+                        </Badge>
+                      )}
                     </div>
+                    {t.debug_paths && Object.keys(t.debug_paths).length > 0 && (
+                      <details className="rounded-lg border bg-background/40 p-2">
+                        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                          Debug-output
+                        </summary>
+                        <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-muted p-2 text-[10px]">
+                          {JSON.stringify(t.debug_paths, null, 2)}
+                        </pre>
+                      </details>
+                    )}
                   </div>
                   <Button
                     variant="ghost"
                     size="icon-sm"
                     onClick={() => {
-                      const next = (plan?.tracks ?? []).filter((_, i) => i !== idx);
-                      setPlan({ ...(plan ?? {}), tracks: next });
+                      const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration).filter((_, i) => i !== idx);
+                      updatePlanTracks(next);
                     }}
                     title="Verwijder track"
                   >
@@ -546,7 +781,7 @@ export function AlbumWizard() {
               </motion.div>
             ))}
           </AnimatePresence>
-          {(plan?.tracks?.length ?? 0) === 0 && (
+          {normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration).length === 0 && (
             <div className="rounded-xl border border-dashed bg-card/20 p-8 text-center text-sm text-muted-foreground">
               Geen tracklist gepland. Ga terug naar stap 0 en klik <em>Vul met AI</em>.
             </div>
@@ -561,7 +796,7 @@ export function AlbumWizard() {
       render: () => (
         <div className="space-y-4">
           <FieldGroup title="Model strategie">
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div className="space-y-1.5">
                 <Label>Song model</Label>
                 <Controller
@@ -595,6 +830,10 @@ export function AlbumWizard() {
                   )}
                 />
               </div>
+              <AudioBackendSelector
+                value={values.audio_backend}
+                onChange={(value) => form.setValue("audio_backend", value, { shouldValidate: true })}
+              />
             </div>
           </FieldGroup>
           <FieldGroup title="Kwaliteit">
@@ -641,16 +880,20 @@ export function AlbumWizard() {
           <ReviewStep
             payload={{
               ...form.getValues(),
+              use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
               ...normalizeLoraSelection(values),
-              tracks: plan?.tracks,
+              tracks: normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration),
             }}
             warnings={warnings}
             primaryFields={[
               { key: "album_title", label: "Album titel" },
               { key: "artist_name", label: "Artiest" },
               { key: "num_tracks", label: "Tracks" },
-              { key: "track_duration", label: "Duur/track", format: (v) => formatDuration(Number(v) || 0) },
+              { key: "duration_mode", label: "Duurbeleid", format: (v) => v === "fixed" ? "Vaste duur" : "AI per track" },
+              { key: "album_writer_mode", label: "AI writer", format: () => "Per-track loop" },
+              { key: "track_duration", label: "Fallback duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
+              { key: "audio_backend", label: "Backend", format: audioBackendLabel },
               { key: "lora_adapter_name", label: "LoRA" },
               { key: "lora_trigger_tag", label: "LoRA trigger" },
               { key: "song_model_strategy", label: "Strategie" },
@@ -820,4 +1063,33 @@ export function AlbumWizard() {
       finishLabel={jobId ? "Renderen…" : startJob.isPending ? "Job start…" : "Genereer album"}
     />
   );
+}
+
+function trackQuality(track: AlbumTrack) {
+  const quality = (track.lyrics_quality && typeof track.lyrics_quality === "object" ? track.lyrics_quality : {}) as Record<string, unknown>;
+  const lyrics = String(track.lyrics ?? "");
+  const lyricLines = lyrics
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\[[^\]]+\]$/.test(line));
+  const sectionCount = (lyrics.match(/\[[^\]]+\]/g) ?? []).length;
+  const fallbackWords = lyrics.split(/\s+/).filter(Boolean).length;
+  const wordCount = Number(quality.word_count ?? fallbackWords);
+  const lineCount = Number(quality.line_count ?? lyricLines.length);
+  const hookCount = Number(quality.hook_count ?? (lyrics.match(/\[(?:[^\]]*(?:chorus|hook|refrain)[^\]]*)\]/gi) ?? []).length);
+  const rapBarCounts = (
+    quality.rap_bar_counts && typeof quality.rap_bar_counts === "object"
+      ? quality.rap_bar_counts
+      : {}
+  ) as Record<string, unknown>;
+  return {
+    wordCount,
+    lineCount,
+    sectionCount: Number(quality.section_count ?? (sectionCount || 0)),
+    hookCount,
+    rapBarCounts,
+    gateStatus: String(track.payload_gate_status || quality.gate_status || ""),
+    targetWords: Number(quality.target_words || 0),
+    minWords: Number(quality.min_words || 0),
+  };
 }

@@ -28,28 +28,33 @@ ACEJAM_ALBUM_SETTINGS_JSON
 Do not wrap JSON in markdown fences.
 
 AceJAM current policy:
-- Album planning uses the selected local LLM provider. Set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
-- Default album strategy is "all_models_album": AceJAM renders the same album plan through all 7 ACE-Step models.
+- Album planning uses the selected local LLM provider. Set "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected local provider.
+- Album writing is track-by-track. Set "album_writer_mode": "per_track_writer_loop" so every track gets its own brief, section map, hook, lyrics, enrichment, audit and repair loop before rendering.
+- Default album strategy is "xl_sft_final": AceJAM renders the approved album plan with ACE-Step v1.5 XL SFT unless the user explicitly requests a model portfolio.
 - The portfolio is: acestep-v15-turbo, acestep-v15-turbo-shift3, acestep-v15-sft, acestep-v15-base, acestep-v15-xl-turbo, acestep-v15-xl-sft, acestep-v15-xl-base.
-- Per-track defaults should be Docs-best: non-turbo models 64 steps/guidance_scale 8.0/shift 3.0; turbo models 8 steps/guidance_scale 7.0/shift 3.0 with optional 20-step high cap; wav32 output.
+- Per-track defaults are docs-correct: SFT/Base/XL SFT/XL Base use 50 steps and shift 1.0; Turbo/XL Turbo use 8 steps and shift 3.0; wav32 output.
+- LoRA, when selected by the user, is album-wide: preserve `use_lora`, `lora_adapter_path`, `lora_adapter_name`, `lora_scale`, `use_lora_trigger`, `lora_trigger_tag`, and adapter model fields. The trigger belongs in caption/tags only, never in lyrics.
 
 The album JSON must include:
 {
   "concept": "",
   "num_tracks": 7,
   "track_duration": 180,
+  "duration_mode": "ai_per_track",
+  "album_writer_mode": "per_track_writer_loop",
+  "max_track_repair_rounds": 3,
   "language": "en",
-  "song_model_strategy": "all_models_album",
-  "final_song_model": "all_models_album",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "song_model_strategy": "xl_sft_final",
+  "final_song_model": "acestep-v15-xl-sft",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
-  "thinking": true,
+  "thinking": false,
   "use_format": false,
-  "use_cot_metas": true,
-  "use_cot_caption": true,
+  "use_cot_metas": false,
+  "use_cot_caption": false,
   "use_cot_lyrics": false,
-  "use_cot_language": true,
-  "use_constrained_decoding": true,
+  "use_cot_language": false,
+  "use_constrained_decoding": false,
   "lm_temperature": 0.85,
   "lm_cfg_scale": 2.0,
   "lm_top_p": 0.9,
@@ -72,15 +77,22 @@ The album JSON must include:
   "batch_size": 1,
   "seed": "-1",
   "use_random_seed": true,
-  "inference_steps": 64,
+  "inference_steps": 50,
   "guidance_scale": 8.0,
-  "shift": 3.0,
+  "shift": 1.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,
   "auto_lrc": false,
   "return_audio_codes": true,
   "save_to_library": true,
+  "use_lora": false,
+  "lora_adapter_path": "",
+  "lora_adapter_name": "",
+  "use_lora_trigger": true,
+  "lora_trigger_tag": "",
+  "lora_scale": 1.0,
+  "adapter_song_model": "",
   "tracks": []
 }
 
@@ -90,8 +102,8 @@ Each track must include:
   "artist_name": "",
   "title": "",
   "role": "opener | single | escalation | breather | climax | cooldown | closer",
-  "duration": 180,
-  "song_model": "all_models_album",
+  "duration": 210,
+  "song_model": "acestep-v15-xl-sft",
   "quality_profile": "chart_master",
   "caption": "",
   "tags": "",
@@ -103,9 +115,9 @@ Each track must include:
   "key_scale": "C major",
   "time_signature": "4",
   "seed": "-1",
-  "inference_steps": 64,
+  "inference_steps": 50,
   "guidance_scale": 8.0,
-  "shift": 3.0,
+  "shift": 1.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,
@@ -138,6 +150,8 @@ Album arc rules:
 - Sequence opener, first single, escalation, emotional risk, peak/climax, cooldown, closer.
 - Vary BPM, key, density, instrumentation, vocal delivery, and hook shape while keeping one sonic identity.
 - Make titles specific and memorable. Make hooks simple enough to remember.
+- Default `duration_mode` is `ai_per_track`. Set every `tracks[].duration` intentionally from the role: intro/outro/skit/interlude 60-120s; single/full_song/opener/climax/closer 180-240s; extended/epic/cinematic pieces 240-360s. Clamp every duration to 30-600s.
+- `track_duration` is only the fallback/average duration. Do not force every track to that same length unless the user explicitly asks for fixed durations; then set `duration_mode: "fixed"`.
 
 User-provided album spec — LOCK these fields verbatim, do not paraphrase:
 - If the user gives a track list with `Track N: "Title" (Producer-style | BPM)`, use those exact titles and BPMs.
@@ -148,7 +162,7 @@ User-provided album spec — LOCK these fields verbatim, do not paraphrase:
 
 Caption/tag rules: per track build a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Vary the stacks across tracks while keeping one sonic identity. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax in lyrics only, parentheses-for-background-vocals, no BPM/key/time-signature in caption, no standalone vocal-technique or energy/emotion brackets in lyrics (those words go comma-separated in the tags field).
 
-Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 tags from that entry. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each cookbook entry and merge.
+Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 tags from that entry. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each cookbook entry and merge.
 
 Rap requests: pair caption-side rap cue (Rap, Trap Flow, Spoken Word, Melodic Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** appended to this prompt for ad-lib placement, hook structure, line length, and rap caption stack template.
 
@@ -161,6 +175,9 @@ Lyrics rules:
   * DEFAULT sung — 30s ~75 / 60s ~155 / 120s ~300 / 180s ~420 / 240s ~510 / 300s ~570 / 600s ~620 words.
   * RAP — 30s ~95 / 60s ~200 / 120s ~360 / 180s ~500 / 240s ~570 / 300s ~600 / 600s ~630 words.
 - For ≥180s tracks use 3-4 verses, 2-3 hook passes, bridge with NEW content, and a final chorus variation. Each verse 8-16 lines (rap pushes to 16+).
+- Rap verses are MINIMUM 16 bars per `[Verse - rap]` section (≥16 lines at 8-15 syllables/line; 1 bar = 4 beats). Pack multisyllabic mosaic rhymes stacked in begin/middle/end of bars (Eminem-style); slant-dominant flow with perfect-rhyme landings on emphasis lines. Long-form story tracks can push to 32 bars (Nas/Eminem scale).
+- Caption stack must cover at least five of these six dimensions per track: drum-triad (kick + snare + hat), bass character, sample-source + treatment, mix treatment, era marker, groove word. Never use the bare word "sample" — pair with origin genre + treatment ("soul sample chops", "jazz sample loop", "replayed funk interpolation").
+- Songwriter craft: every verse must change something (new scene, POV, time, escalation, revelation); concrete sensory anchors per line (Nas-style: trap doors, rooftop snipers, lobby kids); hook passes the hum-test (a stranger grasps the song's thesis from chorus alone). See appended SONGWRITER CRAFT and ANTI-PATTERNS blocks for full rules.
 - Use section tags from the appended Tag Library `basic_structure`/`dynamic_sections`/`performance_modifiers` lists. Rap line length 6-14 syllables; sung 6-10. Ad-libs go in `(parens)` inside lyric lines, never as separate tags.
 - Vocal-technique words (whispered, ad-libs, harmonies, falsetto, call-and-response, layered vocals) and energy/emotion descriptors (high energy, melancholic, explosive, building energy) go COMMA-SEPARATED in the caption. Inside lyrics they are valid ONLY as section modifiers like `[Verse - whispered]`, `[Chorus - layered vocals]`, `[Climax - powerful]`. Never write `[whispered]` or `[high energy]` as a standalone bracket line.
 - Use concrete imagery, one metaphor world per track, strong hook contrast, internal/slant/multisyllabic rhyme for rap, pre-chorus lift for pop, chant hooks for club songs.

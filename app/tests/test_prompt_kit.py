@@ -84,12 +84,28 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("## ACE-Step Tag Library", block)
         self.assertIn("## Producer-Format Cookbook", block)
         self.assertIn("## Rap-Mode Cookbook", block)
+        self.assertIn("## Songwriter Craft Cookbook", block)
+        self.assertIn("## Lyric Anti-Patterns", block)
         self.assertIn("## Worked Examples", block)
         self.assertIn("Dr. Dre / G-funk era", block)
         self.assertIn("No I.D. / Common-era boom bap", block)
         self.assertIn("Metro Boomin / dark trap", block)
         self.assertIn("J Dilla / Soulquarian feel", block)
         self.assertIn("DJ Premier / 90s boom bap", block)
+        # New cookbook entries
+        self.assertIn("Pete Rock / golden-age soul boom bap", block)
+        self.assertIn("Havoc / Mobb Deep production", block)
+        # Era-specific Dre split (G-funk vs Chronic 2001 / Get Rich era)
+        self.assertIn("Dr. Dre / Chronic 2001 + Get Rich era", block)
+        self.assertIn("Mike Elizondo live bass guitar", block)
+        self.assertIn("Million Dollar Mix polish", block)
+        self.assertIn("In Da Club bounce", block)
+        # Production-grade upgrades surface signature elements
+        self.assertIn("whistle synth lead", block)  # Dre signature
+        self.assertIn("replayed funk interpolation", block)  # Dre sample treatment
+        self.assertIn("SP-1200 played bassline", block)  # No I.D. signature
+        self.assertIn("filtered choir", block)  # Metro signature
+        self.assertIn("mono low end", block)  # mono/wide-split signal
         self.assertIn("[Hook]", block)
         self.assertIn("[Verse - rap]", block)
         self.assertIn("[Verse - whispered]", block)
@@ -103,6 +119,20 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("call-and-response", block)
         # Authoring rule explicitly states standalone brackets are wrong.
         self.assertIn("standalone bracket lines", block)
+        # New 16-bar floor + craft + anti-pattern rules surface in authoring rules
+        self.assertIn("16 bars", block)
+        self.assertIn("Six-dimension beat-spec", block)
+        self.assertIn("Sample-source rule", block)
+        self.assertIn("Drum kit triad rule", block)
+        self.assertIn("Mono-bass / wide-pad split", block)
+        # Songwriter craft cookbook surfaces per-artist signatures
+        self.assertIn("eminem signature", block)
+        self.assertIn("nas signature", block)
+        self.assertIn("kendrick signature", block)
+        self.assertIn("tupac signature", block)
+        # Anti-patterns block lists cliches
+        self.assertIn("neon dreams", block)
+        self.assertIn("shattered dreams", block)
         # Worked examples carry concrete ad-lib parens patterns
         self.assertIn("(yeah)", block)
         self.assertIn("(skrrt)", block)

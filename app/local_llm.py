@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import builtins
+import errno
 import json
 import os
 import re
@@ -8,6 +10,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+
+def _safe_print(*args: Any, **kwargs: Any) -> None:
+    try:
+        builtins.print(*args, **kwargs)
+    except (BrokenPipeError, OSError) as exc:
+        if isinstance(exc, BrokenPipeError) or getattr(exc, "errno", None) == errno.EPIPE:
+            return
+        raise
+
+
+print = _safe_print
 
 
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"

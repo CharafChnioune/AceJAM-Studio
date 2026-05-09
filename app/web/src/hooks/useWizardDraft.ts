@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { FieldValues, Path, UseFormReturn } from "react-hook-form";
+import { normalizeAudioBackend } from "@/lib/audioBackend";
 import { useWizardStore } from "@/store/wizard";
 
 function jsonableRecord(value: unknown): Record<string, unknown> {
@@ -11,6 +12,9 @@ function normalizeAceStepRenderDraft<T extends Record<string, unknown>>(values: 
   const songModel = String(values.song_model ?? "");
   if (!songModel.startsWith("acestep-v15-")) return values;
   const normalized: Record<string, unknown> = { ...values };
+  normalized.audio_backend = normalizeAudioBackend(
+    normalized.audio_backend ?? (normalized.use_mlx_dit === false ? "mps_torch" : "mlx"),
+  );
   if (songModel.includes("turbo")) {
     if ("inference_steps" in normalized && Number(normalized.inference_steps) < 8) {
       normalized.inference_steps = 8;

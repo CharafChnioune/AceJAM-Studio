@@ -9,7 +9,9 @@ compatibility only.
 
 from __future__ import annotations
 
+import builtins
 import contextlib
+import errno
 import io
 import json
 import os
@@ -19,6 +21,18 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Tuple
+
+
+def _safe_print(*args: Any, **kwargs: Any) -> None:
+    try:
+        builtins.print(*args, **kwargs)
+    except (BrokenPipeError, OSError) as exc:
+        if isinstance(exc, BrokenPipeError) or getattr(exc, "errno", None) == errno.EPIPE:
+            return
+        raise
+
+
+print = _safe_print
 
 # CrewAI telemetry attempts to attach custom Memory objects as OpenTelemetry
 # attributes. AceJAM uses local compact monitor logs instead.
@@ -73,12 +87,14 @@ from songwriting_toolkit import (
     toolkit_payload,
 )
 from prompt_kit import (
+    DEFAULT_NEGATIVE_CONTROL,
     PROMPT_KIT_VERSION,
     infer_genre_modules,
     is_sparse_lyric_genre,
     kit_metadata_defaults,
     language_preset,
     prompt_kit_payload,
+    prompt_kit_system_block,
     section_map_for,
 )
 from studio_core import (
@@ -88,6 +104,7 @@ from studio_core import (
     DEFAULT_BPM,
     DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
+    clamp_int,
     docs_best_model_settings,
     normalize_quality_profile,
 )
@@ -157,6 +174,9 @@ ACEJAM_AGENT_JSON_RETRIES = int(os.environ.get("ACEJAM_AGENT_JSON_RETRIES", "2")
 ACEJAM_AGENT_BLOCK_RETRIES = int(os.environ.get("ACEJAM_AGENT_BLOCK_RETRIES", str(ACEJAM_AGENT_JSON_RETRIES)))
 ACEJAM_AGENT_EMPTY_RETRIES = int(os.environ.get("ACEJAM_AGENT_EMPTY_RETRIES", "1"))
 ACEJAM_AGENT_GATE_REPAIR_RETRIES = int(os.environ.get("ACEJAM_AGENT_GATE_REPAIR_RETRIES", "8"))
+ALBUM_WRITER_MODE_PER_TRACK = "per_track_writer_loop"
+ALBUM_WRITER_MODE_DEFAULT = os.environ.get("ACEJAM_ALBUM_WRITER_MODE", ALBUM_WRITER_MODE_PER_TRACK).strip() or ALBUM_WRITER_MODE_PER_TRACK
+ALBUM_TRACK_GATE_REPAIR_RETRIES = max(0, min(3, int(os.environ.get("ACEJAM_ALBUM_TRACK_GATE_REPAIR_RETRIES", "3"))))
 ACEJAM_AGENT_TEMPERATURE = float(os.environ.get("ACEJAM_AGENT_TEMPERATURE", "0.25"))
 ACEJAM_AGENT_TOP_P = float(os.environ.get("ACEJAM_AGENT_TOP_P", "0.9"))
 ACEJAM_AGENT_MEMORY_DEFAULT = os.environ.get("ACEJAM_AGENT_MEMORY_DEFAULT", "1").lower() in {"1", "true", "yes"}
@@ -183,22 +203,27 @@ ACE_STEP_PAYLOAD_CONTRACT_VERSION = "ace-step-track-payload-contract-2026-04-29"
 def normalize_album_agent_engine(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"[\s-]+", "_", text)
+    # CrewAI Micro Tasks is the album-wizard default. Each track field is filled
+    # by a real CrewAI Agent/Task running through the crewai library so users
+    # get a visible multi-agent run with full prompt-kit knowledge injection.
+    # The legacy `acejam_agents` direct-Ollama path stays available for
+    # diagnostic / fallback use when the user explicitly opts in.
     aliases = {
-        "": ACEJAM_AGENT_ENGINE,
-        "acejam": ACEJAM_AGENT_ENGINE,
-        "acejam_agent": ACEJAM_AGENT_ENGINE,
-        "acejam_agents": ACEJAM_AGENT_ENGINE,
-        "acejam_direct": ACEJAM_AGENT_ENGINE,
-        "direct": ACEJAM_AGENT_ENGINE,
-        "editable_plan": ACEJAM_AGENT_ENGINE,
+        "": CREWAI_MICRO_AGENT_ENGINE,
         "crewai": CREWAI_MICRO_AGENT_ENGINE,
         "crew_ai": CREWAI_MICRO_AGENT_ENGINE,
         "crewai_micro": CREWAI_MICRO_AGENT_ENGINE,
         "micro_crewai": CREWAI_MICRO_AGENT_ENGINE,
         "crewai_micro_tasks": CREWAI_MICRO_AGENT_ENGINE,
         "legacy_crewai": CREWAI_MICRO_AGENT_ENGINE,
+        "acejam": ACEJAM_AGENT_ENGINE,
+        "acejam_agent": ACEJAM_AGENT_ENGINE,
+        "acejam_agents": ACEJAM_AGENT_ENGINE,
+        "acejam_direct": ACEJAM_AGENT_ENGINE,
+        "direct": ACEJAM_AGENT_ENGINE,
+        "editable_plan": ACEJAM_AGENT_ENGINE,
     }
-    return aliases.get(text, ACEJAM_AGENT_ENGINE)
+    return aliases.get(text, CREWAI_MICRO_AGENT_ENGINE)
 
 
 def album_agent_engine_label(engine: Any) -> str:
@@ -3913,6 +3938,124 @@ def _crewai_micro_block_guardrail(schema_name: str):
     return _guardrail
 
 
+# Per-agent CrewAI personas. Each entry is a (role, goal, backstory) tuple
+# tailored to the agent's job. Default fallback is the generic worker persona;
+# specialised agents get domain-specific framing so the LLM acts like the
+# right kind of expert (topline lyric writer for the lyrics agent, sonic
+# engineer for the tag agent, etc.). The backstory carries the non-negotiable
+# craft rules; the full ACE-Step reference still ships via system_rules().
+_AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
+    "Album Intake Agent": (
+        "Album A&R Intake Producer",
+        "Distil the user concept into an album bible: title, theme, emotional arc, target audience, sonic identity, motif words, and locked tracks. Never invent producers the user did not ask for. Never copy AI-cliche phrasing.",
+        "You run intake for award-level studio releases. You read what the artist actually wants — concrete details, real references, the locked phrases — and you keep generic AI slop out of the bible.",
+    ),
+    "Track Concept Agent": (
+        "Track Concept Producer",
+        "Pitch one track that earns its slot on this album: title, one-sentence narrative, style label, vibe, emotional thesis. Every track must change something the previous tracks did not.",
+        "You write concept docs A&R execs read at lunch. Concrete title, single-sentence thesis, no genre mush, no 'inspirational journey' filler. Each track has a reason to exist on THIS album.",
+    ),
+    "BPM Agent": (
+        "Tempo Producer",
+        "Pick the BPM that matches the producer reference, era and energy from the brief. Default range hip-hop 70-110 BPM, pop 95-128, ballad 60-85, trap 130-160 (half-time = 65-80 perceived).",
+        "You own the click. BPM derives from the producer cookbook era + groove tag, never from a coin flip. 90 BPM Dre G-funk, 78 BPM Chronic 2001, 140 BPM Metro half-time, 92 BPM Pete Rock.",
+    ),
+    "Key Agent": (
+        "Key & Scale Producer",
+        "Pick a key/scale that fits the mood and producer reference. Minor for menacing/dark/cinematic; major for triumphant/anthemic/summer.",
+        "You match key to vibe, not to randomness. C minor for Mobb Deep noir, A minor for Dre 2001 menace, G major for Just Blaze triumph, F# minor for Stoupe cinematic.",
+    ),
+    "Time Signature Agent": (
+        "Meter Producer",
+        "Default 4/4 unless the genre clearly calls for 3/4, 6/8 or 12/8.",
+        "You keep the meter normal. 99% of hits are 4/4. Only switch when the user explicitly asks for waltz, ballad triplets or jazz odd meter.",
+    ),
+    "Duration Agent": (
+        "Duration Producer",
+        "Pick the duration from the track role and album arc: intro/skit 60-90s, single 180-240s, epic/closer 240-360s. Never pad to a round number.",
+        "You match length to song role. Lead singles run 180-240s; cinematic closers can push 300s; skits stay short. Hit albums never have 9 tracks all at exactly 3:00.",
+    ),
+    "Tag Agent": (
+        "ACE-Step Sonic Tags Engineer (2024-2026 chart-aware)",
+        "Build a 12-24 token caption stack covering all six dimensions: drums (kick + snare + hat triad), bass character, sample/source + treatment, mix treatment, era marker, groove word. No bare 'sample'. No producer names in tags. Default to MODERN era markers when the request is contemporary ('2020s rap', '2010s trap', '2024 pop polish', 'retro disco-pop revival') — only use 'classic 90s G-funk' when the user explicitly asks for vintage.",
+        "You think in ACE-Step's vocabulary. Every caption gets the drum triad, bass character, sample-source-with-treatment, mix descriptor, era token, groove word. You stack like Pete Rock built beats AND like Mustard / Pi'erre Bourne / Finneas / Carter Lang stack 2024-2026 productions — six layers, none missing. You know modern templates: Mustard ratchet (hyphy bass + finger-snaps + violin sample), Central Cee UK drill (sliding 808 + acoustic guitar chop + 25ms retune), Finneas bedroom pop (4-chord palette + sub-bass + close-mic), retro disco-pop revival (vintage bass walk + syncopated guitar chops + displaced-downbeat melody).",
+    ),
+    "Section Map Agent": (
+        "Arrangement Producer",
+        "Build the bracketed section sequence for this duration + genre. Rap tracks include [Verse - rap] sections; hooks repeat verbatim; bridges introduce NEW content; long tracks use [Beat Switch] or [Bridge - melodic rap] to keep momentum.",
+        "You arrange songs the way mixtape engineers arrange them. Verse/Hook/Verse/Hook/Bridge/Final Hook for pop. Intro/Verse/Hook/Verse/Hook/Bridge/Verse/Hook/Outro for rap. Long tracks earn their length with section variety, not repetition.",
+    ),
+    "Hook Agent": (
+        "Topline Hook Writer (2024-2026 chart-craft)",
+        "Write a 2-4 line hook that passes the TikTok 30-second test and the hum-test: by 0:15 a stranger should grasp the thesis. Title-drop on chorus line 1 with vowel-lock rhyme through 3-4 successive end-words. Anthem-shout cadence (4-syllable chant a stadium can sing). Concrete proper noun (brand/place/name). One displaced-downbeat melody phrase (start on beat 2 not the 1). No cliche image bank, no polar 'I am X / I am Y' binary.",
+        "You write 2024-2026 chart hooks the way Sabrina Carpenter writes 'that's that me, espresso', Kendrick writes 'they not like us', Billie Eilish writes 'birds of a feather, we should stick together I know', Beyonce writes 'this ain't Texas, ain't no hold 'em'. Hook FIRST, not buried. Vowel-lock stacked, concrete proper nouns, displaced downbeat, anthem-shout cadence. No 'neon dreams', no 'I am the saint I am the sinner' Nick-Cave-flagged AI tells.",
+    ),
+    "Track Lyrics Agent Part 1": (
+        "Tier-1 Lyric Writer Part 1 (2024-2026 chart-craft)",
+        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Modern rap verses are 12 bars minimum (16+ for storytelling tracks Kendrick-concept / Nas-narrative); pop verses 8-12 lines. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
+        "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops (Mountain Dew, Dior, jet-lag CVS), Kendrick 12-bar diss-track punch, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas Hemingway-line specificity + 2Pac empathetic clarity stay as the craft floor. You never ship 'I feel sad', 'my heart is broken', 'we all', 'shattered dreams', 'I am the saint I am the sinner'. You write proper nouns, contradictions in the same verse (confidence + jet-lag), conversational micro-overflow lines.",
+    ),
+    "Track Lyrics Agent Part 2": (
+        "Tier-1 Lyric Writer Part 2 (2024-2026 chart-craft)",
+        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Rap verses minimum 12 bars (16+ for storytelling). Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse.",
+        "You ghost-write for 2024-2026 chart hits. V2 must add what V1 didn't: 'Espresso' V2 jumps from after-party to chapel-to-ICU-to-CVS at dawn. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. 'Birds of a Feather' V2 lands the songwriter's thesis. Same craft rules as Part 1: rhyme stacking, concrete proper nouns, contradictions, no cliches, every verse changes something, hook verbatim every chorus pass.",
+    ),
+    "Track Lyrics Agent Part 3": (
+        "Tier-1 Lyric Writer Part 3 (2024-2026 chart-craft)",
+        "Write the closing lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Bridge OPTIONAL but if present write the 'rant bridge' (Antonoff/Swift): stream-of-consciousness, conversational diction, intrusive thoughts blended with metaphor, end on a shouted single-line thesis. Final chorus repeats hook verbatim. Outro lands the thesis in 1-3 short lines.",
+        "You ghost-write for 2024-2026 chart hits. Closing sections need either a rant-bridge (Cruel Summer style: shout-line ending) OR straight to final hook + outro (Birds of a Feather has no bridge, Not Like Us has no bridge — modern norm). Outro is conversational, short, leaves the listener wanting one more spin.",
+    ),
+    "Caption Agent": (
+        "Final Caption Polisher",
+        "Polish the final 12-24 token ACE-Step caption. Cover all six dimensions (drums-triad, bass, sample-source + treatment, mix, era, groove). No bare 'sample'. No producer names. No BPM/key/title/lyric leakage. Stay under 512 chars.",
+        "You're the caption-engineer who writes the prompt that ships to ACE-Step. You know exactly which words the model rewards (compound terms, era markers, groove words). No filler tags like 'modern production' or 'tight groove' without concrete instruments behind them.",
+    ),
+    "Performance Agent": (
+        "Performance & Mix Brief Writer",
+        "Write a vocal performance brief: persona, cadence, ad-lib placement, harmony stacking, energy curve, mix notes. Concrete instructions a session vocalist + mix engineer can act on.",
+        "You write briefs that vocalists print and tape to the booth. Specific persona, specific cadence per section, specific ad-lib placement (not 'add ad-libs' but '(yeah!) on bar 4 of verse 2, (skrrt) on the second hook'). Mix notes call out which instruments duck for the verse and rise for the hook.",
+    ),
+}
+
+
+def _agent_persona(agent_name: str, schema_name: str) -> tuple[str, str, str]:
+    """Resolve per-agent (role, goal, backstory) for CrewAI. Falls back to a
+    sensible specialist persona when the exact agent_name is not in the
+    cookbook so new agents still get reasonable framing."""
+    key = str(agent_name or "").strip()
+    if key in _AGENT_PERSONAS:
+        return _AGENT_PERSONAS[key]
+    # Wildcard match for "Track Lyrics Agent Part N" beyond Part 3
+    if key.startswith("Track Lyrics Agent Part"):
+        base = _AGENT_PERSONAS.get("Track Lyrics Agent Part 2")
+        if base:
+            return base
+    if key.startswith("Caption"):
+        return _AGENT_PERSONAS.get("Caption Agent", ("Caption Specialist", "", ""))
+    if key.startswith("Tag"):
+        return _AGENT_PERSONAS.get("Tag Agent", ("Tag Specialist", "", ""))
+    # Generic fallback — still better than the old "tiny worker" line.
+    return (
+        key or "AceJAM Album Worker",
+        f"Return only delimiter blocks for {schema_name} with award-level production specificity and lyric craft.",
+        (
+            "You are a hit-album specialist for AceJAM. You apply the appended "
+            "ACE-Step reference (tag library, producer cookbook, songwriter craft, "
+            "anti-patterns, worked examples) to every output. You never ship AI "
+            "slop, never paraphrase locked user fields, never put producer names "
+            "in caption."
+        ),
+    )
+
+
+def _agent_max_iter(agent_name: str) -> int:
+    """Creative agents need iteration room; metadata agents can stay at 1."""
+    creative_keys = ("Lyrics", "Hook", "Caption", "Section Map", "Track Concept", "Tag", "Performance")
+    if any(key in (agent_name or "") for key in creative_keys):
+        return 4
+    return 1
+
+
 def _crewai_micro_block_call(
     *,
     agent_name: str,
@@ -3992,17 +4135,19 @@ def _crewai_micro_block_call(
         started = time.perf_counter()
         try:
             llm = _make_crewai_micro_llm(model_name, provider_name, agent_name, planner_settings)
+            persona_role, persona_goal, persona_backstory = _agent_persona(agent_name, schema_name)
+            agent_iter = _agent_max_iter(agent_name)
             micro_agent = Agent(
-                role=agent_name,
-                goal=f"Return only delimiter blocks for {schema_name}.",
-                backstory="You are a tiny AceJAM planning worker. One task, one schema, no tools.",
+                role=persona_role,
+                goal=persona_goal,
+                backstory=persona_backstory,
                 llm=llm,
                 tools=[],
                 verbose=False,
                 allow_delegation=False,
-                max_iter=1,
+                max_iter=agent_iter,
                 max_retry_limit=1,
-                respect_context_window=False,
+                respect_context_window=True,
                 reasoning=False,
                 system_template="{{ .System }}",
                 prompt_template="{{ .Prompt }}",
@@ -4011,10 +4156,15 @@ def _crewai_micro_block_call(
             )
             micro_task = Task(
                 description=user_content,
-                expected_output=f"Only delimiter blocks for {schema_name}; no JSON or commentary.",
+                expected_output=(
+                    f"Delimiter blocks for {schema_name} only. "
+                    "Award-level craft (concrete imagery, multisyllabic mosaic rhymes for rap, six-dimension caption coverage). "
+                    "No JSON, no commentary, no AI cliches (neon dreams / fire inside / shattered dreams / we rise), "
+                    "no producer names in caption, no metadata leakage."
+                ),
                 agent=micro_agent,
                 guardrail=_crewai_micro_block_guardrail(schema_name),
-                guardrail_max_retries=0,
+                guardrail_max_retries=2 if agent_iter > 1 else 0,
             )
             micro_crew = Crew(
                 agents=[micro_agent],
@@ -4149,6 +4299,85 @@ def _track_summary_for_agent(track: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _director_short_track_role(track: dict[str, Any]) -> bool:
+    role = str((track or {}).get("role") or (track or {}).get("track_role") or "").strip().lower()
+    title = str((track or {}).get("title") or "").strip().lower()
+    return bool(re.search(r"\b(?:intro|outro|skit|interlude)\b", f"{role} {title}"))
+
+
+def _director_is_rap_context(track: dict[str, Any], options: dict[str, Any] | None = None) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b",
+            _director_track_genre_hint(track, options),
+            re.I,
+        )
+    )
+
+
+def _director_rap_bar_counts(track: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, int]:
+    lyrics = str((track or {}).get("lyrics") or "")
+    rap_context = _director_is_rap_context(track, options)
+    counts: dict[str, int] = {}
+    active_section = ""
+    active_counts = False
+    for raw_line in lyrics.splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        if re.fullmatch(r"\[[^\]]+\]", line):
+            active_section = line
+            lower = line.lower()
+            active_counts = bool("verse" in lower and (rap_context or re.search(r"\brap|hip[-\s]?hop|flow\b", lower, re.I)))
+            if active_counts:
+                counts.setdefault(active_section, 0)
+            continue
+        if active_counts and active_section:
+            counts[active_section] = counts.get(active_section, 0) + 1
+    return counts
+
+
+def _director_lyrics_quality(track: dict[str, Any], options: dict[str, Any] | None = None, gate: dict[str, Any] | None = None) -> dict[str, Any]:
+    duration = parse_duration_seconds(
+        (track or {}).get("duration") or (options or {}).get("track_duration") or 180,
+        (options or {}).get("track_duration") or 180,
+    )
+    genre_hint = _director_track_genre_hint(track, options)
+    density = str((track or {}).get("lyric_density") or (options or {}).get("lyric_density") or "dense")
+    structure_preset = str((track or {}).get("structure_preset") or (options or {}).get("structure_preset") or "auto")
+    plan = lyric_length_plan(duration, density, structure_preset, genre_hint)
+    stats = lyric_stats(str((track or {}).get("lyrics") or ""))
+    min_words = int(plan.get("min_words") or 0)
+    target_words = int(plan.get("target_words") or min_words)
+    raw_min_lines = int(plan.get("min_lines") or 0)
+    min_lines = _director_effective_min_lines(raw_min_lines, min_words)
+    target_lines = int(plan.get("target_lines") or min_lines)
+    rap_bar_counts = _director_rap_bar_counts(track, options)
+    issues = list((gate or {}).get("issues") or [])
+    gate_status = str((gate or {}).get("status") or ("pass" if not issues else "fail"))
+    return {
+        "version": "album-lyrics-quality-v1",
+        "gate_status": gate_status,
+        "word_count": int(stats.get("word_count") or 0),
+        "line_count": int(stats.get("line_count") or 0),
+        "char_count": int(stats.get("char_count") or 0),
+        "section_count": int(stats.get("section_count") or 0),
+        "hook_count": sum(
+            1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
+        ),
+        "rap_bar_counts": rap_bar_counts,
+        "target_words": target_words,
+        "min_words": min_words,
+        "target_lines": target_lines,
+        "min_lines": min_lines,
+        "raw_min_lines": raw_min_lines,
+        "duration": duration,
+        "is_rap": _director_is_rap_context(track, options),
+        "is_short_role": _director_short_track_role(track),
+        "issues": issues,
+    }
+
+
 def _set_track_stats(track: dict[str, Any]) -> dict[str, Any]:
     stats = lyric_stats(str(track.get("lyrics") or ""))
     track["lyrics_word_count"] = int(stats.get("word_count") or 0)
@@ -4158,6 +4387,7 @@ def _set_track_stats(track: dict[str, Any]) -> dict[str, Any]:
     track["hook_count"] = sum(
         1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
     )
+    track["lyrics_quality"] = _director_lyrics_quality(track)
     return track
 
 
@@ -4710,6 +4940,50 @@ def _hint_by_track_number(hints: list[dict[str, Any]], track_number: int) -> dic
     return {}
 
 
+def _album_duration_mode(opts: dict[str, Any] | None) -> str:
+    return "fixed" if str((opts or {}).get("duration_mode") or "").strip().lower() == "fixed" else "ai_per_track"
+
+
+def _clamp_album_duration(value: Any, fallback: float) -> float:
+    duration = parse_duration_seconds(value, fallback)
+    return max(30.0, min(600.0, float(duration)))
+
+
+def _album_track_role_hint(track: dict[str, Any], fallback_role: str = "") -> str:
+    parts: list[str] = [fallback_role]
+    for key in ("role", "album_arc_role", "title", "description", "narrative", "caption", "tags", "style", "vibe"):
+        value = track.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if str(item).strip())
+        elif value not in (None, "", []):
+            parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def _album_default_duration_for_role(track: dict[str, Any], fallback: float, role: str = "") -> float:
+    text = _album_track_role_hint(track, role)
+    if any(token in text for token in ("intro", "outro", "skit", "interlude", "breather")):
+        return 90.0
+    if any(token in text for token in ("extended", "epic", "cinematic")):
+        return 270.0
+    if any(token in text for token in ("single", "full_song", "full song", "opener", "climax", "closer")):
+        return 210.0
+    return _clamp_album_duration(fallback, 180.0)
+
+
+def _album_duration_from_hint(
+    hint: dict[str, Any],
+    fallback: float,
+    duration_mode: str,
+    role: str = "",
+) -> tuple[float, str]:
+    if duration_mode == "fixed":
+        return _clamp_album_duration(fallback, 180.0), "fixed_duration_mode"
+    if hint.get("duration") not in (None, "", []):
+        return _clamp_album_duration(hint.get("duration"), fallback), "ai_per_track"
+    return _clamp_album_duration(_album_default_duration_for_role(hint, fallback, role), fallback), "role_default"
+
+
 def _build_album_track_scaffold(
     *,
     concept: str,
@@ -4725,12 +4999,14 @@ def _build_album_track_scaffold(
     editable_hints = [item for item in (opts.get("editable_plan_tracks") or []) if isinstance(item, dict)]
     scaffold: list[dict[str, Any]] = []
     requested_duration = parse_duration_seconds(track_duration, 180)
+    duration_mode = _album_duration_mode(opts)
     for index in range(max(0, int(num_tracks or 0))):
         track_number = index + 1
         role = _album_arc_role(index, num_tracks)
         hint = _hint_by_track_number(hints, track_number)
+        initial_duration, duration_source = _album_duration_from_hint(hint, requested_duration, duration_mode, role)
         hint_duration = hint.get("duration")
-        if hint_duration not in (None, "", []) and parse_duration_seconds(hint_duration, requested_duration) != requested_duration:
+        if duration_mode == "fixed" and hint_duration not in (None, "", []) and parse_duration_seconds(hint_duration, requested_duration) != requested_duration:
             logs.append(
                 f"Ignored agent duration hint for track {track_number}: "
                 f"{parse_duration_seconds(hint_duration, requested_duration)}s; job duration is {requested_duration}s."
@@ -4738,7 +5014,9 @@ def _build_album_track_scaffold(
         slot: dict[str, Any] = {
             "track_number": track_number,
             "title": "",
-            "duration": requested_duration,
+            "duration": initial_duration,
+            "duration_mode": duration_mode,
+            "duration_source": duration_source,
             "bpm": hint.get("bpm") or 95,
             "key_scale": hint.get("key_scale") or "A minor",
             "time_signature": hint.get("time_signature") or "4",
@@ -4758,22 +5036,27 @@ def _build_album_track_scaffold(
         }
         if hint:
             slot.update({key: value for key, value in hint.items() if value not in (None, "", [])})
-            slot["duration"] = requested_duration
+            slot["duration"] = initial_duration
+            slot["duration_mode"] = duration_mode
+            slot["duration_source"] = duration_source
             slot["scaffold_source"] = "bible_hint"
         editable_hint = _hint_by_track_number(editable_hints, track_number)
         if editable_hint:
-            editable_duration = editable_hint.get("duration")
-            if editable_duration not in (None, "", []) and parse_duration_seconds(editable_duration, requested_duration) != requested_duration:
+            editable_hint_duration, editable_duration_source = _album_duration_from_hint(editable_hint, requested_duration, duration_mode, role)
+            raw_editable_duration = editable_hint.get("duration")
+            if duration_mode == "fixed" and raw_editable_duration not in (None, "", []) and parse_duration_seconds(raw_editable_duration, requested_duration) != requested_duration:
                 logs.append(
                     f"Ignored editable duration hint for track {track_number}: "
-                    f"{parse_duration_seconds(editable_duration, requested_duration)}s; job duration is {requested_duration}s."
+                    f"{parse_duration_seconds(raw_editable_duration, requested_duration)}s; job duration is {requested_duration}s."
                 )
             for key, value in editable_hint.items():
                 if key in {"lyrics", "lyrics_lines"}:
                     continue
                 if value not in (None, "", []):
                     slot[key] = value
-            slot["duration"] = requested_duration
+            slot["duration"] = editable_hint_duration
+            slot["duration_mode"] = duration_mode
+            slot["duration_source"] = editable_duration_source
             slot["editable_plan_scaffold"] = True
             slot["scaffold_source"] = "editable_plan"
         locked = contract_track(contract, track_number, index)
@@ -4794,6 +5077,7 @@ def _build_album_track_scaffold(
                 slot["lyrics"] = locked.get("required_lyrics")
             if locked.get("duration"):
                 slot["duration"] = parse_duration_seconds(locked.get("duration"), requested_duration)
+                slot["duration_source"] = "user_contract"
             slot["needs_agent_blueprint"] = bool(not slot.get("tags") or not slot.get("hook_promise"))
         if not slot.get("title"):
             slot["title"] = _default_missing_track_title(contract, index, num_tracks)
@@ -4811,13 +5095,19 @@ def _merge_blueprint_payload(scaffold: dict[str, Any], payload: dict[str, Any], 
     merged = {**dict(scaffold or {}), **dict(payload or {})}
     merged["track_number"] = int(scaffold.get("track_number") or index + 1)
     scaffold_duration = parse_duration_seconds(scaffold.get("duration") or 180, 180)
+    duration_mode = str(scaffold.get("duration_mode") or "ai_per_track")
     payload_duration = payload.get("duration")
-    if payload_duration not in (None, "", []) and parse_duration_seconds(payload_duration, scaffold_duration) != scaffold_duration:
+    if duration_mode == "fixed" and payload_duration not in (None, "", []) and parse_duration_seconds(payload_duration, scaffold_duration) != scaffold_duration:
         logs.append(
             f"Ignored blueprint duration hint for track {merged['track_number']}: "
             f"{parse_duration_seconds(payload_duration, scaffold_duration)}s; scaffold duration is {scaffold_duration}s."
         )
-    merged["duration"] = scaffold_duration
+    if duration_mode == "fixed" or payload_duration in (None, "", []):
+        merged["duration"] = scaffold_duration
+    else:
+        merged["duration"] = _clamp_album_duration(payload_duration, scaffold_duration)
+        merged["duration_source"] = "blueprint"
+    merged["duration_mode"] = duration_mode
     if not merged.get("title"):
         merged["title"] = scaffold.get("title") or f"Track {index + 1}"
     if not merged.get("tag_list"):
@@ -5815,15 +6105,28 @@ class AlbumAgentPromptLibrary:
             caption_dna = ", ".join(str(item) for item in (module.get("caption_dna") or [])[:3])
             section_bias = ", ".join(str(item) for item in (module.get("section_bias") or [])[:3])
             genre_bits.append(f"{slug}: {caption_dna}; sections {section_bias}".strip(": ;"))
+        # Inject the full prompt_kit album-mode reference: tag taxonomy, authoring
+        # rules, producer-format cookbook, rap-mode cookbook, songwriter craft,
+        # anti-patterns and worked examples. This is the same block prompt-assistant
+        # routes inject for non-album modes; album agents previously ran without it
+        # which left producer requests, craft moves and bar-floor enforcement weak.
+        rich_kit_block = prompt_kit_system_block("album")
         return (
             "ACEJAM PROMPT-FIRST V2 RULES\n"
             "One small decision per call. Answer the schema only.\n"
             "ACE-Step: caption<512 sound-only; lyrics<4096 temporal script; metadata separate; complete agent lyrics bypass ACE LM rewrite.\n"
             "Lyrics: section tags exact, complete lines, clear section separation, 6-10 syllables as a guide, breaks for long tracks.\n"
+            "Rap verses: minimum 16 bars per [Verse - rap] section on tracks >=120s. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
             "Never put BPM/key/duration/model/seed/title/story/producer/person names in caption or lyrics unless user explicitly wrote a sung line.\n"
+            "Producer references: never put producer names in caption. Use the Producer-Format Cookbook below to translate to genre+era+drum+timbre stacks.\n"
+            "Anti-pattern guard: forbid AI-cliche image bank (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes, we rise, let it burn, chasing the night). Forbid telling-not-showing labels and generic POV.\n"
             f"Language={language_info.get('code') or self.language} {language_info.get('name') or ''}; genre_prompt={genre_prompt or 'not specified'}; "
             f"mood={mood or 'follow concept'}; vocal={vocal or 'choose'}; audience={audience or 'streaming release'}; "
-            f"genre_hints={' | '.join(genre_bits) if genre_bits else 'none'}; MD reference not injected={self.md_available}.\n"
+            f"genre_hints={' | '.join(genre_bits) if genre_bits else 'none'}.\n\n"
+            "================================================================\n"
+            "ACE-STEP REFERENCE BLOCK (full tag library, authoring rules, producer/rap/songwriter cookbooks, anti-patterns, worked examples):\n"
+            "================================================================\n"
+            f"{rich_kit_block}\n"
         )
 
 
@@ -5863,7 +6166,7 @@ def _director_section_line_minimums(section_tags: list[str], *, duration: float,
         label = str(tag or "")
         lower = label.lower()
         if rap and "verse" in lower:
-            minimums[label] = 12 if long_form else 8 if dur >= 120 else 3
+            minimums[label] = 16 if dur >= 150 else (8 if dur >= 120 else 3)
         elif rap and re.search(r"beat\s*switch|bridge", lower):
             minimums[label] = 6 if long_form else 4 if dur >= 120 else 2
         elif re.search(r"chorus|hook|refrain", lower):
@@ -6070,6 +6373,26 @@ def _validate_lyrics_part_payload(
         issues.append("forbidden_section_tags:" + ",".join(forbidden_hits))
     if not lines:
         issues.append("empty_lyrics_lines")
+    # Per-line minimum content length on non-tag lines. Padding lines like
+    # "yeah", "uh", or single-word fillers slip past min_lines counting.
+    # 12 chars is the floor for a line that actually carries lyric content.
+    non_tag_lines = [
+        str(line or "").strip()
+        for line in lines
+        if str(line or "").strip() and not re.fullmatch(r"\[[^\]]+\]", str(line or "").strip())
+    ]
+    short_lines = [line for line in non_tag_lines if len(line) < 12]
+    # Allow a small budget of short lines (ad-libs, one-word punctuation) but
+    # flag if more than 20% of the lyric body is sub-12-char filler.
+    if non_tag_lines and len(short_lines) > max(2, len(non_tag_lines) // 5):
+        issues.append(
+            f"lyrics_too_many_short_lines:{len(short_lines)}/{len(non_tag_lines)}_lines_under_12_chars"
+        )
+    # Cliche / telling-not-showing / generic-POV detection on the lyric body.
+    lyric_text = "\n".join(non_tag_lines)
+    cliche_hits = _scan_for_cliche_phrases(lyric_text)
+    if cliche_hits:
+        issues.append("lyrics_contain_cliche_phrases:" + ",".join(cliche_hits[:5]))
     return issues
 
 
@@ -6181,6 +6504,50 @@ def _validate_section_map_payload(payload: dict[str, Any]) -> list[str]:
     return issues
 
 
+# Pre-compiled cliche-phrase regex used by hook + lyric validators.
+# Substring matches force the agent to rewrite with concrete imagery instead
+# of falling back to the generic AI image bank. Keep this list in sync with
+# LYRIC_ANTI_PATTERNS["cliche_image_bank"] in prompt_kit.py.
+_LYRIC_CLICHE_PHRASES = (
+    "neon dreams", "fire inside", "shattered dreams", "endless night",
+    "empty streets", "embers", "whispers in the dark", "silhouettes",
+    "echoes of", "we rise", "let it burn", "chasing the night",
+    "broken heart", "rising from the ashes", "stars aligned",
+    "fade away", "into the void", "burning bright", "stolen kisses",
+    "tears like rain", "frozen in time", "dancing in the dark",
+    "running through my mind",
+)
+_LYRIC_TELLING_LABELS = (
+    "i feel sad", "my heart is broken", "i'm in pain", "we're all in pain",
+    "this is sad", "this is hard", "we suffer", "i'm hurting inside",
+)
+_LYRIC_GENERIC_POV = (
+    "we all", "everyone feels", "the world is", "the people need",
+    "society today", "this generation", "the youth of today",
+)
+
+
+def _scan_for_cliche_phrases(text: str) -> list[str]:
+    """Return the cliche / telling-not-showing / generic-POV phrases that
+    appear in the given text. Match is case-insensitive substring; the LLM
+    sees the hits in the validator response and is expected to rewrite."""
+    if not text:
+        return []
+    lowered = str(text).lower()
+    hits: list[str] = []
+    for phrase in _LYRIC_CLICHE_PHRASES:
+        if phrase in lowered:
+            hits.append(f"cliche:{phrase}")
+    for phrase in _LYRIC_TELLING_LABELS:
+        if phrase in lowered:
+            hits.append(f"telling:{phrase}")
+    for phrase in _LYRIC_GENERIC_POV:
+        # Generic POV needs word-boundary so 'we all' doesn't match 'wear all-stars'
+        if re.search(rf"\b{re.escape(phrase)}\b", lowered):
+            hits.append(f"generic_pov:{phrase}")
+    return hits
+
+
 def _validate_hook_payload(payload: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     hook_lines = payload.get("hook_lines")
@@ -6189,8 +6556,23 @@ def _validate_hook_payload(payload: dict[str, Any]) -> list[str]:
     tagged = [str(line) for line in hook_lines if re.search(r"\[[^\]]+\]", str(line or ""))]
     if tagged:
         issues.append("hook_lines_must_not_contain_section_tags")
-    if not [line for line in hook_lines if str(line or "").strip()]:
+    non_empty = [str(line or "").strip() for line in hook_lines if str(line or "").strip()]
+    if not non_empty:
         issues.append("hook_lines_empty")
+    # Hook lines need actual content — under 8 chars is almost always padding
+    # ("yeah", "uh", "ok"). The hum-test fails on filler lines.
+    too_short = [line for line in non_empty if len(line) < 8]
+    if too_short:
+        issues.append(f"hook_lines_too_short:{len(too_short)}_lines_under_8_chars")
+    # Hook promise should explain the song's emotional thesis in one line.
+    hook_promise = str((payload or {}).get("hook_promise") or "").strip()
+    if hook_promise and len(hook_promise) < 20:
+        issues.append(f"hook_promise_too_short:{len(hook_promise)}_chars_min_20")
+    # Cliche image bank check on hook text (the most visible part of the song).
+    hook_text = " ".join(non_empty)
+    cliches = _scan_for_cliche_phrases(hook_text)
+    if cliches:
+        issues.append("hook_contains_cliche_phrases:" + ",".join(cliches[:3]))
     return issues
 
 
@@ -6204,6 +6586,16 @@ def _validate_caption_payload(payload: dict[str, Any], track: dict[str, Any] | N
     issues.extend(_caption_forbidden_markers(caption, track))
     if re.search(r"\[[^\]]+\]", caption):
         issues.append("section_tag_in_caption")
+    # Caption six-dimension coverage check: caption that names "drums" without
+    # specifying kick/snare/hat triad, or "sample" without source-genre, fails
+    # the production-grade rule from ACE_STEP_AUTHORING_RULES.
+    lowered_caption = caption.lower()
+    if re.search(r"\bsample\b", lowered_caption) and not re.search(
+        r"\b(?:soul sample|jazz sample|gospel chop|funk sample|film score|"
+        r"chopped|replayed|sample chops|sample loop|sample chop)\b",
+        lowered_caption,
+    ):
+        issues.append("caption_bare_sample_token_missing_source_genre")
     return sorted(set(issues))
 
 
@@ -6215,8 +6607,14 @@ def _validate_performance_payload(payload: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     if unexpected:
         issues.append("unexpected_performance_keys:" + ",".join(unexpected))
-    if not str(payload.get("performance_brief") or "").strip():
+    brief = str(payload.get("performance_brief") or "").strip()
+    if not brief:
         issues.append("missing_performance_brief")
+    elif len(brief) < 50:
+        # A real vocal performance brief covers persona + cadence + ad-lib +
+        # mix notes. Under 50 chars it is almost always "soulful, confident"
+        # filler that tells the vocalist nothing.
+        issues.append(f"performance_brief_too_short:{len(brief)}_chars_min_50")
     return issues
 
 
@@ -6335,6 +6733,36 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
         issues.append("lyrics_missing_hook_section")
     lyric_duration_fit = _director_lyric_duration_fit(track, options)
     issues.extend(lyric_duration_fit.get("issues") or [])
+    lyrics_quality = _director_lyrics_quality(track, options, {"status": "fail" if issues else "pass", "issues": issues})
+    short_role = bool(lyrics_quality.get("is_short_role"))
+    full_song = not short_role and float(lyrics_quality.get("duration") or 0) >= 150
+    rap_context = bool(lyrics_quality.get("is_rap"))
+    if full_song:
+        verse_sections = [
+            marker for marker in section_markers
+            if re.search(r"\bverse\b", str(marker), re.I)
+        ]
+        bridge_sections = [
+            marker for marker in section_markers
+            if re.search(r"\bbridge\b", str(marker), re.I)
+        ]
+        hook_sections = [
+            marker for marker in section_markers
+            if re.search(r"chorus|hook|refrain", str(marker), re.I)
+        ]
+        if len(verse_sections) < 2:
+            issues.append(f"weak_section_map:verses_{len(verse_sections)}/2")
+        if not bridge_sections:
+            issues.append("weak_section_map:missing_bridge")
+        if len(hook_sections) < 2:
+            issues.append(f"missing_hook:hook_passes_{len(hook_sections)}/2")
+        if rap_context:
+            rap_bar_counts = dict(lyrics_quality.get("rap_bar_counts") or {})
+            if len(rap_bar_counts) < 2:
+                issues.append(f"weak_section_map:rap_verses_{len(rap_bar_counts)}/2")
+            for section, count in rap_bar_counts.items():
+                if int(count or 0) < 16:
+                    issues.append(f"rap_verses_underfilled:{section}={count}/16")
     density_plan = ((lyric_duration_fit.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(lyric_duration_fit.get("lyric_density_gate"), dict) else {}
     instrumental = str(lyrics or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental"))
     lyric_craft = lyric_craft_gate(
@@ -6358,6 +6786,7 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
         issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
         detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
         issues.append(f"{issue_id}:{detail}" if detail else issue_id)
+    lyrics_quality = _director_lyrics_quality(track, options, {"status": "fail" if issues else "pass", "issues": issues})
     return {
         "version": ACEJAM_ALBUM_DIRECTOR_VERSION,
         "gate_passed": not issues,
@@ -6367,6 +6796,7 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
         "lyrics_chars": len(lyrics),
         "lyrics_word_count": int(lyric_duration_fit.get("word_count") or 0),
         "lyrics_line_count": int(lyric_duration_fit.get("line_count") or 0),
+        "lyrics_quality": lyrics_quality,
         "lyric_duration_fit": lyric_duration_fit,
         "lyric_density_gate": lyric_duration_fit.get("lyric_density_gate") or {},
         "lyrical_craft_contract": lyric_craft.get("contract") or {},
@@ -6492,6 +6922,11 @@ class AceJamAlbumDirector:
             raise AceJamAgentError("Album concept is empty. Provide concept, user_prompt, album_title, or track hints before planning.")
         self.logs.append(f"Planning Engine: {self.agent_runtime_label} ({self.agent_runtime}).")
         self.logs.append(f"Agent engine: {self.agent_runtime_label} ({ACEJAM_ALBUM_DIRECTOR_VERSION}).")
+        self.logs.append(
+            "Album writer mode: "
+            f"{self.opts.get('album_writer_mode') or ALBUM_WRITER_MODE_DEFAULT}; "
+            f"max_track_repair_rounds={max(0, min(3, int(self.opts.get('max_track_repair_rounds') or ALBUM_TRACK_GATE_REPAIR_RETRIES)))}."
+        )
         if self.agent_debug_dir:
             self.logs.append(f"Agent debug log dir: {self.agent_debug_dir}")
             self.logs.append(f"Agent raw prompts JSONL: {Path(self.agent_debug_dir) / '03_agent_prompts.jsonl'}")
@@ -6510,6 +6945,7 @@ class AceJamAlbumDirector:
             "02_contract.json",
             {
                 "planning_engine": self.agent_runtime,
+                "album_writer_mode": self.opts.get("album_writer_mode") or ALBUM_WRITER_MODE_DEFAULT,
                 "agent_runtime": self.agent_runtime,
                 "crewai_used": self.crewai_used,
                 "director_version": ACEJAM_ALBUM_DIRECTOR_VERSION,
@@ -6598,6 +7034,7 @@ class AceJamAlbumDirector:
                 "success": False,
                 "error": str(planning_failures[0].get("error") if planning_failures else error),
                 "planning_engine": self.agent_runtime,
+                "album_writer_mode": self.opts.get("album_writer_mode") or ALBUM_WRITER_MODE_DEFAULT,
                 "custom_agents_used": True,
                 "crewai_used": self.crewai_used,
                 "toolbelt_fallback": False,
@@ -6639,6 +7076,7 @@ class AceJamAlbumDirector:
             {
                 "version": ACEJAM_ALBUM_DIRECTOR_VERSION,
                 "planning_engine": self.agent_runtime,
+                "album_writer_mode": self.opts.get("album_writer_mode") or ALBUM_WRITER_MODE_DEFAULT,
                 "agent_runtime": self.agent_runtime,
                 "agent_debug_dir": self.agent_debug_dir,
                 "files": {
@@ -6670,6 +7108,7 @@ class AceJamAlbumDirector:
             "planning_failures": planning_failures,
             "failed_tracks": planning_failures,
             "planning_engine": self.agent_runtime,
+            "album_writer_mode": self.opts.get("album_writer_mode") or ALBUM_WRITER_MODE_DEFAULT,
             "custom_agents_used": True,
             "crewai_used": self.crewai_used,
             "toolbelt_fallback": False,
@@ -7200,6 +7639,7 @@ class AceJamAlbumDirector:
                 + f"\nWHOLE_SONG_LYRIC_LENGTH_PLAN:\n{json.dumps({'duration': requested_duration, 'density': lyric_plan.get('density'), 'target_words': target_words, 'min_words': min_words, 'target_lines': target_lines, 'min_lines': min_lines, 'max_lyrics_chars': lyric_plan.get('max_lyrics_chars') or ACE_STEP_LYRICS_CHAR_LIMIT}, ensure_ascii=False)}\n"
                 + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
                 + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
+                + f"BARS_PER_SECTION_FLOOR:\n{json.dumps(lyric_plan.get('bars_per_section') or {}, ensure_ascii=False)}\n"
                 + f"\nONLY_ALLOWED_SECTION_TAGS:\n{json.dumps(group, ensure_ascii=False)}\n"
                 + f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
                 + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
@@ -7212,13 +7652,17 @@ class AceJamAlbumDirector:
                 "Each allowed section tag must appear once in lyrics_lines, in the same order. "
                 "Never write a forbidden previous section. Never copy earlier sections. "
                 "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
-                "Write award-level lyric craft: concrete scene details, one coherent metaphor world, natural human phrasing, no motivational-poster slogans, no random image pileups, no filler. "
-                "Every verse should move the story forward with specific nouns and actions; every hook should simplify into a memorable emotional promise. "
-                "For rap or hip-hop, write short intelligible bars, one breath per line, with enough unique lyric lines to cover the full duration. "
-                "For rap or hip-hop, include cadence, internal/slant rhyme, bar momentum, and concrete punchlines without forcing pop singing. "
+                "RAP VERSE FLOOR: every [Verse - rap] section is minimum 16 bars (~16 lines at 8-15 syllables/line; 1 bar = 4 beats). "
+                "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
+                "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
+                "Every verse moves the story forward — new scene, new POV, time jump, escalation, or revelation. A verse that just restates the chorus is dead weight. "
+                "Every hook simplifies into a memorable emotional promise that passes the hum-test (a stranger should grasp the song's thesis from chorus alone). "
+                "For rap or hip-hop, pack 8-15 syllables per bar (push to ~20 only on emotional spikes); pocket beats acrobatics; triplets only at high-tension moments. "
+                "Ad-libs in (parens) on the same line are punctuation, not decoration — use them to mark payoff lines, not every 4 bars. "
                 "For pop, R&B, rock, country, soul, latin, afro, dancehall, or sung tracks, keep vowel-friendly singable line lengths and title-connected hooks. "
                 "For rap or hip-hop, never write stage directions like Instrumental break, orchestra swells, strings fade, taiko drums hit, or production notes as lyrics. "
                 "For [Break] or [Instrumental Break], write the allowed section tag and one short rap ad-lib or crowd-response line only. "
+                "ANTI-PATTERN GUARD: reject your own draft and rewrite if it contains any of these cliché phrases: neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes of, we rise, let it burn, chasing the night, broken heart, rising from the ashes, stars aligned, fade away, into the void, burning bright, frozen in time. Reject telling-not-showing labels ('I feel sad', 'my heart is broken'), generic POV ('we all', 'the world', 'everyone'), and explanation lines ('in other words', 'what I mean is'). "
                 "Do not include BPM, key, caption, explanation, producer names, metadata, markdown, or escaped newlines.\n"
                 + f"OUTPUT_BLOCKS:\n{_agent_block_template(f'lyrics_part_{part_index + 1}_payload')}\n"
             )
@@ -8024,10 +8468,102 @@ class AceJamAlbumDirector:
         track["lyric_craft_issues"] = craft_gate.get("issue_ids") or []
         track["agent_complete_payload"] = True
         track["agent_director_version"] = ACEJAM_ALBUM_DIRECTOR_VERSION
-        _set_track_stats(track)
+        # Fill remaining UI-visible fields so the album wizard does not show
+        # blank slots for inference settings, negative tags, artist credit and
+        # production-team metadata. The user can still edit any of these in
+        # the wizard after the crew run finishes.
+        bible_artist = ""
+        bible_obj = getattr(self, "album_bible", None)
+        if isinstance(bible_obj, dict):
+            bible_artist = str(bible_obj.get("artist_name") or "").strip()
+        artist_default = (
+            slot.get("artist_name")
+            or current.get("artist_name")
+            or bible_artist
+            or self.opts.get("artist_name")
+            or ""
+        )
+        if not track.get("artist_name"):
+            track["artist_name"] = str(artist_default).strip()
+        producer_default = (
+            slot.get("producer_credit")
+            or current.get("producer_credit")
+            or self.opts.get("producer_credit")
+            or ""
+        )
+        if not track.get("producer_credit"):
+            track["producer_credit"] = str(producer_default).strip()
+        # Negative tags: combine album-level negatives with the cookbook default
+        # control list. ACE-Step itself does not always read negative_tags but
+        # the field is shown in the wizard and used by other AceJAM gates.
+        existing_negatives = str(track.get("negative_tags") or self.opts.get("negative_tags") or "").strip()
+        negative_tokens: list[str] = []
+        if existing_negatives:
+            negative_tokens = [item.strip() for item in re.split(r",\s*", existing_negatives) if item.strip()]
+        for default_token in DEFAULT_NEGATIVE_CONTROL:
+            if default_token not in negative_tokens:
+                negative_tokens.append(default_token)
+        track["negative_tags"] = ", ".join(negative_tokens)
+        # Inference settings: pass through album-level config so wizard shows
+        # the actual values that will be sent to ACE-Step rather than blanks.
+        track["inference_steps"] = clamp_int(
+            track.get("inference_steps") or self.opts.get("inference_steps") or ALBUM_FINAL_DOCS_BEST["inference_steps"],
+            ALBUM_FINAL_DOCS_BEST["inference_steps"],
+            1,
+            200,
+        )
+        track["guidance_scale"] = float(
+            track.get("guidance_scale") or self.opts.get("guidance_scale") or ALBUM_FINAL_DOCS_BEST["guidance_scale"]
+        )
+        track["shift"] = float(
+            track.get("shift") or self.opts.get("shift") or ALBUM_FINAL_DOCS_BEST["shift"]
+        )
+        track["infer_method"] = str(
+            track.get("infer_method") or self.opts.get("infer_method") or ALBUM_FINAL_DOCS_BEST.get("infer_method") or "ode"
+        )
+        track["audio_format"] = str(
+            track.get("audio_format") or self.opts.get("audio_format") or ALBUM_FINAL_DOCS_BEST.get("audio_format") or "wav32"
+        )
+        track["seed"] = str(track.get("seed") or "-1")
+        track["use_random_seed"] = bool(track.get("use_random_seed", True))
+        track["auto_score"] = bool(track.get("auto_score", False))
+        track["auto_lrc"] = bool(track.get("auto_lrc", False))
+        track["return_audio_codes"] = bool(track.get("return_audio_codes", True))
+        track["save_to_library"] = bool(track.get("save_to_library", True))
+        # Production team metadata: surface which agent did what so the user
+        # can see the crew makeup in the wizard. Each role maps to a tiny
+        # signature; the user can edit credits freely.
+        if not track.get("production_team"):
+            track["production_team"] = {
+                "executive_producer": "AceJAM Director Agent",
+                "artist_performer": str(track.get("artist_name") or ""),
+                "songwriter": "AceJAM Track Concept + Lyrics Agents",
+                "rhyme_metaphor_editor": "AceJAM Lyric Craft Gate",
+                "beat_producer": str(track.get("producer_credit") or "AceJAM Sonic Tags Agent"),
+                "ace_step_prompt_engineer": "AceJAM Caption Polisher",
+                "studio_engineer": "AceJAM Final Payload Assembler",
+                "ar_quality_gate": "AceJAM Payload + Lyric Craft Gates",
+            }
         gate = _director_minimal_validate(track, section_tags, self.opts)
         track["payload_gate_status"] = gate["status"]
         track["payload_quality_gate"] = gate
+        track["lyrics_quality"] = gate.get("lyrics_quality") or _director_lyrics_quality(track, self.opts, gate)
+        track["debug_paths"] = self._debug_paths()
+        track["album_writer_mode"] = str(self.opts.get("album_writer_mode") or ALBUM_WRITER_MODE_DEFAULT)
+        # Quality report: mirror the gate scores so the wizard can show
+        # the user how each track scored before they hit render. Runs after
+        # the gate so warnings + lyrics_quality are available.
+        if not track.get("quality_report"):
+            track["quality_report"] = {
+                "hit_angle": str(track.get("description") or "")[:240],
+                "hook": (track.get("hook_promise") or current.get("hook_promise") or ""),
+                "metaphor_world": str(track.get("style") or current.get("style") or "")[:240],
+                "rhyme_flow": str((craft_gate or {}).get("summary") or "")[:240],
+                "energy_curve": str(track.get("vibe") or current.get("vibe") or "")[:240],
+                "lyric_word_target": int((track.get("lyrics_quality") or {}).get("target_words") or 0),
+                "section_plan": list(section_tags or []),
+                "warnings": list((gate or {}).get("warnings") or (track.get("lyric_craft_issues") or [])),
+            }
         _append_album_debug_jsonl(self.opts, "06_gate_reports.jsonl", {"track_number": index + 1, "title": track.get("title"), "gate": gate})
         _print_agent_io(self.opts, f"track_{index + 1}_gate_report", gate)
         return track, gate
@@ -8123,7 +8659,8 @@ class AceJamAlbumDirector:
 
         track, gate = self._assemble_track(index, slot, current, section_tags)
         issue_history: list[dict[str, Any]] = []
-        max_gate_repairs = max(0, ACEJAM_AGENT_GATE_REPAIR_RETRIES)
+        requested_repair_rounds = int(self.opts.get("max_track_repair_rounds") or ALBUM_TRACK_GATE_REPAIR_RETRIES)
+        max_gate_repairs = max(0, min(3, requested_repair_rounds, ACEJAM_AGENT_GATE_REPAIR_RETRIES))
 
         def _has_issue(issues: list[str], *names: str) -> bool:
             return any(
@@ -8369,6 +8906,8 @@ def plan_album(
     opts["sanitized_concept"] = recovered_concept
     opts["genre_hint"] = _album_genre_hint(opts)
     opts["agent_engine"] = requested_engine
+    opts["album_writer_mode"] = str(opts.get("album_writer_mode") or ALBUM_WRITER_MODE_DEFAULT).strip() or ALBUM_WRITER_MODE_DEFAULT
+    opts["max_track_repair_rounds"] = max(0, min(3, int(opts.get("max_track_repair_rounds") or ALBUM_TRACK_GATE_REPAIR_RETRIES)))
     opts["print_agent_io"] = _truthy(opts.get("print_agent_io"), ACEJAM_PRINT_AGENT_IO_DEFAULT)
     planner_settings = planner_llm_settings_from_payload(opts)
     opts.update(planner_settings)
@@ -8413,6 +8952,16 @@ def plan_album(
     embedding_model = str(embedding_model or DEFAULT_ALBUM_EMBEDDING_MODEL).strip()
     logs.append(f"Local AI Writer/Planner: {provider_label(planner_provider)} ({ollama_model}) for lyrics, tags, BPM, key and captions.")
     logs.append(f"Planning Engine: {album_agent_engine_label(requested_engine)} ({requested_engine}).")
+    if requested_engine == CREWAI_MICRO_AGENT_ENGINE:
+        logs.append("================================================================")
+        logs.append("CREWAI MICRO TASKS ENGINE ACTIVE")
+        logs.append("Each track field is filled by a real CrewAI Agent/Task.")
+        logs.append(f"Agents per track: Track Concept, BPM, Key, Time Signature, Duration, Sonic Tags, Section Map, Hook, Lyrics Parts, Caption Polisher, Performance, Final Payload Assembler.")
+        logs.append(f"Watch the log for 'CrewAI Micro Agent call:' lines — that is each agent invoking crewai.Agent + crewai.Task.")
+        logs.append("Knowledge injected per agent: ACE-Step tag library, Producer-Format Cookbook (17 entries incl. Dre G-funk + Chronic 2001 + Pete Rock + Havoc + Stoupe), Rap-Mode Cookbook, Songwriter Craft Cookbook (Eminem/2Pac/Kendrick/Nas signatures), Lyric Anti-Patterns, Worked Examples, 16-bar rap verse floor.")
+        logs.append("================================================================")
+    else:
+        logs.append("(Tip: switch agent_engine to 'crewai_micro' to run multi-agent CrewAI flow with full visibility.)")
     logs.append("ACE-Step optional lyric/metadata LM: off for album-agent payloads; ACE-Step Audio Models render the final music.")
     logs.append(f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled and not used by the selected micro/direct director.")
     logs.append(

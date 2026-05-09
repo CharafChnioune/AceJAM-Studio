@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { audioBackendLabel } from "@/lib/audioBackend";
 import { formatDuration } from "@/lib/utils";
 
 function text(value: unknown, fallback = "—"): string {
@@ -27,6 +28,7 @@ export function RenderInsightPanel({
   const chips = [
     ["Mode", text(payload.task_type || sourceMode)],
     ["Model", text(payload.song_model || "auto")],
+    ["Backend", audioBackendLabel(payload.audio_backend)],
     ...(loraName ? ([["LoRA", loraName]] as Array<[string, string]>) : []),
     ["Quality", text(payload.quality_profile || "auto")],
     ["Duration", duration ? formatDuration(duration) : "auto"],

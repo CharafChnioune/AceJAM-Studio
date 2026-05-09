@@ -806,10 +806,14 @@ def build_lyrical_craft_contract(
     allow_surreal = bool(re.search(r"\b(?:surreal|abstract|psychedelic|experimental|dream logic|avant[-\s]?garde)\b", source_text, re.I))
     if family == "rap":
         required = [
+            "rap verse minimum 16 bars on tracks >=120s",
+            "multisyllabic mosaic rhymes stacked in begin/middle/end of bar",
+            "slant-dominant flow with perfect-rhyme landings on emphasis lines",
+            "8-15 syllables per bar working range; pocket beats acrobatics",
             "cadence and breath control",
-            "internal or slant rhyme momentum",
-            "concrete punchlines and scene details",
-            "hook promise stated without pop-ballad drift",
+            "concrete punchlines and Nas-style sensory scene anchors per line",
+            "every verse changes something (scene, POV, time jump, escalation, revelation)",
+            "hook passes hum-test (stranger grasps thesis from chorus alone)",
         ]
     elif family == "sung":
         required = [
@@ -817,6 +821,9 @@ def build_lyrical_craft_contract(
             "emotional clarity",
             "title-connected memorable hook",
             "singable line lengths",
+            "Pat Pattison prosody match (form supports content)",
+            "concrete sensory detail over abstract emotional labels",
+            "every verse changes something (new scene, time, POV)",
         ]
     elif family == "sparse_or_instrumental":
         required = [
@@ -830,9 +837,10 @@ def build_lyrical_craft_contract(
             "one coherent metaphor world",
             "clear section contrast",
             "memorable hook promise",
+            "every verse moves the story forward",
         ]
     return {
-        "version": "lyrical-craft-contract-2026-05-02",
+        "version": "lyrical-craft-contract-2026-05-08",
         "family": family,
         "repair_first": True,
         "pass_score": 82,
@@ -846,6 +854,10 @@ def build_lyrical_craft_contract(
             "missing hook in vocal tracks",
             "extreme repetition",
             "mid-line truncation",
+            "AI-cliche image bank phrases (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes of, we rise, let it burn, chasing the night, broken heart, rising from the ashes, stars aligned, fade away, into the void, burning bright, frozen in time)",
+            "telling-not-showing emotional labels (I feel sad, my heart is broken, this is sad)",
+            "generic POV without a named situated speaker (we all, the world, everyone, the people)",
+            "explanation lines (in other words, what I mean is, to be clear)",
         ],
         "source_preview": _craft_source_preview(source_text),
     }
@@ -1109,6 +1121,7 @@ def lyric_density_gate(
     }
     if stats["hook_count"] < 1:
         issues.append({"id": "hook_missing", "severity": "fail", "detail": "no hook/chorus/refrain section"})
+        issues.append({"id": "missing_hook", "severity": "fail", "detail": "no hook/chorus/refrain section"})
     elif dur >= 120 and hook_counts and max(hook_counts.values()) < 2:
         issues.append({"id": "hook_underwritten", "severity": "fail", "detail": f"hook section lines={hook_counts}"})
     if rap and dur >= 180:
@@ -1901,6 +1914,7 @@ def evaluate_album_payload_quality(
             issues.append({"id": "section_coverage_low", "severity": "fail", "detail": f"{section_coverage} coverage"})
         if stats["hook_count"] < 1:
             issues.append({"id": "hook_missing", "severity": "fail", "detail": "no chorus/hook/refrain section"})
+            issues.append({"id": "missing_hook", "severity": "fail", "detail": "no chorus/hook/refrain section"})
         if stats["fallback_artifact_count"]:
             issues.append({"id": "fallback_lyric_artifacts", "severity": "fail", "detail": f"{stats['fallback_artifact_count']} artifact(s)"})
         if stats["meta_leak_lines"]:

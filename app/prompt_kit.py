@@ -547,83 +547,492 @@ ACE_STEP_AUTHORING_RULES: list[str] = [
     "Caption is sound-only: genre, mood, instruments, timbre, era, production style, vocal type, rhythm, structure energy. No song titles, no producer credits as prose, no lyrics, no JSON, no BPM/key/time text.",
     "Lyrics are a temporal script: a section tag header per block, then performable lines (rap can run 6-14 syllables/line, sung 6-10). Internal rhyme and ad-libs go inside the lyric text or in (parens) on the same line, not as separate tags.",
     "Producer references: never put a producer or label name in the caption. Map the request to the matching Producer-Format Cookbook entry below and use that tag stack instead. ACE-Step does not recognise producer names; it only responds to genre+era+drum+timbre vocabulary.",
+    "Six-dimension beat-spec rule: every caption stack must cover at least five of these six dimensions: drum kit (kick + snare + hat triad), bass character, sample/source material, mix treatment, era marker, groove word. Missing one is acceptable; missing two reads as 'names a few instruments' and underspecifies the beat.",
+    "Mono-bass / wide-pad split rule: when the producer is Dre / Metro / Mike Dean / Pharrell or any modern-trap or cinematic style, include both halves: 'mono 808 sub' + 'wide stereo pads' or 'mono low end' + 'wide stereo synths'. A single 'wide stereo' tag without the mono counterpart pulls the low end apart.",
+    "Sample-source rule: never use the bare word 'sample' alone. Pair with origin genre + treatment: 'soul sample chops', 'jazz sample loop', 'gospel chop', 'film score string sample', 'replayed funk interpolation', 'chopped horn sample'. Highest-leverage upgrade for production specificity.",
+    "Drum kit triad rule: specify kick + snare + hat as separate tokens ('punchy kick, dusty snare, shuffled hi-hat') instead of a single 'drums' token. ACE-Step's official prompts use compound terms ('Heavy Riffs', 'Blast Beats', 'punchy snare') and rewards specificity in the drum slot.",
+    "Era + groove pairing rule: every cookbook entry must include exactly one era token ('90s G-funk', '2010s trap', 'NYC east coast warmth') AND one groove token ('head-nod groove', 'behind-the-beat', 'trap bounce'). Era anchors timbre era; groove anchors timing feel. They are not interchangeable.",
     "Section modifier dash: use ASCII hyphen `-` ([Verse - rap]). The model also accepts em-dash `–` (canonical in official examples like [Intro – Spoken], [Hook/Chorus – Reprise]). Pick one style per song; do not mix.",
-    "Avoid generic AI phrasing: no 'neon dreams / fire inside / we rise / let it burn / chasing the night' style filler. Concrete scene details and one disciplined metaphor world per song outperform abstract slogans.",
+    "Rap verse minimum: every [Verse - rap] section is at least 16 bars. 1 bar = 4 beats. At 90 BPM, 16 bars ≈ 42 seconds. Pack 8-15 syllables per bar (push to ~20 only on emotional spikes). 16 lines is the floor for a rap verse on tracks ≥120 seconds. Long-form story tracks (Nas / Eminem) can push to 32 bars.",
+    "Songwriter craft: rhyme on sounds not words; stack multisyllabic mosaic rhymes in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis; show concrete scene details over abstract slogans; every verse must change something (scene, POV, time, escalation, revelation). See appended SONGWRITER CRAFT block for the full 12-rule cookbook plus Eminem / 2Pac / Kendrick / Nas signatures.",
+    "Anti-pattern guard: forbid AI-cliché phrases (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes of, we rise, let it burn, chasing the night, broken heart, rising from the ashes, stars aligned, fade away, into the void, burning bright, stolen kisses, tears like rain, frozen in time). Reject any draft that contains telling-not-showing emotional labels ('I feel sad', 'my heart is broken'), generic POV ('we all', 'the world', 'everyone'), or explanation lines ('in other words', 'what I mean is'). See appended ANTI-PATTERNS block.",
 ]
 
 PRODUCER_FORMAT_COOKBOOK: dict[str, str] = {
-    # ACE-Step does NOT recognize producer names directly. These map common producer/era
-    # references to the genre+era+drum+timbre stacks the model actually responds to.
+    # ACE-Step does NOT recognize producer names directly. Each entry covers
+    # six dimensions: drums (kick + snare + hat triad), bass character, sample
+    # source + treatment, mix treatment, era marker, groove word. Stays under
+    # 512 chars (ACE-Step caption hard cap) when combined with mood/genre tags.
     "Dr. Dre / G-funk era": (
-        "G-funk, West Coast hip hop, talkbox lead, heavy synthesizer bassline, "
-        "laid-back groove, polished mix, deep low end, syncopated kick, smooth high hat, "
-        "90s G-funk, summer banger polish, head-nod groove"
+        "G-funk, West Coast hip hop, 90s G-funk, talkbox lead, whistle synth lead, "
+        "Minimoog synth bass, replayed funk interpolation, sub-heavy kick, "
+        "layered chest-hit snare, smooth closed hi-hat, mono low end, "
+        "wide stereo synths, polished mix, head-nod groove, laid-back groove, "
+        "summer banger polish"
+    ),
+    "Dr. Dre / Chronic 2001 + Get Rich era": (
+        "Chronic 2001 era, post-Aftermath polish, early 2000s West Coast rap, "
+        "cinematic string arrangement, sweeping orchestral strings, "
+        "glassy synth piano lead, sparkling Rhodes lead, Mike Elizondo live bass guitar, "
+        "mono punchy sub, sub-heavy tight kick, layered clap-snare combo, "
+        "crisp programmed hi-hat, brass swell accents, Million Dollar Mix polish, "
+        "loud mastered polish, wide stereo pads, mono low end, menacing anthemic energy, "
+        "head-nod groove, Aftermath production polish, In Da Club bounce"
     ),
     "No I.D. / Common-era boom bap": (
-        "boom bap, soul sample chops, dusty drums, jazzy chord loop, vinyl texture, "
-        "warm analog mix, head-nod groove, 90s boom bap, NYC east coast warmth, "
-        "muted piano sample, soft kick, tight snare"
+        "boom bap, soul sample chops, jazzy chord loop, muted piano sample, "
+        "soft horn under sample, SP-1200 played bassline, warm round sub, "
+        "soft kick, tight backbeat snare, shuffled closed hi-hat, dusty drums, "
+        "vinyl texture, warm analog mix, tape warmth, behind-the-beat groove, "
+        "head-nod groove, 90s boom bap, NYC east coast warmth"
     ),
     "Metro Boomin / dark trap": (
-        "modern trap, dark atmospheric, 808 bass, trap hi-hats, sparse melody, "
-        "ominous synth lead, gritty, hard-hitting drums, half-time drums, "
-        "hi-hat rolls, 808 swells, cinematic tension"
+        "modern trap, 2010s trap, dark atmospheric, sub-heavy 808, mono 808 sub, "
+        "harmonic-distorted 808 mids, sparse drums, half-time snare, hard-hitting kick, "
+        "fast triplet hi-hat rolls, hi-hat rolls, minor-key piano, filtered choir, "
+        "haunting bell melody, eerie bell, wide stereo synth pads, cinematic tension, "
+        "trap bounce"
     ),
     "Quincy Jones / 80s pop polish": (
-        "cinematic strings, lush brass, R&B/funk fusion, 80s pop polish, "
-        "layered backing vocals, wide stereo, studio-polished, "
-        "tight horn stabs, slap bass, gated reverb"
+        "80s pop polish, R&B/funk fusion, layered flugelhorn, alto horn, French horn warmth, "
+        "soft tuba foundation, dual Minimoog synth bass, slap bass, Afro-Cuban percussion, "
+        "congas, shekere, cowbell, cinematic dissonant string tension, tight punchy kick, "
+        "gated reverb snare, layered backing vocals, wide stereo, mono bass, studio-polished"
     ),
     "Mobb Deep / NYC street rap": (
-        "90s boom bap, gritty, dark, stripped drums, dusty piano sample, "
-        "dry vocal, raw, NYC street rap, ominous strings, head-nod groove"
+        "90s boom bap, NYC street rap, claustrophobic mood, eerie minor-key piano loop, "
+        "soft ominous low strings, gritty MPC60 drums, hard sparse kick, hard-snare backbeat, "
+        "rumbling sub, dusty mix, dry vocal, raw, head-nod groove, behind-the-beat"
     ),
     "J Dilla / Soulquarian feel": (
-        "boom bap, swung drums, jazzy sample loop, behind-the-beat groove, "
-        "vinyl crackle, warm bass, head-nod groove, dusty mix, neo-soul tinge"
+        "boom bap, soulquarian feel, drunken swing, MPC quantize-off feel, swung drums, "
+        "dragged hi-hat, rushed snare, dusty kit samples, jazzy soul sample loop, "
+        "pitched mid-loop chop, round warm bass, slightly out-of-tune tension, "
+        "vinyl crackle, lo-fi mix, dusty mix, behind-the-beat groove, head-nod groove, "
+        "2000s underground hip-hop"
+    ),
+    "Pete Rock / golden-age soul boom bap": (
+        "boom bap, 90s NYC golden-age, soul horn stabs, tenor sax loop, jazzy sample chops, "
+        "filtered multi-layer sample, SP-1200 'pointy' drums, hard kick, deep snare, "
+        "prominent breakbeat hi-hat, walking bassline, live-bass character, summery mood, "
+        "warm analog mix, head-nod groove, NYC east coast warmth"
     ),
     "Timbaland / early 2000s R&B-rap": (
-        "syncopated rhythm, percussive vocal stabs, beatbox layer, "
-        "sub-bass, sparse drums, exotic percussion, tight snare, "
-        "high vocal flourishes, 2000s R&B polish"
+        "2000s R&B polish, syncopated polyrhythmic drums, off-grid drum patterns, "
+        "vocal beatbox layer, mouth percussion, vocal stabs, pitched percussion tuned to key, "
+        "tabla, Middle Eastern percussion, clean sparse sub-bass, kick panned wide, "
+        "central voice unobstructed, exotic percussion, glossy mix, head-nod groove"
     ),
     "Pharrell / Neptunes minimal": (
-        "minimal arrangement, syncopated rhythm, 808 cowbell, "
-        "stripped drums, tight kick, falsetto vocal accents, glossy mix, "
-        "pop-rap polish, 2000s rap"
+        "Neptunes minimal, 2000s pop-rap polish, minimal arrangement, syncopated rhythm, "
+        "808 cowbell, syncopated shaker, robotic kick-clap, tight dry kick, processed clap, "
+        "clavinet, electric piano, synthetic guitar, sci-fi FX, falsetto vocal accents, "
+        "glossy mix, percussive bounce, head-nod groove, 3-4 sounds total"
     ),
     "Kanye West / 808s era": (
-        "auto-tune vocal, lush synth pads, 808 drums, sparse melody, "
-        "emotional minimal arrangement, wide stereo, glossy mix, "
-        "2000s rap, syncopated rhythm"
+        "808s and Heartbreak era, electro-pop minimalism, TR-808, LinnDrum LM-2, "
+        "step-input drum programming, sparse drums, distorted heartbreak 808, "
+        "compressed saturated 808 bass, droning synth pads, lengthy strings, "
+        "somber piano, minor-key, auto-tune as instrument, dense reverbed drums, "
+        "austere mix, 2000s rap"
     ),
     "Mike Dean / cinematic rap": (
-        "cinematic synth pads, wide stereo, big reverb tail, "
-        "saturated 808 bass, lush production, layered ambience, "
-        "modern trap polish, atmospheric"
+        "cinematic rap, 2010s trap polish, Jupiter-8 synth lead, CS-80-like lead, "
+        "MemoryMoog screaming overdrive lead, smoke-toned analog monosynth, "
+        "tape saturation, Decapitator-style 808 grit, saturated 808 bass, "
+        "EchoBoy delay tails, big ambient hall reverb, wide stereo synth pads, "
+        "mono punchy bass, atmospheric, cinematic tension, head-nod groove"
     ),
     "DJ Premier / 90s boom bap": (
-        "boom bap, scratched samples, gritty drums, soul horn samples, "
-        "dusty piano, raw mix, 90s boom bap, NYC street rap"
+        "90s boom bap, NYC street rap, scratched vocal-stab hook, chopped speech sample, "
+        "loop discipline, weird background sax stabs, vinyl noise, hard programmed drums, "
+        "sparse kick, deep bass, looped chord stab, raw mix, slightly behind-the-beat groove, "
+        "head-nod groove"
     ),
     "Rick Rubin / stripped rap-rock": (
-        "stripped drums, raw guitar, minimal arrangement, dry vocal, "
-        "punchy kick, head-nod groove, 90s boom bap, NYC street rap, gritty"
+        "stripped rap-rock, naked TR-808, no melodic loop, single-take guitar, "
+        "raw unprocessed riff, dry present vocal, uncomfortably sparse arrangement, "
+        "punchy kick, hard snare, reductionist mix, imperfection retained, "
+        "raw demo feel, 80s rap-rock crossover"
     ),
     "Madlib / loop-driven boom bap": (
-        "boom bap, jazz sample loop, dusty mix, loose drums, vinyl crackle, "
-        "warm analog mix, head-nod groove, behind-the-beat groove"
+        "loop-driven boom bap, micro-chopped jazz sample, world-music sample, "
+        "pitched stitched loops, deep-in-the-mix dusty drums, non-quantized loose drums, "
+        "drunken swing, SP-303 vinyl-sim crackle, exaggerated dust texture, "
+        "round warm analog bass, psychedelic woozy pitch-shifted vocal interludes, "
+        "behind-the-beat groove, lo-fi mix, 2000s underground hip-hop"
     ),
     "Just Blaze / triumphant soul hip-hop": (
-        "soulful hip-hop, triumphant horns, chopped soul sample, big drum break, "
-        "anthemic energy, layered backing vocals, polished mix, NYC east coast warmth, "
-        "marching snare, brass swells, head-nod groove, 2000s rap"
+        "triumphant soul hip-hop, anthemic stadium feel, Lafayette Afro Rock-style horns, "
+        "Johnny Pate-style orchestral horn stabs, chopped scratched soul vocal hook, "
+        "live-drum re-mic'd break, booming kick, marching rim-shot snare, polished punchy mix, "
+        "NYC east coast warmth, head-nod groove, building energy, 2000s rap"
+    ),
+    "Havoc / Mobb Deep production": (
+        "90s boom bap, Queensbridge street-noir, claustrophobic mood, eerie detuned piano, "
+        "single-note minor-key piano loop, soft ominous low strings, MPC3000 drums, "
+        "gritty hard snare, sparse kick, heavy rumbling sub, dusty mix, dry vocal, "
+        "raw vinyl-cracked sample, head-nod groove, behind-the-beat"
     ),
     "Stoupe / cinematic hardcore hip-hop": (
-        "cinematic hip-hop, orchestral strings, dramatic sample chop, hard-hitting drums, "
-        "filmic atmosphere, dark, dusty piano, taiko drums, choir vocals, "
-        "boom bap, gritty, ominous strings, big reverb tail"
+        "cinematic hardcore hip-hop, 2000s underground hip-hop, horror score string sample, "
+        "film score sample, Latin choir chop, operatic vocal snippet, Greek folk sample, "
+        "world-music source, dramatic orchestral stab, taiko drums layered with boom bap, "
+        "hard-hitting MPC drums, deep rumbling sub, dusty piano loop, ominous low strings, "
+        "film dialogue snippet transitions, big reverb tail, filmic atmosphere, dark, "
+        "claustrophobic, head-nod groove"
     ),
+    # MODERN (2023-2026 chart-topper) producer entries.
+    "Mustard / West Coast diss-track ratchet": (
+        "ratchet West Coast hip hop, 2020s rap, Mustard signature, hyphy bass, "
+        "finger-snap percussion, sliding sub-bass, dembow-tinted kick pattern, "
+        "violin sample, sparse drums, half-time snare, 4/4 hand claps, mono 808, "
+        "anthem-shout hook, polished commercial mix, head-nod groove, trap bounce, "
+        "Compton 2024 sound, 'Not Like Us' template"
+    ),
+    "Pi'erre Bourne / plugg + rage hybrid": (
+        "plugg, rage rap, 2020s underground rap, melodic synth lead, "
+        "stereo-widened EDM-leaning lead, distorted overdriven 808, "
+        "sparse trap drums, fast triplet hi-hat rolls, sub-bass swells, "
+        "dreamy atmospheric pad, glossy mix, hyperpop-tinged melody, "
+        "Yeat / Carti / Lil Uzi Vert era, modern trap polish"
+    ),
+    "Tay Keith / Memphis trap": (
+        "Memphis trap, 2010s-2020s trap, Tay Keith bounce, hard 808 kick, "
+        "rolling triplet hi-hat, snappy snare on 3, sparse melody, "
+        "distorted Memphis sample, sliding 808 bass, dark menacing pad, "
+        "anthemic chant hook, hard-hitting mix, GloRilla / BlocBoy template, "
+        "trap bounce, head-nod groove"
+    ),
+    "AXL Beats / Brooklyn drill": (
+        "Brooklyn drill, NY drill, 2020s drill, AXL Beats template, "
+        "sliding 808 bass gliding scale-degree-to-scale-degree, sparse pianos, "
+        "icy synth pads, stuttering hi-hat triplet rolls, bell melody, "
+        "hard half-time kick, snare on 3, dark cinematic, drill bounce, "
+        "Pop Smoke / Fivio Foreign era"
+    ),
+    "Central Cee / UK drill melodic-rap": (
+        "UK drill, 140 BPM half-time, sliding 808s gliding scale-degree-to-scale-degree, "
+        "chopped acoustic guitar loop, operatic vocal sample chop, melodic-rap hybrid, "
+        "auto-tune retune around 25ms, sing-rap blend, stuttering hi-hat rolls, "
+        "money-imagery hook, polished UK mix, head-nod groove, Sprinter / BAND4BAND template"
+    ),
+    "Jersey Club / PinkPantheress era": (
+        "Jersey club, 2020s alt R&B, PinkPantheress template, four-on-the-floor club kick, "
+        "syncopated hand claps on the off-beats, breakbeat sample chops, "
+        "bedroom pop polish, breathy female vocal, Y2K nostalgia synths, "
+        "pitched-up vocal chops, sliding 808, glossy mix, fast tempo around 140 BPM, "
+        "Boy's a Liar Pt. 2 template"
+    ),
+    "Finneas / Billie Eilish bedroom pop": (
+        "bedroom pop, alt pop, breathy whisper-aesthetic, close-mic vocal, "
+        "minimal 4-chord palette across whole song, sub-bass-heavy minimalism, "
+        "soft Rhodes piano, cinematic strings comeback for emotional climax, "
+        "introspective mood, conversational diction, ASMR vocal texture, "
+        "plate reverb on snare only, Birds of a Feather / Lunch template"
+    ),
+    "Carter Lang + Julian Bunetta / Sabrina Carpenter retro-disco pop": (
+        "retro disco-pop, yacht-rock revival, vintage disco bass walk, "
+        "2020s pop polish, syncopated guitar chops, electric piano stabs, "
+        "tight punchy kick, snare on 2 and 4, hand-claps stacked, "
+        "displaced-downbeat melody starting on beat 2, glossy commercial mix, "
+        "Espresso / Please Please Please template, sex-positive humor topline"
+    ),
+    "Mike WiLL Made It / 2010s-2020s anthemic trap": (
+        "anthemic trap, 2010s trap, Mike WiLL bounce, big 808 kick, "
+        "snappy snare on 3, fast triplet hi-hat rolls, ominous synth lead, "
+        "stadium-anthem hook, hard mix, half-time drums, sparse melody, "
+        "Rae Sremmurd / Future / 21 Savage template, modern trap polish"
+    ),
+    "Bruno Mars / retro pop-rock revival": (
+        "retro pop-rock, 80s pop-funk revival, 2020s pop polish, "
+        "tight slap bass, syncopated funk guitar, brass stab section, "
+        "live-drum kit, snare on 2 and 4, vintage Wurlitzer organ, "
+        "anthemic shout hook, polished radio mix, APT. / Die With a Smile template, "
+        "head-nod groove, dance-pop bounce"
+    ),
+    "Mustard x Kendrick / 2024 hyphy revival": (
+        "ratchet West Coast 2024, hyphy bass + sliding sub, snap-clap percussion, "
+        "violin string sample, finger-snap pattern, sparse drums, "
+        "anthemic 4-syllable chant hook, polished commercial 2024 mix, "
+        "Compton revival, mono 808 + wide stereo synths, head-nod groove, "
+        "Not Like Us template"
+    ),
+}
+
+# SONGWRITER_CRAFT_COOKBOOK distills lyric craft principles from Eminem, 2Pac,
+# Kendrick Lamar, Nas, MF DOOM and Pat Pattison-style songwriting pedagogy into
+# concrete rules the local LLM can actually apply. Sources cited via research
+# audits stored in ~/.claude/plans/. These get appended to every music-mode
+# system block so the writer reaches for craft moves instead of generic phrasing.
+SONGWRITER_CRAFT_COOKBOOK: dict[str, str] = {
+    "rhyme_stacking": (
+        "Rhyme on sounds, not whole words. Stack rhymes in beginning/middle/end of each bar — "
+        "Eminem's 'Lose Yourself' verse stacks sweaty/knees weak/heavy/spaghetti/ready as "
+        "multiple multisyllabic chains across 4 lines. Default to 2-4 syllable mosaic rhymes; "
+        "reserve perfect end-rhyme for emotional resolution."
+    ),
+    "rhyme_density": (
+        "Slant-dominant with periodic perfect-rhyme landings on emphasis words. Pure rhyme "
+        "everywhere reads like Dr. Seuss; pure prose has no song. Sweet spot is ~70% slant / "
+        "internal / multisyllabic plus ~30% perfect end-rhymes on payoff lines."
+    ),
+    "bar_anatomy": (
+        "1 bar = 4 beats. Standard rap verse = 16 bars (~64 beats; ~42 seconds at 90 BPM). "
+        "Long-form storytelling (Nas Illmatic, Eminem Renegade) pushes to 32 bars. "
+        "8-15 syllables per bar is the working range; push to ~20 only for emotional spike "
+        "(Eminem furious on Godzilla = 11.3 syllables/sec)."
+    ),
+    "flow_pocket_vs_grid": (
+        "Lock to the grid for verses 1-2. Break the grid (drift across bar lines, triplets, "
+        "double-time) only for emotional spikes. Kendrick uses triplets only at 'high tension' "
+        "moments, not as default flow. Pocket beats acrobatics."
+    ),
+    "show_dont_tell": (
+        "No 'this is bad, don't do this' lines. Tell it as a scene. Concrete sensory detail — "
+        "Nas writes trap doors, rooftop snipers, lobby kids; Tom Waits writes 'a stain on your "
+        "bedroom wall, the flavour of a soda they stopped making, a girl's name you made up'. "
+        "Specific is universal."
+    ),
+    "specific_over_abstract": (
+        "One small specific beats ten generic. A discontinued soda flavour, a real first name, "
+        "a specific street corner, a brand of cigarettes. Banned generic POV: 'the world', "
+        "'everyone', 'the people', 'we all', 'this generation'."
+    ),
+    "punchline_construction": (
+        "Setup + payoff. Plant a phrase in line 1 whose meaning flips in line 2 (homophone, "
+        "double entendre, conceptual pivot). Eminem and Big L pair entendres with mind-rhyme. "
+        "Ban explanation lines like 'in other words...' or 'what I mean is'."
+    ),
+    "section_purpose": (
+        "Verse = scene. Chorus = single phrase that survives repetition. Bridge = NEW angle "
+        "(zoom out, time shift, confession, counter-argument). Each section occupies a different "
+        "sonic and emotional space. A bridge that just restates verse 3 is dead weight."
+    ),
+    "hook_hum_test": (
+        "If a stranger can't hum the hook after one listen, rewrite. Keep hooks to ONE phrase "
+        "or a few notes. The hook must work without the verses — someone hearing only the chorus "
+        "should grasp the song's thesis."
+    ),
+    "prosody_match": (
+        "Pat Pattison's rule: form supports content. Stable content (resolution, calm) = AABB or "
+        "ABAB, even line count, perfect rhyme. Unstable content (longing, tension) = ABBA, odd "
+        "line count, slant rhyme. Don't rhyme a tense lyric like a love song."
+    ),
+    "ad_libs_punctuation": (
+        "Ad-libs are punctuation, not decoration. Use them to mark a payoff line, not every "
+        "4 bars. Travis Scott reserves 'It's lit!' for moments that deserve that energy. "
+        "Constant ad-libs feel cheap and drain meaning."
+    ),
+    "verse_must_change_something": (
+        "Every verse must change something — new scene, new POV, time jump, escalation, or "
+        "revelation. A verse that just restates the chorus is dead weight. Cut it or rewrite "
+        "with a new angle."
+    ),
+    "eminem_signature": (
+        "Stacks rhymes across beginning/middle/end columns of every bar. Rhymes 'sounds with "
+        "sounds', not whole words. Late-career adds homophone + multi-entendre + mind-rhyme. "
+        "Flow accelerates/decelerates with character emotion (Lose Yourself: hesitant → "
+        "rapid-fire); pocket holds over half-time."
+    ),
+    "tupac_signature": (
+        "Storytelling first, technique second. Says exactly what he means, literally and clearly. "
+        "Brenda's Got a Baby = single-verse three-act narrative (community → incident → "
+        "consequence). Character voicing: third-person omniscient (Brenda), direct address "
+        "(Dear Mama). Empathy over technical density."
+    ),
+    "kendrick_signature": (
+        "Concept-album narrative threading (good kid m.A.A.d city = single day, To Pimp a "
+        "Butterfly = single poem revealed line-by-line across tracks, fully on Mortal Man). "
+        "Switches between music-rhythmic (locked grid, King Kunta) and speech-rhythmic "
+        "(off-grid, Momma v2). Triplets reserved for high-tension moments."
+    ),
+    "nas_signature": (
+        "'Hip-hop Hemingway' — each line a short story connecting to a larger narrative. "
+        "Concrete sensory anchors per bar (trap doors, rooftop snipers, lobby kids). Mid-verse "
+        "pivot from braggadocio to immersive scene to moral reflection. One Love = epistolary "
+        "form, verses written as letters to incarcerated friends."
+    ),
+    # MODERN HIT-CRAFT LAYER (2023-2026 chart anatomy). Sourced from Hit Songs
+    # Deconstructed, Berklee Songwriting, MusicRadar Antonoff/Finneas/Max Martin
+    # interviews, Billboard YE reports. We write to chart in 2025-2026, not 1995.
+    "modern_title_drop_vowel_lock": (
+        "Title-drop on line 1 of the chorus and again as the last vowel-locked syllable. "
+        "Rhyme that vowel through 3-4 successive end-words. 'Espresso' loops 'that's that "
+        "me espresso' on /oʊ/ then stacks six verbs all locking to /uː/. 'Flowers' opens "
+        "'I can buy myself flowers' as the title-drop. Title is the first thing the listener "
+        "hears in the chorus, not buried in the second half."
+    ),
+    "modern_three_chorus_framework": (
+        "Default 2024-2026 song shape: V1 -> Pre-Chorus -> Chorus -> V2 -> Pre-Chorus -> "
+        "Chorus -> Bridge-or-Tag -> Final Chorus. 69% of 2024 #1s use three choruses "
+        "(up from 31% in 2022). Two-chorus is now minority; a missing third chorus reads "
+        "as unfinished. Hit Songs Deconstructed 2024 #1 Focus Report."
+    ),
+    "modern_30_second_test": (
+        "TikTok 30-second test: by 0:15 the listener must hear a sticky fragment, by 0:30 "
+        "the hook must have landed at least once. Modern openings lead with a pre-hook "
+        "fragment or jump straight into chorus. Average time-to-first-chorus is 33-45s on "
+        "2024 #1s; only 25% delay past 1:00. Berklee 2024 hit-DNA research."
+    ),
+    "modern_displaced_downbeat": (
+        "Modern hook melodies start on beat 2 or the 'and' of beat 1, not the downbeat. "
+        "Espresso chorus delays every phrase to beat 2; verses to beat 4. That off-kilter "
+        "syncopated pull is the earworm. Don't land the most important syllable on the "
+        "downbeat — push it back half a beat."
+    ),
+    "modern_micro_hook_stacking": (
+        "Stack micro-hooks: a pre-chorus lift (one ascending line), a post-chorus tag "
+        "(repeated nano-phrase), AND a chantable nano-hook (1-3 syllable shout). 'Flowers' "
+        "stacks: 'up-top/down-below' chorus + 'I can love me better' post-chorus + bass riff "
+        "hook. 'Not Like Us' stacks: hook + 'they not like us' chant + Mustard's hyphy bass."
+    ),
+    "modern_anthem_hook": (
+        "The chorus core must be a 4-syllable shout a stadium of strangers can chant on "
+        "first listen. 'They not like us', 'BAND for BAND', 'that's that me espresso', "
+        "'I can buy myself flowers'. Test by saying it out loud once — if it feels "
+        "performable to a crowd, it's an anthem hook. If it requires explanation, rewrite."
+    ),
+    "modern_rant_bridge": (
+        "If you write a bridge in 2024-2026, write the 'rant bridge' (Antonoff/Swift). "
+        "Stream-of-consciousness, conversational diction, intrusive thoughts blended with "
+        "metaphor, end on a shouted single-line thesis. Cruel Summer has TWO rant-bridges. "
+        "Birds of a Feather has none — pick one approach, commit. Bridge is optional in "
+        "modern pop, never mandatory."
+    ),
+    "modern_rap_verse_count": (
+        "Modern rap verse count is 12 bars more often than 16 (2024-2026 mainstream). "
+        "Reserve 16+ bars for storytelling tracks (Kendrick concept tracks, Nas-style "
+        "narratives). For radio rap 'Not Like Us' / 'BAND4BAND' / Sexyy Red / Glorilla, "
+        "12 staccato bars locked on snare beats both length and impact."
+    ),
+    "modern_concrete_proper_nouns": (
+        "Force one concrete proper noun per verse: a brand, a place, a time, a person, an "
+        "object. 'Espresso' has Mountain Dew, jet-lag, Dior. 'Texas Hold 'Em' has Texas, "
+        "whiskey, dance hall. 'Not Like Us' name-drops 3 specific people. AI lyric tells "
+        "ALL fail this test — they fear specificity. Force it on the first draft."
+    ),
+    "modern_metric_overflow": (
+        "Allow ONE deliberate metric overflow per song — a line longer than the others, "
+        "conversational, anti-symmetric. Antonoff/Swift 'rant' technique. 'Cruel Summer' "
+        "bridge breaks meter on 'Devils roll the dice, angels roll their eyes'. Symmetric "
+        "syllable counts on every line read as AI; one breath-overflow signals human."
+    ),
+    "modern_v2_must_escalate": (
+        "Verse 2 NEVER paraphrases verse 1. V2 must add: a new scene, a new witness, a "
+        "time jump, OR a reversal. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. "
+        "'Birds of a Feather' V2 is where Eilish/Finneas land 'our best writing lives "
+        "here'. AI tools love restating V1 in V2 with synonyms — reject that draft."
+    ),
+    "modern_genre_blend_anchor": (
+        "Genre is post-genre in 2024-2026 — pop+country, pop+drill, pop+afrobeats, "
+        "K-pop+retro-rock all chart. But cross-genre still demands ONE production anchor. "
+        "Pick a lane (sliding-808 drill, retro-disco, breathy-bedroom ballad, "
+        "acoustic-percussion country-pop, rage synth-lead) and commit; the cross-pollination "
+        "lives in the topline, not the production. Texas Hold 'Em = country anchor + R&B "
+        "topline. APT. = retro pop-rock anchor + K-pop topline."
+    ),
+    # PER-MODERN-ARTIST signatures (2023-2026 era) to balance the classic ones above.
+    "sabrina_carpenter_signature": (
+        "Humor + sex-positive double-entendre layered over yacht-rock/disco-revival "
+        "production. Title-drop with vowel-lock. Uses brand drops + personal-life specificity "
+        "(jet-lag, Dior, ex-flames) over vague emotion. Confidence + vulnerability in same "
+        "verse — never one note."
+    ),
+    "kendrick_2024_signature": (
+        "Diss-track-as-hit anatomy: hook first (anthem-shout), 12-bar staccato verses "
+        "locked to snare, name-checks of 3+ specific people, double-entendre 'A-Minor' "
+        "wordplay, West Coast Mustard production. No bridge needed. Hook ×8 to outro. "
+        "'Not Like Us' template."
+    ),
+    "billie_eilish_finneas_signature": (
+        "Whisper-aesthetic + bass-heavy minimalism. 4-chord palette across the whole song "
+        "(D / Bm / Em / A on Birds of a Feather). Conversational diction, one idiom-flip "
+        "in the title, V2 is where the writers land their thesis. Close-mic'd vocal, "
+        "introspection-themed (44% of 2025 top 10s are introspection). Cinematic strings "
+        "comeback for emotional climax."
+    ),
+    "central_cee_drill_signature": (
+        "UK drill template: 140 BPM half-time, sliding 808s gliding scale-degree-to-scale-"
+        "degree, chopped acoustic-guitar/operatic-vocal loops. Auto-tune retune ~25ms "
+        "for melodic-rap hybrid. Sing-rap blend, money imagery, 4-syllable repeat shout "
+        "as hook ('BAND-for-BAND', 'Doja-Doja-Doja')."
+    ),
+    "morgan_wallen_country_signature": (
+        "Country crossover: acoustic-percussion forward (37% of 2024 #1s use it), "
+        "storytelling first (specific places, names, moments), genre-blur with "
+        "hip-hop cadence on verses + traditional country topline on chorus. "
+        "'Last Night' / 'I Had Some Help' / 'A Bar Song (Tipsy)' template."
+    ),
+}
+
+# LYRIC_ANTI_PATTERNS lists the cliché phrases and structural failure modes the
+# writer must avoid. Substring matches against the cliché_image_bank trigger a
+# repair pass. The form_antipatterns are LLM-side reminders, not regex matches.
+LYRIC_ANTI_PATTERNS: dict[str, list[str]] = {
+    "cliche_image_bank": [
+        # Classic AI-slop image bank (Audiocipher / AISongFix research)
+        "neon dreams", "fire inside", "shattered dreams", "endless night",
+        "empty streets", "city lights", "embers", "whispers in the dark",
+        "silhouettes", "echoes of", "we rise", "let it burn",
+        "chasing the night", "broken heart", "rising from the ashes",
+        "stars aligned", "fade away", "into the void", "burning bright",
+        "stolen kisses", "tears like rain", "frozen in time",
+        "dancing in the dark", "running through my mind",
+        # Modern AI-slop additions (Nick Cave Red Hand Files critique + 2024-2026 ChatGPT lyric tells)
+        "soul on fire", "heart of gold", "light of my life",
+        "wings to fly", "mountains to climb", "rivers to cross",
+        "beautiful disaster", "love is the answer", "find my way",
+        "out of the darkness", "into the light", "feel the rhythm",
+        "ride or die", "until the end", "forever and always",
+        "dancing with destiny",
+    ],
+    "telling_not_showing": [
+        "I feel sad", "my heart is broken", "I'm in pain", "we're all in pain",
+        "this is sad", "this is hard", "we suffer", "I'm hurting inside",
+        "I'm so happy", "I'm so in love", "I feel alive",
+        "this is real", "this is everything",
+    ],
+    "generic_pov": [
+        "we all", "everyone feels", "the world is", "the people need",
+        "society today", "this generation", "the youth of today",
+        "humanity is", "mankind",
+    ],
+    "explanation_lines": [
+        "in other words", "what I mean is", "to be clear",
+        "let me explain", "in summary", "basically",
+        "what I'm trying to say",
+    ],
+    # Nick Cave's GPT-4 critique flagged the polar-binary "I am X / I am Y" trick
+    # as the unmistakable AI tell. ChatGPT loves it. Hits never use it.
+    "polar_binary_reversals": [
+        "i am the saint i am the sinner", "i am the angel i am the demon",
+        "i am the light i am the dark", "i am the king i am the slave",
+        "i am the hunter i am the prey", "i'm the fire i'm the flame",
+        "i'm the rose i'm the thorn",
+    ],
+    "form_antipatterns": [
+        "Every line same end-rhyme scheme — puts listeners to sleep.",
+        "Padding syllables ('yeah', 'you know') to hit a bar count.",
+        "Punchlines that explain themselves.",
+        "Choruses that just repeat the verse's idea instead of distilling a new memorable phrase.",
+        "Bridges that don't shift perspective (verse 3 in disguise).",
+        "Flowery 8th-grade-poetry register without concrete imagery.",
+        "Generic POV ('we', 'the world') with no named, situated speaker.",
+        "Sterile syllable counts that don't sing — every line same length, no breath-overflow.",
+        "Over-perfect rhymes that read like greeting cards.",
+        "Ad-libs sprinkled every line — drains them of meaning.",
+        # Modern (2024-2026) anti-patterns from chart research
+        "Polar-binary 'I am X / I am Y' reversal — Nick Cave called this the AI tell.",
+        "No proper nouns at all — AI fears specifics. Force one brand/place/name per verse.",
+        "Theme stated but not embodied — cut the line that names the emotion, keep the line that proves it.",
+        "Hook buried past 0:30 — 2024-2026 hits land the hook by 0:15-0:30 (TikTok test).",
+        "Verse 2 paraphrases verse 1 — V2 must add new scene, witness, or reversal.",
+        "No contradictions — real songs argue with themselves (confidence + jet-lag in same verse).",
+        "Title-drop missing or buried — modern hits drop the title in chorus line 1, vowel-locked.",
+        "Two-chorus structure — 2024 #1s use three choruses (69%, up from 31% in 2022).",
+        "Symmetric meter throughout — allow ONE deliberate metric overflow per song (Antonoff/Swift rant).",
+    ],
 }
 
 RAP_MODE_COOKBOOK: dict[str, str] = {
@@ -788,6 +1197,186 @@ WORKED_EXAMPLES: list[dict[str, str]] = [
         "notes": (
             "Metro Boomin not in caption. 'Metro on the night flight' is allowed inside lyrics as flavour, not as caption tag. "
             "Half-time drums + 808 swells + hi-hat rolls captured via cookbook stack."
+        ),
+    },
+    # MODERN (2024-2026 chart) worked examples — Espresso-style retro disco-pop,
+    # Not Like Us-style West Coast diss, Birds of a Feather-style ballad. These
+    # show the modern hit anatomy: title-drop with vowel-lock, hook-first opens,
+    # 12-bar verses, displaced downbeat, concrete proper nouns.
+    {
+        "request": "Make me a Sabrina Carpenter Espresso-style flirty retro disco-pop banger",
+        "caption": (
+            "retro disco-pop, yacht-rock revival, vintage disco bass walk, syncopated guitar chops, "
+            "electric piano stabs, tight punchy kick, snare on 2 and 4, hand-claps stacked, "
+            "displaced-downbeat melody, glossy commercial mix, female pop vocal, head-nod groove, "
+            "2020s pop polish, sex-positive humor"
+        ),
+        "lyrics": (
+            "[Intro]\n"
+            "(uh-huh)\n"
+            "\n"
+            "[Hook]\n"
+            "That's that me, espresso\n"
+            "Mountain Dew on the dresser, I'm a problem you can't measure\n"
+            "Move it like espresso, move it like espresso\n"
+            "Move it like espresso, oh\n"
+            "\n"
+            "[Verse 1]\n"
+            "Met him at the after-party, jet-lag in my Dior heels\n"
+            "Asked if I'm exclusive, told him 'baby, I'm a deal'\n"
+            "He been textin' twenty-twenty, I been readin' twenty-three\n"
+            "Boy you're cute but I'm the brand, you're the marketing\n"
+            "\n"
+            "[Pre-Chorus]\n"
+            "(say it back, say it back)\n"
+            "He said baby say it back\n"
+            "(say it back, say it back)\n"
+            "\n"
+            "[Hook]\n"
+            "That's that me, espresso\n"
+            "Mountain Dew on the dresser, I'm a problem you can't measure\n"
+            "Move it like espresso, move it like espresso\n"
+            "Move it like espresso, oh\n"
+            "\n"
+            "[Verse 2]\n"
+            "Sunday morning chapel, Monday morning ICU\n"
+            "Tuesday night I'm walkin' barefoot through a CVS for two\n"
+            "He keeps askin' 'where you headed', I keep sayin' 'after-shift'\n"
+            "Boy I'm bigger than the bar tab, I'm the bigger plot to flip\n"
+            "\n"
+            "[Pre-Chorus]\n"
+            "(say it back, say it back)\n"
+            "He said baby say it back\n"
+            "\n"
+            "[Hook]\n"
+            "That's that me, espresso\n"
+            "Move it like espresso, oh\n"
+            "\n"
+            "[Outro]\n"
+            "(that's that me)"
+        ),
+        "notes": (
+            "Title-drop on chorus line 1 ('that's that me espresso') with vowel-lock /oʊ/. "
+            "Three-chorus framework. Concrete proper nouns per verse: Mountain Dew, Dior, CVS. "
+            "V2 escalates (chapel -> ICU -> barefoot CVS). Pre-chorus 'say it back' is the nano-hook tag. "
+            "Displaced-downbeat melody. Producer name (Carter Lang / Julian Bunetta) NOT in caption — cookbook stack carries it."
+        ),
+    },
+    {
+        "request": "Write a Kendrick Not Like Us-style West Coast diss anthem",
+        "caption": (
+            "ratchet West Coast hip hop, hyphy bass, finger-snap percussion, "
+            "sliding sub-bass, violin sample, sparse drums, half-time snare, "
+            "4/4 hand claps, mono 808, anthem-shout hook, polished commercial mix, "
+            "male rap vocal, head-nod groove, 2020s rap, Compton 2024 sound"
+        ),
+        "lyrics": (
+            "[Intro]\n"
+            "(yeah, yeah)\n"
+            "\n"
+            "[Hook]\n"
+            "They not like us\n"
+            "They not like us\n"
+            "They not like us\n"
+            "They not like us\n"
+            "\n"
+            "[Verse - rap]\n"
+            "Boy I see you on the timeline askin' how it's done (yeah)\n"
+            "I been in the lab while you been chasin' clout for fun (uh)\n"
+            "DJ Mustard on the violin, the city know the sound (Mustard)\n"
+            "Concrete know my footprint, Compton know who run the town\n"
+            "You said you was top three, top five, top ten (psh)\n"
+            "I been countin' twenty Grammys while you countin' Instagram friends\n"
+            "Stage at the Coliseum lit, the choir in the booth (uh)\n"
+            "Half a million in the front row, every line a proof\n"
+            "\n"
+            "[Hook]\n"
+            "They not like us\n"
+            "They not like us\n"
+            "They not like us\n"
+            "They not like us\n"
+            "\n"
+            "[Verse - rap]\n"
+            "Boy you doin' interviews to clean up what you said (yeah)\n"
+            "I been doin' albums every line a body bag instead\n"
+            "You was at the Drake show, I was at the Forum sold (skrrt)\n"
+            "Sixty thousand chant the chorus louder than the radio\n"
+            "Tell yo' team to call my team, my team don't make a deal (uh)\n"
+            "Crown ain't been moved since two-thousand-twelve, that's how it feel\n"
+            "\n"
+            "[Hook]\n"
+            "They not like us\n"
+            "They not like us\n"
+            "They not like us\n"
+            "They not like us\n"
+            "\n"
+            "[Outro]\n"
+            "(West side, West side)\n"
+            "(they not like us)"
+        ),
+        "notes": (
+            "Hook FIRST (anthem 4-syllable shout 'they not like us'). 12-bar verses (modern norm) "
+            "locked to snare. Mustard self-reference allowed inside lyrics ('DJ Mustard on the violin') "
+            "as flavour, NEVER in caption. Concrete proper nouns: Coliseum, Compton, Drake, Forum, "
+            "Grammys. No bridge — straight Hook x4 to outro. Diss-track-as-hit anatomy."
+        ),
+    },
+    {
+        "request": "Write a Billie Eilish Birds of a Feather-style intimate alt-pop ballad",
+        "caption": (
+            "bedroom pop, alt pop, breathy whisper-aesthetic, close-mic vocal, "
+            "minimal 4-chord palette, sub-bass-heavy minimalism, soft Rhodes piano, "
+            "cinematic strings, introspective mood, conversational diction, ASMR vocal texture, "
+            "plate reverb on snare, female alt-pop vocal, slow tempo around 100 BPM, "
+            "2020s alt-pop polish"
+        ),
+        "lyrics": (
+            "[Intro]\n"
+            "(close, close)\n"
+            "\n"
+            "[Verse 1]\n"
+            "I want you to stay (yeah)\n"
+            "Till my second-floor balcony lights are gone\n"
+            "Till the upstairs neighbor's dog stops barkin'\n"
+            "Till the morning kettle's whistle quiet on\n"
+            "\n"
+            "[Pre-Chorus]\n"
+            "And I don't know what's after, but if you ask me\n"
+            "I'd say it's you, just you, just you\n"
+            "\n"
+            "[Chorus]\n"
+            "Birds of a feather, we should stick together I know\n"
+            "Said I'd never think I wasn't better alone\n"
+            "Can't change the weather, might not be forever\n"
+            "But if it's forever, it's even better, oh\n"
+            "\n"
+            "[Verse 2]\n"
+            "I been the kind of girl who flies at the first turn of the key (mm)\n"
+            "But you been workin' on me quiet like nobody but me see\n"
+            "Got me writin' in the notebook, like our best stuff lives in here\n"
+            "Got me thinkin' 'bout the long way 'round and tryin' to disappear\n"
+            "\n"
+            "[Pre-Chorus]\n"
+            "And I don't know what's after, but if you ask me\n"
+            "I'd say it's you, just you, just you\n"
+            "\n"
+            "[Chorus]\n"
+            "Birds of a feather, we should stick together I know\n"
+            "Said I'd never think I wasn't better alone\n"
+            "Can't change the weather, might not be forever\n"
+            "But if it's forever, it's even better, oh\n"
+            "\n"
+            "[Outro]\n"
+            "(birds of a feather)\n"
+            "(stick together)"
+        ),
+        "notes": (
+            "Whisper-aesthetic close-mic. 4-chord palette (D / Bm / Em / A) across whole song. "
+            "Idiom-flip in title ('birds of a feather' reframed as romantic commitment). "
+            "V2 lands the writers' thesis ('our best stuff lives in here' = Eilish/Finneas songwriting "
+            "moment from interviews). Concrete sensory details (second-floor balcony, neighbor's dog, "
+            "morning kettle, notebook). Producer (Finneas) NOT in caption — bedroom-pop stack carries it. "
+            "No bridge — modern alt-pop ballad doesn't need it."
         ),
     },
 ]
@@ -1172,6 +1761,45 @@ def _format_worked_examples_block() -> str:
     return "\n".join(lines)
 
 
+def _format_songwriter_cookbook_block() -> str:
+    lines = [
+        "## Songwriter Craft Cookbook",
+        "Apply these to every verse, hook, and bridge. They distill craft moves from "
+        "Eminem, 2Pac, Kendrick Lamar, Nas, MF DOOM, plus Pat Pattison-style songwriting "
+        "pedagogy. Reach for these BEFORE writing — generic phrasing is the result of "
+        "skipping this layer.",
+    ]
+    for label, body in SONGWRITER_CRAFT_COOKBOOK.items():
+        lines.append(f"- **{label.replace('_', ' ')}**: {body}")
+    return "\n".join(lines)
+
+
+def _format_anti_patterns_block() -> str:
+    lines = [
+        "## Lyric Anti-Patterns (forbid; rewrite if drafted)",
+        "If your draft contains any of the cliché phrases below, rewrite the line with "
+        "concrete sensory detail before output. Form anti-patterns are reminders for the "
+        "shape of your writing.",
+        "",
+        "### Cliché image bank — never use these phrases:",
+    ]
+    lines.append(", ".join(LYRIC_ANTI_PATTERNS["cliche_image_bank"]))
+    lines.append("")
+    lines.append("### Telling-not-showing labels — never use these phrases:")
+    lines.append(", ".join(LYRIC_ANTI_PATTERNS["telling_not_showing"]))
+    lines.append("")
+    lines.append("### Generic POV — never use these phrases:")
+    lines.append(", ".join(LYRIC_ANTI_PATTERNS["generic_pov"]))
+    lines.append("")
+    lines.append("### Explanation lines — never use these phrases:")
+    lines.append(", ".join(LYRIC_ANTI_PATTERNS["explanation_lines"]))
+    lines.append("")
+    lines.append("### Form anti-patterns — restructure if drafted:")
+    for item in LYRIC_ANTI_PATTERNS["form_antipatterns"]:
+        lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
 def prompt_kit_system_block(mode: str = "custom") -> str:
     contract = ", ".join(PROMPT_KIT_OUTPUT_CONTRACT_FIELDS)
     metadata = ", ".join(PROMPT_KIT_METADATA_FIELDS)
@@ -1207,5 +1835,7 @@ def prompt_kit_system_block(mode: str = "custom") -> str:
     if str(mode or "").strip().lower() in MUSIC_MODES_FOR_RAP_COOKBOOK:
         blocks.append(_format_producer_cookbook_block())
         blocks.append(_format_rap_cookbook_block())
+        blocks.append(_format_songwriter_cookbook_block())
+        blocks.append(_format_anti_patterns_block())
         blocks.append(_format_worked_examples_block())
     return "\n\n".join(blocks)

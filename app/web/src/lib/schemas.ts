@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_LORA_SCALE } from "@/lib/lora";
+import { DEFAULT_AUDIO_BACKEND } from "@/lib/audioBackend";
 
 /**
  * Zod schemas per wizard step. Kept loose enough that AI-fill can hydrate
@@ -48,6 +49,7 @@ export const simpleSchema = z.object({
   time_signature: optionalString,
   vocal_language: z.string().default("en"),
   song_model: z.string().default("acestep-v15-xl-sft"),
+  audio_backend: z.enum(["mlx", "mps_torch"]).default(DEFAULT_AUDIO_BACKEND),
   quality_profile: z.enum(["draft", "standard", "chart_master"]).default("standard"),
   seed: optionalNumber,
   use_lora: z.boolean().default(false),
@@ -83,6 +85,7 @@ export const simpleDefaults: SimpleFormValues = {
   time_signature: undefined,
   vocal_language: "en",
   song_model: "acestep-v15-xl-sft",
+  audio_backend: DEFAULT_AUDIO_BACKEND,
   quality_profile: "standard",
   seed: undefined,
   use_lora: false,
@@ -117,14 +120,38 @@ export type CustomFormValues = z.infer<typeof customSchema>;
 
 // ---- Album ----
 
+export const albumTrackSchema = z.object({
+  track_number: optionalNumber,
+  title: optionalString,
+  artist_name: optionalString,
+  role: optionalString,
+  duration: optionalNumber,
+  caption: optionalString,
+  tags: tagsField,
+  lyrics: optionalString,
+  bpm: optionalNumber,
+  key_scale: optionalString,
+  time_signature: optionalString,
+  payload_gate_status: optionalString,
+  lyrics_quality: z.record(z.string(), z.unknown()).optional(),
+  debug_paths: z.record(z.string(), z.unknown()).optional(),
+  lora_adapter_name: optionalString,
+  lora_scale: optionalNumber,
+  lora_trigger_tag: optionalString,
+  lora_trigger_applied: z.boolean().optional(),
+}).passthrough();
+
 export const albumSchema = z.object({
   concept: z.string().min(8, "Beschrijf het album-concept iets uitgebreider."),
   album_title: optionalString,
   artist_name: optionalString,
   num_tracks: z.number().int().min(1).max(20).default(7),
   track_duration: z.number().min(30).max(600).default(180),
+  duration_mode: z.enum(["ai_per_track", "fixed"]).default("ai_per_track"),
+  album_writer_mode: z.enum(["per_track_writer_loop"]).default("per_track_writer_loop"),
   language: z.string().default("en"),
   song_model: z.string().default("acestep-v15-xl-sft"),
+  audio_backend: z.enum(["mlx", "mps_torch"]).default(DEFAULT_AUDIO_BACKEND),
   song_model_strategy: z.enum(["single_model_album", "all_models_album"]).default(
     "single_model_album",
   ),
@@ -148,6 +175,8 @@ export const albumSchema = z.object({
   auto_video_clip: z.boolean().default(false),
   art_prompt: z.string().default(""),
   video_prompt: z.string().default(""),
+  tracks: z.array(albumTrackSchema).default([]),
 });
 
 export type AlbumFormValues = z.infer<typeof albumSchema>;
+export type AlbumTrackFormValues = z.infer<typeof albumTrackSchema>;

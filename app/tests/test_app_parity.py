@@ -559,6 +559,40 @@ class AppParityTest(unittest.TestCase):
             text = (Path(__file__).resolve().parents[1] / path).read_text(encoding="utf-8")
             self.assertIn("AudioStyleSelector", text, path)
             self.assertIn("style_profile", text, path)
+            self.assertIn("AudioBackendSelector", text, path)
+            self.assertIn("audio_backend", text, path)
+            self.assertIn("use_mlx_dit", text, path)
+
+    def test_audio_backend_defaults_to_mlx_and_allows_mps_torch_fallback(self):
+        with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
+            patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            defaulted = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                }
+            )
+            fallback = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "audio_backend": "mps_torch",
+                }
+            )
+
+        self.assertEqual(defaulted["audio_backend"], "mlx")
+        self.assertTrue(defaulted["use_mlx_dit"])
+        self.assertEqual(defaulted["device"], "mps")
+        self.assertEqual(defaulted["dtype"], "float32")
+        self.assertEqual(fallback["audio_backend"], "mps_torch")
+        self.assertFalse(fallback["use_mlx_dit"])
 
     def test_query_result_returns_acejam_result_for_ui_rendering(self):
         task_id = "unit-query-result"
@@ -627,6 +661,8 @@ class AppParityTest(unittest.TestCase):
             request = acejam_app._official_request_payload(params, Path(tmp))
 
         official_params = request["params"]
+        self.assertEqual(request["audio_backend"], "mlx" if acejam_app._IS_APPLE_SILICON else "mps_torch")
+        self.assertEqual(request["use_mlx_dit"], acejam_app._IS_APPLE_SILICON)
         self.assertFalse(official_params["dcw_enabled"])
         self.assertEqual(official_params["dcw_mode"], "low")
         self.assertEqual(official_params["dcw_scaler"], 0.07)
@@ -2234,7 +2270,8 @@ class AppParityTest(unittest.TestCase):
         if acejam_app._IS_APPLE_SILICON:
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
-            self.assertFalse(captured["use_mlx_dit"])
+            self.assertEqual(captured["audio_backend"], "mlx")
+            self.assertTrue(captured["use_mlx_dit"])
         self.assertIn(result["lyrics_fit"]["action"], {"none", "fit_for_20s"})
         self.assertTrue(result["lyrics_fit"]["timed_structure"])
 
@@ -2360,7 +2397,8 @@ class AppParityTest(unittest.TestCase):
         if acejam_app._IS_APPLE_SILICON:
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
-            self.assertFalse(captured["use_mlx_dit"])
+            self.assertEqual(captured["audio_backend"], "mlx")
+            self.assertTrue(captured["use_mlx_dit"])
         self.assertEqual(result["lyrics_fit"]["action"], "fit_for_30s")
 
     def test_lora_upload_path_sanitizer_preserves_relative_folders(self):
@@ -2465,6 +2503,37 @@ class AppParityTest(unittest.TestCase):
 
         self.assertEqual(normalized["lm_backend"], expected_mlx)
 
+    def test_mac_mlx_xl_repetition_guard_disables_known_bad_dcw_codes_combo(self):
+        with patch.dict(os.environ, {"ACEJAM_MAC_MLX_XL_REPETITION_GUARD": "1"}), \
+            patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
+            patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            normalized = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "rap, hip hop, rhythmic spoken-word vocal",
+                    "lyrics": "[Verse - rap]\nLine one lands in the pocket\n\n[Chorus - rap hook]\nHook line repeats clean",
+                    "duration": 30,
+                    "lm_backend": "mlx",
+                    "dcw_enabled": True,
+                    "audio_cover_strength": 1.0,
+                }
+            )
+
+        self.assertFalse(normalized["dcw_enabled"])
+        self.assertEqual(normalized["audio_cover_strength"], 0.0)
+        self.assertTrue(
+            any(str(item).startswith("mac_mlx_xl_repetition_guard:parse") for item in normalized["payload_warnings"])
+        )
+
+    def test_vendor_mlx_single_seed_patch_present(self):
+        source = (Path(acejam_app.BASE_DIR) / "vendor" / "ACE-Step-1.5" / "acestep" / "llm_inference.py").read_text(encoding="utf-8")
+
+        self.assertIn('"seeds": seeds', source)
+        self.assertIn("seed=seeds[0] if seeds else None", source)
+        self.assertIn("seed_base + step * 1000003", source)
+
     def test_lm_backend_alone_does_not_require_ace_lm(self):
         validation = acejam_app._validate_generation_payload(
             {
@@ -2560,11 +2629,7 @@ class AppParityTest(unittest.TestCase):
             "album_use_ace_lm_for_supplied_lyrics": False,
             "track_variants": 1,
             "save_to_library": False,
-            "use_lora": True,
-            "lora_adapter_path": "/tmp/album-charaf-hook",
-            "lora_adapter_name": "charaf hook",
-            "lora_scale": 0.7,
-            "adapter_model_variant": "xl_sft",
+            "use_lora": False,
             "vocal_clarity_recovery": False,
             "tracks": [
                 {
@@ -2638,14 +2703,142 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(all(payload.get("audio_code_string", "") == "" for payload in calls))
         self.assertTrue(all(payload.get("src_audio_id", "") == "" for payload in calls))
         self.assertTrue(all(payload.get("reference_audio_id", "") == "" for payload in calls))
-        self.assertTrue(all(payload["use_lora"] for payload in calls))
-        self.assertTrue(all(payload["lora_adapter_path"] == "/tmp/album-charaf-hook" for payload in calls))
-        self.assertTrue(all(payload["lora_adapter_name"] == "charaf hook" for payload in calls))
-        self.assertTrue(all(payload["lora_scale"] == 0.7 for payload in calls))
-        self.assertTrue(all(payload["adapter_model_variant"] == "xl_sft" for payload in calls))
+        self.assertTrue(all(not payload["use_lora"] for payload in calls))
         self.assertEqual(len(data["model_albums"]), len(acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS))
         self.assertIn("album_family_id", data)
         self.assertEqual(data["tracks"][0]["model_results"][0]["album_model"], acejam_app.ALBUM_MODEL_PORTFOLIO_MODELS[0])
+
+    def test_album_single_model_applies_lora_trigger_scale_to_each_track(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            return {
+                "success": True,
+                "result_id": "album-lora-01",
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": {
+                    **payload,
+                    "lora_trigger_applied": True,
+                    "lora_trigger_conditioning_audit": {"status": "applied", "caption_only": True},
+                },
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": "take-1",
+                        "result_id": "album-lora-01",
+                        "filename": "take.wav",
+                        "audio_url": "/media/results/album-lora-01/take.wav",
+                        "download_url": "/media/results/album-lora-01/take.wav",
+                        "title": payload["title"],
+                        "seed": payload["seed"],
+                    }
+                ],
+            }
+
+        request_payload = {
+            "agent_engine": "editable_plan",
+            "toolbelt_only": True,
+            "song_model_strategy": "single_model_album",
+            "song_model": "acestep-v15-xl-sft",
+            "ace_lm_model": "none",
+            "track_variants": 1,
+            "save_to_library": False,
+            "use_lora": True,
+            "lora_adapter_path": "/tmp/album-charaf-hook",
+            "lora_adapter_name": "charaf hook",
+            "use_lora_trigger": True,
+            "lora_trigger_tag": "pac",
+            "lora_scale": 1.0,
+            "adapter_song_model": "acestep-v15-xl-sft",
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "artist_name": "Unit Signal",
+                    "title": "LoRA Album Test",
+                    "tags": "rap, hip hop, rhythmic spoken-word vocal, hard drums, polished mix",
+                    "lyrics": (
+                        "[Verse - rap]\n"
+                        + "\n".join(f"Bar {idx} lands with pressure in the skyline tonight" for idx in range(16))
+                        + "\n[Chorus - rap hook]\n"
+                        + "\n".join(f"Hook keeps calling from the avenue line {idx}" for idx in range(6))
+                        + "\n[Verse 2 - rap]\n"
+                        + "\n".join(f"Second verse keeps the cadence locked in time {idx}" for idx in range(10))
+                        + "\n[Outro]\nFade the drums but keep the message moving\n"
+                    ),
+                    "duration": 60,
+                    "bpm": 92,
+                    "key_scale": "D minor",
+                    "time_signature": "4",
+                }
+            ],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(album_crew_module, "plan_album", return_value=self._mock_direct_album_plan(request_payload["tracks"])), \
+            patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+            patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+            patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
+            raw = acejam_app.generate_album(
+                concept="unit test album lora",
+                num_tracks=1,
+                track_duration=60,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertTrue(data["success"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["song_model"], "acestep-v15-xl-sft")
+        self.assertTrue(calls[0]["use_lora"])
+        self.assertEqual(calls[0]["lora_adapter_name"], "charaf hook")
+        self.assertEqual(calls[0]["lora_scale"], 1.0)
+        self.assertEqual(calls[0]["lora_trigger_tag"], "pac")
+        self.assertTrue(calls[0]["lora_trigger_applied"])
+        self.assertEqual(calls[0]["adapter_song_model"], "acestep-v15-xl-sft")
+        self.assertEqual(data["tracks"][0]["lora_adapter_name"], "charaf hook")
+        self.assertEqual(data["tracks"][0]["lora_scale"], 1.0)
+        self.assertEqual(data["tracks"][0]["lora_trigger_tag"], "pac")
+        self.assertTrue(data["tracks"][0]["lora_trigger_applied"])
+
+    def test_album_lora_model_mismatch_blocks_before_render(self):
+        request_payload = {
+            "agent_engine": "editable_plan",
+            "toolbelt_only": True,
+            "song_model_strategy": "single_model_album",
+            "song_model": "acestep-v15-turbo",
+            "ace_lm_model": "none",
+            "track_variants": 1,
+            "save_to_library": False,
+            "use_lora": True,
+            "lora_adapter_path": "/tmp/album-xl-sft",
+            "lora_adapter_name": "xl sft lora",
+            "lora_scale": 1.0,
+            "adapter_song_model": "acestep-v15-xl-sft",
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "artist_name": "Unit Signal",
+                    "title": "Mismatch",
+                    "tags": "rap, hard drums",
+                    "lyrics": "[Verse - rap]\nWe test the mismatch before render",
+                    "duration": 60,
+                }
+            ],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo", "acestep-v15-xl-sft"}):
+            raw = acejam_app.generate_album(
+                concept="unit test mismatch",
+                num_tracks=1,
+                track_duration=60,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertFalse(data["success"])
+        self.assertIn("Selected LoRA was trained for acestep-v15-xl-sft", data["error"])
 
     def test_album_skips_planning_failed_track_and_renders_remaining_tracks(self):
         calls = []
@@ -3215,6 +3408,49 @@ class AppParityTest(unittest.TestCase):
         data = json.loads(raw)
         self.assertEqual(data["download_models"], ["acestep-v15-xl-sft"])
         self.assertNotIn("No album models resolved", json.dumps(data))
+
+    def test_album_scaffold_respects_ai_per_track_durations(self):
+        logs: list[str] = []
+        scaffold = album_crew_module._build_album_track_scaffold(
+            concept="smart duration album",
+            num_tracks=3,
+            track_duration=180,
+            language="en",
+            opts={"duration_mode": "ai_per_track"},
+            contract={},
+            bible_payload={
+                "tracks": [
+                    {"track_number": 1, "title": "Intro", "role": "intro", "duration": 90},
+                    {"track_number": 2, "title": "Single", "role": "single", "duration": 210},
+                    {"track_number": 3, "title": "Outro", "role": "outro", "duration": 75},
+                ]
+            },
+            logs=logs,
+        )
+
+        self.assertEqual([track["duration"] for track in scaffold], [90.0, 210.0, 75.0])
+        self.assertFalse([line for line in logs if "Ignored agent duration hint" in line])
+
+    def test_album_scaffold_fixed_duration_forces_fallback(self):
+        logs: list[str] = []
+        scaffold = album_crew_module._build_album_track_scaffold(
+            concept="fixed duration album",
+            num_tracks=2,
+            track_duration=180,
+            language="en",
+            opts={"duration_mode": "fixed"},
+            contract={},
+            bible_payload={
+                "tracks": [
+                    {"track_number": 1, "title": "Intro", "role": "intro", "duration": 90},
+                    {"track_number": 2, "title": "Single", "role": "single", "duration": 210},
+                ]
+            },
+            logs=logs,
+        )
+
+        self.assertEqual([track["duration"] for track in scaffold], [180.0, 180.0])
+        self.assertTrue([line for line in logs if "Ignored agent duration hint" in line])
 
     def test_album_download_filename_contains_track_title_and_model(self):
         filename = acejam_app._numbered_audio_filename(

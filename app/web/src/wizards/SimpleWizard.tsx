@@ -15,6 +15,7 @@ import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
 import { QualityPresets } from "@/components/wizard/QualityPresets";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
+import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,7 @@ import {
 } from "@/components/ui/select";
 import { simpleSchema, simpleDefaults, type SimpleFormValues } from "@/lib/schemas";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
+import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
@@ -147,6 +149,8 @@ export function SimpleWizard() {
       time_signature: v.time_signature,
       vocal_language: v.vocal_language,
       song_model: v.song_model,
+      audio_backend: v.audio_backend,
+      use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
       quality_profile: v.quality_profile,
       seed: v.seed,
       auto_song_art: v.auto_song_art,
@@ -349,6 +353,13 @@ export function SimpleWizard() {
             />
           </FieldGroup>
 
+          <FieldGroup title="Audio backend">
+            <AudioBackendSelector
+              value={values.audio_backend}
+              onChange={(value) => form.setValue("audio_backend", value, { shouldValidate: true })}
+            />
+          </FieldGroup>
+
           <FieldGroup title="LoRA" description="Optioneel: pas een getrainde PEFT LoRA toe op deze render.">
             <LoraSelector value={values} onChange={setLoraSelection} />
           </FieldGroup>
@@ -403,6 +414,7 @@ export function SimpleWizard() {
               { key: "artist_name", label: "Artiest" },
               { key: "duration", label: "Duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
+              { key: "audio_backend", label: "Backend", format: audioBackendLabel },
               { key: "lora_adapter_name", label: "LoRA" },
               { key: "lora_trigger_tag", label: "LoRA trigger" },
               { key: "vocal_language", label: "Taal" },
