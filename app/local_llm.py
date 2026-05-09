@@ -34,7 +34,7 @@ PLANNER_LLM_DEFAULTS: dict[str, Any] = {
     "planner_repeat_penalty": 1.1,
     "planner_seed": "",
     "planner_max_tokens": 8192,
-    "planner_context_length": 32768,
+    "planner_context_length": 65536,
     "planner_timeout": 600.0,
 }
 PLANNER_LLM_PRESETS: dict[str, dict[str, Any]] = {
@@ -214,7 +214,7 @@ def planner_llm_settings_from_payload(
         or base["planner_context_length"],
         int(base["planner_context_length"]),
         2048,
-        32768,
+        262144,
     )
     timeout = _clamp_float(
         _payload_first(source, "planner_timeout", "local_llm_timeout")

@@ -535,13 +535,17 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertLessEqual(report["lyric_duration_fit"]["stats"]["char_count"], 4096)
 
     def test_required_phrases_match_typographic_punctuation_variants(self):
+        # Test isolates the typographic-match logic for required_phrases —
+        # not section-template coverage. Use a non-rap caption + simple
+        # song-style sections so the gate doesn't trip on the 16-bar rap
+        # floor or the 3-verse rap template now enforced for 120s+ rap.
         sections = ["Intro", "Verse", "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
         lyrics = _lyrics_for_sections(sections, lines_per_section=7)
         lyrics += "\nDeath Row... East Coast... Closed doors"
         lyrics += "\nThey paved them blocks just to hide what's real"
         payload = {
             "caption": (
-                "hip-hop, steady groove, 808 bass, male rap vocal, gritty mood, "
+                "indie pop, steady groove, electric piano, male sung vocal, gritty mood, "
                 "dynamic hook arrangement, polished studio mix"
             ),
             "lyrics": lyrics,

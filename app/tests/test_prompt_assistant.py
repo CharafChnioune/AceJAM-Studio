@@ -76,6 +76,12 @@ class PromptAssistantTest(unittest.TestCase):
                         "key_scale": "A minor",
                         "time_signature": "4",
                         "vocal_language": "en",
+                        "style": "G-funk hip-hop",
+                        "vibe": "menacing triumphant",
+                        "narrative": "From-the-bottom rags-to-riches arc",
+                        "mood": "menacing triumphant",
+                        "genre": "G-funk hip-hop",
+                        "vocal_type": "male rap lead",
                         "production_team": {"executive_producer": "AceJAM Director"},
                         "quality_report": {"hit_angle": "low-end opener", "section_plan": ["[Intro]", "[Verse - rap]"]},
                     }
@@ -87,13 +93,35 @@ class PromptAssistantTest(unittest.TestCase):
                 "warnings": [],
                 "planning_engine": "crewai_micro",
                 "crewai_used": True,
+                "album_bible": {
+                    "album_title": "Test Album",
+                    "concept": "test concept",
+                    "language": "en",
+                    "genre_prompt": "G-funk hip-hop with talkbox lead",
+                    "mood_vibe": "menacing triumphant",
+                    "vocal_type": "male rap lead",
+                    "intake": {
+                        "album_title": "Test Album",
+                        "one_sentence_concept": "Coming-up tale",
+                        "style_guardrails": ["no soft hooks", "keep talkbox up front"],
+                    },
+                    "recurring_motifs": ["talkbox", "concrete"],
+                },
             }
 
         with patch("album_crew.plan_album", fake_plan_album):
             result = acejam_app._run_prompt_assistant_album_crew(
                 body={"mode": "album", "user_prompt": "Album about systems and ledgers"},
                 user_prompt="Album about systems and ledgers",
-                current_payload={"num_tracks": 1, "track_duration": 210, "language": "en"},
+                current_payload={
+                    "num_tracks": 1,
+                    "track_duration": 210,
+                    "language": "en",
+                    "album_mood": "menacing triumphant",
+                    "vocal_type": "male rap lead",
+                    "genre_prompt": "G-funk hip-hop with talkbox lead",
+                    "custom_tags": "summer banger, late-night, 92 BPM",
+                },
                 planner_provider="ollama",
                 planner_model="qwen-test",
             )
@@ -117,6 +145,17 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertEqual(payload["song_model_strategy"], "single_model_album")
         self.assertEqual(payload["final_song_model"], "acestep-v15-xl-sft")
         self.assertEqual(payload["quality_profile"], "chart_master")
+
+        # Top-level wizard hydrate fields: passthrough from the user's
+        # current_payload wins, with album_bible / first track as fallbacks
+        # (style_profile derives from track 1 style when user didn't lock it).
+        self.assertEqual(payload["album_mood"], "menacing triumphant")
+        self.assertEqual(payload["vocal_type"], "male rap lead")
+        self.assertEqual(payload["genre_prompt"], "G-funk hip-hop with talkbox lead")
+        self.assertEqual(payload["custom_tags"], "summer banger, late-night, 92 BPM")
+        self.assertEqual(payload["style_profile"], "G-funk hip-hop")
+        self.assertIn("no soft hooks", payload["style_guardrails"])
+        self.assertIn("talkbox", payload["motif_words"])
 
         # First track is fully populated (artist, producer, caption, lyrics, BPM, etc.)
         track = payload["tracks"][0]
@@ -145,6 +184,128 @@ class PromptAssistantTest(unittest.TestCase):
         )
         self.assertFalse(result["success"])
         self.assertIn("Album concept is empty", result["error"])
+
+    def test_album_wizard_fill_passes_track_variants_for_variations(self):
+        """Wizard accepts batch_size / track_variants like Custom mode does so
+        the user can ask for multiple variations of each track. The bridge
+        forwards both into options + payload."""
+        captured: dict[str, Any] = {}
+
+        def fake_plan_album(**kwargs):
+            captured.update(kwargs)
+            return {
+                "tracks": [{"track_number": 1, "title": "T1", "bpm": 100, "duration": 180.0}],
+                "success": True,
+                "warnings": [],
+            }
+
+        with patch("album_crew.plan_album", fake_plan_album):
+            result = acejam_app._run_prompt_assistant_album_crew(
+                body={"mode": "album", "user_prompt": "test", "track_variants": 3},
+                user_prompt="test concept",
+                current_payload={"num_tracks": 1, "batch_size": 3},
+                planner_provider="ollama",
+                planner_model="qwen-test",
+            )
+
+        self.assertTrue(result["success"])
+        # Variation lever propagated to crew options and into wizard payload
+        self.assertEqual(captured["options"]["track_variants"], 3)
+        self.assertEqual(result["payload"]["track_variants"], 3)
+        self.assertEqual(result["payload"]["batch_size"], 3)
+
+    def test_album_wizard_fill_derives_mood_and_vocal_when_user_did_not_lock_them(self):
+        """When the wizard fires AI Fill without pre-locking album_mood or
+        vocal_type (the common case — user only types a concept and clicks
+        Vul met AI), the bridge must still populate those wizard cells.
+        Falls back to the Track Concept Agent's `vibe` for Sfeer and to
+        caption keywords for Vocals so the wizard never blanks. This is the
+        regression guard for the empty-Sfeer/Vocals UI bug observed in the
+        first 7-track smoke run."""
+        captured: dict[str, Any] = {}
+
+        def fake_plan_album(**kwargs):
+            captured.update(kwargs)
+            return {
+                "tracks": [
+                    {
+                        "track_number": 1,
+                        "title": "Pavement Prophets",
+                        "duration": 180.0,
+                        "caption": "West Coast G-funk hip-hop, gritty male rap vocal, talkbox lead",
+                        "tags": "G-funk, talkbox, male rap vocal",
+                        "style": "West Coast G-funk with deep sine-wave basslines",
+                        "vibe": "Menacing swagger, gritty urban realism, triumphant survival energy",
+                        "narrative": "From-the-bottom rags-to-riches arc",
+                        "bpm": 92,
+                        "key_scale": "A minor",
+                    }
+                ],
+                "album_title": "Pavement Prophets",
+                "concept": "G-funk album",
+                "num_tracks": 1,
+                "success": True,
+                "warnings": [],
+                # Bare album_bible — no mood_vibe / vocal_type populated, the
+                # exact shape the crew returns when the user did not pass
+                # album_agent_mood_vibe / album_agent_vocal_type opts.
+                "album_bible": {
+                    "album_title": "Pavement Prophets",
+                    "concept": "G-funk album",
+                    "language": "en",
+                    "genre_prompt": "",
+                    "mood_vibe": "",
+                    "vocal_type": "",
+                    "intake": {"album_title": "Pavement Prophets", "style_guardrails": []},
+                },
+            }
+
+        with patch("album_crew.plan_album", fake_plan_album):
+            result = acejam_app._run_prompt_assistant_album_crew(
+                body={"mode": "album", "user_prompt": "G-funk album"},
+                user_prompt="G-funk album",
+                # current_payload deliberately omits album_mood / vocal_type
+                # to mirror the wizard's first-fire payload.
+                current_payload={"num_tracks": 1, "track_duration": 180, "language": "en"},
+                planner_provider="ollama",
+                planner_model="qwen-test",
+            )
+
+        payload = result["payload"]
+        # Sfeer (album_mood) falls back to the Track Concept Agent's `vibe`.
+        self.assertEqual(payload["album_mood"], "Menacing swagger, gritty urban realism, triumphant survival energy")
+        # Vocals (vocal_type) is inferred from the caption keyword scan.
+        self.assertEqual(payload["vocal_type"], "male rap vocal")
+        # Genre-richting falls back to track style/genre when album_bible empty.
+        self.assertIn("G-funk", payload["genre_prompt"])
+        # style_profile picks up the rich crew-derived style line.
+        self.assertIn("G-funk", payload["style_profile"])
+
+    def test_album_wizard_fill_handles_plan_album_crash_gracefully(self):
+        """When plan_album raises, the wizard must still get a clean failure
+        response with the error message + traceback in warnings — not a 500.
+        This is the regression guard for the AI-Fill failure the user saw."""
+
+        def crashing_plan_album(**kwargs):
+            raise RuntimeError("Ollama not reachable on localhost:11434")
+
+        with patch("album_crew.plan_album", crashing_plan_album):
+            result = acejam_app._run_prompt_assistant_album_crew(
+                body={"mode": "album", "user_prompt": "test"},
+                user_prompt="test concept",
+                current_payload={"num_tracks": 1},
+                planner_provider="ollama",
+                planner_model="qwen-test",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("CrewAI album fill crashed", result["error"])
+        self.assertIn("RuntimeError", result["error"])
+        # Wizard still gets a usable payload skeleton so the UI does not crash
+        self.assertEqual(result["payload"]["agent_engine"], "crewai_micro")
+        self.assertEqual(result["payload"]["tracks"], [])
+        # Traceback is attached as a warning so the user can see what went wrong
+        self.assertTrue(any("RuntimeError" in str(w) for w in result["warnings"]))
 
     def test_staged_system_prompt_inherits_acestep_reference_block(self):
         base = acejam_app._prompt_assistant_system_prompt("custom")

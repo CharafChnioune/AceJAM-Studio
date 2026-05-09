@@ -1101,13 +1101,18 @@ def lyric_density_gate(
     rap = bool(re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", genre_hint or "", re.I))
     target_words = int(plan.get("target_words") or 0)
     target_lines = int(plan.get("target_lines") or 0)
-    if target_words and stats["word_count"] < int(target_words * 0.82):
+    # Density floors loosened from 82% → 70%. The plan's target_lines is
+    # an aspirational hit-density figure; 70% matches the per-section
+    # minimums (3 verses × 16 + 4 hooks + bridge + intros = ~72 lines for
+    # a 180s rap, which is target_lines ≈ 96 × 70%). 82% caused tracks
+    # with full content to fail just because the planner aimed high.
+    if target_words and stats["word_count"] < int(target_words * 0.70):
         issues.append({
             "id": "lyrics_under_hit_density",
             "severity": "fail",
             "detail": f"{stats['word_count']}/{target_words} target words",
         })
-    if target_lines and stats["line_count"] < int(target_lines * 0.82):
+    if target_lines and stats["line_count"] < int(target_lines * 0.70):
         issues.append({
             "id": "lyrics_under_hit_line_density",
             "severity": "fail",

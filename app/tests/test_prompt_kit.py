@@ -64,7 +64,9 @@ class PromptKitTest(unittest.TestCase):
         rap_tags = [item["tag"] for item in rap_sections]
         self.assertIn("[Verse 1]", rap_tags)
         self.assertIn("[Chorus]", rap_tags)
-        self.assertIn("[Verse 3 - Beat Switch]", rap_tags)
+        # 3-verse rap template now uses "Verse 3 - rap" (consistent with
+        # the other two rap verses; modifier-syntax stays single-dash).
+        self.assertIn("[Verse 3 - rap]", rap_tags)
 
     def test_metadata_defaults_and_system_block(self):
         meta = kit_metadata_defaults("text2music", "ko", "k-pop bright synths", 220)

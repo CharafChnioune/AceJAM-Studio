@@ -435,6 +435,30 @@ Lyrics:
         # Worked examples surface
         self.assertIn("Worked Examples", rules)
 
+    def test_agent_full_system_prompt_does_not_recurse(self):
+        """Regression guard: `_agent_full_system_prompt` previously recursed
+        into itself (line 3657 calling itself) which crashed every CrewAI
+        Micro Tasks album-fill run with `RecursionError: maximum recursion
+        depth exceeded`. The album wizard would return empty tracks after
+        the preflight passed. This test pins the working composition: per-
+        agent base prompt + album knowledge block + thinking directive +
+        schema instruction, no recursion."""
+        prompt = album_crew_module._agent_full_system_prompt(
+            agent_name="Topline Hook Writer (2024-2026 chart-craft)",
+            schema_name="hook_payload",
+            extra_system="EXTRA_KNOWLEDGE_BLOCK_PLACEHOLDER",
+            debug_options={"planner_thinking": False},
+        )
+        self.assertIsInstance(prompt, str)
+        # Per-agent task scope present
+        self.assertIn("ACE-Step album planning agent", prompt)
+        # Extra system (album knowledge block) appended
+        self.assertIn("EXTRA_KNOWLEDGE_BLOCK_PLACEHOLDER", prompt)
+        # Thinking directive surfaces (planner_thinking=False -> disabled)
+        self.assertIn("Planner thinking is disabled", prompt)
+        # Schema-specific JSON instruction tail
+        self.assertIn("hook_payload", prompt)
+
     def test_per_agent_personas_specialise_role_goal_backstory(self):
         """CrewAI agents must get specialist personas with 2024-2026 chart-craft
         framing — lyric agent reads as topline writer for modern hits, tag agent
@@ -1590,7 +1614,11 @@ kill all the rivals
         self.assertLess(long["target_words"], ten_minutes["target_words"])
         self.assertGreaterEqual(short["min_words"], 45)
         self.assertGreaterEqual(long["min_words"], 340)
-        self.assertIn("Verse 3 - Beat Switch", long["sections"])
+        # 3-verse rap template (used for 90<dur<=240) renames the third
+        # rap verse to "Verse 3 - rap" to keep the modifier-syntax
+        # consistent with the other two verses. Beat Switch lives only on
+        # tracks >240s now.
+        self.assertIn("Verse 3 - rap", long["sections"])
         self.assertLessEqual(long["safe_lyrics_char_target"], 3600)
         self.assertLessEqual(ten_minutes["max_lyrics_chars"], 4096)
         self.assertGreaterEqual(short["min_lines"], len(short["sections"]))
@@ -1602,7 +1630,9 @@ kill all the rivals
         self.assertGreaterEqual(plan["min_words"], 430)
         self.assertGreaterEqual(plan["target_words"], 480)
         self.assertGreaterEqual(plan["min_lines"], 75)
-        self.assertIn("Verse 3 - Beat Switch", plan["sections"])
+        # See note above: 3-verse rap template uses "Verse 3 - rap" for the
+        # third verse instead of "Verse 3 - Beat Switch".
+        self.assertIn("Verse 3 - rap", plan["sections"])
         self.assertLessEqual(plan["safe_lyrics_char_target"], 3600)
 
     def test_trim_lyrics_to_limit_never_slices_mid_line_or_adds_outro(self):

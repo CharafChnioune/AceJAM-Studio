@@ -143,7 +143,7 @@ CREWAI_AGENT_MAX_ITER = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_ITER", "80")
 CREWAI_AGENT_MAX_RETRY_LIMIT = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_RETRY_LIMIT", "8"))
 CREWAI_TASK_MAX_RETRIES = int(os.environ.get("ACEJAM_CREWAI_TASK_MAX_RETRIES", "8"))
 CREWAI_LLM_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LLM_MAX_TOKENS", "12000"))
-CREWAI_LLM_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_LLM_CONTEXT_WINDOW", "32768"))
+CREWAI_LLM_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_LLM_CONTEXT_WINDOW", "65536"))
 CREWAI_LLM_NUM_PREDICT = int(os.environ.get("ACEJAM_CREWAI_LLM_NUM_PREDICT", str(CREWAI_LLM_MAX_TOKENS)))
 CREWAI_LMSTUDIO_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LMSTUDIO_MAX_TOKENS", str(CREWAI_LLM_MAX_TOKENS)))
 CREWAI_LMSTUDIO_DISABLE_THINKING = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_DISABLE_THINKING", "1").lower() in {"1", "true", "yes"}
@@ -3523,16 +3523,19 @@ def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
                     raise ValueError(f"block_parse_failed:orphan_close:{field}:line_{line_number}")
                 if field != current_field:
                     raise ValueError(f"block_parse_failed:mismatched_close:{current_field}!={field}:line_{line_number}")
-                if field in blocks:
-                    raise ValueError(f"block_parse_failed:duplicate_block:{field}")
+                # Tolerate duplicates: keep the LAST occurrence. Models often
+                # echo an example block before the actual answer; the rule
+                # used to be a hard fail, but rejecting the whole response
+                # over a benign repetition wastes a full LLM call. Last-wins
+                # picks the model's actual output instead of the example.
                 blocks[field] = current_lines
                 current_field = ""
                 current_lines = []
             else:
                 if current_field:
                     raise ValueError(f"block_parse_failed:nested_block:{field}:inside:{current_field}:line_{line_number}")
-                if field in blocks:
-                    raise ValueError(f"block_parse_failed:duplicate_block:{field}")
+                # Re-opening a previously seen field is allowed (last-wins);
+                # we'll overwrite the prior block on the matching close.
                 current_field = field
                 current_lines = []
             continue
@@ -3654,12 +3657,26 @@ def _agent_full_system_prompt(
     extra_system: str = "",
     debug_options: dict[str, Any] | None = None,
 ) -> str:
-    system_prompt = _agent_full_system_prompt(
-        agent_name=agent_name,
-        schema_name=schema_name,
-        extra_system=extra_system,
-        debug_options=debug_options,
-    )
+    """Build the full per-agent system prompt: per-agent task scope from
+    `_agent_system_prompt(agent_name)`, plus the album-mode `extra_system`
+    block (which carries `prompt_kit_system_block("album")` with the tag
+    library, producer/songwriter/anti-pattern cookbooks and worked examples),
+    plus the thinking directive, plus the schema-specific JSON instruction.
+
+    Earlier this function recursed into itself (`_agent_full_system_prompt`
+    calling `_agent_full_system_prompt`) which crashed CrewAI Micro Tasks
+    with `RecursionError: maximum recursion depth exceeded` the moment the
+    Album Intake Agent tried to fire — keeping the album wizard empty even
+    after a successful preflight. The fix mirrors the working composition
+    in `_agent_json_call`."""
+    system_prompt = _agent_system_prompt(agent_name)
+    if extra_system:
+        system_prompt += "\n" + str(extra_system).strip()
+    if _truthy((debug_options or {}).get("planner_thinking"), False):
+        system_prompt += "\nPlanner thinking is enabled: you may reason internally, but final visible content must be delimiter blocks only."
+    else:
+        system_prompt += "\nPlanner thinking is disabled: do not emit <think>, hidden reasoning, chain-of-thought, markdown, or prose."
+    system_prompt += "\n" + _agent_json_instruction(schema_name)
     return system_prompt
 
 
@@ -3896,6 +3913,14 @@ def _crewai_micro_llm_kwargs(
         ollama_options["repeat_penalty"] = float(repeat_penalty)
     if seed_value is not None:
         ollama_options["seed"] = seed_value
+    # `think: False` is the correct setting for ALL Ollama models including
+    # Qwen3 :thinking variants. Direct probes confirmed: `think: True`
+    # routes the answer to `message.thinking` and leaves `message.content`
+    # empty — litellm only reads content, so CrewAI raises "Invalid response
+    # from LLM call - None or empty." We pair `think: False` with the
+    # `/no_think` directive injected into the user message inside
+    # `_crewai_micro_block_call` so the model writes its answer directly to
+    # `content` even when its tag advertises a reasoning mode.
     return {
         **common,
         "provider": "ollama",
@@ -3910,16 +3935,258 @@ def _crewai_micro_llm_kwargs(
     }
 
 
+def _build_ollama_native_llm_class():
+    """Build the CrewAI-compatible Ollama-native LLM class. We construct it
+    inside a factory because it must subclass `crewai.llms.base_llm.BaseLLM`
+    for pydantic validation in `crewai.Agent` to pass, and crewai is
+    imported lazily.
+
+    Why subclass BaseLLM (not the public LLM facade): crewai.LLM uses a
+    custom __new__ factory that returns a different concrete class
+    (OpenAICompatibleCompletion) regardless of the cls argument. Subclassing
+    LLM therefore fails with TypeError: LLM.__new__() missing argument.
+    BaseLLM is the actual abstract base accepted by Agent.llm validation
+    (`Annotated[str | BaseLLM | None, ...]`).
+    """
+    from crewai.llms.base_llm import BaseLLM as _BaseLLM
+
+    class _OllamaNativeLLM(_BaseLLM):
+        """BaseLLM subclass that hits Ollama's native /api/chat endpoint
+        directly via httpx. Bypasses CrewAI's OpenAI-compat layer which
+        drops the `reasoning` field for Qwen :thinking / DeepSeek-R1 /
+        QwQ models — that bug left message.content empty and crashed every
+        album agent with 'Invalid response from LLM call - None or empty.'
+        Hitting /api/chat with `think: False` + `/no_think` directive
+        produces a populated content field directly (verified by probe)."""
+
+        llm_type: str = "ollama_native"
+
+        # Pydantic-friendly attribute fields. Internal Ollama config kept
+        # in private attributes so they bypass model validation.
+        _ollama_base_url: str = ""
+        _ollama_options_raw: dict[str, Any] = {}
+        _ollama_timeout: float = 600.0
+
+        def __init__(self, model_name: str, base_url: str, options: dict[str, Any], timeout: float = 600.0, **extra: Any):
+            super().__init__(model=str(model_name or "").strip(), provider="ollama_native", **extra)
+            object.__setattr__(self, "_ollama_base_url", str(base_url or "").rstrip("/"))
+            object.__setattr__(self, "_ollama_options_raw", dict(options or {}))
+            object.__setattr__(self, "_ollama_timeout", float(timeout))
+
+        def supports_function_calling(self) -> bool:
+            return False
+
+        def supports_stop_words(self) -> bool:
+            return False
+
+        def get_context_window_size(self) -> int:
+            try:
+                return int(self._ollama_options_raw.get("num_ctx") or CREWAI_LLM_CONTEXT_WINDOW)
+            except Exception:
+                return CREWAI_LLM_CONTEXT_WINDOW
+
+        @staticmethod
+        def _ensure_no_think_directive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            if not messages:
+                return messages
+            adjusted = [dict(m) for m in messages]
+            for i in range(len(adjusted) - 1, -1, -1):
+                if adjusted[i].get("role") == "user":
+                    content = str(adjusted[i].get("content") or "")
+                    if "/no_think" not in content:
+                        adjusted[i]["content"] = "/no_think\n\n" + content
+                    break
+            return adjusted
+
+        def call(
+            self,
+            messages,
+            tools=None,
+            callbacks=None,
+            available_functions=None,
+            from_task=None,
+            from_agent=None,
+            response_model=None,
+        ):
+            import httpx
+
+            if isinstance(messages, str):
+                payload_messages = [{"role": "user", "content": messages}]
+            else:
+                payload_messages = []
+                for m in messages or []:
+                    if isinstance(m, dict):
+                        payload_messages.append({"role": str(m.get("role") or "user"), "content": str(m.get("content") or "")})
+                    else:
+                        payload_messages.append({"role": str(getattr(m, "role", "user")), "content": str(getattr(m, "content", ""))})
+
+            payload_messages = self._ensure_no_think_directive(payload_messages)
+
+            body = {
+                "model": self.model,
+                "messages": payload_messages,
+                "think": False,
+                "stream": False,
+                "options": dict(self._ollama_options_raw),
+            }
+
+            url = f"{self._ollama_base_url}/api/chat"
+            try:
+                with httpx.Client(timeout=self._ollama_timeout) as client:
+                    response = client.post(url, json=body)
+                    response.raise_for_status()
+                    data = response.json()
+            except Exception as exc:
+                raise RuntimeError(f"OllamaNativeLLM HTTP call failed: {type(exc).__name__}: {exc}") from exc
+
+            message = data.get("message") if isinstance(data, dict) else None
+            if not isinstance(message, dict):
+                return ""
+            content = (message.get("content") or "").strip()
+            if not content:
+                content = (message.get("thinking") or "").strip()
+            if not content:
+                return ""
+            stripped = _strip_thinking_blocks(content)
+            return stripped if stripped.strip() else content
+
+    return _OllamaNativeLLM
+
+
 def _make_crewai_micro_llm(
     model_name: str,
     provider: str,
     agent_name: str,
     planner_settings: dict[str, Any] | None = None,
 ):
+    provider_name = normalize_provider(provider)
+    # Ollama: use our native-endpoint LLM that handles :thinking variants
+    # correctly. CrewAI's OpenAI-compat layer drops the `reasoning` field
+    # for those models, leaving content empty and crashing the agent.
+    if provider_name == "ollama":
+        kwargs = _crewai_micro_llm_kwargs(model_name, provider, agent_name, planner_settings)
+        ollama_options = (kwargs.get("additional_params") or {}).get("extra_body", {}).get("options") or {}
+        ollama_options.setdefault("temperature", kwargs.get("temperature", 0.45))
+        ollama_options.setdefault("top_p", kwargs.get("top_p", 0.92))
+        ollama_options.setdefault("num_predict", kwargs.get("max_tokens", 8192))
+        ollama_native_cls = _build_ollama_native_llm_class()
+        return ollama_native_cls(
+            model_name=model_name,
+            base_url=OLLAMA_BASE_URL,
+            options=ollama_options,
+            timeout=float(kwargs.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
+        )
+
     from crewai import LLM
 
     llm = LLM(**_crewai_micro_llm_kwargs(model_name, provider, agent_name, planner_settings))
     llm.supports_function_calling = lambda: False
+
+    # Patch `LLM.call` so Qwen :thinking / DeepSeek-R1 / QwQ variants stop
+    # crashing CrewAI with "Invalid response from LLM call - None or empty."
+    # Ollama's OpenAI-compat (/v1/chat/completions) endpoint routes the
+    # answer for those tagged reasoning models into a non-standard
+    # `reasoning` field and leaves `message.content` empty. Litellm preserves
+    # the field verbatim. Our wrapper invokes the original call once, then
+    # if the returned string is empty issues a single follow-up via
+    # litellm.completion to read the full message dict and pull the answer
+    # out of `reasoning` (or legacy `thinking`).
+    original_call = llm.call
+
+    def _diag(msg: str) -> None:
+        """Write reasoning-fallback diagnostics to both stdout (Pinokio
+        terminal) and a file the dev can tail from outside the app process."""
+        try:
+            print(msg, flush=True)
+        except Exception:
+            pass
+        try:
+            with open("/tmp/album_crew_diag.log", "a", encoding="utf-8") as fh:
+                fh.write(msg + "\n")
+        except Exception:
+            pass
+
+    def _call_with_reasoning_fallback(messages=None, *args, **kwargs):
+        response = original_call(messages, *args, **kwargs) if messages is not None else original_call(*args, **kwargs)
+        non_empty = bool(response) and isinstance(response, str) and bool(response.strip())
+        _diag(
+            f"[REASONING_FALLBACK] agent={agent_name} response_type={type(response).__name__} "
+            f"len={len(response) if isinstance(response, str) else -1} non_empty={non_empty}"
+        )
+        if non_empty:
+            return response
+        # Empty/None — try to extract from reasoning or thinking field via
+        # a follow-up litellm.completion that captures the full message dict.
+        try:
+            import litellm
+
+            pending = messages if messages is not None else (args[0] if args else None) or kwargs.get("messages")
+            if pending is None:
+                _diag(f"[REASONING_FALLBACK] agent={agent_name} skipped: no messages to retry")
+                return response
+            completion_kwargs = {
+                "model": llm.model,
+                "messages": pending,
+                "temperature": getattr(llm, "temperature", None),
+                "max_tokens": getattr(llm, "max_tokens", None),
+                "api_base": getattr(llm, "api_base", None),
+                "timeout": getattr(llm, "timeout", None),
+            }
+            completion_kwargs = {k: v for k, v in completion_kwargs.items() if v is not None}
+            _diag(
+                f"[REASONING_FALLBACK] agent={agent_name} retrying via litellm.completion model={completion_kwargs.get('model')}"
+            )
+            raw = litellm.completion(**completion_kwargs)
+            choice = raw.choices[0] if hasattr(raw, "choices") and raw.choices else None
+            if choice is None:
+                _diag(f"[REASONING_FALLBACK] agent={agent_name} retry got no choices")
+                return response
+            msg = getattr(choice, "message", None)
+            if msg is None and isinstance(choice, dict):
+                msg = choice.get("message")
+            if msg is None:
+                _diag(f"[REASONING_FALLBACK] agent={agent_name} retry message is None")
+                return response
+            keys_seen: list[str] = []
+            content = ""
+            source_used = "content"
+            if isinstance(msg, dict):
+                keys_seen = list(msg.keys())
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    content = (msg.get("reasoning") or "").strip()
+                    source_used = "reasoning"
+                if not content:
+                    content = (msg.get("thinking") or "").strip()
+                    source_used = "thinking"
+            else:
+                keys_seen = [k for k in dir(msg) if not k.startswith("_")][:15]
+                content = (getattr(msg, "content", "") or "").strip()
+                if not content:
+                    content = (getattr(msg, "reasoning", "") or "").strip()
+                    source_used = "reasoning"
+                if not content:
+                    content = (getattr(msg, "thinking", "") or "").strip()
+                    source_used = "thinking"
+                if not content:
+                    # Last resort: dump message repr to see all available fields
+                    _diag(f"[REASONING_FALLBACK] agent={agent_name} message_repr={repr(msg)[:500]}")
+            _diag(
+                f"[REASONING_FALLBACK] agent={agent_name} message_keys={keys_seen} "
+                f"source={source_used} extracted_len={len(content)} preview={content[:120]!r}"
+            )
+            if content:
+                # Strip <think>...</think> wrapper if model emitted both
+                # reasoning channel and inline tags.
+                stripped = _strip_thinking_blocks(content)
+                if stripped.strip():
+                    return stripped
+                return content
+        except Exception as exc:
+            _diag(f"[REASONING_FALLBACK] agent={agent_name} fallback exception: {type(exc).__name__}: {exc}")
+        return response
+
+    llm.call = _call_with_reasoning_fallback  # type: ignore[method-assign]
     return llm
 
 
@@ -3951,9 +4218,27 @@ _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
         "You run intake for award-level studio releases. You read what the artist actually wants — concrete details, real references, the locked phrases — and you keep generic AI slop out of the bible.",
     ),
     "Track Concept Agent": (
-        "Track Concept Producer",
-        "Pitch one track that earns its slot on this album: title, one-sentence narrative, style label, vibe, emotional thesis. Every track must change something the previous tracks did not.",
-        "You write concept docs A&R execs read at lunch. Concrete title, single-sentence thesis, no genre mush, no 'inspirational journey' filler. Each track has a reason to exist on THIS album.",
+        "Track Concept Producer (concrete style + vibe + narrative required)",
+        (
+            "Pitch one track that earns its slot on this album. ALL FOUR fields are REQUIRED non-empty: "
+            "title (specific phrase), description (1 sentence hit-angle), style (one specific stack — examples: "
+            "'modern trap with sub-808 + auto-tune lead', 'G-funk with Minimoog bass + talkbox lead + 90s polish', "
+            "'boom-bap with chopped soul sample + dusty SP1200 drums', 'cinematic drill with sliding 808 + "
+            "horror-string sample' — NEVER one generic word like 'rap' or 'pop'), vibe (emotional + textural — "
+            "'menacing late-night confidence', 'triumphant horn-stab anthem', 'claustrophobic NYC street-noir'), "
+            "narrative (1-2 sentences with a concrete actor + action + stake — 'A delivery driver counts the same "
+            "twelve corners every night and starts narrating each light he runs'). Every track changes something "
+            "the previous tracks did not."
+        ),
+        (
+            "You write concept docs A&R execs read at lunch. Concrete title, single-sentence thesis, no genre mush, "
+            "no 'inspirational journey' filler. The four fields you control (title/description/style/vibe/narrative) "
+            "feed every other agent in the album crew — empty values cascade into empty captions, generic hooks, "
+            "and unmotivated lyrics. Style is your most-stolen field: a Tag Engineer downstream copies its instrument/era "
+            "tokens, a Hook Writer reads its mood, a Lyric Writer reads its narrative. Land all four with the kind of "
+            "specificity Eminem's Slim Shady origin spec, Kendrick's m.A.A.d city day-in-the-life, or Travis Scott's "
+            "Astroworld park-ride concept landed."
+        ),
     ),
     "BPM Agent": (
         "Tempo Producer",
@@ -6166,8 +6451,24 @@ def _director_section_line_minimums(section_tags: list[str], *, duration: float,
         label = str(tag or "")
         lower = label.lower()
         if rap and "verse" in lower:
-            minimums[label] = 16 if dur >= 150 else (8 if dur >= 120 else 3)
-        elif rap and re.search(r"beat\s*switch|bridge", lower):
+            # 16-bar rap-verse floor for full songs (120s+) so they get
+            # real verse density matching the 3-verses template. Shorter
+            # tracks scale: 90-119s → 8 lines, 60-89s → 4 lines (skit
+            # verse), <60s → 3 lines (snippet/instrumental). Keeps short
+            # smoke fixtures usable while raising the floor for full songs.
+            if dur >= 120:
+                minimums[label] = 16
+            elif dur >= 90:
+                minimums[label] = 8
+            elif dur >= 60:
+                minimums[label] = 4
+            else:
+                minimums[label] = 3
+        elif rap and re.search(r"beat\s*switch", lower):
+            # Beat-switch is a transition section — 2-3 lines is enough.
+            # Was 4-6 which made agents pad with low-quality lines.
+            minimums[label] = 3 if long_form else 2
+        elif rap and re.search(r"bridge", lower):
             minimums[label] = 6 if long_form else 4 if dur >= 120 else 2
         elif re.search(r"chorus|hook|refrain", lower):
             minimums[label] = 3 if long_form else 2
@@ -6412,10 +6713,27 @@ def _raw_director_section_tags(payload: dict[str, Any]) -> list[str]:
 
 
 def _validate_track_concept_payload(payload: dict[str, Any]) -> list[str]:
+    """Track Concept Agent must populate ALL five fields. Empty values
+    cascade into empty wizard cells (the user's complaint: 'Stijl', 'Vibe',
+    'Narrative' staying blank). The repair-loop reads these issue codes and
+    re-prompts the agent until they fill every slot."""
     issues: list[str] = []
-    for key in ("title", "description", "style"):
-        if not str((payload or {}).get(key) or "").strip():
+    payload = payload or {}
+    for key in ("title", "description", "style", "vibe", "narrative"):
+        value = str(payload.get(key) or "").strip()
+        if not value:
             issues.append(f"missing_{key}")
+    # Style must have >=2 words: rejects single-word generic outputs like
+    # "rap" or "pop" while accepting real stacks like "warm boom-bap" or
+    # "modern trap with sub-808". Char count would either over-reject ("warm
+    # boom-bap" is 13 chars) or under-reject ("hip-hop pop" is 11 chars).
+    style = str(payload.get("style") or "").strip()
+    if style and len(style.split()) < 2:
+        issues.append(f"style_too_generic:{style!r}_needs_at_least_2_words")
+    # Narrative must have >=4 words: rejects "a sad song" placeholders.
+    narrative = str(payload.get("narrative") or "").strip()
+    if narrative and len(narrative.split()) < 4:
+        issues.append(f"narrative_too_short:{narrative!r}_needs_at_least_4_words")
     return issues
 
 
@@ -7120,6 +7438,9 @@ class AceJamAlbumDirector:
             "context_chunks": 0,
             "retrieval_rounds": 0,
             "sequence_report": sequence_report,
+            "album_title": album_title,
+            "album_bible": album_bible,
+            "concept": album_bible.get("concept") or self.concept,
             "prompt_kit_version": PROMPT_KIT_VERSION,
             "prompt_kit": prompt_kit_payload(),
             "toolkit": toolkit_payload(self.opts.get("installed_models")),
@@ -7302,14 +7623,43 @@ class AceJamAlbumDirector:
         }
 
     def _failed_track_payload(self, index: int, exc: Exception) -> dict[str, Any]:
+        """Build a stub track payload when crew planning fails. The wizard
+        still receives editable fields filled with album-bible / opts values
+        instead of raw blanks, so the user can see what failed and finish
+        the track manually rather than staring at a half-empty form."""
         slot = self._locked_track_slot(index)
         title = str(slot.get("title") or slot.get("locked_title") or f"Track {index + 1}").strip()
         error = str(exc)
+        # Pull album-level direction from opts so the wizard's mood / genre /
+        # vocal_type cells are never None on a failed track. The user can
+        # overwrite them, but blanks make the failure look worse than it is.
+        opts = self.opts or {}
+        bible_obj = getattr(self, "album_bible", None)
+        bible_mood = ""
+        bible_concept = ""
+        bible_genre_hint = ""
+        if isinstance(bible_obj, dict):
+            bible_mood = str(bible_obj.get("mood") or bible_obj.get("mood_vibe") or "").strip()
+            bible_concept = str(bible_obj.get("concept") or bible_obj.get("one_sentence_concept") or "").strip()
+            bible_genre_hint = str(bible_obj.get("genre_prompt") or bible_obj.get("genre_hint") or "").strip()
+        producer_credit = str(slot.get("producer_credit") or "").strip()
+        derived_style = ", ".join(
+            dict.fromkeys(bit for bit in (bible_genre_hint, producer_credit) if bit)
+        )[:160]
         return {
             **{key: value for key, value in slot.items() if value not in (None, "", [])},
             "track_number": index + 1,
             "title": title,
             "duration": parse_duration_seconds(slot.get("duration") or self.track_duration, self.track_duration),
+            # Wizard-visible fallback values so failed tracks still look
+            # "filled" — user edits replace these freely.
+            "style": str(slot.get("style") or derived_style or "").strip(),
+            "vibe": str(slot.get("vibe") or bible_mood or "").strip(),
+            "narrative": str(slot.get("narrative") or bible_concept or "").strip(),
+            "description": str(slot.get("description") or bible_concept or "").strip(),
+            "mood": str(opts.get("album_mood") or opts.get("mood_vibe") or bible_mood or "").strip(),
+            "genre": str(opts.get("album_genre") or opts.get("genre_prompt") or bible_genre_hint or "").strip(),
+            "vocal_type": str(opts.get("album_vocal_type") or opts.get("vocal_type") or "").strip(),
             "planning_status": "failed",
             "planning_error": error,
             "error": error,
@@ -7391,14 +7741,48 @@ class AceJamAlbumDirector:
             include_producer=include_producer,
             fields=fields,
         )
+        # Album-level direction the wizard collects gets surfaced to every
+        # per-track agent. Legacy keys (`album_agent_*`) plus the new ones the
+        # bridge passes (`album_mood`, `album_vocal_type`, `album_genre`,
+        # `mood`, `mood_vibe`, `vocal_type`, `genre`, `genre_prompt`) are all
+        # consulted so agents see the user's intent regardless of which
+        # entry-point shaped the request.
+        opts = self.opts or {}
+        genre_prompt = (
+            opts.get("album_agent_genre_prompt")
+            or opts.get("genre_prompt")
+            or opts.get("album_genre")
+            or opts.get("genre")
+            or ""
+        )
+        mood_vibe = (
+            opts.get("album_agent_mood_vibe")
+            or opts.get("mood_vibe")
+            or opts.get("album_mood")
+            or opts.get("mood")
+            or ""
+        )
+        vocal_type = (
+            opts.get("album_agent_vocal_type")
+            or opts.get("album_vocal_type")
+            or opts.get("vocal_type")
+            or opts.get("vocal_lead")
+            or ""
+        )
+        audience = (
+            opts.get("album_agent_audience")
+            or opts.get("album_audience")
+            or opts.get("audience_platform")
+            or ""
+        )
         return (
             f"{concept_label}:\n{concept_text}\n\n"
             f"TRACK_COUNTER: you are working on track {index + 1} of {self.num_tracks}.\n"
             f"LANGUAGE: {self.language}\n"
-            f"USER_GENRE_PROMPT: {self.opts.get('album_agent_genre_prompt') or self.opts.get('genre_prompt') or ''}\n"
-            f"MOOD_VIBE: {self.opts.get('album_agent_mood_vibe') or ''}\n"
-            f"VOCAL_TYPE: {self.opts.get('album_agent_vocal_type') or ''}\n"
-            f"AUDIENCE_PLATFORM: {self.opts.get('album_agent_audience') or ''}\n"
+            f"USER_GENRE_PROMPT: {genre_prompt}\n"
+            f"MOOD_VIBE: {mood_vibe}\n"
+            f"VOCAL_TYPE: {vocal_type}\n"
+            f"AUDIENCE_PLATFORM: {audience}\n"
             f"ALBUM_BIBLE_COMPACT:\n{_compact_json(_director_album_context(album_bible))}\n"
             f"LOCKED_TRACK_FIELDS:\n{_compact_json(locked)}\n"
             f"CURRENT_TRACK_STATE:\n{_compact_json(current_payload)}\n"
@@ -7484,10 +7868,22 @@ class AceJamAlbumDirector:
         genre_contract = build_genre_intent_contract(current, self.opts)
         rap_note = ""
         if genre_contract.get("family") == "rap":
-            rap_note = (
-                " Rap-lock: prefer [Intro], [Verse 1], [Chorus] or [Hook], [Verse 2], [Beat Switch] or [Bridge], "
-                "[Final Chorus], [Outro]. Avoid pop-style repeated [Pre-Chorus] sections."
-            )
+            # Rap-lock: full songs (>=120s) MUST have 3 [Verse - rap] sections
+            # so the 16-bar floor delivers a real verse pool. Shorter tracks
+            # use the 2-verse template. Use the canonical "Verse N - rap"
+            # naming so the lyric agent recognises them as rap-modifier slots.
+            if requested_duration >= 120:
+                rap_note = (
+                    " Rap-lock for full songs (this is a 120s+ track): use exactly THREE rap verses. "
+                    "Recommended layout: [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Hook], [Bridge], "
+                    "[Verse 3 - rap], [Final Hook], [Outro]. Three verses are mandatory — two-verse "
+                    "structures cap density and waste the album slot. Avoid pop-style repeated [Pre-Chorus] sections."
+                )
+            else:
+                rap_note = (
+                    " Rap-lock: prefer [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Bridge], "
+                    "[Final Hook], [Outro]. Avoid pop-style repeated [Pre-Chorus] sections."
+                )
         repair_note = ""
         if repair_issues:
             repair_note = (
@@ -7499,10 +7895,16 @@ class AceJamAlbumDirector:
             issues = _validate_section_map_payload(payload)
             if genre_contract.get("family") == "rap":
                 tags = _raw_director_section_tags(payload if isinstance(payload, dict) else {})
-                if not any(re.search(r"verse", tag, re.I) for tag in tags):
+                verse_tags = [tag for tag in tags if re.search(r"verse", tag, re.I)]
+                if not verse_tags:
                     issues.append("rap_section_map_missing_verse")
                 if sum(1 for tag in tags if re.search(r"pre[-\s]?chorus", tag, re.I)) > 1:
                     issues.append("rap_section_map_pop_prechorus_overused")
+                # Full rap songs (>=120s) require 3 verses to match the
+                # 3-verses template + 16-bar floor. Reject 1-2 verse layouts
+                # so the repair loop coaxes a third verse in.
+                if requested_duration >= 120 and len(verse_tags) < 3:
+                    issues.append(f"rap_full_song_needs_3_verses:got_{len(verse_tags)}")
             return issues
         section_payload = self._call_until_valid(
             "Section Map Agent",
@@ -7722,7 +8124,13 @@ class AceJamAlbumDirector:
                             section_counts[active_section] = section_counts.get(active_section, 0) + 1
                     for section, minimum in part_section_minimums.items():
                         actual = section_counts.get(section, 0)
-                        if actual < minimum:
+                        # 10% tolerance — 15/16 was failing the whole part for
+                        # one missing line. The repair loop spent 8 attempts
+                        # trying to coax that last line out and shipped a stub
+                        # track instead. A single line short is close enough
+                        # to ship; bigger gaps still trigger repair.
+                        tolerance = max(1, int(minimum * 0.1))
+                        if actual + tolerance < minimum:
                             issues.append(f"section_under_min_lines:{section}={actual}/{minimum}")
                 return issues
 
@@ -8472,10 +8880,59 @@ class AceJamAlbumDirector:
         # blank slots for inference settings, negative tags, artist credit and
         # production-team metadata. The user can still edit any of these in
         # the wizard after the crew run finishes.
-        bible_artist = ""
         bible_obj = getattr(self, "album_bible", None)
+        bible_artist = ""
+        bible_mood = ""
+        bible_concept = ""
+        bible_genre_hint = ""
         if isinstance(bible_obj, dict):
             bible_artist = str(bible_obj.get("artist_name") or "").strip()
+            bible_mood = str(bible_obj.get("mood") or bible_obj.get("mood_vibe") or "").strip()
+            bible_concept = str(bible_obj.get("concept") or bible_obj.get("one_sentence_concept") or "").strip()
+            bible_genre_hint = str(bible_obj.get("genre_prompt") or bible_obj.get("genre_hint") or "").strip()
+        # Deterministic safety net: if Track Concept Agent left style/vibe/
+        # narrative empty even after the validator's repair loop, derive
+        # them from album bible + caption/genre hints so the wizard is never
+        # blank. The crew is the primary source; this is the floor.
+        producer_credit = str(track.get("producer_credit") or "").strip()
+        caption_text = str(track.get("caption") or "").strip()
+        first_caption_token = caption_text.split(",")[0].strip() if caption_text else ""
+        if not str(track.get("style") or "").strip():
+            derived_style_parts = [
+                bit
+                for bit in (bible_genre_hint, producer_credit, first_caption_token)
+                if bit
+            ]
+            track["style"] = ", ".join(dict.fromkeys(derived_style_parts))[:160]
+        if not str(track.get("vibe") or "").strip():
+            track["vibe"] = bible_mood or "(set in wizard)"
+        if not str(track.get("narrative") or "").strip():
+            track["narrative"] = bible_concept or str(track.get("description") or "")
+        if not str(track.get("description") or "").strip():
+            track["description"] = str(track.get("narrative") or bible_concept)
+        # Track-level mood / genre / vocal_type — first prefer crew-derived
+        # values, fall back to album-level option keys, finally to derived.
+        track["mood"] = str(
+            track.get("mood")
+            or self.opts.get("album_mood")
+            or self.opts.get("mood_vibe")
+            or bible_mood
+            or ""
+        ).strip()
+        track["genre"] = str(
+            track.get("genre")
+            or self.opts.get("album_genre")
+            or self.opts.get("genre_prompt")
+            or bible_genre_hint
+            or first_caption_token
+            or ""
+        ).strip()
+        track["vocal_type"] = str(
+            track.get("vocal_type")
+            or self.opts.get("album_vocal_type")
+            or self.opts.get("vocal_type")
+            or ""
+        ).strip()
         artist_default = (
             slot.get("artist_name")
             or current.get("artist_name")

@@ -183,6 +183,9 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertNotIn("num_ctx", seen_payloads[0])
 
     def test_planner_llm_settings_clamp_and_map_to_ollama_options(self):
+        # Context-length clamp ceiling raised to 262144 (Qwen 3.6 native max)
+        # so power users can push to native context. Use 999999 here to
+        # hit the new ceiling.
         payload = {
             "planner_creativity_preset": "wild",
             "planner_temperature": 3.0,
@@ -191,7 +194,7 @@ class OllamaManagerTest(unittest.TestCase):
             "planner_repeat_penalty": 0.1,
             "planner_seed": "42",
             "planner_max_tokens": 99999,
-            "planner_context_length": 99999,
+            "planner_context_length": 999999,
             "planner_timeout": 99999,
         }
 
@@ -204,14 +207,15 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(settings["planner_repeat_penalty"], 0.8)
         self.assertEqual(settings["planner_seed"], 42)
         self.assertEqual(settings["planner_max_tokens"], 8192)
-        self.assertEqual(settings["planner_context_length"], 32768)
+        # New ceiling is 262144 (Qwen native context max)
+        self.assertEqual(settings["planner_context_length"], 262144)
         self.assertEqual(settings["planner_timeout"], 1800.0)
         self.assertEqual(options["temperature"], 2.0)
         self.assertEqual(options["top_p"], 0.0)
         self.assertEqual(options["top_k"], 200)
         self.assertEqual(options["repeat_penalty"], 0.8)
         self.assertEqual(options["seed"], 42)
-        self.assertEqual(options["num_ctx"], 32768)
+        self.assertEqual(options["num_ctx"], 262144)
         self.assertEqual(options["num_predict"], 8192)
 
     def test_planner_llm_settings_map_to_lmstudio_without_context_option(self):

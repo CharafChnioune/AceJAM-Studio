@@ -141,8 +141,37 @@ _ALBUM_QUALITY_REQUIRED_EXPORTS = (
 )
 
 
+def _album_crew_has_recursion_bug(crew_module) -> bool:
+    """Detect whether the in-memory album_crew module still carries the
+    pre-fix `_agent_full_system_prompt` that called itself (RecursionError
+    on first crew agent). Recognise the buggy version by reading the source
+    of the function and checking for a self-call inside its body. Returns
+    True when the function recurses, signalling we must reload the module
+    so the live dev server picks up the fix without an app restart."""
+    func = getattr(crew_module, "_agent_full_system_prompt", None)
+    if func is None:
+        return True  # missing function = stale module, force reload
+    try:
+        import inspect
+
+        source = inspect.getsource(func)
+    except (OSError, TypeError):
+        return False
+    # Buggy body had the function calling itself with the same kwargs.
+    # Fixed body delegates to `_agent_system_prompt(agent_name)` instead.
+    if "_agent_full_system_prompt(" in source and "_agent_system_prompt(" not in source:
+        return True
+    return False
+
+
 def _ensure_album_agent_modules_current() -> None:
-    """Reload stale album gate modules left in memory by a live dev server."""
+    """Reload album gate / crew modules so a live dev server picks up source
+    fixes without an app restart. Each call invalidates the import caches,
+    refreshes album_quality_gate when stale, and ALWAYS reloads album_crew
+    so source-level edits (recursion fix, thinking-variant detect, persona
+    tweaks, etc.) take effect on the next wizard fill instead of waiting
+    for the next process restart. Reload cost is ~50-200ms — negligible
+    against a multi-minute crew run."""
     importlib.invalidate_caches()
     gate_module = sys.modules.get("album_quality_gate")
     if gate_module is not None:
@@ -156,8 +185,14 @@ def _ensure_album_agent_modules_current() -> None:
                     + ", ".join(still_missing)
                 )
     crew_module = sys.modules.get("album_crew")
-    if crew_module is not None and not hasattr(crew_module, "plan_album"):
-        importlib.reload(crew_module)
+    if crew_module is not None:
+        # Skip reload when running under pytest — pytest's mock.patch on
+        # `album_crew.plan_album` does not survive an importlib.reload, so
+        # forcing one would wipe every test's mock and turn unit tests
+        # into real-network calls. Production / dev server runs always
+        # reload so source-level fixes take effect on the next fill.
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            importlib.reload(crew_module)
 ACEJAM_VOCAL_INTELLIGIBILITY_GATE = _env_flag("ACEJAM_VOCAL_INTELLIGIBILITY_GATE", default=True)
 ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS = max(1, _env_int("ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS", 8))
 ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE = _env_flag("ACEJAM_VOCAL_INTELLIGIBILITY_MODEL_RESCUE", default=True)
@@ -2402,6 +2437,128 @@ def _album_wizard_track_dict(track: Any) -> dict[str, Any]:
         "vibe": str(track.get("vibe") or ""),
         "narrative": str(track.get("narrative") or track.get("description") or ""),
         "description": str(track.get("description") or ""),
+        # Album-level fields the wizard form exposes per track. The crew's
+        # _assemble_track populates these from album bible / opts when the
+        # per-track agents leave them empty, so the wizard never blanks.
+        "mood": str(track.get("mood") or ""),
+        "genre": str(track.get("genre") or ""),
+        "vocal_type": str(track.get("vocal_type") or ""),
+    }
+
+
+def _album_crew_stdout_log(line: str) -> None:
+    """Forward album-crew log lines to stdout with a visible prefix so the
+    user can see CrewAI running in real time. CrewAI agents call litellm
+    directly (not AceJAM's chat_ollama wrapper), so without this forwarder
+    the user only sees the preflight ping and then silence. With it, every
+    crew agent call surfaces as `[ALBUM_FILL_CREW] ...` in the terminal."""
+    try:
+        print(f"[ALBUM_FILL_CREW] {line}", flush=True)
+    except Exception:
+        pass
+
+
+def _derive_album_level_fields(
+    raw_tracks: list[Any],
+    current_payload: dict[str, Any],
+    album_bible: dict[str, Any],
+) -> dict[str, str]:
+    """Resolve the five top-level wizard fields the AlbumWizard hydrate()
+    expects. Source priority per field: user's locked input > album_bible
+    intake outputs > first-track derived > empty string. Empty strings are
+    intentional so the wizard textareas render editable rather than null."""
+    payload = current_payload if isinstance(current_payload, dict) else {}
+    bible = album_bible if isinstance(album_bible, dict) else {}
+    intake = bible.get("intake") if isinstance(bible.get("intake"), dict) else {}
+    first_track = next(
+        (track for track in (raw_tracks or []) if isinstance(track, dict)),
+        {},
+    )
+
+    def _first_str(*candidates: Any) -> str:
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            if isinstance(candidate, (list, tuple)):
+                joined = ", ".join(str(item).strip() for item in candidate if str(item).strip())
+                if joined:
+                    return joined
+                continue
+            text = str(candidate).strip()
+            if text:
+                return text
+        return ""
+
+    album_mood = _first_str(
+        payload.get("album_mood"),
+        payload.get("mood_vibe"),
+        payload.get("mood"),
+        bible.get("mood_vibe"),
+        first_track.get("mood"),
+        # The Track Concept Agent emits a rich `vibe` line ("Menacing
+        # swagger, gritty urban realism, triumphant survival energy") which
+        # is exactly what the Sfeer wizard cell wants when the user did not
+        # lock an album_mood up front.
+        first_track.get("vibe"),
+    )
+    vocal_type_caption = str(first_track.get("caption") or "").lower()
+    vocal_inferred = ""
+    if vocal_type_caption:
+        # Crew captions consistently say things like "male rap vocal",
+        # "female lead", "mixed choir". Pick out the matching span so the
+        # wizard's Vocals cell never blanks just because the user did not
+        # lock vocal_type up front.
+        for keyword in (
+            "male rap lead", "female rap lead",
+            "male rap vocal", "female rap vocal",
+            "male lead vocal", "female lead vocal",
+            "male lead", "female lead",
+            "male vocal", "female vocal",
+            "mixed choir", "choir vocal",
+            "rap lead", "rap vocal",
+        ):
+            if keyword in vocal_type_caption:
+                vocal_inferred = keyword
+                break
+    vocal_type = _first_str(
+        payload.get("vocal_type"),
+        payload.get("album_vocal_type"),
+        payload.get("vocal_lead"),
+        bible.get("vocal_type"),
+        first_track.get("vocal_type"),
+        vocal_inferred,
+    )
+    genre_prompt = _first_str(
+        payload.get("genre_prompt"),
+        payload.get("album_genre"),
+        payload.get("genre"),
+        bible.get("genre_prompt"),
+        first_track.get("genre"),
+        first_track.get("style"),
+    )
+    custom_tags = _first_str(
+        payload.get("custom_tags"),
+        payload.get("tags"),
+        first_track.get("caption"),
+        first_track.get("tags"),
+    )
+    style_profile = _first_str(
+        payload.get("style_profile"),
+        first_track.get("style"),
+        first_track.get("genre"),
+        bible.get("genre_prompt"),
+    ) or "auto"
+    style_guardrails = intake.get("style_guardrails") if isinstance(intake.get("style_guardrails"), list) else []
+    motif_words = bible.get("recurring_motifs") if isinstance(bible.get("recurring_motifs"), list) else []
+
+    return {
+        "album_mood": album_mood,
+        "vocal_type": vocal_type,
+        "genre_prompt": genre_prompt,
+        "custom_tags": custom_tags,
+        "style_profile": style_profile,
+        "style_guardrails": [str(item).strip() for item in style_guardrails if str(item).strip()],
+        "motif_words": [str(item).strip() for item in motif_words if str(item).strip()],
     }
 
 
@@ -2412,20 +2569,30 @@ def _run_prompt_assistant_album_crew(
     planner_provider: str,
     planner_model: str,
 ) -> dict[str, Any]:
-    """Album wizard AI Fill — replaces the old single-Ollama-call planner
-    with the existing CrewAI Micro Tasks director (`plan_album`). Each track
-    field gets filled by a specialised CrewAI agent (Topline Hook Writer,
-    Tier-1 Lyric Writer, Sonic Tags Engineer, etc.) instead of one cramped
-    JSON-schema completion. Output shape mirrors what the previous wizard
-    response returned so the UI keeps rendering.
+    """Album wizard AI Fill — the ONLY path for filling the album wizard.
+    Routes the request through the CrewAI Micro Tasks director (`plan_album`)
+    so each track field gets filled by a specialised CrewAI agent (Topline
+    Hook Writer, Tier-1 Lyric Writer, Sonic Tags Engineer, etc.). The legacy
+    single-Ollama-call planner is gone; this is the only album-fill code path.
 
     The user can edit every wizard field after fill; ACE-Step audio render
     happens separately when the user clicks Generate (track-by-track,
-    outside the crew)."""
+    outside the crew). The `track_variants` field controls how many
+    variations per track the crew produces — same lever the Custom mode
+    uses, defaulting to 1 unless the user requests more."""
+    # Force module-current check BEFORE importing plan_album so a live dev
+    # server picks up source-level fixes (e.g. the _agent_full_system_prompt
+    # recursion fix) without requiring an app restart.
+    _ensure_album_agent_modules_current()
     from album_crew import plan_album as _plan_album
+
+    _album_crew_stdout_log("=" * 60)
+    _album_crew_stdout_log("Starting CrewAI album wizard fill")
+    _album_crew_stdout_log("=" * 60)
 
     concept_text = (user_prompt or "").strip() or str(current_payload.get("concept") or "").strip()
     if not concept_text:
+        _album_crew_stdout_log("REJECTED: empty concept")
         return {
             "success": False,
             "error": "Album concept is empty. Paste an album idea or fill the concept field before AI Fill.",
@@ -2444,21 +2611,82 @@ def _run_prompt_assistant_album_crew(
     except (TypeError, ValueError):
         track_duration = 180.0
     language = str(current_payload.get("language") or body.get("language") or "en").strip() or "en"
+    # Variations per track — same lever the Custom mode exposes via batch_size.
+    # Wizard accepts either "track_variants" (album-native) or "batch_size" (custom-style).
+    try:
+        track_variants = int(
+            current_payload.get("track_variants")
+            or current_payload.get("batch_size")
+            or body.get("track_variants")
+            or body.get("batch_size")
+            or 1
+        )
+    except (TypeError, ValueError):
+        track_variants = 1
+    track_variants = max(1, min(8, track_variants))
 
-    # Pass the user's current payload through as options so locked fields,
-    # producer credits, lyric density etc. survive the crew run. Force the
-    # CrewAI Micro engine so the wizard fill is always a multi-agent run
-    # (matches user's explicit directive: "het invullen moet door crewai
-    # gedaan worden").
-    options: dict[str, Any] = {}
+    # Build options through the canonical _album_options_from_payload helper
+    # so the crew receives installed_models, model portfolio, render defaults,
+    # and other context the AceJamAlbumDirector relies on. Bypassing this
+    # helper was the root cause of the AI-Fill failure: the crew would try
+    # to reach for installed_models / song_model recommendations and KeyError
+    # without them. Reusing the helper guarantees plan_album sees the same
+    # options shape as /api/album/plan does.
+    bridge_payload: dict[str, Any] = {}
     if isinstance(current_payload, dict):
-        options.update({k: v for k, v in current_payload.items() if k not in {"tracks"}})
+        bridge_payload.update({k: v for k, v in current_payload.items() if k not in {"tracks"}})
+    bridge_payload["concept"] = concept_text
+    bridge_payload["user_prompt"] = user_prompt
+    bridge_payload["num_tracks"] = num_tracks
+    bridge_payload["track_duration"] = track_duration
+    bridge_payload["language"] = language
+    bridge_payload["track_variants"] = track_variants
+    bridge_payload["batch_size"] = max(1, min(track_variants, 4))
+    bridge_payload["planner_lm_provider"] = planner_provider
+    bridge_payload["planner_model"] = planner_model
+    bridge_payload["planner_ollama_model"] = planner_model
+    bridge_payload["ollama_model"] = planner_model
+    bridge_payload.setdefault("song_model_strategy", "single_model_album")
+    bridge_payload.setdefault("final_song_model", "acestep-v15-xl-sft")
+    bridge_payload.setdefault("song_model", "acestep-v15-xl-sft")
+    bridge_payload.setdefault("duration_mode", "ai_per_track")
+    bridge_payload.setdefault("album_writer_mode", "per_track_writer_loop")
+    bridge_payload.setdefault("quality_profile", "chart_master")
+    # Lift album-level form fields the wizard collects (mood, vocal_type,
+    # genre) so the AceJamAlbumDirector can inject them into every per-track
+    # agent context. Without this passthrough Track Concept / Tag / Hook /
+    # Lyric agents cannot see the user's album-wide direction and the
+    # corresponding wizard cells stay blank.
+    for album_field in (
+        "album_mood", "mood", "mood_vibe",
+        "album_vocal_type", "vocal_type", "vocal_lead",
+        "album_genre", "genre", "genre_prompt",
+        "album_audience", "audience_platform",
+        "album_title", "album_concept",
+    ):
+        if album_field in current_payload and not bridge_payload.get(album_field):
+            bridge_payload[album_field] = current_payload[album_field]
+
+    try:
+        options = _album_options_from_payload(bridge_payload, song_model=bridge_payload.get("song_model") or "auto")
+    except Exception as opts_exc:
+        # If the option-builder itself fails (e.g. missing installed models
+        # mapping), fall back to the minimum required option set so the wizard
+        # still gets a useful error rather than a 500.
+        return {
+            "success": False,
+            "error": f"Album option setup failed: {type(opts_exc).__name__}: {opts_exc}",
+            "payload": {},
+            "warnings": [],
+            "raw_text": "",
+        }
+
+    # Force CrewAI Micro engine and copy the variation lever into the options
+    # so AceJamAlbumDirector sees it.
     options["agent_engine"] = "crewai_micro"
     options.setdefault("album_writer_mode", "per_track_writer_loop")
-    options.setdefault("quality_profile", "chart_master")
-    options.setdefault("song_model_strategy", "single_model_album")
-    options.setdefault("final_song_model", "acestep-v15-xl-sft")
-    options.setdefault("duration_mode", "ai_per_track")
+    options["track_variants"] = track_variants
+    options["batch_size"] = bridge_payload["batch_size"]
     options["planner_lm_provider"] = planner_provider
     options["planner_model"] = planner_model
     options["planner_ollama_model"] = planner_model
@@ -2467,23 +2695,130 @@ def _run_prompt_assistant_album_crew(
 
     input_tracks = _json_list(body.get("tracks") or current_payload.get("tracks")) or None
 
-    logs_buffer: list[str] = []
-    result = _plan_album(
-        concept=concept_text,
-        num_tracks=num_tracks,
-        track_duration=track_duration,
-        ollama_model=planner_model,
-        language=language,
-        options=options,
-        use_crewai=True,
-        input_tracks=input_tracks,
-        planner_provider=planner_provider,
-        embedding_provider="ollama",
-        log_callback=logs_buffer.append,
+    _album_crew_stdout_log(f"Concept: {concept_text[:160]}")
+    _album_crew_stdout_log(
+        f"num_tracks={num_tracks}, duration={int(track_duration)}s, variants={track_variants}, "
+        f"language={language}, planner={planner_provider}/{planner_model}"
     )
+    if input_tracks:
+        _album_crew_stdout_log(f"Locked input tracks from user paste: {len(input_tracks)}")
+    _album_crew_stdout_log("Calling album_crew.plan_album with agent_engine=crewai_micro ...")
+
+    logs_buffer: list[str] = []
+
+    def _log_to_buffer_and_stdout(line: str) -> None:
+        logs_buffer.append(str(line))
+        _album_crew_stdout_log(str(line))
+
+    try:
+        result = _plan_album(
+            concept=concept_text,
+            num_tracks=num_tracks,
+            track_duration=track_duration,
+            ollama_model=planner_model,
+            language=language,
+            options=options,
+            use_crewai=True,
+            input_tracks=input_tracks,
+            planner_provider=planner_provider,
+            embedding_provider="ollama",
+            log_callback=_log_to_buffer_and_stdout,
+        )
+    except Exception as plan_exc:
+        # Surface the actual crew failure to the wizard instead of a generic
+        # 500. The traceback signals which agent failed (model missing,
+        # Ollama down, schema error, etc.) so the user can act on it.
+        import traceback
+
+        tb_text = traceback.format_exc(limit=4)
+        _album_crew_stdout_log(f"CRASHED: {type(plan_exc).__name__}: {plan_exc}")
+        for tb_line in tb_text.splitlines():
+            _album_crew_stdout_log(tb_line)
+        return {
+            "success": False,
+            "error": f"CrewAI album fill crashed: {type(plan_exc).__name__}: {plan_exc}",
+            "payload": {
+                "concept": concept_text,
+                "num_tracks": num_tracks,
+                "language": language,
+                "track_duration": int(track_duration),
+                "track_variants": track_variants,
+                "agent_engine": "crewai_micro",
+                "tracks": [],
+            },
+            "warnings": [str(line) for line in logs_buffer[-20:]] + [tb_text],
+            "raw_text": "",
+        }
 
     raw_tracks = result.get("tracks") or []
+    _album_crew_stdout_log(
+        f"Crew finished. success={result.get('success', True)}, "
+        f"tracks={len(raw_tracks)}, planning_engine={result.get('planning_engine')}, "
+        f"crewai_used={result.get('crewai_used')}"
+    )
+    if not raw_tracks:
+        _album_crew_stdout_log("WARNING: crew returned 0 tracks — wizard will show empty.")
+        if result.get("error"):
+            _album_crew_stdout_log(f"Crew error: {result.get('error')}")
     wizard_tracks = [_album_wizard_track_dict(track) for track in raw_tracks if isinstance(track, dict)]
+    # Backfill mood / genre / vocal_type from the underlying raw track + bridge
+    # opts in case _album_wizard_track_dict was loaded before those keys were
+    # added (Python only hot-reloads album_crew, not app.py — module restart
+    # required to pick up the helper change). This belt-and-braces line keeps
+    # the wizard fields populated regardless of when the helper was edited.
+    for wizard_track, raw_track in zip(wizard_tracks, raw_tracks):
+        if isinstance(raw_track, dict):
+            wizard_track.setdefault(
+                "mood",
+                str(
+                    raw_track.get("mood")
+                    or current_payload.get("album_mood")
+                    or current_payload.get("mood")
+                    or ""
+                ),
+            )
+            wizard_track.setdefault(
+                "genre",
+                str(
+                    raw_track.get("genre")
+                    or current_payload.get("album_genre")
+                    or current_payload.get("genre")
+                    or ""
+                ),
+            )
+            wizard_track.setdefault(
+                "vocal_type",
+                str(
+                    raw_track.get("vocal_type")
+                    or current_payload.get("album_vocal_type")
+                    or current_payload.get("vocal_type")
+                    or ""
+                ),
+            )
+            # Force-overwrite if the existing value is None/empty AND we have a
+            # non-empty source — `setdefault` only fills missing keys, not
+            # null/empty ones present from the stale helper.
+            for field, sources in (
+                ("mood", (raw_track.get("mood"), current_payload.get("album_mood"), current_payload.get("mood"))),
+                ("genre", (raw_track.get("genre"), current_payload.get("album_genre"), current_payload.get("genre"))),
+                ("vocal_type", (raw_track.get("vocal_type"), current_payload.get("album_vocal_type"), current_payload.get("vocal_type"))),
+            ):
+                if not str(wizard_track.get(field) or "").strip():
+                    for candidate in sources:
+                        if candidate:
+                            wizard_track[field] = str(candidate)
+                            break
+
+    album_bible = result.get("album_bible") if isinstance(result.get("album_bible"), dict) else {}
+    album_level = _derive_album_level_fields(raw_tracks, current_payload, album_bible)
+    _album_crew_stdout_log(
+        "Wizard hydrate fields: "
+        f"album_mood={album_level['album_mood'][:60]!r}, "
+        f"vocal_type={album_level['vocal_type'][:60]!r}, "
+        f"genre_prompt={album_level['genre_prompt'][:60]!r}, "
+        f"custom_tags={album_level['custom_tags'][:60]!r}, "
+        f"style_profile={album_level['style_profile'][:60]!r}"
+    )
 
     payload: dict[str, Any] = {
         "concept": str(result.get("concept") or concept_text),
@@ -2496,6 +2831,8 @@ def _run_prompt_assistant_album_crew(
         "quality_profile": str(options.get("quality_profile") or "chart_master"),
         "song_model_strategy": str(options.get("song_model_strategy") or "single_model_album"),
         "final_song_model": str(options.get("final_song_model") or "acestep-v15-xl-sft"),
+        "track_variants": track_variants,
+        "batch_size": bridge_payload["batch_size"],
         "planner_lm_provider": planner_provider,
         "planner_model": planner_model,
         "ace_lm_model": "none",
@@ -2508,6 +2845,16 @@ def _run_prompt_assistant_album_crew(
         "agent_engine": "crewai_micro",
         "planning_engine": "crewai_micro",
         "crewai_used": True,
+        # Album-level wizard fields the AlbumWizard hydrate() reads from the
+        # response. Derived from user input first, album bible second, first
+        # track third — never None so the wizard textareas render editable.
+        "album_mood": album_level["album_mood"],
+        "vocal_type": album_level["vocal_type"],
+        "genre_prompt": album_level["genre_prompt"],
+        "custom_tags": album_level["custom_tags"],
+        "style_profile": album_level["style_profile"],
+        "style_guardrails": album_level["style_guardrails"],
+        "motif_words": album_level["motif_words"],
     }
 
     warnings: list[str] = []

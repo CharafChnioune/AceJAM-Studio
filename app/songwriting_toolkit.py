@@ -645,12 +645,15 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
         return ["Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Outro"]
     if dur <= 90:
         return ["Intro", "Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Verse 2", "Final Chorus"]
-    if rap and dur <= 150:
-        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Bridge", "Final Chorus", "Outro"]
+    # Rap full songs >90s now always get 3 [Verse - rap] sections so the
+    # 16-bar floor in album_crew matches a real 48-bar verse pool. Previously
+    # the 90<rap<=150 band capped at 2 verses (forcing thin lyrics on 120s
+    # rap tracks); that boundary moved up to 90 so any rap track 91-240s
+    # follows the 3-verse template.
+    if rap and dur <= 240:
+        return ["Intro", "Verse 1 - rap", "Hook", "Verse 2 - rap", "Hook", "Bridge", "Verse 3 - rap", "Final Hook", "Outro"]
     if dur <= 150:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
-    if rap and dur <= 240:
-        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Second Chorus", "Verse 3 - Beat Switch", "Bridge", "Final Chorus", "Outro"]
     if dur <= 240:
         return ["Intro", "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Final Chorus", "Outro"]
     if rap and dur <= 360:

@@ -22,3 +22,5 @@
 /app/web/dist/
 /app/web/.vite/
 /.playwright-mcp/
+/.claude/
+/album-identiteit-*.png
