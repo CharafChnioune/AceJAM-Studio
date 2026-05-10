@@ -14,6 +14,7 @@ from studio_core import (
     OFFICIAL_MAIN_MODEL_REPO,
     diffusers_pipeline_dir_ready,
     diffusers_pipeline_missing_reasons,
+    official_helper_model_ids,
 )
 
 
@@ -73,6 +74,8 @@ def default_download_models() -> list[str]:
             names.append(model_name)
 
     for model_name in DEFAULT_SFT_DOWNLOAD_MODELS:
+        add(model_name)
+    for model_name in official_helper_model_ids():
         add(model_name)
     for component in SHARED_RUNTIME_COMPONENTS:
         add(component)

@@ -2754,7 +2754,7 @@ def official_helper_model_ids() -> list[str]:
     ]
 
 
-def official_boot_model_ids(*, include_helpers: bool = False, include_best_quality: bool = True) -> list[str]:
+def official_boot_model_ids(*, include_helpers: bool = True, include_best_quality: bool = True) -> list[str]:
     """Return the default boot download bundle for quality-first local runs."""
     ids: list[str] = []
 
