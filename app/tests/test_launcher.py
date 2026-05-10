@@ -24,6 +24,20 @@ class LauncherScriptTest(unittest.TestCase):
         self.assertIn("MFLUX_ENV_DIR", manager)
         self.assertIn("_command_path", manager)
 
+    def test_torchao_is_pinned_for_torch_291_runtime(self):
+        root = Path(__file__).resolve().parents[2]
+        core_requirements = (root / "app" / "requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("torchao==0.15.0", core_requirements)
+        self.assertNotIn("torchao>=0.16.0,<0.17.0", core_requirements)
+
+    def test_vendor_patch_skips_bitsandbytes_warning_on_non_cuda(self):
+        root = Path(__file__).resolve().parents[2]
+        patcher = (root / "app" / "patch_ace_step_vendor.py").read_text(encoding="utf-8")
+
+        self.assertIn("patch_bitsandbytes_non_cuda_warning", patcher)
+        self.assertIn("if torch.cuda.is_available()", patcher)
+
     def test_start_script_binds_localhost_and_captures_url(self):
         root = Path(__file__).resolve().parents[2]
         start_js = (root / "start.js").read_text(encoding="utf-8")

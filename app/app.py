@@ -2453,9 +2453,15 @@ def _album_wizard_track_dict(track: Any) -> dict[str, Any]:
         "hook_promise": str(track.get("hook_promise") or ""),
         "hook_lines": list(track.get("hook_lines") or []),
         "style": str(track.get("style") or ""),
+        "style_profile": str(track.get("style_profile") or ""),
         "vibe": str(track.get("vibe") or ""),
         "narrative": str(track.get("narrative") or track.get("description") or ""),
         "description": str(track.get("description") or ""),
+        "genre_profile": str(track.get("genre_profile") or ""),
+        "genre_direction": str(track.get("genre_direction") or track.get("genre_prompt") or ""),
+        "caption_tags": str(track.get("caption_tags") or ""),
+        "album_tags": str(track.get("album_tags") or ""),
+        "negative_control": str(track.get("negative_control") or ""),
         # Album-level fields the wizard form exposes per track. The crew's
         # _assemble_track populates these from album bible / opts when the
         # per-track agents leave them empty, so the wizard never blanks.
@@ -2563,10 +2569,17 @@ def _derive_album_level_fields(
     )
     style_profile = _first_str(
         payload.get("style_profile"),
+        first_track.get("style_profile"),
+        first_track.get("genre_profile"),
         first_track.get("style"),
         first_track.get("genre"),
         bible.get("genre_prompt"),
     ) or "auto"
+    negative_tags = _first_str(
+        payload.get("negative_tags"),
+        first_track.get("negative_tags"),
+        first_track.get("negative_control"),
+    )
     style_guardrails = intake.get("style_guardrails") if isinstance(intake.get("style_guardrails"), list) else []
     motif_words = bible.get("recurring_motifs") if isinstance(bible.get("recurring_motifs"), list) else []
 
@@ -2576,6 +2589,7 @@ def _derive_album_level_fields(
         "genre_prompt": genre_prompt,
         "custom_tags": custom_tags,
         "style_profile": style_profile,
+        "negative_tags": negative_tags,
         "style_guardrails": [str(item).strip() for item in style_guardrails if str(item).strip()],
         "motif_words": [str(item).strip() for item in motif_words if str(item).strip()],
     }
@@ -2845,6 +2859,10 @@ def _run_prompt_assistant_album_crew(
                 ("mood", (raw_track.get("mood"), current_payload.get("album_mood"), current_payload.get("mood"))),
                 ("genre", (raw_track.get("genre"), current_payload.get("album_genre"), current_payload.get("genre"))),
                 ("vocal_type", (raw_track.get("vocal_type"), current_payload.get("album_vocal_type"), current_payload.get("vocal_type"))),
+                ("style_profile", (raw_track.get("style_profile"), raw_track.get("genre_profile"), current_payload.get("style_profile"))),
+                ("caption_tags", (raw_track.get("caption_tags"), raw_track.get("tags"), raw_track.get("caption"))),
+                ("album_tags", (raw_track.get("album_tags"), current_payload.get("custom_tags"), raw_track.get("caption_tags"))),
+                ("negative_control", (raw_track.get("negative_control"), raw_track.get("negative_tags"), current_payload.get("negative_tags"))),
             ):
                 if not str(wizard_track.get(field) or "").strip():
                     for candidate in sources:
@@ -2904,7 +2922,7 @@ def _run_prompt_assistant_album_crew(
         "use_official_lm": False,
         "vocal_language": language,
         "tracks": wizard_tracks,
-        "negative_tags": "muddy mix, weak hook, unclear vocal, noisy artifacts, flat drums, boring arrangement, generic lyrics, contradictory style",
+        "negative_tags": album_level["negative_tags"] or "muddy mix, weak hook, unclear vocal, noisy artifacts, flat drums, boring arrangement, generic lyrics, contradictory style",
         "prompt_kit_version": PROMPT_KIT_VERSION,
         "max_track_repair_rounds": int(options.get("max_track_repair_rounds") or 3),
         "agent_engine": "crewai_micro",
@@ -6505,6 +6523,21 @@ def _load_local_llm_settings() -> dict[str, Any]:
     except Exception as exc:
         print(f"[local_llm_settings] load failed: {exc}", flush=True)
     return _normalize_local_llm_settings({})
+
+
+def _load_local_llm_settings_fast() -> dict[str, Any]:
+    """Read persisted LLM settings without probing Ollama/LM Studio.
+
+    Album job creation must stay responsive even while the selected LLM is busy.
+    The worker performs the real model preflight and reports pull/wait status.
+    """
+    try:
+        if LOCAL_LLM_SETTINGS_PATH.is_file():
+            raw = json.loads(LOCAL_LLM_SETTINGS_PATH.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+    except Exception as exc:
+        print(f"[local_llm_settings] fast load failed: {exc}", flush=True)
+    return {}
 
 
 def _save_local_llm_settings(payload: dict[str, Any]) -> dict[str, Any]:
@@ -15004,6 +15037,7 @@ def _album_job_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict
 
 
 def _set_album_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
     with _album_jobs_lock:
         job = _album_jobs.setdefault(
             job_id,
@@ -15019,8 +15053,22 @@ def _set_album_job(job_id: str, **updates: Any) -> dict[str, Any]:
                 "planner_model": "",
                 "embedding_model": "",
                 "memory_enabled": False,
+                "stage": "queued",
+                "current_task": "Queued",
+                "current_agent": "",
                 "current_model_album": "",
                 "current_track": "",
+                "total_tracks": 0,
+                "completed_tracks": 0,
+                "remaining_tracks": 0,
+                "waiting_on_llm": False,
+                "llm_provider": "",
+                "llm_model": "",
+                "llm_wait_started_at": "",
+                "llm_wait_elapsed_s": 0,
+                "last_log_at": None,
+                "last_update_at": now,
+                "updated_at": now,
                 "generated_count": 0,
                 "expected_count": 0,
                 "album_id": "",
@@ -15044,6 +15092,8 @@ def _set_album_job(job_id: str, **updates: Any) -> dict[str, Any]:
                 job["errors"] = (old_errors + [str(item) for item in new_errors])[-100:]
             elif new_errors:
                 job["errors"] = (old_errors + [str(new_errors)])[-100:]
+        updates.setdefault("updated_at", now)
+        updates.setdefault("last_update_at", now)
         job.update(_jsonable(updates))
         if len(_album_jobs) > ALBUM_JOB_KEEP_LIMIT:
             removable = sorted(
@@ -15059,7 +15109,166 @@ def _set_album_job(job_id: str, **updates: Any) -> dict[str, Any]:
 def _album_job_log(job_id: str, line: str, **updates: Any) -> None:
     if not job_id:
         return
+    updates.setdefault("last_log_at", datetime.now(timezone.utc).isoformat())
     _set_album_job(job_id, logs=[line], **updates)
+
+
+def _album_plan_agent_weight(agent_name: str) -> float:
+    lower = str(agent_name or "").lower()
+    if "album intake" in lower or "bible" in lower:
+        return 0.05
+    if "track concept" in lower:
+        return 0.08
+    if "tag" in lower:
+        return 0.16
+    if "section" in lower:
+        return 0.28
+    if "hook" in lower:
+        return 0.38
+    if "lyrics" in lower or "lyric" in lower:
+        return 0.58
+    if "caption" in lower or "sonic" in lower:
+        return 0.76
+    if "performance" in lower or "settings" in lower:
+        return 0.86
+    if "final payload" in lower or "assembler" in lower:
+        return 0.95
+    return 0.5
+
+
+def _album_plan_track_progress(track_number: int, total_tracks: int, agent_name: str = "") -> int:
+    total_tracks = max(1, int(total_tracks or 1))
+    track_number = max(1, min(total_tracks, int(track_number or 1)))
+    weight = max(0.0, min(0.99, _album_plan_agent_weight(agent_name)))
+    return int(max(5, min(98, round(10 + 85 * (((track_number - 1) + weight) / total_tracks)))))
+
+
+def _album_plan_progress_updates_from_log(line: str, job: dict[str, Any]) -> dict[str, Any]:
+    compact = str(line or "").replace("\n", " ")[:700]
+    lower = compact.lower()
+    total_tracks = clamp_int(job.get("total_tracks") or job.get("expected_count") or 0, 0, 0, 1000)
+    if total_tracks <= 0:
+        total_tracks = 0
+    current_track = clamp_int(job.get("current_track") or 0, 0, 0, max(1, total_tracks or 1))
+    updates: dict[str, Any] = {}
+
+    writing_match = re.search(r"writing track\s+(\d+)\s*/\s*(\d+)", lower)
+    if writing_match:
+        current_track = int(writing_match.group(1))
+        total_tracks = int(writing_match.group(2))
+        updates.update(
+            stage="track_writer",
+            status=f"Writing track {current_track}/{total_tracks}",
+            current_task=f"Track {current_track}/{total_tracks}: writer loop",
+            current_track=current_track,
+            total_tracks=total_tracks,
+            completed_tracks=max(0, current_track - 1),
+            remaining_tracks=max(0, total_tracks - current_track + 1),
+            progress=_album_plan_track_progress(current_track, total_tracks, "Track Concept Agent"),
+        )
+
+    completed_match = re.search(r"writing track\s+(\d+)\s*/\s*(\d+).*completed", lower)
+    if completed_match:
+        completed = int(completed_match.group(1))
+        total_tracks = int(completed_match.group(2))
+        updates.update(
+            stage="track_complete",
+            status=f"Track {completed}/{total_tracks} ready",
+            current_task=f"Track {completed}/{total_tracks}: render payload ready",
+            completed_tracks=completed,
+            remaining_tracks=max(0, total_tracks - completed),
+            progress=_album_plan_track_progress(completed, total_tracks, "Final Payload Assembler"),
+        )
+
+    call_match = re.search(
+        r"crewai micro agent call:\s*(?P<agent>.+?)\s+attempt\s+(?P<attempt>\d+)\s+via\s+(?P<provider>.+?)\s+\(prompt_chars=(?P<prompt>\d+),\s*system=(?P<system>\d+),\s*user=(?P<user>\d+)\)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if call_match:
+        agent = call_match.group("agent").strip()
+        provider = call_match.group("provider").strip()
+        if current_track <= 0 and total_tracks > 0 and "album intake" not in agent.lower():
+            current_track = 1
+        progress = (
+            _album_plan_track_progress(current_track, total_tracks, agent)
+            if current_track and total_tracks
+            else int(8 + 22 * _album_plan_agent_weight(agent))
+        )
+        updates.update(
+            stage="waiting_on_llm",
+            status=f"Waiting on {provider}: {agent}",
+            current_task=f"Waiting for {agent} response",
+            current_agent=agent,
+            agent_attempt=int(call_match.group("attempt")),
+            llm_provider=provider,
+            llm_prompt_chars=int(call_match.group("prompt")),
+            llm_system_chars=int(call_match.group("system")),
+            llm_user_chars=int(call_match.group("user")),
+            waiting_on_llm=True,
+            llm_wait_started_at=datetime.now(timezone.utc).isoformat(),
+            llm_wait_elapsed_s=0,
+            progress=max(int(job.get("progress") or 0), min(97, progress)),
+        )
+
+    response_match = re.search(r"crewai micro agent response:\s*(?P<agent>.+?)\s+\d+\s+chars\s+in\s+(?P<elapsed>[\d.]+)s", compact, flags=re.IGNORECASE)
+    if response_match:
+        agent = response_match.group("agent").strip()
+        updates.update(
+            stage="agent_response",
+            status=f"{agent} response received",
+            current_task=f"{agent} response received",
+            current_agent=agent,
+            waiting_on_llm=False,
+            llm_wait_elapsed_s=float(response_match.group("elapsed")),
+            llm_last_elapsed_s=float(response_match.group("elapsed")),
+        )
+
+    parsed_match = re.search(r"crewai micro agent parsed .*?:\s*(?P<agent>.+?)\s+attempt\s+\d+\s+ok", compact, flags=re.IGNORECASE)
+    if parsed_match:
+        agent = parsed_match.group("agent").strip()
+        updates.update(
+            stage="agent_parse",
+            status=f"{agent} parsed",
+            current_task=f"{agent} parsed OK",
+            current_agent=agent,
+            waiting_on_llm=False,
+        )
+
+    micro_match = re.search(r"micro setting call:\s*(?P<agent>.+?)\s+for\s+track\s+(?P<track>\d+)", compact, flags=re.IGNORECASE)
+    if micro_match:
+        current_track = int(micro_match.group("track"))
+        agent = micro_match.group("agent").strip()
+        updates.update(
+            stage="track_settings",
+            status=f"Track {current_track}/{total_tracks or '?'} settings",
+            current_task=f"Track {current_track}: {agent}",
+            current_agent=agent,
+            current_track=current_track,
+            progress=_album_plan_track_progress(current_track, total_tracks, agent) if total_tracks else max(int(job.get("progress") or 0), 55),
+        )
+
+    produced_match = re.search(r"acejam director produced\s+(\d+)\s+direct", lower)
+    if produced_match:
+        completed = int(produced_match.group(1))
+        updates.update(
+            stage="assembly",
+            status="MLX Media direct payloads ready",
+            current_task="Final album payload assembly",
+            completed_tracks=completed,
+            remaining_tracks=max(0, (total_tracks or completed) - completed),
+            progress=95,
+            waiting_on_llm=False,
+        )
+
+    if "planning album bible with acejam agents" in lower:
+        updates.update(stage="album_bible", status="MLX Media album bible running", current_task="Building album bible", progress=max(int(job.get("progress") or 0), 15))
+    elif "acejam agents planned" in lower:
+        updates.update(stage="track_blueprints", status="MLX Media track blueprints ready", current_task="Track blueprints ready", progress=max(int(job.get("progress") or 0), 45))
+    elif "acejam agents produced" in lower:
+        updates.update(stage="plan_ready", status="MLX Media plan ready", current_task="Album plan ready", progress=95, waiting_on_llm=False)
+
+    return updates
 
 
 def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
@@ -15244,6 +15453,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         str(body.get("language") or "en"),
         body,
     )
+    num_tracks = clamp_int(body.get("num_tracks") or len(_json_list(body.get("tracks"))) or 5, 5, 1, 40)
     start_logs = [
         f"Album plan job {job_id} started.",
         f"Planning engine requested: {requested_engine_label} ({requested_engine}).",
@@ -15283,29 +15493,100 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         input_contract_version=USER_ALBUM_CONTRACT_VERSION,
         blocked_unsafe_count=int(user_album_contract.get("blocked_unsafe_count") or 0),
         memory_enabled=False,
+        stage="queued",
+        current_task="Queued album planning job",
+        total_tracks=num_tracks,
+        current_track=0,
+        completed_tracks=0,
+        remaining_tracks=num_tracks,
         started_at=datetime.now(timezone.utc).isoformat(),
         finished_at=None,
         logs=start_logs,
     )
     try:
+        wait_warn_seconds = max(10.0, _env_float("ACEJAM_ALBUM_PLAN_LLM_WAIT_WARN_SECONDS", 45.0))
+        hard_timeout_seconds = max(0.0, _env_float("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS", 900.0))
+        wait_state: dict[str, Any] = {"running": True, "waiting": False, "started": 0.0, "agent": "", "provider": "", "timed_out": False}
+
+        def _wait_watchdog() -> None:
+            last_reported_bucket = -1
+            while wait_state.get("running"):
+                time.sleep(5.0)
+                if not wait_state.get("waiting"):
+                    continue
+                started_at = float(wait_state.get("started") or 0.0)
+                if started_at <= 0:
+                    continue
+                elapsed = max(0.0, time.time() - started_at)
+                bucket = int(elapsed // 15)
+                if elapsed >= wait_warn_seconds and bucket != last_reported_bucket:
+                    last_reported_bucket = bucket
+                    snapshot = _album_job_snapshot(job_id)
+                    if isinstance(snapshot, dict) and snapshot.get("state") in {"failed", "succeeded"}:
+                        continue
+                    _set_album_job(
+                        job_id,
+                        state="running",
+                        stage="waiting_on_llm",
+                        status=f"Waiting on {wait_state.get('provider') or 'LLM'}: {wait_state.get('agent') or 'album agent'}",
+                        current_task=f"Still waiting for {wait_state.get('agent') or 'album agent'} ({int(elapsed)}s)",
+                        current_agent=str(wait_state.get("agent") or ""),
+                        waiting_on_llm=True,
+                        llm_provider=str(wait_state.get("provider") or ""),
+                        llm_wait_elapsed_s=int(elapsed),
+                        logs=[f"Waiting on {wait_state.get('provider') or 'LLM'} {wait_state.get('agent') or 'album agent'} for {int(elapsed)}s."],
+                    )
+                if hard_timeout_seconds and elapsed >= hard_timeout_seconds and not wait_state.get("timed_out"):
+                    wait_state["timed_out"] = True
+                    _set_album_job(
+                        job_id,
+                        state="failed",
+                        stage="llm_timeout",
+                        status="Album AI timed out waiting on LLM",
+                        current_task=f"{wait_state.get('agent') or 'Album agent'} exceeded {int(hard_timeout_seconds)}s",
+                        waiting_on_llm=False,
+                        llm_wait_elapsed_s=int(elapsed),
+                        timed_out=True,
+                        errors=[f"Album AI call timed out after {int(elapsed)}s waiting on {wait_state.get('provider') or 'LLM'} {wait_state.get('agent') or 'album agent'}."],
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    return
+
+        threading.Thread(target=_wait_watchdog, daemon=True).start()
+
         def _stream_plan_log(line: str) -> None:
             compact = str(line).replace("\n", " ")[:700]
-            updates: dict[str, Any] = {}
-            lower = compact.lower()
-            if "planning album bible with acejam agents" in lower:
-                updates.update(status="MLX Media album bible running", progress=15)
-            elif "acejam agents planned" in lower:
-                updates.update(status="MLX Media track blueprints ready", progress=45)
-            elif "writing track" in lower:
-                updates.update(status="MLX Media track writing running", progress=55)
-            elif "acejam agents produced" in lower:
-                updates.update(status="MLX Media plan ready", progress=95)
-            elif "acejam director produced" in lower:
-                updates.update(status="MLX Media direct payloads ready", progress=90)
+            job = _album_job_snapshot(job_id)
+            updates = _album_plan_progress_updates_from_log(compact, job if isinstance(job, dict) else {})
+            if updates.get("waiting_on_llm"):
+                wait_state.update(
+                    waiting=True,
+                    started=time.time(),
+                    agent=str(updates.get("current_agent") or ""),
+                    provider=str(updates.get("llm_provider") or ""),
+                )
+            elif "crewai micro agent response:" in compact.lower() or "crewai micro agent parsed" in compact.lower():
+                wait_state.update(waiting=False, started=0.0)
             print(f"[album_plan_job][{job_id}] {compact}", file=sys.__stdout__, flush=True)
             _album_job_log(job_id, compact, **updates)
 
         result = _run_album_plan_from_payload(body, log_callback=_stream_plan_log)
+        wait_state["running"] = False
+        wait_state["waiting"] = False
+        snapshot = _album_job_snapshot(job_id)
+        if isinstance(snapshot, dict) and snapshot.get("timed_out"):
+            return
+        if isinstance(snapshot, dict) and snapshot.get("stop_requested"):
+            _set_album_job(
+                job_id,
+                state="stopped",
+                stage="stopped",
+                status="Album plan stopped",
+                current_task="Album plan stopped after current LLM call returned",
+                waiting_on_llm=False,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+            return
         tracks = result.get("tracks") or []
         success = bool(result.get("success", True)) and bool(tracks)
         _set_album_job(
@@ -15313,6 +15594,9 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             state="succeeded" if success else "failed",
             status="Album plan ready" if success else "Album plan failed",
             progress=100,
+            stage="complete" if success else "failed",
+            current_task="Album plan ready" if success else "Album plan failed",
+            waiting_on_llm=False,
             result=result,
             logs=result.get("logs") or [],
             errors=[] if success else [result.get("error") or "Album planning failed"],
@@ -15341,15 +15625,43 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             contract_repair_count=int(result.get("contract_repair_count") or 0),
             expected_count=len(tracks),
             planned_count=len(tracks),
+            total_tracks=len(tracks) or num_tracks,
+            completed_tracks=len(tracks) if success else int(snapshot.get("completed_tracks") or 0) if isinstance(snapshot, dict) else 0,
+            remaining_tracks=0 if success else max(0, num_tracks - (int(snapshot.get("completed_tracks") or 0) if isinstance(snapshot, dict) else 0)),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
+    except OllamaPullStarted as exc:
+        wait_state["running"] = False
+        wait_state["waiting"] = False
+        _set_album_job(
+            job_id,
+            state="waiting_on_model",
+            job_type="album_plan",
+            status=f"Downloading planner model: {exc.model_name}",
+            progress=max(1, int((_jsonable(exc.job) or {}).get("progress") or 1)),
+            stage="model_download",
+            current_task=f"Planner-model downloaden: {exc.model_name}",
+            current_agent="Local LLM install",
+            waiting_on_llm=False,
+            ollama_pull_job=_jsonable(exc.job),
+            errors=[],
+            logs=[exc.message],
+        )
     except Exception as exc:
+        wait_state["running"] = False
+        wait_state["waiting"] = False
+        snapshot = _album_job_snapshot(job_id)
+        if isinstance(snapshot, dict) and snapshot.get("timed_out"):
+            return
         _set_album_job(
             job_id,
             state="failed",
             job_type="album_plan",
             status="Album plan failed",
             progress=100,
+            stage="failed",
+            current_task="Album plan failed",
+            waiting_on_llm=False,
             errors=[str(exc)],
             logs=[traceback.format_exc()],
             crewai_output_log_file=crewai_output_log_file,
@@ -15357,6 +15669,10 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
     finally:
+        try:
+            wait_state["running"] = False
+        except Exception:
+            pass
         _cleanup_accelerator_memory()
 
 
@@ -15578,20 +15894,22 @@ async def api_album_plan(request: Request):
 async def api_create_album_plan_job(request: Request):
     try:
         body = _album_ace_lm_disabled_payload(await request.json())
-        global_llm_settings = _load_local_llm_settings()
+        global_llm_settings = _load_local_llm_settings_fast()
         planner_provider = _album_planner_provider_from_payload(body)
         embedding_provider = _embedding_provider_from_payload(body)
-        planner_model = _resolve_local_llm_model_selection(
-            planner_provider,
-            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or ""),
-            "chat",
-            "album planning",
-        )
-        embedding_model = _resolve_local_llm_model_selection(
-            embedding_provider,
-            str(body.get("embedding_model") or global_llm_settings.get("embedding_model") or ""),
-            "embedding",
-            "album embeddings",
+        planner_model = str(
+            body.get("planner_model")
+            or body.get("planner_ollama_model")
+            or body.get("ollama_model")
+            or global_llm_settings.get("chat_model")
+            or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")
+            or ""
+        ).strip()
+        embedding_model = str(
+            body.get("embedding_model")
+            or global_llm_settings.get("embedding_model")
+            or (DEFAULT_ALBUM_EMBEDDING_MODEL if embedding_provider == "ollama" else "")
+            or ""
         )
         job_id = uuid.uuid4().hex[:12]
         planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
@@ -15620,6 +15938,12 @@ async def api_create_album_plan_job(request: Request):
             custom_agents_used=True,
             crewai_used=planning_engine == "crewai_micro",
             memory_enabled=False,
+            stage="queued",
+            current_task="Queued album planning job",
+            total_tracks=int(body.get("num_tracks") or 5),
+            current_track=0,
+            completed_tracks=0,
+            remaining_tracks=int(body.get("num_tracks") or 5),
             expected_count=int(body.get("num_tracks") or 5),
             logs=[
                 f"Queued album plan job {job_id}.",
@@ -17954,6 +18278,26 @@ async def api_album_job_status(job_id: str):
     if not job:
         return JSONResponse({"success": False, "error": "Album job not found"}, status_code=404)
     return JSONResponse({"success": True, "job": job})
+
+
+@app.post("/api/album/jobs/{job_id}/stop")
+async def api_album_job_stop(job_id: str):
+    job = _album_job_snapshot(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": "Album job not found"}, status_code=404)
+    state = str((job or {}).get("state") or "").lower() if isinstance(job, dict) else ""
+    if state in {"succeeded", "success", "failed", "error", "stopped"}:
+        return JSONResponse({"success": True, "job": job, "message": "Album job already finished"})
+    updated = _set_album_job(
+        job_id,
+        state="stopping",
+        stage="cancel_requested",
+        status="Stop requested",
+        current_task="Stop requested; waiting for current LLM call to return",
+        stop_requested=True,
+        logs=["Stop requested from JobTracker."],
+    )
+    return JSONResponse({"success": True, "job": updated})
 
 
 @app.get("/api/albums/{album_id}/download")

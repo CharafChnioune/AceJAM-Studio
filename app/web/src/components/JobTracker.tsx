@@ -297,6 +297,28 @@ function jobPatchFromMlxVideo(job: JsonRecord): JobEntry {
   };
 }
 
+function jobPatchFromAlbum(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const result = asRecord(job.result);
+  const id = text(job.id, "album-job");
+  const label = text(payload.album_title || result.album_title || payload.concept || id, "Album job");
+  return {
+    id,
+    kind: "album",
+    label,
+    progress: progressOf({ id, kind: "album", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "album", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "album", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "Album job",
+    detailsPath: `/api/album/jobs/${encodeURIComponent(id)}`,
+    metadata: job,
+    error: text(job.error, ""),
+    startedAt: job.started_at ? new Date(String(job.started_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.last_update_at || job.finished_at, ""),
+  };
+}
+
 function InfoRow({ label, value }: { label: string; value: unknown }) {
   return (
     <div className="min-w-0 rounded-md border bg-background/35 px-3 py-2">
@@ -943,6 +965,20 @@ function AlbumDetails({ job }: { job: JsonRecord }) {
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           <InfoRow label="Status" value={job.status || result.album_status || job.state} />
           <InfoRow label="Progress" value={`${text(job.progress, "0")}%`} />
+          <InfoRow label="Stage" value={job.stage} />
+          <InfoRow label="Current task" value={job.current_task} />
+          <InfoRow label="Current agent" value={job.current_agent} />
+          <InfoRow
+            label="Track progress"
+            value={`${text(job.current_track, "0")} / ${text(job.total_tracks || payload.num_tracks || result.track_count, "?")}`}
+          />
+          <InfoRow label="Completed tracks" value={job.completed_tracks || result.completed_track_count} />
+          <InfoRow label="Remaining tracks" value={job.remaining_tracks} />
+          <InfoRow
+            label="LLM wait"
+            value={Boolean(job.waiting_on_llm) ? `${text(job.llm_provider || "LLM")} ${text(job.llm_wait_elapsed_s, "0")}s` : "no"}
+          />
+          <InfoRow label="Last update" value={job.last_update_at || job.updated_at} />
           <InfoRow label="Tracks" value={payload.num_tracks || result.track_count || asArray(result.tracks).length} />
           <InfoRow label="Full tracks ready" value={result.full_tracks_ready || result.completed_track_count || playableTracks.length} />
           <InfoRow label="Audio files ready" value={result.completed_audio_count || asArray(result.audios).length} />
@@ -1104,6 +1140,7 @@ function JobDetailsDialog({
           progress: progressOf(job, next),
           status: stageOf(job, next) || stateOf(job, next),
           state: stateOf(job, next),
+          stage: stageOf(job, next),
           updatedAt: text(next.updated_at || next.finished_at, "") || Date.now(),
           metadata: next,
           error: text(next.error, ""),
@@ -1206,12 +1243,26 @@ function JobDetailsDialog({
   const params = asRecord(remote.params);
   const canStop = job.kind === "lora" && ACTIVE_STATES.has(state);
   const canResume = job.kind === "lora" && ["failed", "stopped", "error"].includes(state);
+  const canStopAlbum = job.kind === "album" && ["queued", "running"].includes(state);
 
   const runLoraAction = async (action: "stop" | "resume") => {
     setActionBusy(action);
     try {
       await api.post(`/api/lora/jobs/${encodeURIComponent(job.id)}/${action}`);
       toast.success(action === "stop" ? "Training wordt gestopt." : "Training wordt hervat.");
+      await load();
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setActionBusy("");
+    }
+  };
+
+  const stopAlbumJob = async () => {
+    setActionBusy("album-stop");
+    try {
+      await api.post(`/api/album/jobs/${encodeURIComponent(job.id)}/stop`);
+      toast.success("Album-job stopverzoek gestuurd.");
       await load();
     } catch (error) {
       toast.error((error as Error).message);
@@ -1257,6 +1308,12 @@ function JobDetailsDialog({
               <Button variant="outline" size="sm" onClick={() => void runLoraAction("stop")} disabled={!!actionBusy}>
                 {actionBusy === "stop" ? <Loader2 className="size-3.5 animate-spin" /> : <PauseCircle className="size-3.5" />}
                 Stop
+              </Button>
+            )}
+            {canStopAlbum && (
+              <Button variant="outline" size="sm" onClick={() => void stopAlbumJob()} disabled={!!actionBusy}>
+                {actionBusy === "album-stop" ? <Loader2 className="size-3.5 animate-spin" /> : <PauseCircle className="size-3.5" />}
+                Stop album
               </Button>
             )}
             {canResume && (
@@ -1334,11 +1391,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
     let cancelled = false;
     const hydrateRemoteJobs = async () => {
       try {
-        const [loraResult, generationResult, mfluxResult, mlxVideoResult, ollamaResult] = await Promise.allSettled([
+        const [loraResult, generationResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mflux/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mlx-video/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/album/jobs"),
           api.get<{ success: boolean; pull_jobs?: JsonRecord[] }>("/api/ollama/status"),
         ]);
         if (cancelled) return;
@@ -1347,6 +1405,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
         const mfluxJobs = mfluxResult.status === "fulfilled" ? mfluxResult.value.jobs || [] : [];
         const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
+        const albumJobs = albumResult.status === "fulfilled" ? albumResult.value.jobs || [] : [];
         const ollamaPullJobs = ollamaResult.status === "fulfilled" ? ollamaResult.value.pull_jobs || [] : [];
         for (const rawJob of loraJobs) {
           const id = text(rawJob.id, "");
@@ -1371,6 +1430,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           if (!id) continue;
           if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
           addJob(jobPatchFromMlxVideo(rawJob));
+        }
+        for (const [index, rawJob] of albumJobs.entries()) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromAlbum(rawJob));
         }
         for (const rawJob of ollamaPullJobs) {
           const id = text(rawJob.id || rawJob.model, "");

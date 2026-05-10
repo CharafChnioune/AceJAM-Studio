@@ -327,8 +327,14 @@ export interface AlbumPlanJobRequest extends Record<string, unknown> {
 export interface AlbumPlanJobResponse {
   success: boolean;
   job_id?: string;
+  job?: Record<string, unknown>;
   status?: string;
   error?: string;
+  message?: string;
+  ollama_pull_started?: boolean;
+  ollama_model?: string;
+  ollama_pull_job?: Record<string, unknown>;
+  logs?: string[];
 }
 
 export const startAlbumPlanJob = (body: AlbumPlanJobRequest) =>
@@ -340,9 +346,23 @@ export const getAlbumPlanJob = (jobId: string) =>
     job?: {
       status?: string;
       state?: string;
+      stage?: string;
+      current_task?: string;
+      current_agent?: string;
+      current_track?: number | string;
+      total_tracks?: number;
+      completed_tracks?: number;
+      remaining_tracks?: number;
+      waiting_on_llm?: boolean;
+      llm_provider?: string;
+      llm_model?: string;
+      llm_wait_elapsed_s?: number;
+      last_update_at?: string;
+      logs?: string[];
       progress?: number;
       result?: Record<string, unknown>;
       error?: string;
+      errors?: string[];
     };
   }>(`/api/album/jobs/${encodeURIComponent(jobId)}`);
 

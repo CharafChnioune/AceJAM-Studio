@@ -49,6 +49,15 @@ import { cn, formatDuration } from "@/lib/utils";
 
 const MODE = "album" as const;
 
+function jobText(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function jobNumber(value: unknown, fallback = 0): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 const SONG_MODELS = [
   ["auto", "Auto (laat de planner kiezen)"],
   ["acestep-v15-xl-sft", "XL SFT"],
@@ -175,6 +184,7 @@ export function AlbumWizard() {
   const [jobId, setJobId] = React.useState<string | null>(null);
   const [jobProgress, setJobProgress] = React.useState<number>(0);
   const [jobStatus, setJobStatus] = React.useState<string>("");
+  const [jobDetail, setJobDetail] = React.useState<Record<string, unknown> | null>(null);
   const values = form.watch();
   const draftState = useWizardDraft(MODE, form);
 
@@ -367,6 +377,7 @@ export function AlbumWizard() {
       }
       setJobId(resp.job_id);
       setJobStatus("queued");
+      setJobDetail((resp.job as Record<string, unknown> | undefined) ?? null);
       setStep(4);
     },
     onError: (err: Error) => toast.error(err.message),
@@ -408,6 +419,7 @@ export function AlbumWizard() {
         if (cancelled) return;
         const j = resp.job;
         if (!j) return;
+        setJobDetail(j as Record<string, unknown>);
         const state = (j.state || "running").toLowerCase();
         const description = j.status || state;
         setJobStatus(description);
@@ -736,6 +748,65 @@ export function AlbumWizard() {
                     </div>
                     <details className="rounded-lg border bg-background/40 p-2">
                       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        Stijl & ACE-Step tags
+                      </summary>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Genre / stijlprofiel</Label>
+                          <Input
+                            value={String(t.style_profile ?? t.genre_profile ?? t.genre ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], style_profile: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Genre-richting</Label>
+                          <Input
+                            value={String(t.genre_direction ?? t.genre ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], genre_direction: e.target.value, genre: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Caption tags</Label>
+                          <Textarea
+                            rows={2}
+                            value={String(t.caption_tags ?? t.tags ?? t.caption ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], caption_tags: e.target.value, tags: e.target.value, caption: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Album-tags / negative tags</Label>
+                          <Textarea
+                            rows={2}
+                            value={[
+                              String(t.album_tags ?? ""),
+                              String(t.negative_tags ?? t.negative_control ?? ""),
+                            ].filter(Boolean).join("\n---\n")}
+                            onChange={(e) => {
+                              const [albumTags = "", negativeTags = ""] = e.target.value.split(/\n---\n/);
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], album_tags: albumTags, negative_tags: negativeTags, negative_control: negativeTags };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </details>
+                    <details className="rounded-lg border bg-background/40 p-2">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                         Lyrics-preview / bewerken
                       </summary>
                       <Textarea
@@ -984,6 +1055,54 @@ export function AlbumWizard() {
               <span className="font-mono text-sm tabular-nums">{jobProgress}%</span>
             </div>
             <Progress value={jobProgress} className="mt-3" />
+            {jobDetail && (
+              <div className="mt-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  Taak{" "}
+                  <span className="font-medium text-foreground">
+                    {jobText(jobDetail.current_task) || jobText(jobDetail.stage) || "—"}
+                  </span>
+                </div>
+                <div>
+                  Track{" "}
+                  <span className="font-medium text-foreground">
+                    {jobText(jobDetail.current_track) || "0"}/{jobText(jobDetail.total_tracks) || "?"}
+                  </span>
+                </div>
+                <div>
+                  Klaar{" "}
+                  <span className="font-medium text-foreground">
+                    {jobText(jobDetail.completed_tracks) || "0"}
+                  </span>{" "}
+                  · Nog{" "}
+                  <span className="font-medium text-foreground">
+                    {jobText(jobDetail.remaining_tracks) || "?"}
+                  </span>
+                </div>
+                <div>
+                  {Boolean(jobDetail.waiting_on_llm) ? (
+                    <>
+                      Wacht op{" "}
+                      <span className="font-medium text-foreground">
+                        {jobText(jobDetail.llm_provider) || "LLM"} {Math.round(jobNumber(jobDetail.llm_wait_elapsed_s))}s
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      Agent{" "}
+                      <span className="font-medium text-foreground">
+                        {jobText(jobDetail.current_agent) || "—"}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+            {jobDetail && Array.isArray(jobDetail.logs) && jobDetail.logs.length > 0 && (
+              <div className="mt-3 rounded-md border border-border/50 bg-background/60 p-2 text-xs text-muted-foreground">
+                {String(jobDetail.logs[jobDetail.logs.length - 1])}
+              </div>
+            )}
           </div>
         </div>
       ),

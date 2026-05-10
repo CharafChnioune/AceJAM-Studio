@@ -602,6 +602,29 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("acestep.training_v2.cli.train_fixed", command)
             self.assertIn("xl_turbo", command)
 
+    def test_large_preprocess_can_continue_with_tiny_decode_failure_rate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            log_path = root / "job.log"
+            log_path.write_text(
+                "[Side-Step] Pass 1 FAIL 20-Xzibit - X (Feat. Dr. Dre & Snoop Dogg)-RGF.mp3: Unspecified internal error.\n"
+                "[Side-Step] Pass 1 FAIL 40-Eminem - My Name is (Feat. Dr. Dre)-RGF.mp3: Unspecified internal error.\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(manager._preprocess_partial_allowed(913, 915))
+            failures = manager._extract_preprocess_failures(log_path)
+            self.assertEqual(len(failures), 2)
+            self.assertIn("Xzibit", failures[0]["filename"])
+            self.assertIn("Eminem", failures[1]["filename"])
+
+    def test_small_or_dirty_preprocess_failure_rate_still_blocks_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self.make_manager(Path(tmp))
+            self.assertFalse(manager._preprocess_partial_allowed(49, 50))
+            self.assertFalse(manager._preprocess_partial_allowed(80, 100))
+
     def test_train_command_supports_lokr(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -738,10 +738,11 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
     if sparse_genre:
         target_lines = max(len(sections), min(len(sections) * 3, target_lines))
         min_lines = max(0 if min_words == 0 else len(sections), int(target_lines * 0.5))
-    # Bar allocation per section type. 1 bar = 4 beats. Rap verses lock to a
-    # 16-bar floor on tracks >=120s (the standard hip-hop verse length); on
-    # shorter tracks fall back to a target_lines-derived practical floor.
+    # Bar allocation per section type. 1 bar = 4 beats. Full rap songs prefer
+    # three 16-bar verses; if a two-verse structure is chosen, the album gate
+    # requires 24 bars per verse so the track still has a real verse pool.
     rap_verse_bar_target = 16 if dur >= 120 else max(8, min(16, target_lines // max(1, len(sections) - 1)))
+    two_verse_rap_bar_target = 24 if rap and dur >= 150 else rap_verse_bar_target
     sung_verse_bar_target = max(8, min(16, target_words // 60)) if not sparse_genre else max(4, min(8, target_lines // 2))
     hook_bar_target = 8 if dur > 120 else 4
     bars_per_section_template = {
@@ -768,6 +769,13 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         "min_lines": min_lines,
         "bars_per_section": bars_per_section_template,
         "min_bars_per_rap_verse": rap_verse_bar_target,
+        "min_rap_verses_full_song": 3 if rap and dur >= 150 else 2 if rap else 0,
+        "alternate_min_bars_if_two_rap_verses": two_verse_rap_bar_target,
+        "rap_full_song_rule": (
+            "Full rap songs need 3 rap verses of at least 16 bars each, or 2 rap verses of at least 24 bars each."
+            if rap and dur >= 150
+            else ""
+        ),
         "bars_per_line_factor": 1.0 if rap else 1.4,
         "max_lyrics_chars": 4096,
         "safe_lyrics_char_target": ACE_STEP_LYRICS_SOFT_TARGET_MAX,

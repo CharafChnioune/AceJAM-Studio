@@ -82,6 +82,9 @@ NONFINITE_TRAINING_LOSS_RE = re.compile(
     re.IGNORECASE,
 )
 CHECKPOINT_LOSS_RE = re.compile(r"(?:^|_)loss_([-+]?\d+(?:[._]\d+)?(?:e[-+]?\d+)?)", re.IGNORECASE)
+PREPROCESS_FAIL_LINE_RE = re.compile(r"\[Side-Step\]\s+Pass\s+\d+\s+FAIL\s+(.+?):\s*(.+)$")
+PREPROCESS_MIN_CLEAN_RATIO = 0.99
+PREPROCESS_MIN_CLEAN_SAMPLES_FOR_PARTIAL = 50
 DEFAULT_TRAINING_STOP_POLICY = "max_epochs_or_loss_plateau"
 DEFAULT_LOSS_PATIENCE_EPOCHS = 15
 DEFAULT_MIN_RELATIVE_LOSS_IMPROVEMENT = 0.005
@@ -1568,7 +1571,6 @@ class AceTrainingManager:
             "modelscope": "modelscope",
             "typer-slim": "typer",
             "peft": "peft",
-            "torchao": "torchao",
         }
         missing = []
         for package, module in modules.items():
@@ -3002,10 +3004,40 @@ class AceTrainingManager:
             )
             self._run_command_step(job.id, preprocess_command, log_path, stage="preprocess")
             tensor_count = len([path for path in tensor_output.glob("*.pt") if not path.name.endswith(".tmp.pt")])
+            effective_sample_count = tensor_count
+            preprocess_excluded_count = max(0, len(labels) - tensor_count)
+            preprocess_excluded_samples: list[dict[str, str]] = []
             if tensor_count < len(labels):
-                raise RuntimeError(
-                    f"Preprocess produced only {tensor_count}/{len(labels)} tensor samples. "
-                    "Fix failed samples before training so the LoRA dataset is complete."
+                missing_count = preprocess_excluded_count
+                clean_ratio = (tensor_count / len(labels)) if labels else 0.0
+                failed_samples = self._extract_preprocess_failures(log_path)
+                preprocess_excluded_samples = failed_samples[:25]
+                partial_allowed = self._preprocess_partial_allowed(tensor_count, len(labels))
+                if not partial_allowed:
+                    raise RuntimeError(
+                        f"Preprocess produced only {tensor_count}/{len(labels)} tensor samples. "
+                        "Fix failed samples before training so the LoRA dataset is complete."
+                    )
+                self._append_log(
+                    log_path,
+                    (
+                        "\n[warning] Preprocess skipped "
+                        f"{missing_count}/{len(labels)} samples but kept {tensor_count} clean tensors "
+                        f"({clean_ratio:.2%}). Continuing with the clean subset.\n"
+                    ),
+                )
+                self._set_job_state(
+                    job.id,
+                    stage="preprocess",
+                    progress=55,
+                    result={
+                        "sample_count": len(labels),
+                        "effective_sample_count": tensor_count,
+                        "preprocess_partial": True,
+                        "preprocess_clean_ratio": clean_ratio,
+                        "preprocess_excluded_count": missing_count,
+                        "preprocess_excluded_samples": preprocess_excluded_samples,
+                    },
                 )
 
             output_dir = self.training_dir / f"{slug(trigger or adapter_type)}-{job.id}"
@@ -3101,7 +3133,14 @@ class AceTrainingManager:
                     "final_adapter": str(output_dir / "final"),
                     "log_dir": str(log_dir),
                 },
-                result={"sample_count": len(labels), "epochs": epochs, "dataset_warnings": params.get("dataset_warnings") or {}},
+                result={
+                    "sample_count": len(labels),
+                    "effective_sample_count": effective_sample_count,
+                    "preprocess_excluded_count": preprocess_excluded_count,
+                    "preprocess_excluded_samples": preprocess_excluded_samples,
+                    "epochs": epochs,
+                    "dataset_warnings": params.get("dataset_warnings") or {},
+                },
             )
             self._run_train_command_with_epoch_auditions(
                 job.id,
@@ -3130,7 +3169,7 @@ class AceTrainingManager:
                 song_model=str(params["song_model"]),
                 job_id=job.id,
                 dataset_id=dataset_id,
-                sample_count=len(labels),
+                sample_count=effective_sample_count,
                 epochs=int(epochs),
                 language=language,
                 metadata={
@@ -3141,6 +3180,10 @@ class AceTrainingManager:
                     "epoch_audition": params.get("epoch_audition") or {},
                     "epoch_auditions": list(pre_register_result.get("epoch_auditions") or []),
                     "dataset_warnings": params.get("dataset_warnings") or {},
+                    "original_sample_count": len(labels),
+                    "effective_sample_count": effective_sample_count,
+                    "preprocess_excluded_count": preprocess_excluded_count,
+                    "preprocess_excluded_samples": preprocess_excluded_samples,
                     "training_shift": params.get("training_shift"),
                     "num_inference_steps": params.get("num_inference_steps"),
                     "lora_scale": params.get("lora_scale"),
@@ -3182,6 +3225,10 @@ class AceTrainingManager:
                     "dataset_id": dataset_id,
                     "dataset_json": dataset_json,
                     "tensor_output": str(tensor_output),
+                    "sample_count": len(labels),
+                    "effective_sample_count": effective_sample_count,
+                    "preprocess_excluded_count": preprocess_excluded_count,
+                    "preprocess_excluded_samples": preprocess_excluded_samples,
                     "output_dir": str(output_dir),
                     "final_adapter": str(final_adapter),
                     "registered_adapter_path": str(registered),
@@ -4000,6 +4047,40 @@ class AceTrainingManager:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(text)
+
+    def _extract_preprocess_failures(self, log_path: Path) -> list[dict[str, str]]:
+        if not log_path.exists():
+            return []
+        failures: list[dict[str, str]] = []
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        seen: set[tuple[str, str]] = set()
+        for line in lines:
+            match = PREPROCESS_FAIL_LINE_RE.search(line.strip())
+            if not match:
+                continue
+            filename = match.group(1).strip()
+            error = match.group(2).strip()
+            key = (filename, error)
+            if key in seen:
+                continue
+            seen.add(key)
+            failures.append({"filename": filename, "error": error})
+        return failures
+
+    def _preprocess_partial_allowed(self, clean_count: int, total_count: int) -> bool:
+        if total_count <= 0:
+            return False
+        missing_count = total_count - clean_count
+        if missing_count <= 0:
+            return True
+        return (
+            clean_count >= PREPROCESS_MIN_CLEAN_SAMPLES_FOR_PARTIAL
+            and (clean_count / total_count) >= PREPROCESS_MIN_CLEAN_RATIO
+            and missing_count <= max(3, int(total_count * (1.0 - PREPROCESS_MIN_CLEAN_RATIO)) + 1)
+        )
 
     def _caption_fallback(self, entry: dict[str, Any]) -> str:
         relative = str(entry.get("relative_path") or entry.get("filename") or entry.get("path") or "sample")

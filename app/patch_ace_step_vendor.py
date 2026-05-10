@@ -211,6 +211,44 @@ def patch_mps_training_auto_precision() -> bool:
     return changed
 
 
+def patch_bitsandbytes_non_cuda_warning() -> bool:
+    path = VENDOR_DIR / "acestep" / "training" / "trainer.py"
+    text = path.read_text(encoding="utf-8")
+    patched = (
+        "# OPTIMIZATION: Use 8-bit Adam to save CUDA VRAM.\n"
+        "#\n"
+        "# bitsandbytes is a CUDA-oriented optional optimizer backend. Importing it on\n"
+        "# Apple/MPS only produces noise and cannot be used below anyway, so keep MPS\n"
+        "# training on the documented AdamW path without warning spam.\n"
+        "if torch.cuda.is_available():\n"
+        "    try:\n"
+        "        import bitsandbytes as bnb\n\n"
+        "        HAS_BNB = True\n"
+        "    except ImportError:\n"
+        "        bnb = None\n"
+        "        HAS_BNB = False\n"
+        '        logger.info("bitsandbytes not installed. Using standard AdamW.")\n'
+        "else:\n"
+        "    bnb = None\n"
+        "    HAS_BNB = False\n"
+    )
+    if patched in text:
+        return False
+    original = (
+        "# OPTIMIZATION: Use 8-bit Adam to save some VRAM\n"
+        "try:\n"
+        "    import bitsandbytes as bnb\n\n"
+        "    HAS_BNB = True\n"
+        "except ImportError:\n"
+        "    HAS_BNB = False\n"
+        '    logger.warning("bitsandbytes not installed. Using standard AdamW.")\n'
+    )
+    if original not in text:
+        raise RuntimeError(f"Could not find bitsandbytes import block in {path}")
+    path.write_text(text.replace(original, patched, 1), encoding="utf-8")
+    return True
+
+
 def patch_mlx_single_seed_propagation() -> bool:
     path = VENDOR_DIR / "acestep" / "llm_inference.py"
     text = path.read_text(encoding="utf-8")
@@ -438,6 +476,7 @@ def main() -> None:
         "chunked_training_scheduler_epochs" if patch_chunked_training_scheduler_epochs() else "",
         "lora_adapter_name_sanitizer" if patch_lora_adapter_name_sanitizer() else "",
         "mps_training_auto_precision" if patch_mps_training_auto_precision() else "",
+        "bitsandbytes_non_cuda_warning" if patch_bitsandbytes_non_cuda_warning() else "",
         "mlx_single_seed_propagation" if patch_mlx_single_seed_propagation() else "",
     ]
     applied = [item for item in changed if item]

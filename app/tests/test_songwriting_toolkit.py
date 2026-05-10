@@ -469,8 +469,9 @@ Lyrics:
         )
         self.assertIn("Lyric Writer", lyric_role)
         self.assertIn("2024-2026", lyric_role)
-        # Modern rap = 12-bar minimum (storytelling = 16+); both numbers must surface
-        self.assertIn("12 bars", lyric_goal)
+        # Full rap albums now use a hard long-form rule: 3x16 or 2x24.
+        self.assertIn("THREE rap verses", lyric_goal)
+        self.assertIn("24 bars", lyric_goal)
         self.assertIn("multisyllabic", lyric_goal.lower())
         # Backstory references modern chart-toppers, not just classic
         self.assertIn("Sabrina Carpenter", lyric_backstory)
@@ -590,13 +591,17 @@ Lyrics:
                     "Persona: late-night working-class storyteller. Cadence: laid-back pocket on verses, "
                     "front-of-beat on hook. Ad-libs (yeah!) on bar 4 of verse 2; (woo) on second hook entry. "
                     "Mix: ducks the synth pad on verse, brings stacked harmonies up on hook."
-                )
+                ),
+                "negative_control": "avoid muddy vocals, gibberish, random syllables, prompt text, and over-compressed drums",
+                "genre_profile": "West Coast rap-first pocket with hard drums, deep low end, clear rap lead, and polished mix",
             }
         )
         self.assertNotIn(
             next((i for i in rich if "performance_brief_too_short" in i), None),
             rich,
         )
+        self.assertNotIn("missing_negative_control", rich)
+        self.assertNotIn("missing_genre_profile", rich)
 
     def test_album_agent_engine_defaults_to_crewai_micro(self):
         # CrewAI Micro Tasks is the album-wizard default — empty/None values
@@ -732,6 +737,19 @@ Lyrics:
     def test_agent_block_parser_fails_json_only_response(self):
         with self.assertRaisesRegex(ValueError, "json_response_not_allowed"):
             album_crew_module._parse_agent_block_payload('{"caption":"bright drums"}', "caption_agent_payload")
+
+    def test_agent_block_parser_autocloses_final_block(self):
+        raw = (
+            "******album_title******\nMarket Lights\n******/album_title******\n"
+            "******one_sentence_concept******\nStreet-level victory lap\n******/one_sentence_concept******\n"
+            "******style_guardrails******\nWest Coast rap\nNo ballad drift\n******/style_guardrails******\n"
+            "******track_roles******\nTrack 1 opener\nTrack 2 closer"
+        )
+
+        payload = album_crew_module._parse_agent_block_payload(raw, "album_intake_payload")
+
+        self.assertEqual(payload["album_title"], "Market Lights")
+        self.assertEqual(payload["track_roles"], ["Track 1 opener", "Track 2 closer"])
 
     def test_agent_block_parser_reports_missing_and_extra_blocks(self):
         with self.assertRaisesRegex(ValueError, "missing_block:one_sentence_concept,style_guardrails,track_roles"):
@@ -1683,6 +1701,9 @@ kill all the rivals
         # 16-bar floor for rap verses on tracks >=120s
         self.assertGreaterEqual(bars["Verse_rap"], 16)
         self.assertEqual(plan["min_bars_per_rap_verse"], bars["Verse_rap"])
+        self.assertEqual(plan["min_rap_verses_full_song"], 3)
+        self.assertEqual(plan["alternate_min_bars_if_two_rap_verses"], 24)
+        self.assertIn("3 rap verses", plan["rap_full_song_rule"])
         # Bars per line factor: 1.0 for rap (1 line ~ 1 bar)
         self.assertEqual(plan["bars_per_line_factor"], 1.0)
         # Hook gets 8 bars on tracks >120s
@@ -2401,16 +2422,27 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertGreaterEqual(report["lyric_duration_fit"]["min_words"], 340)
         self.assertGreaterEqual(report["lyric_duration_fit"]["min_lines"], 36)
 
-    def test_director_rap_section_minimums_use_16_bar_floor_for_full_songs(self):
+    def test_director_rap_section_minimums_use_24_bar_floor_for_two_verse_full_songs(self):
         minimums = album_crew_module._director_section_line_minimums(
             ["[Verse - rap]", "[Chorus - rap hook]", "[Verse 2 - rap]"],
             duration=180,
             genre_hint="West Coast rap",
         )
 
-        self.assertEqual(minimums["[Verse - rap]"], 16)
+        self.assertEqual(minimums["[Verse - rap]"], 24)
+        self.assertEqual(minimums["[Verse 2 - rap]"], 24)
+        self.assertLess(minimums["[Chorus - rap hook]"], 24)
+
+    def test_director_rap_section_minimums_keep_16_bar_floor_for_three_verse_full_songs(self):
+        minimums = album_crew_module._director_section_line_minimums(
+            ["[Verse 1 - rap]", "[Hook]", "[Verse 2 - rap]", "[Bridge]", "[Verse 3 - rap]"],
+            duration=180,
+            genre_hint="West Coast rap",
+        )
+
+        self.assertEqual(minimums["[Verse 1 - rap]"], 16)
         self.assertEqual(minimums["[Verse 2 - rap]"], 16)
-        self.assertLess(minimums["[Chorus - rap hook]"], 16)
+        self.assertEqual(minimums["[Verse 3 - rap]"], 16)
 
     def test_director_lyrics_quality_reports_rap_bar_counts(self):
         verse_one = [f"Brick by brick the city rhythm sharpens every motive {idx}" for idx in range(16)]
@@ -2449,7 +2481,7 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertGreaterEqual(quality["rap_bar_counts"]["[Verse 2 - rap]"], 16)
         self.assertEqual(quality["gate_status"], "pass")
 
-    def test_director_minimal_gate_flags_rap_verses_under_16_bars(self):
+    def test_director_minimal_gate_flags_two_rap_verses_under_24_bars(self):
         sections = ["[Intro]", "[Verse - rap]", "[Chorus - rap hook]", "[Verse 2 - rap]", "[Bridge]", "[Final Chorus - rap hook]", "[Outro]"]
         short_verse = [f"Concrete truth keeps knocking on the city door {idx}" for idx in range(8)]
         lyrics = "\n".join(
@@ -2486,7 +2518,7 @@ The Narrative: friends read old letters on a roof as the lights come back.
         )
 
         self.assertFalse(report["gate_passed"])
-        self.assertTrue(any(str(issue).startswith("rap_verses_underfilled:") for issue in report["issues"]))
+        self.assertTrue(any("/24_two_verse_full_song" in str(issue) for issue in report["issues"]))
         self.assertIn("lyrics_quality", report)
 
     def test_director_minimal_gate_blocks_non_rap_payload_for_rap_request(self):

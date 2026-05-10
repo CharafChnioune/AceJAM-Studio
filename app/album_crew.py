@@ -385,7 +385,7 @@ AGENT_BLOCK_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "performance_agent_payload": {
         "fields": ["performance_brief", "negative_control", "genre_profile"],
-        "required_nonempty": {"performance_brief"},
+        "required_nonempty": {"performance_brief", "negative_control", "genre_profile"},
     },
     "final_payload": {
         "fields": [
@@ -3395,7 +3395,7 @@ def _agent_block_contract(schema_name: str) -> dict[str, Any] | None:
         if field == "performance_brief":
             return {
                 "fields": ["performance_brief", "negative_control", "genre_profile"],
-                "required_nonempty": {"performance_brief"},
+                "required_nonempty": {"performance_brief", "negative_control", "genre_profile"},
             }
         if field == "language":
             return {
@@ -3544,7 +3544,12 @@ def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
         elif stripped:
             raise ValueError(f"block_parse_failed:text_outside_blocks:line_{line_number}")
     if current_field:
-        raise ValueError(f"block_parse_failed:unclosed_block:{current_field}")
+        # Local models occasionally omit the closing delimiter for the final
+        # block even while the block content itself is complete. Closing the
+        # final block at EOF keeps the app-owned validator/repair loop in
+        # control instead of letting CrewAI swallow the raw response as a hard
+        # guardrail exception.
+        blocks[current_field] = current_lines
     missing = [field for field in expected if field not in blocks]
     if missing:
         raise ValueError("missing_block:" + ",".join(missing))
@@ -4277,12 +4282,12 @@ _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
     ),
     "Track Lyrics Agent Part 1": (
         "Tier-1 Lyric Writer Part 1 (2024-2026 chart-craft)",
-        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Modern rap verses are 12 bars minimum (16+ for storytelling tracks Kendrick-concept / Nas-narrative); pop verses 8-12 lines. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
+        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Full rap songs require either THREE rap verses with at least 16 bars each, or TWO rap verses with at least 24 bars each. Pop verses are 8-12 lines. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
         "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops (Mountain Dew, Dior, jet-lag CVS), Kendrick 12-bar diss-track punch, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas Hemingway-line specificity + 2Pac empathetic clarity stay as the craft floor. You never ship 'I feel sad', 'my heart is broken', 'we all', 'shattered dreams', 'I am the saint I am the sinner'. You write proper nouns, contradictions in the same verse (confidence + jet-lag), conversational micro-overflow lines.",
     ),
     "Track Lyrics Agent Part 2": (
         "Tier-1 Lyric Writer Part 2 (2024-2026 chart-craft)",
-        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Rap verses minimum 12 bars (16+ for storytelling). Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse.",
+        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Full rap songs require THREE rap verses with at least 16 bars each, or TWO rap verses with at least 24 bars each. Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse.",
         "You ghost-write for 2024-2026 chart hits. V2 must add what V1 didn't: 'Espresso' V2 jumps from after-party to chapel-to-ICU-to-CVS at dawn. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. 'Birds of a Feather' V2 lands the songwriter's thesis. Same craft rules as Part 1: rhyme stacking, concrete proper nouns, contradictions, no cliches, every verse changes something, hook verbatim every chorus pass.",
     ),
     "Track Lyrics Agent Part 3": (
@@ -4638,6 +4643,11 @@ def _director_lyrics_quality(track: dict[str, Any], options: dict[str, Any] | No
     min_lines = _director_effective_min_lines(raw_min_lines, min_words)
     target_lines = int(plan.get("target_lines") or min_lines)
     rap_bar_counts = _director_rap_bar_counts(track, options)
+    is_rap = _director_is_rap_context(track, options)
+    is_short_role = _director_short_track_role(track)
+    full_rap_song = bool(is_rap and not is_short_role and float(duration or 0) >= 150)
+    rap_verse_count = len(rap_bar_counts)
+    rap_bar_floor = 24 if full_rap_song and rap_verse_count == 2 else 16
     issues = list((gate or {}).get("issues") or [])
     gate_status = str((gate or {}).get("status") or ("pass" if not issues else "fail"))
     return {
@@ -4651,14 +4661,18 @@ def _director_lyrics_quality(track: dict[str, Any], options: dict[str, Any] | No
             1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
         ),
         "rap_bar_counts": rap_bar_counts,
+        "required_rap_verses": 3 if full_rap_song else 2 if is_rap else 0,
+        "rap_bar_floor": rap_bar_floor if is_rap else 0,
+        "alternate_min_bars_if_two_rap_verses": int(plan.get("alternate_min_bars_if_two_rap_verses") or 0),
+        "rap_structure_rule": str(plan.get("rap_full_song_rule") or ""),
         "target_words": target_words,
         "min_words": min_words,
         "target_lines": target_lines,
         "min_lines": min_lines,
         "raw_min_lines": raw_min_lines,
         "duration": duration,
-        "is_rap": _director_is_rap_context(track, options),
-        "is_short_role": _director_short_track_role(track),
+        "is_rap": is_rap,
+        "is_short_role": is_short_role,
         "issues": issues,
     }
 
@@ -6401,7 +6415,7 @@ class AlbumAgentPromptLibrary:
             "One small decision per call. Answer the schema only.\n"
             "ACE-Step: caption<512 sound-only; lyrics<4096 temporal script; metadata separate; complete agent lyrics bypass ACE LM rewrite.\n"
             "Lyrics: section tags exact, complete lines, clear section separation, 6-10 syllables as a guide, breaks for long tracks.\n"
-            "Rap verses: minimum 16 bars per [Verse - rap] section on tracks >=120s. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
+            "Full rap songs: write either THREE [Verse - rap] sections with at least 16 bars each, or TWO [Verse - rap] sections with at least 24 bars each. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
             "Never put BPM/key/duration/model/seed/title/story/producer/person names in caption or lyrics unless user explicitly wrote a sung line.\n"
             "Producer references: never put producer names in caption. Use the Producer-Format Cookbook below to translate to genre+era+drum+timbre stacks.\n"
             "Anti-pattern guard: forbid AI-cliche image bank (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes, we rise, let it burn, chasing the night). Forbid telling-not-showing labels and generic POV.\n"
@@ -6451,13 +6465,17 @@ def _director_section_line_minimums(section_tags: list[str], *, duration: float,
         label = str(tag or "")
         lower = label.lower()
         if rap and "verse" in lower:
-            # 16-bar rap-verse floor for full songs (120s+) so they get
-            # real verse density matching the 3-verses template. Shorter
-            # tracks scale: 90-119s → 8 lines, 60-89s → 4 lines (skit
-            # verse), <60s → 3 lines (snippet/instrumental). Keeps short
-            # smoke fixtures usable while raising the floor for full songs.
+            # Full rap songs prefer 3x16 bars. If the section map only has
+            # two rap verses, raise each verse to 24 bars so it still carries
+            # enough lyrics for a complete track.
             if dur >= 120:
-                minimums[label] = 16
+                rap_verse_count = sum(
+                    1
+                    for section in section_tags or []
+                    if re.search(r"\bverse\b", str(section), re.I)
+                    and re.search(r"\brap|hip[-\s]?hop|flow\b", str(section), re.I)
+                )
+                minimums[label] = 24 if dur >= 150 and 0 < rap_verse_count <= 2 else 16
             elif dur >= 90:
                 minimums[label] = 8
             elif dur >= 60:
@@ -6926,6 +6944,8 @@ def _validate_performance_payload(payload: dict[str, Any]) -> list[str]:
     if unexpected:
         issues.append("unexpected_performance_keys:" + ",".join(unexpected))
     brief = str(payload.get("performance_brief") or "").strip()
+    negative = str(payload.get("negative_control") or "").strip()
+    profile = str(payload.get("genre_profile") or "").strip()
     if not brief:
         issues.append("missing_performance_brief")
     elif len(brief) < 50:
@@ -6933,6 +6953,10 @@ def _validate_performance_payload(payload: dict[str, Any]) -> list[str]:
         # mix notes. Under 50 chars it is almost always "soulful, confident"
         # filler that tells the vocalist nothing.
         issues.append(f"performance_brief_too_short:{len(brief)}_chars_min_50")
+    if not negative:
+        issues.append("missing_negative_control")
+    if not profile:
+        issues.append("missing_genre_profile")
     return issues
 
 
@@ -7076,11 +7100,17 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
             issues.append(f"missing_hook:hook_passes_{len(hook_sections)}/2")
         if rap_context:
             rap_bar_counts = dict(lyrics_quality.get("rap_bar_counts") or {})
-            if len(rap_bar_counts) < 2:
-                issues.append(f"weak_section_map:rap_verses_{len(rap_bar_counts)}/2")
-            for section, count in rap_bar_counts.items():
-                if int(count or 0) < 16:
-                    issues.append(f"rap_verses_underfilled:{section}={count}/16")
+            rap_verse_count = len(rap_bar_counts)
+            if rap_verse_count < 2:
+                issues.append(f"weak_section_map:rap_verses_{rap_verse_count}/3x16_or_2x24")
+            elif rap_verse_count >= 3:
+                for section, count in rap_bar_counts.items():
+                    if int(count or 0) < 16:
+                        issues.append(f"rap_verses_underfilled:{section}={count}/16")
+            else:
+                for section, count in rap_bar_counts.items():
+                    if int(count or 0) < 24:
+                        issues.append(f"rap_verses_underfilled:{section}={count}/24_two_verse_full_song")
     density_plan = ((lyric_duration_fit.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(lyric_duration_fit.get("lyric_density_gate"), dict) else {}
     instrumental = str(lyrics or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental"))
     lyric_craft = lyric_craft_gate(
@@ -7295,11 +7325,15 @@ class AceJamAlbumDirector:
         previous_summaries: list[dict[str, Any]] = []
         planning_failures: list[dict[str, Any]] = []
         for index in range(self.num_tracks):
+            self.logs.append(f"Writing track {index + 1}/{self.num_tracks}: starting per-track writer loop.")
             try:
                 track = self._write_track(index, album_bible, previous_summaries)
                 track["planning_status"] = "completed"
                 tracks.append(track)
                 previous_summaries.append(_track_summary_for_agent(track))
+                self.logs.append(
+                    f"Writing track {index + 1}/{self.num_tracks}: completed {track.get('title') or f'Track {index + 1}'}."
+                )
             except Exception as exc:
                 failed_track = self._failed_track_payload(index, exc)
                 tracks.append(failed_track)
@@ -7417,6 +7451,18 @@ class AceJamAlbumDirector:
             )
             self.logs.append(f"AceJAM Director partial plan: failed tracks: {failed_preview}.")
         contract_repairs = len([line for line in self.logs if str(line).startswith("Contract repaired:")]) - self.repair_lines_before
+        first_completed = completed_tracks[0] if completed_tracks else {}
+        album_caption_tags = str(first_completed.get("caption_tags") or first_completed.get("tags") or first_completed.get("caption") or "").strip()
+        album_negative_tags = str(first_completed.get("negative_tags") or first_completed.get("negative_control") or self.opts.get("negative_tags") or "").strip()
+        album_style_profile = str(first_completed.get("style_profile") or self.opts.get("style_profile") or "auto").strip() or "auto"
+        album_genre_prompt = str(
+            self.opts.get("genre_prompt")
+            or album_bible.get("genre_prompt")
+            or first_completed.get("genre_direction")
+            or first_completed.get("genre")
+            or first_completed.get("genre_profile")
+            or ""
+        ).strip()
         return {
             "tracks": tracks,
             "logs": self.logs,
@@ -7441,6 +7487,12 @@ class AceJamAlbumDirector:
             "album_title": album_title,
             "album_bible": album_bible,
             "concept": album_bible.get("concept") or self.concept,
+            "album_mood": str(album_bible.get("mood_vibe") or first_completed.get("mood") or first_completed.get("vibe") or "").strip(),
+            "vocal_type": str(album_bible.get("vocal_type") or first_completed.get("vocal_type") or "").strip(),
+            "genre_prompt": album_genre_prompt,
+            "style_profile": album_style_profile,
+            "custom_tags": str(self.opts.get("custom_tags") or first_completed.get("album_tags") or album_caption_tags).strip(),
+            "negative_tags": album_negative_tags,
             "prompt_kit_version": PROMPT_KIT_VERSION,
             "prompt_kit": prompt_kit_payload(),
             "toolkit": toolkit_payload(self.opts.get("installed_models")),
@@ -7646,6 +7698,10 @@ class AceJamAlbumDirector:
         derived_style = ", ".join(
             dict.fromkeys(bit for bit in (bible_genre_hint, producer_credit) if bit)
         )[:160]
+        caption_tags = ", ".join(_baseline_caption_tags({**slot, "style": derived_style}, bible_genre_hint or bible_concept))
+        negative_tags = ", ".join(DEFAULT_NEGATIVE_CONTROL)
+        style_hint = " ".join([derived_style, bible_genre_hint, caption_tags]).lower()
+        style_profile = "rap" if re.search(r"\brap|hip[-\s]?hop|trap|drill\b", style_hint) else "pop"
         return {
             **{key: value for key, value in slot.items() if value not in (None, "", [])},
             "track_number": index + 1,
@@ -7659,6 +7715,13 @@ class AceJamAlbumDirector:
             "description": str(slot.get("description") or bible_concept or "").strip(),
             "mood": str(opts.get("album_mood") or opts.get("mood_vibe") or bible_mood or "").strip(),
             "genre": str(opts.get("album_genre") or opts.get("genre_prompt") or bible_genre_hint or "").strip(),
+            "genre_direction": str(opts.get("genre_prompt") or bible_genre_hint or "").strip(),
+            "style_profile": style_profile,
+            "genre_profile": str(derived_style or bible_genre_hint or caption_tags).strip(),
+            "caption_tags": caption_tags,
+            "album_tags": str(opts.get("custom_tags") or caption_tags).strip(),
+            "negative_tags": negative_tags,
+            "negative_control": negative_tags,
             "vocal_type": str(opts.get("album_vocal_type") or opts.get("vocal_type") or "").strip(),
             "planning_status": "failed",
             "planning_error": error,
@@ -7868,16 +7931,15 @@ class AceJamAlbumDirector:
         genre_contract = build_genre_intent_contract(current, self.opts)
         rap_note = ""
         if genre_contract.get("family") == "rap":
-            # Rap-lock: full songs (>=120s) MUST have 3 [Verse - rap] sections
-            # so the 16-bar floor delivers a real verse pool. Shorter tracks
-            # use the 2-verse template. Use the canonical "Verse N - rap"
-            # naming so the lyric agent recognises them as rap-modifier slots.
+            # Rap-lock: full songs should use 3 [Verse - rap] sections. A
+            # 2-verse layout is only acceptable when each verse expands to
+            # 24 bars, enforced later by the lyric gate.
             if requested_duration >= 120:
                 rap_note = (
-                    " Rap-lock for full songs (this is a 120s+ track): use exactly THREE rap verses. "
+                    " Rap-lock for full songs (this is a 120s+ track): prefer THREE rap verses. "
                     "Recommended layout: [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Hook], [Bridge], "
-                    "[Verse 3 - rap], [Final Hook], [Outro]. Three verses are mandatory — two-verse "
-                    "structures cap density and waste the album slot. Avoid pop-style repeated [Pre-Chorus] sections."
+                    "[Verse 3 - rap], [Final Hook], [Outro]. If you choose only TWO rap verses, they must be "
+                    "long-form 24-bar verses. Avoid pop-style repeated [Pre-Chorus] sections."
                 )
             else:
                 rap_note = (
@@ -7900,11 +7962,11 @@ class AceJamAlbumDirector:
                     issues.append("rap_section_map_missing_verse")
                 if sum(1 for tag in tags if re.search(r"pre[-\s]?chorus", tag, re.I)) > 1:
                     issues.append("rap_section_map_pop_prechorus_overused")
-                # Full rap songs (>=120s) require 3 verses to match the
-                # 3-verses template + 16-bar floor. Reject 1-2 verse layouts
-                # so the repair loop coaxes a third verse in.
-                if requested_duration >= 120 and len(verse_tags) < 3:
-                    issues.append(f"rap_full_song_needs_3_verses:got_{len(verse_tags)}")
+                # Full rap songs need 3x16 or 2x24. Section-map validation
+                # only checks the structural half; lyric validation checks
+                # the 24-bar floor when only two verses are present.
+                if requested_duration >= 120 and len(verse_tags) < 2:
+                    issues.append(f"rap_full_song_needs_3x16_or_2x24:got_{len(verse_tags)}")
             return issues
         section_payload = self._call_until_valid(
             "Section Map Agent",
@@ -8042,6 +8104,7 @@ class AceJamAlbumDirector:
                 + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
                 + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
                 + f"BARS_PER_SECTION_FLOOR:\n{json.dumps(lyric_plan.get('bars_per_section') or {}, ensure_ascii=False)}\n"
+                + f"RAP_FULL_SONG_RULE:\n{json.dumps({'rule': lyric_plan.get('rap_full_song_rule') or '', 'min_rap_verses_full_song': lyric_plan.get('min_rap_verses_full_song'), 'alternate_min_bars_if_two_rap_verses': lyric_plan.get('alternate_min_bars_if_two_rap_verses')}, ensure_ascii=False)}\n"
                 + f"\nONLY_ALLOWED_SECTION_TAGS:\n{json.dumps(group, ensure_ascii=False)}\n"
                 + f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
                 + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
@@ -8054,7 +8117,7 @@ class AceJamAlbumDirector:
                 "Each allowed section tag must appear once in lyrics_lines, in the same order. "
                 "Never write a forbidden previous section. Never copy earlier sections. "
                 "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
-                "RAP VERSE FLOOR: every [Verse - rap] section is minimum 16 bars (~16 lines at 8-15 syllables/line; 1 bar = 4 beats). "
+                "RAP VERSE FLOOR: full rap songs need 3 rap verses of at least 16 bars each, or 2 rap verses of at least 24 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
                 "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
                 "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
                 "Every verse moves the story forward — new scene, new POV, time jump, escalation, or revelation. A verse that just restates the chorus is dead weight. "
@@ -8961,6 +9024,69 @@ class AceJamAlbumDirector:
             if default_token not in negative_tokens:
                 negative_tokens.append(default_token)
         track["negative_tags"] = ", ".join(negative_tokens)
+        if not str(track.get("negative_control") or "").strip():
+            track["negative_control"] = track["negative_tags"]
+
+        # UI-visible style/tag fields: ACE-Step wants rich sonic conditioning
+        # in caption, while the wizard also shows style profile, caption tags,
+        # album tags and genre direction. Fill them deterministically from the
+        # crew caption/tag outputs so no track can ship with blank visible
+        # conditioning fields.
+        tag_tokens = _director_sound_tag_candidates(track)[:16]
+        if not tag_tokens:
+            tag_tokens = _baseline_caption_tags(track, bible_genre_hint or bible_concept)
+        if not track.get("tag_list"):
+            track["tag_list"] = tag_tokens[:12]
+        if not str(track.get("tags") or "").strip():
+            track["tags"] = ", ".join(tag_tokens[:12])
+        if not str(track.get("caption") or "").strip():
+            track["caption"] = str(track.get("tags") or "").strip()
+        caption_tags_text = ", ".join(tag_tokens[:14]).strip()
+        if not str(track.get("caption_tags") or "").strip():
+            track["caption_tags"] = caption_tags_text
+        if not str(track.get("album_tags") or "").strip():
+            track["album_tags"] = str(self.opts.get("custom_tags") or caption_tags_text).strip()
+        genre_hint_text = _director_track_genre_hint(track, self.opts).lower()
+        if re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", genre_hint_text):
+            profile_key = "rap"
+        elif re.search(r"\b(?:r&b|rnb|soul)\b", genre_hint_text):
+            profile_key = "soul"
+        elif re.search(r"\b(?:edm|dance|house|techno|club|trance)\b", genre_hint_text):
+            profile_key = "edm"
+        elif re.search(r"\b(?:rock|punk|metal|guitar)\b", genre_hint_text):
+            profile_key = "rock"
+        elif re.search(r"\b(?:country|americana|folk)\b", genre_hint_text):
+            profile_key = "country"
+        elif re.search(r"\b(?:cinematic|score|orchestral|trailer)\b", genre_hint_text):
+            profile_key = "cinematic"
+        else:
+            profile_key = "pop"
+        if str(track.get("style_profile") or "").strip().lower() in {"", "auto"}:
+            track["style_profile"] = profile_key
+        if not str(track.get("genre_profile") or "").strip():
+            track["genre_profile"] = str(track.get("genre") or track.get("style") or caption_tags_text or profile_key).strip()
+        if not str(track.get("genre_direction") or "").strip():
+            track["genre_direction"] = str(
+                self.opts.get("genre_prompt")
+                or self.opts.get("album_genre")
+                or track.get("genre")
+                or track.get("genre_profile")
+                or profile_key
+            ).strip()
+        if not str(track.get("caption_dimensions_covered") or "").strip():
+            track["caption_dimensions_covered"] = list(ACE_STEP_CAPTION_DIMENSIONS)
+
+        # The first pass above ran before the UI floor filled style/profile
+        # fields. Recompute the visible readiness mirrors so JobTracker and
+        # Review show the same conditioning that ACE-Step will receive.
+        genre_adherence = evaluate_genre_adherence(track, self.opts)
+        track["genre_intent_contract"] = genre_adherence.get("contract") or {}
+        track["genre_adherence"] = {key: value for key, value in genre_adherence.items() if key != "contract"}
+        track["genre_validation_issues"] = genre_adherence.get("issue_ids") or []
+        producer_readiness = producer_grade_readiness(track, options=self.opts)
+        track["producer_grade_sonic_contract"] = (producer_readiness.get("sonic_dna_coverage") or {}).get("contract") or {}
+        track["sonic_dna_coverage"] = producer_readiness.get("sonic_dna_coverage") or {}
+        track["producer_grade_readiness"] = producer_readiness
         # Inference settings: pass through album-level config so wizard shows
         # the actual values that will be sent to ACE-Step rather than blanks.
         track["inference_steps"] = clamp_int(
@@ -9415,7 +9541,7 @@ def plan_album(
         logs.append("Each track field is filled by a real CrewAI Agent/Task.")
         logs.append(f"Agents per track: Track Concept, BPM, Key, Time Signature, Duration, Sonic Tags, Section Map, Hook, Lyrics Parts, Caption Polisher, Performance, Final Payload Assembler.")
         logs.append(f"Watch the log for 'CrewAI Micro Agent call:' lines — that is each agent invoking crewai.Agent + crewai.Task.")
-        logs.append("Knowledge injected per agent: ACE-Step tag library, Producer-Format Cookbook (17 entries incl. Dre G-funk + Chronic 2001 + Pete Rock + Havoc + Stoupe), Rap-Mode Cookbook, Songwriter Craft Cookbook (Eminem/2Pac/Kendrick/Nas signatures), Lyric Anti-Patterns, Worked Examples, 16-bar rap verse floor.")
+        logs.append("Knowledge injected per agent: ACE-Step tag library, Producer-Format Cookbook (17 entries incl. Dre G-funk + Chronic 2001 + Pete Rock + Havoc + Stoupe), Rap-Mode Cookbook, Songwriter Craft Cookbook (Eminem/2Pac/Kendrick/Nas signatures), Lyric Anti-Patterns, Worked Examples, full-rap rule 3x16 or 2x24 bars.")
         logs.append("================================================================")
     else:
         logs.append("(Tip: switch agent_engine to 'crewai_micro' to run multi-agent CrewAI flow with full visibility.)")
