@@ -641,7 +641,7 @@ class LoraTrainerTest(unittest.TestCase):
                 }
             )
             command = job["command"]
-            self.assertIn("fixed", command)
+            self.assertIn("_acejam_train_bootstrap.py", command[1])
             self.assertIn("--adapter-type", command)
             self.assertIn("lokr", command)
             self.assertIn("--lokr-weight-decompose", command)

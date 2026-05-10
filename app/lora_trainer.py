@@ -2138,10 +2138,9 @@ class AceTrainingManager:
         log_dir = output_dir / "runs"
         command = [
             sys.executable,
-            "train.py",
+            str(self.base_dir / "_acejam_train_bootstrap.py"),
             "--plain",
             "--yes",
-            "fixed",
             "--checkpoint-dir",
             str(self.checkpoint_dir),
             "--model-variant",
