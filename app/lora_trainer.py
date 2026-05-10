@@ -25,7 +25,18 @@ except Exception:  # pragma: no cover - dependency is installed in the app env.
     sf = None
 
 
-AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".m4a"}
+AUDIO_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".m4a",
+    ".aif",
+    ".aiff",
+    ".caf",
+}
 JOB_ACTIVE_STATES = {"queued", "running", "stopping"}
 EPOCH_AUDITION_DURATION_SECONDS = 30
 EPOCH_AUDITION_CHARS_PER_SECOND = 8

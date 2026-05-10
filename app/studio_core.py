@@ -1338,7 +1338,18 @@ LM_MODEL_PROFILES: dict[str, dict[str, Any]] = {
 
 SUPPORTED_AUDIO_FORMATS = {"wav", "flac", "ogg"}
 OFFICIAL_AUDIO_FORMATS = {"flac", "mp3", "opus", "aac", "wav", "wav32"}
-ALLOWED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".m4a"}
+ALLOWED_AUDIO_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".m4a",
+    ".aif",
+    ".aiff",
+    ".caf",
+}
 MAX_BATCH_SIZE = 8
 
 FAST_HANDLER_FIELDS = {

@@ -1941,6 +1941,9 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Rap / Hip-hop", trainer)
         self.assertIn("Soul / R&B", trainer)
         self.assertIn("folderInputRef", trainer)
+        self.assertIn("configureFolderInput", trainer)
+        self.assertIn('id="trainer-folder-input"', trainer)
+        self.assertIn('htmlFor="trainer-folder-input"', trainer)
         self.assertIn('setAttribute("webkitdirectory"', trainer)
         self.assertIn('removeAttribute("accept")', trainer)
         self.assertIn("openFolderPicker", trainer)
@@ -2607,7 +2610,7 @@ class AppParityTest(unittest.TestCase):
         client = TestClient(acejam_app.app)
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "dataset"
-            labels = [{"filename": "artist/session/song.wav", "caption": "rap", "lyrics": "lyrics"}]
+            labels = [{"filename": "artist/session/song.aiff", "caption": "rap", "lyrics": "lyrics"}]
             with patch.object(acejam_app.training_manager, "import_root_for", return_value=target), \
                 patch.object(acejam_app.training_manager, "scan_dataset", return_value={"files": labels}), \
                 patch.object(acejam_app.training_manager, "label_entries", return_value=labels):
@@ -2615,16 +2618,16 @@ class AppParityTest(unittest.TestCase):
                     "/api/lora/dataset/import-folder",
                     data={"dataset_id": "nested-dataset", "trigger_tag": "pac", "language": "en"},
                     files=[
-                        ("files", ("artist/session/song.wav", b"RIFF....WAVE", "audio/wav")),
+                        ("files", ("artist/session/song.aiff", b"FORM....AIFF", "audio/aiff")),
                         ("files", ("artist/session/song.txt", b"[Verse]\nlyrics", "text/plain")),
                     ],
                 )
 
             data = response.json()
             self.assertTrue(data["success"])
-            self.assertIn("artist/session/song.wav", data["copied_files"])
+            self.assertIn("artist/session/song.aiff", data["copied_files"])
             self.assertIn("artist/session/song.txt", data["copied_files"])
-            self.assertTrue((target / "artist" / "session" / "song.wav").exists())
+            self.assertTrue((target / "artist" / "session" / "song.aiff").exists())
             self.assertTrue((target / "artist" / "session" / "song.txt").exists())
 
     def test_training_genre_label_prefers_sidecar_metadata_before_musicbrainz_or_ai(self):

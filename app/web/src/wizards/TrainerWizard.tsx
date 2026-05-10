@@ -80,7 +80,7 @@ interface TrainJobState {
   transcribe_labels?: LoraAutolabelLabel[];
 }
 
-const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
+const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|opus|m4a|aac|aif|aiff|caf)$/i;
 const ALLOWED_SIDECAR = /\.(txt|json|csv)$/i;
 
 function autoEpochTarget(sampleCount: number): number {
@@ -570,8 +570,8 @@ export function TrainerWizard() {
 
   // ---- File selection ----------------------------------------------------
 
-  React.useEffect(() => {
-    const input = folderInputRef.current;
+  const configureFolderInput = React.useCallback((input: HTMLInputElement | null) => {
+    folderInputRef.current = input;
     if (!input) return;
     input.setAttribute("webkitdirectory", "");
     input.setAttribute("directory", "");
@@ -598,17 +598,10 @@ export function TrainerWizard() {
     input.click();
   };
 
-  const openLooseFilePicker = () => {
-    const input = inputRef.current;
-    if (!input) return;
-    input.value = "";
-    input.click();
-  };
-
   const addUploadItems = (incoming: TrainerUploadItem[]) => {
     const arr = incoming.filter((item) => isTrainerUploadSupported(item.relativePath || item.file.name));
     if (arr.length === 0) {
-      toast.error("Geen audio of sidecar-bestanden gevonden (wav/mp3/flac/ogg/m4a/aac/txt/json/csv)");
+      toast.error("Geen audio of sidecar-bestanden gevonden (wav/mp3/flac/ogg/opus/m4a/aac/aif/aiff/caf/txt/json/csv)");
       return;
     }
     setFiles((prev) => {
@@ -998,18 +991,20 @@ export function TrainerWizard() {
       render: () => (
         <div className="space-y-4">
           <input
+            id="trainer-loose-files-input"
             ref={inputRef}
             type="file"
             multiple
-            accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.txt,.json,.csv,audio/*"
-            className="hidden"
+            accept=".wav,.mp3,.flac,.ogg,.opus,.m4a,.aac,.aif,.aiff,.caf,.txt,.json,.csv,audio/*"
+            className="sr-only"
             onChange={(e) => onPickFiles(e.target.files)}
           />
           <input
-            ref={folderInputRef}
+            id="trainer-folder-input"
+            ref={configureFolderInput}
             type="file"
             multiple
-            className="hidden"
+            className="sr-only"
             aria-label="Kies een map met audio en sidecars"
             onChange={(e) => onPickFiles(e.target.files)}
           />
@@ -1076,25 +1071,43 @@ export function TrainerWizard() {
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <Button
+                asChild
                 size="sm"
                 variant="default"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openFolderPicker();
-                }}
                 className="gap-1.5"
               >
-                <FolderOpen className="size-3.5" /> Map kiezen
+                <label
+                  htmlFor="trainer-folder-input"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const input = folderInputRef.current;
+                    if (input) {
+                      input.value = "";
+                      input.setAttribute("webkitdirectory", "");
+                      input.setAttribute("directory", "");
+                      input.setAttribute("mozdirectory", "");
+                      input.removeAttribute("accept");
+                    }
+                  }}
+                >
+                  <FolderOpen className="size-3.5" /> Map kiezen
+                </label>
               </Button>
               <Button
+                asChild
                 size="sm"
                 variant="secondary"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openLooseFilePicker();
-                }}
               >
-                Losse bestanden kiezen
+                <label
+                  htmlFor="trainer-loose-files-input"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const input = inputRef.current;
+                    if (input) input.value = "";
+                  }}
+                >
+                  Losse bestanden kiezen
+                </label>
               </Button>
             </div>
           </motion.div>
