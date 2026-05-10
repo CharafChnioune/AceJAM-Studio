@@ -2092,6 +2092,8 @@ class AceTrainingManager:
             device,
             "--precision",
             precision,
+            "--num-workers",
+            "0",
         ]
         if dataset_json:
             command.extend(["--dataset-json", dataset_json])
@@ -2189,6 +2191,8 @@ class AceTrainingManager:
             device,
             "--precision",
             precision,
+            "--num-workers",
+            "0",
         ]
         if parse_bool(payload.get("offload_encoder"), False):
             command.append("--offload-encoder")

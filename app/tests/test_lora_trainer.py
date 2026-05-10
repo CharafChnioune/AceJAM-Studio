@@ -648,6 +648,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(command[command.index("--save-every") + 1], "1")
             self.assertEqual(command[command.index("--device") + 1], "mps")
             self.assertEqual(command[command.index("--precision") + 1], "fp32")
+            self.assertEqual(command[command.index("--num-workers") + 1], "0")
             self.assertEqual(job["params"]["precision"], "fp32")
 
     def test_train_command_carries_trigger_tag_for_registration(self):
