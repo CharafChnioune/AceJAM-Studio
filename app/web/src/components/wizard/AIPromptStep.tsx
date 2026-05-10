@@ -17,7 +17,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  api,
   chatModelDetails,
+  embeddingModelDetails,
   getLLMCatalog,
   promptAssistantRun,
   PROVIDER_LABEL,
@@ -60,6 +62,7 @@ export function AIPromptStep({
   const setPlanner = useSettingsStore((s) => s.setPlanner);
   const embeddingProvider = useSettingsStore((s) => s.embeddingProvider);
   const embeddingModel = useSettingsStore((s) => s.embeddingModel);
+  const setEmbedding = useSettingsStore((s) => s.setEmbedding);
 
   const catalogQuery = useQuery({
     queryKey: ["llm-catalog"],
@@ -72,8 +75,16 @@ export function AIPromptStep({
     [catalogQuery.data],
   );
 
-  // Group by provider for the dropdown
-  const grouped = React.useMemo(() => {
+  const allEmbeddingModels = React.useMemo(
+    () =>
+      embeddingModelDetails(catalogQuery.data).filter(
+        (m) => m.provider === "ollama" || m.provider === "lmstudio",
+      ),
+    [catalogQuery.data],
+  );
+
+  // Group by provider for the dropdowns
+  const groupedChatModels = React.useMemo(() => {
     const map = new Map<LLMProvider, typeof allChatModels>();
     for (const m of allChatModels) {
       const arr = map.get(m.provider) ?? [];
@@ -83,13 +94,23 @@ export function AIPromptStep({
     return map;
   }, [allChatModels]);
 
+  const groupedEmbeddingModels = React.useMemo(() => {
+    const map = new Map<LLMProvider, typeof allEmbeddingModels>();
+    for (const m of allEmbeddingModels) {
+      const arr = map.get(m.provider) ?? [];
+      arr.push(m);
+      map.set(m.provider, arr);
+    }
+    return map;
+  }, [allEmbeddingModels]);
+
   // Auto-pick a sensible default planner from catalog.settings or first chat model
   React.useEffect(() => {
     if (plannerModel || !catalogQuery.data) return;
     const settings = catalogQuery.data.settings;
     const preferred = settings?.chat_model;
     const preferredProvider = (settings?.provider ?? "ollama") as LLMProvider;
-    if (preferred && allChatModels.some((m) => m.name === preferred)) {
+    if (preferred && allChatModels.some((m) => m.provider === preferredProvider && m.name === preferred)) {
       setPlanner(preferredProvider, preferred);
       return;
     }
@@ -99,7 +120,35 @@ export function AIPromptStep({
     }
   }, [catalogQuery.data, allChatModels, plannerModel, setPlanner]);
 
+  React.useEffect(() => {
+    if (embeddingModel || !catalogQuery.data) return;
+    const settings = catalogQuery.data.settings;
+    const preferred = settings?.embedding_model;
+    const preferredProvider = (settings?.embedding_provider ?? "ollama") as LLMProvider;
+    if (
+      preferred &&
+      allEmbeddingModels.some((m) => m.provider === preferredProvider && m.name === preferred)
+    ) {
+      setEmbedding(preferredProvider, preferred);
+      return;
+    }
+    if (allEmbeddingModels.length > 0) {
+      const first = allEmbeddingModels[0];
+      setEmbedding(first.provider, first.name);
+    }
+  }, [allEmbeddingModels, catalogQuery.data, embeddingModel, setEmbedding]);
+
   const currentKey = plannerModel ? modelKey(plannerProvider, plannerModel) : "";
+  const embeddingKey = embeddingModel ? modelKey(embeddingProvider, embeddingModel) : "";
+
+  const saveLocalSettings = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api.post<{ success: boolean; error?: string }>("/api/local-llm/settings", body),
+    onSuccess: (data) => {
+      if (!data.success) toast.error(data.error || "AI Memory-instelling opslaan mislukt");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
 
   const aiFill = useMutation({
     mutationFn: () =>
@@ -142,8 +191,22 @@ export function AIPromptStep({
     setPlanner(provider, name);
   };
 
+  const onEmbeddingChange = (key: string) => {
+    if (!key) return;
+    const idx = key.indexOf(":");
+    if (idx < 0) return;
+    const provider = key.slice(0, idx) as LLMProvider;
+    const name = key.slice(idx + 1);
+    setEmbedding(provider, name);
+    saveLocalSettings.mutate({
+      embedding_provider: provider,
+      embedding_model: name,
+    });
+  };
+
   const isLoading = catalogQuery.isLoading;
   const isEmpty = !isLoading && allChatModels.length === 0;
+  const embeddingsEmpty = !isLoading && allEmbeddingModels.length === 0;
 
   return (
     <div className="space-y-5">
@@ -176,7 +239,7 @@ export function AIPromptStep({
         )}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
         <div className="space-y-2">
           <Label className="text-xs uppercase tracking-wider text-muted-foreground">
             Planner model
@@ -193,7 +256,7 @@ export function AIPromptStep({
                 <SelectValue placeholder={isLoading ? "Catalog laden…" : "Kies een planner-model"} />
               </SelectTrigger>
               <SelectContent>
-                {Array.from(grouped.entries()).map(([provider, list]) => (
+                {Array.from(groupedChatModels.entries()).map(([provider, list]) => (
                   <SelectGroup key={provider}>
                     <SelectLabel>{PROVIDER_LABEL[provider]}</SelectLabel>
                     {list.map((m) => {
@@ -217,6 +280,50 @@ export function AIPromptStep({
               </SelectContent>
             </Select>
           )}
+        </div>
+        <div className="space-y-2">
+          <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+            AI Memory / RAG embedding
+          </Label>
+          {embeddingsEmpty ? (
+            <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-yellow-200">
+              Geen embedding-modellen gevonden bij Ollama of LM Studio. Open{" "}
+              <Link to="/settings" className="underline">Settings</Link>{" "}
+              en kies of pull een embedding-model voor CrewAI memory/RAG.
+            </div>
+          ) : (
+            <Select value={embeddingKey} onValueChange={onEmbeddingChange}>
+              <SelectTrigger>
+                <SelectValue placeholder={isLoading ? "Catalog laden…" : "Kies embedding-model"} />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from(groupedEmbeddingModels.entries()).map(([provider, list]) => (
+                  <SelectGroup key={provider}>
+                    <SelectLabel>{PROVIDER_LABEL[provider]}</SelectLabel>
+                    {list.map((m) => {
+                      const dropdownLabel =
+                        m.profile?.dropdown_label || m.display_name || m.name;
+                      return (
+                        <SelectItem key={m.key} value={modelKey(m.provider, m.name)}>
+                          <div className="flex items-center gap-2">
+                            <span>{dropdownLabel}</span>
+                            {m.size_gb && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {m.size_gb.toFixed(1)} GB
+                              </span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Alleen voor AI/CrewAI memory en RAG. ACE-Step audio text encoder blijft Qwen3-Embedding-0.6B.
+          </p>
         </div>
         <Button
           size="lg"

@@ -897,6 +897,28 @@ export function AlbumWizard() {
             </div>
           </FieldGroup>
           <FieldGroup
+            title="AI Memory / RAG embeddings"
+            description="Gebruikt door CrewAI album-memory en retrieval. De ACE-Step audio text encoder blijft vast."
+          >
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Provider</p>
+                <p className="mt-1 text-sm font-medium">{PROVIDER_LABEL[embeddingProvider]}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Embedding model</p>
+                <p className="mt-1 truncate text-sm font-medium">{embeddingModel || "Settings default"}</p>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">ACE-Step encoder</p>
+                <p className="mt-1 text-sm font-medium">Qwen3-Embedding-0.6B</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Pas deze keuze aan in de AI Fill-kaart of in Settings; albumjobs sturen dezelfde provider en model mee naar CrewAI.
+            </p>
+          </FieldGroup>
+          <FieldGroup
             title="LoRA"
             description="Optioneel: deze PEFT LoRA wordt op elke albumtrack toegepast."
           >
