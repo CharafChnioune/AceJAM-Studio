@@ -410,8 +410,10 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("main", payload["manifest"]["model_registry"])
         self.assertIn("acestep-v15-turbo-shift1", payload["manifest"]["model_registry"])
         self.assertIn("acestep-v15-turbo-continuous", payload["manifest"]["model_registry"])
-        self.assertIn("acestep-captioner", payload["manifest"]["boot_quality_models"])
         self.assertIn("acestep-v15-xl-sft", payload["manifest"]["boot_quality_models"])
+        self.assertIn("acestep-v15-sft", payload["manifest"]["boot_quality_models"])
+        self.assertNotIn("acestep-captioner", payload["manifest"]["boot_quality_models"])
+        self.assertNotIn("acestep-v15-xl-base", payload["manifest"]["boot_quality_models"])
         self.assertEqual(payload["manifest"]["model_registry"]["acestep-v15-turbo-rl"]["status"], "unreleased")
         self.assertIn("component_status", payload["manifest"]["core_bundle"])
         self.assertIn("boot_downloads", payload["manifest"]["runtime"])
@@ -431,15 +433,16 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("acestep-transcriber", downloads)
         self.assertNotIn("acestep-v15-turbo-rl", downloads)
 
-    def test_boot_download_bundle_queues_best_quality_and_helper_models(self):
+    def test_boot_download_bundle_queues_default_sft_models_only(self):
         names = acejam_app._boot_download_model_names()
 
-        self.assertIn("main", names)
         self.assertIn("acestep-v15-xl-sft", names)
-        self.assertIn("acestep-v15-xl-base", names)
-        self.assertIn(acejam_app.ACE_LM_PREFERRED_MODEL, names)
-        self.assertIn("acestep-captioner", names)
-        self.assertIn("acestep-transcriber", names)
+        self.assertIn("acestep-v15-sft", names)
+        self.assertNotIn("main", names)
+        self.assertNotIn("acestep-v15-xl-base", names)
+        self.assertNotIn(acejam_app.ACE_LM_PREFERRED_MODEL, names)
+        self.assertNotIn("acestep-captioner", names)
+        self.assertNotIn("acestep-transcriber", names)
 
         started: list[str] = []
         with patch.object(acejam_app, "ACEJAM_BOOT_DOWNLOAD_ENABLED", True), \

@@ -7,18 +7,21 @@ import download_models
 
 
 class DownloadModelsTest(unittest.TestCase):
-    def test_all_download_list_covers_supported_models_and_shared_components(self):
+    def test_default_download_list_is_sft_only_with_shared_components(self):
         models = download_models.default_download_models()
 
-        self.assertIn("acestep-v15-turbo", models)
         self.assertIn("acestep-v15-xl-sft", models)
-        self.assertIn("acestep-5Hz-lm-4B", models)
-        self.assertIn("main", models)
-        self.assertIn("acestep-captioner", models)
-        self.assertIn("acestep-transcriber", models)
-        self.assertIn("ace-step-v1.5-1d-vae-stable-audio-format", models)
+        self.assertIn("acestep-v15-sft", models)
         self.assertIn("vae", models)
         self.assertIn("Qwen3-Embedding-0.6B", models)
+        self.assertNotIn("acestep-v15-turbo", models)
+        self.assertNotIn("acestep-v15-xl-turbo", models)
+        self.assertNotIn("acestep-v15-xl-base", models)
+        self.assertNotIn("acestep-5Hz-lm-4B", models)
+        self.assertNotIn("main", models)
+        self.assertNotIn("acestep-captioner", models)
+        self.assertNotIn("acestep-transcriber", models)
+        self.assertNotIn("ace-step-v1.5-1d-vae-stable-audio-format", models)
         self.assertNotIn("auto", models)
         self.assertNotIn("none", models)
         self.assertNotIn("acestep-v15-turbo-rl", models)

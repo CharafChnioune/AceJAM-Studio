@@ -8,22 +8,19 @@ from typing import Iterable
 
 from acestep.handler import AceStepHandler
 from studio_core import (
-    ACE_STEP_LM_MODELS,
-    KNOWN_ACE_STEP_MODELS,
     OFFICIAL_ACE_STEP_MODEL_REGISTRY,
     OFFICIAL_CORE_MODEL_ID,
     OFFICIAL_MAIN_MODEL_COMPONENTS,
     OFFICIAL_MAIN_MODEL_REPO,
-    OFFICIAL_UNRELEASED_MODELS,
     diffusers_pipeline_dir_ready,
     diffusers_pipeline_missing_reasons,
-    official_boot_model_ids,
 )
 
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_CACHE_DIR = BASE_DIR / "model_cache"
 CHECKPOINT_DIR = MODEL_CACHE_DIR / "checkpoints"
+DEFAULT_SFT_DOWNLOAD_MODELS = ("acestep-v15-xl-sft", "acestep-v15-sft")
 SHARED_RUNTIME_COMPONENTS = ("vae", "Qwen3-Embedding-0.6B")
 WEIGHT_SUFFIXES = {".safetensors", ".bin", ".pt", ".ckpt"}
 
@@ -75,19 +72,22 @@ def default_download_models() -> list[str]:
         if model_name and model_name not in names:
             names.append(model_name)
 
-    for model_name in official_boot_model_ids():
+    for model_name in DEFAULT_SFT_DOWNLOAD_MODELS:
         add(model_name)
-    add("acestep-v15-turbo")
     for component in SHARED_RUNTIME_COMPONENTS:
         add(component)
-    add("acestep-5Hz-lm-1.7B")
-    for model_name in KNOWN_ACE_STEP_MODELS:
-        if model_name not in OFFICIAL_UNRELEASED_MODELS:
-            add(model_name)
-    for model_name in ACE_STEP_LM_MODELS:
-        if model_name not in {"auto", "none"}:
-            add(model_name)
     return names
+
+
+def _download_shared_runtime_component(model_name: str) -> None:
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id=OFFICIAL_MAIN_MODEL_REPO,
+        local_dir=str(CHECKPOINT_DIR),
+        local_dir_use_symlinks=False,
+        allow_patterns=[f"{model_name}/**"],
+    )
 
 
 def verify_runtime_components() -> list[str]:
@@ -104,6 +104,21 @@ def download_models(models: Iterable[str], check_only: bool = False) -> list[str
     requested = list(models)
     failures: list[str] = []
     for model_name in requested:
+        if model_name in SHARED_RUNTIME_COMPONENTS:
+            path = CHECKPOINT_DIR / model_name
+            if checkpoint_dir_ready(path):
+                print(f"[models] ready: {model_name}", flush=True)
+                continue
+            if check_only:
+                failures.append(missing_reason(model_name))
+                continue
+            print(f"[models] downloading shared component: {model_name}", flush=True)
+            _download_shared_runtime_component(model_name)
+            if not checkpoint_dir_ready(path):
+                failures.append(missing_reason(model_name))
+                continue
+            print(f"[models] installed: {model_name}", flush=True)
+            continue
         if model_name == OFFICIAL_CORE_MODEL_ID:
             missing_components = [
                 component
@@ -154,14 +169,14 @@ def download_models(models: Iterable[str], check_only: bool = False) -> list[str
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Download and verify AceJAM ACE-Step checkpoints.")
-    parser.add_argument("--all", action="store_true", help="Download every AceJAM-supported ACE-Step model.")
+    parser.add_argument("--all", action="store_true", help="Download the default SFT runtime bundle.")
     parser.add_argument("--model", action="append", default=[], help="Download one model/component. Can be repeated.")
     parser.add_argument("--check-only", action="store_true", help="Only verify local checkpoint readiness.")
     args = parser.parse_args(argv)
 
     models = list(args.model) if args.model else default_download_models()
-    if not args.all and not args.model:
-        models = ["acestep-v15-turbo", *SHARED_RUNTIME_COMPONENTS, "acestep-5Hz-lm-1.7B"]
+    if args.all:
+        models = default_download_models()
 
     print(f"[models] target count: {len(models)}", flush=True)
     failures = download_models(models, check_only=bool(args.check_only))

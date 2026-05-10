@@ -82,10 +82,8 @@ OFFICIAL_HELPER_MODEL_IDS = [
     "acestep-v15-xl-turbo-diffusers",
 ]
 OFFICIAL_BOOT_QUALITY_MODEL_IDS = [
-    OFFICIAL_CORE_MODEL_ID,
     "acestep-v15-xl-sft",
-    "acestep-v15-xl-base",
-    "acestep-5Hz-lm-4B",
+    "acestep-v15-sft",
 ]
 OFFICIAL_LORA_MODEL_IDS = [
     "ACE-Step-v1-chinese-rap-LoRA",
@@ -2756,7 +2754,7 @@ def official_helper_model_ids() -> list[str]:
     ]
 
 
-def official_boot_model_ids(*, include_helpers: bool = True, include_best_quality: bool = True) -> list[str]:
+def official_boot_model_ids(*, include_helpers: bool = False, include_best_quality: bool = True) -> list[str]:
     """Return the default boot download bundle for quality-first local runs."""
     ids: list[str] = []
 

@@ -100,7 +100,7 @@ ALBUM_JOB_KEEP_LIMIT = 50
 GENERATION_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
-ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=True)
+ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=False)
 ACEJAM_BOOT_DOWNLOAD_BEST_QUALITY_MODELS = _env_flag("ACEJAM_BOOT_DOWNLOAD_BEST_QUALITY_MODELS", default=True)
 ACEJAM_BOOT_DOWNLOAD_ALL_OFFICIAL_MODELS = _env_flag("ACEJAM_BOOT_DOWNLOAD_ALL_OFFICIAL_MODELS", default=False)
 ACEJAM_BOOT_DOWNLOAD_ENABLED = _env_flag("ACEJAM_BOOT_DOWNLOAD_ENABLED", default=True)
@@ -549,9 +549,7 @@ def _default_acestep_checkpoint() -> str:
     override = os.environ.get("ACE_STEP_MODEL", "").strip()
     if override:
         return override
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "acestep-v15-turbo"
-    return "acestep-v15-xl-turbo"
+    return "acestep-v15-xl-sft"
 
 
 def _song_model_label(name: str) -> str:
@@ -5356,6 +5354,8 @@ def _is_model_installed(model_name: str, ignore_active_job: bool = False) -> boo
     if model_name == OFFICIAL_CORE_MODEL_ID:
         checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
         return all(_checkpoint_dir_ready(checkpoint_dir / component) for component in OFFICIAL_MAIN_MODEL_COMPONENTS)
+    if model_name in ACE_STEP_SHARED_RUNTIME_COMPONENTS:
+        return _checkpoint_dir_ready(checkpoint_path)
     if model_name.startswith("acestep-v15-"):
         return _song_model_runtime_ready(model_name)
     if model_name.startswith("acestep-5Hz-lm-"):
@@ -5414,6 +5414,20 @@ def _download_official_model_to_cache(model_name: str, checkpoint_dir: Path) -> 
     snapshot_download(repo_id=repo_id, local_dir=str(target_dir), local_dir_use_symlinks=False)
 
 
+def _download_shared_runtime_component_to_cache(component: str, checkpoint_dir: Path, model_name: str) -> None:
+    if component not in ACE_STEP_SHARED_RUNTIME_COMPONENTS:
+        raise RuntimeError(f"{component} is not a known shared ACE-Step runtime component.")
+    from huggingface_hub import snapshot_download
+
+    _set_model_download_job(model_name, message=f"Downloading shared ACE-Step component {component}...")
+    snapshot_download(
+        repo_id=OFFICIAL_MAIN_MODEL_REPO,
+        local_dir=str(checkpoint_dir),
+        local_dir_use_symlinks=False,
+        allow_patterns=[f"{component}/**"],
+    )
+
+
 def _download_model_worker(model_name: str) -> None:
     with _model_download_runner_lock:
         _set_model_download_job(
@@ -5428,19 +5442,16 @@ def _download_model_worker(model_name: str) -> None:
             checkpoint_dir = MODEL_CACHE_DIR / "checkpoints"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             role = str((OFFICIAL_ACE_STEP_MODEL_REGISTRY.get(model_name) or {}).get("role") or "")
-            if model_name in OFFICIAL_ACE_STEP_MODEL_REGISTRY:
+            if model_name in ACE_STEP_SHARED_RUNTIME_COMPONENTS:
+                _download_shared_runtime_component_to_cache(model_name, checkpoint_dir, model_name)
+            elif model_name in OFFICIAL_ACE_STEP_MODEL_REGISTRY:
                 _download_official_model_to_cache(model_name, checkpoint_dir)
             else:
                 handler._ensure_model_downloaded(model_name, str(checkpoint_dir))
             if model_name.startswith("acestep-v15-") and role != "diffusers_export":
-                if not _checkpoint_dir_ready(checkpoint_dir / "acestep-v15-turbo"):
-                    _set_model_download_job(model_name, message="Downloading shared ACE-Step components...")
-                    _download_official_model_to_cache("acestep-v15-turbo", checkpoint_dir)
                 for component in ACE_STEP_SHARED_RUNTIME_COMPONENTS:
                     if not _checkpoint_dir_ready(checkpoint_dir / component):
-                        _set_model_download_job(model_name, message=f"Downloading shared ACE-Step component {component}...")
-                        _download_official_model_to_cache(OFFICIAL_CORE_MODEL_ID, checkpoint_dir)
-                        break
+                        _download_shared_runtime_component_to_cache(component, checkpoint_dir, model_name)
             if not _is_model_installed(model_name, ignore_active_job=True):
                 if role == "diffusers_export":
                     reasons = _diffusers_pipeline_status_reason(checkpoint_dir / model_name)

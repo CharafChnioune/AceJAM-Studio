@@ -129,10 +129,11 @@ class StudioCoreTest(unittest.TestCase):
         self.assertNotIn("acestep-v15-turbo-rl", downloadable)
 
         boot_models = official_boot_model_ids()
-        self.assertIn(OFFICIAL_CORE_MODEL_ID, boot_models)
+        self.assertNotIn(OFFICIAL_CORE_MODEL_ID, boot_models)
         self.assertIn("acestep-v15-xl-sft", boot_models)
-        self.assertIn("acestep-v15-xl-base", boot_models)
-        self.assertIn("acestep-5Hz-lm-4B", boot_models)
+        self.assertIn("acestep-v15-sft", boot_models)
+        self.assertNotIn("acestep-v15-xl-base", boot_models)
+        self.assertNotIn("acestep-5Hz-lm-4B", boot_models)
         self.assertEqual(official_helper_model_ids(), [
             "acestep-captioner",
             "acestep-transcriber",
@@ -140,7 +141,7 @@ class StudioCoreTest(unittest.TestCase):
             "acestep-v15-xl-turbo-diffusers",
         ])
         for helper in official_helper_model_ids():
-            self.assertIn(helper, boot_models)
+            self.assertNotIn(helper, boot_models)
 
     def test_model_profile_fallback_and_installed_flags(self):
         profile = model_profile("acestep-v15-custom-base", installed=True)
