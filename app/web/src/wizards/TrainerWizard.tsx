@@ -1139,9 +1139,7 @@ export function TrainerWizard() {
               </div>
               <Button
                 onClick={() => importMutation.mutate()}
-                disabled={
-                  files.length === 0 || !form.trigger_tag || importMutation.isPending
-                }
+                disabled={files.length === 0 || stats.audio === 0 || importMutation.isPending}
                 className="w-full gap-2"
               >
                 {importMutation.isPending ? (
@@ -1153,6 +1151,11 @@ export function TrainerWizard() {
                   ? "Uploaden + auto-labelen…"
                   : "Importeer + label dataset"}
               </Button>
+              {!form.trigger_tag.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  Je kunt de folder alvast importeren; de trigger tag is pas nodig bij het starten van de training.
+                </p>
+              )}
             </FieldGroup>
           )}
 

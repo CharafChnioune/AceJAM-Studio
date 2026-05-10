@@ -1947,6 +1947,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Map kiezen", trainer)
         self.assertIn("directoryInput.webkitdirectory = true", trainer)
         self.assertIn("Losse bestanden kiezen", trainer)
+        self.assertIn("stats.audio === 0", trainer)
+        self.assertIn("trigger tag is pas nodig bij het starten van de training", trainer)
         self.assertIn('fd.append("files", item.file, item.relativePath', trainer)
         self.assertIn('fd.append("genre_label_mode"', trainer)
         self.assertIn("AI per track als fallback", trainer)
