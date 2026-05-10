@@ -1945,7 +1945,12 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("Map kiezen", trainer)
         self.assertIn('fd.append("files", item.file, item.relativePath', trainer)
         self.assertIn("uploadItemsFromDataTransfer", trainer)
+        self.assertIn("Auto stop bij loss-plateau", trainer)
+        self.assertIn("autoEpochTarget", trainer)
+        self.assertIn("max_epochs_or_loss_plateau", trainer)
         self.assertIn("WaveformPlayer", tracker)
+        self.assertIn("Loss & early stop", tracker)
+        self.assertIn("best_loss_epoch", tracker)
         self.assertIn("Epoch ${text(item.epoch)} test-WAV", tracker)
 
     def test_react_lora_selector_filters_peft_lora_and_uses_tag_labels(self):
@@ -2053,6 +2058,30 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("aiPromptPending", text, path.name)
             self.assertIn("onPendingChange={setAiPromptPending}", text, path.name)
             self.assertIn("!aiPromptPending", text, path.name)
+
+    def test_react_album_ai_fill_sends_full_payload_and_embedding_settings(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
+        settings_store = (web_src / "store" / "settings.ts").read_text(encoding="utf-8")
+        ai_step = (web_src / "components" / "wizard" / "AIPromptStep.tsx").read_text(encoding="utf-8")
+        album = (web_src / "wizards" / "AlbumWizard.tsx").read_text(encoding="utf-8")
+        settings = (web_src / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("current_payload?: Record<string, unknown>", api_ts)
+        self.assertIn("embedding_provider?: string", api_ts)
+        self.assertIn("embedding_model?: string", api_ts)
+        self.assertIn("currentPayload?: Record<string, unknown>", ai_step)
+        self.assertIn("current_payload: currentPayload", ai_step)
+        self.assertIn("embedding_lm_provider: embeddingProvider", ai_step)
+        self.assertIn("embeddingProvider", settings_store)
+        self.assertIn("setEmbedding", settings_store)
+        self.assertIn("currentPayload={albumCurrentPayload}", album)
+        self.assertIn("embedding_provider: embeddingProvider", album)
+        self.assertIn("embedding_model: embeddingModel", album)
+        self.assertIn("AI Memory / RAG embeddings", settings)
+        self.assertIn("/api/local-llm/settings", settings)
+        self.assertIn("/api/local-llm/test", settings)
+        self.assertIn("ACE-Step audio text encoder blijft: Qwen3-Embedding-0.6B", settings)
 
     def test_lora_status_and_adapters_expose_display_name_and_trigger(self):
         client = TestClient(acejam_app.app)
@@ -2271,6 +2300,91 @@ class AppParityTest(unittest.TestCase):
             1,
         )
         self.assertEqual(params["lora_trigger_conditioning_audit"]["status"], "present")
+
+    def test_no_lora_payload_strips_stale_trigger_from_caption(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "pac, rap, west coast hip hop",
+                    "lyrics": "[Verse - rap]\nClear line\n\n[Chorus - rap hook]\nHook line",
+                    "duration": 30,
+                    "use_lora": False,
+                    "use_lora_trigger": True,
+                    "lora_trigger_tag": "2pac",
+                }
+            )
+
+        self.assertFalse(params["use_lora"])
+        self.assertFalse(params["use_lora_trigger"])
+        self.assertEqual(params["lora_trigger_tag"], "")
+        self.assertNotRegex(params["caption"], r"(?i)(?<![a-z0-9])pac(?![a-z0-9])")
+        self.assertIn("rap", params["caption"])
+        self.assertTrue(params["lora_trigger_conditioning_audit"]["stripped_from_caption"])
+        self.assertIn("lora_trigger_stripped_for_no_lora", params["payload_warnings"])
+
+    def test_lora_preflight_baseline_strips_trigger_conditioning(self):
+        params = {
+            "task_type": "text2music",
+            "song_model": "acestep-v15-xl-sft",
+            "quality_profile": "chart_master",
+            "caption": "pac, rap, west coast hip hop",
+            "lyrics": "[Verse - rap]\nClear line\n\n[Chorus - rap hook]\nHook line",
+            "duration": 180,
+            "use_lora": True,
+            "use_lora_trigger": True,
+            "lora_trigger_tag": "pac",
+            "lora_adapter_path": "/tmp/unit-adapter",
+            "lora_adapter_name": "unit",
+            "lora_scale": 1.0,
+            "payload_warnings": [],
+            "repair_actions": [],
+        }
+
+        baseline = acejam_app._lora_preflight_attempt_params(
+            params,
+            use_lora=False,
+            scale=0.0,
+            label="baseline",
+        )
+
+        self.assertFalse(baseline["use_lora"])
+        self.assertFalse(baseline["use_lora_trigger"])
+        self.assertEqual(baseline["lora_trigger_tag"], "")
+        self.assertEqual(baseline["lora_scale"], 0.0)
+        self.assertNotRegex(baseline["caption"], r"(?i)(?<![a-z0-9])pac(?![a-z0-9])")
+        self.assertIn("rap", baseline["caption"])
+        self.assertIn("lora_trigger_stripped_for_no_lora_preflight", baseline["payload_warnings"])
+
+    def test_raw_lora_trigger_caption_can_be_preserved_for_ab_test(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "2pac, rap, west coast hip hop",
+                    "lyrics": "[Verse - rap]\nClear line\n\n[Chorus - rap hook]\nHook line",
+                    "duration": 30,
+                    "use_lora": True,
+                    "lora_adapter_path": "/tmp/unit-adapter",
+                    "lora_adapter_name": "unit",
+                    "use_lora_trigger": False,
+                    "lora_trigger_tag": "2pac",
+                    "lora_scale": 1.0,
+                    "adapter_model_variant": "xl_sft",
+                    "preserve_raw_lora_trigger_caption": True,
+                }
+            )
+
+        self.assertTrue(params["use_lora"])
+        self.assertFalse(params["use_lora_trigger"])
+        self.assertEqual(params["lora_trigger_tag"], "")
+        self.assertRegex(params["caption"], r"(?i)(?<![a-z0-9])2pac(?![a-z0-9])")
+        self.assertNotRegex(params["lyrics"], r"(?i)(?<![a-z0-9])2pac(?![a-z0-9])")
+        self.assertIn("generation_prompt_token_2pac_preserved_for_lora_trigger_test", params["payload_warnings"])
 
     def test_lora_epoch_audition_uses_private_generation_without_library_save(self):
         captured = {}

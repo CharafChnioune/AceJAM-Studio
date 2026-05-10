@@ -19,6 +19,8 @@ from lora_trainer import (
     model_from_variant,
     model_to_variant,
     normalize_training_song_model,
+    parse_checkpoint_loss,
+    parse_training_loss_line,
     safe_generation_trigger_tag,
     split_missing_vocal_lyrics_labels,
     training_device_policy,
@@ -60,6 +62,29 @@ class AuditionTrainingManager(AceTrainingManager):
             "result_id": f"audition-{epoch}",
             "audios": [{"result_id": f"audition-{epoch}", "audio_url": f"/media/results/audition-{epoch}/take-1.wav"}],
             "vocal_intelligibility_gate": {"status": "pass", "passed": True, "transcript_preview": "clear vocal line"},
+        }
+
+
+class LossTrainingManager(AuditionTrainingManager):
+    def __init__(self, *args, losses: list[float | None], **kwargs):
+        self.losses = losses
+        super().__init__(*args, **kwargs)
+
+    def _run_command_step(self, job_id, command, log_path, *, stage):
+        self.commands.append((stage, list(command)))
+        epoch = int(command[command.index("--epochs") + 1])
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        loss = self.losses[min(epoch - 1, len(self.losses) - 1)]
+        checkpoint_name = f"epoch_{epoch}_loss_{loss:.4f}" if loss is not None else f"epoch_{epoch}"
+        checkpoint = output_dir / "checkpoints" / checkpoint_name
+        checkpoint.mkdir(parents=True, exist_ok=True)
+        if loss is None:
+            self._append_log(log_path, f"{stage}\n")
+            return {"loss_samples": [], "last_loss": None}
+        self._append_log(log_path, f"{stage} Loss: {loss:.4f}\n")
+        return {
+            "loss_samples": [{"loss": loss, "line": f"Loss: {loss:.4f}"}],
+            "last_loss": loss,
         }
 
 
@@ -425,6 +450,11 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["training_seed"], 42)
             self.assertIsNone(params["train_epochs"])
             self.assertEqual(params["save_every_n_epochs"], 1)
+            self.assertEqual(params["stop_policy"], "max_epochs_or_loss_plateau")
+            self.assertTrue(params["loss_early_stop_enabled"])
+            self.assertEqual(params["loss_patience_epochs"], 15)
+            self.assertEqual(params["min_relative_improvement"], 0.005)
+            self.assertEqual(params["min_absolute_improvement"], 0.002)
             self.assertEqual(params["song_model"], "acestep-v15-xl-sft")
             self.assertEqual(params["model_variant"], "xl_sft")
             self.assertTrue(params["epoch_audition"]["enabled"])
@@ -797,6 +827,104 @@ class LoraTrainerTest(unittest.TestCase):
 
             self.assertTrue(fake.terminated)
             self.assertIn("Loss: nan", Path(job.log_path).read_text(encoding="utf-8"))
+
+    def test_training_loss_parsers_accept_logs_and_checkpoint_names(self):
+        self.assertEqual(parse_training_loss_line("Epoch 3 Step 10 Loss: 0.8726"), 0.8726)
+        self.assertEqual(parse_training_loss_line("train_loss=1.25e-1"), 0.125)
+        self.assertIsNone(parse_training_loss_line("Loss: nan"))
+        self.assertEqual(parse_checkpoint_loss(Path("epoch_2_loss_0.8726")), 0.8726)
+        self.assertEqual(parse_checkpoint_loss(Path("epoch_2_loss_0_8726")), 0.8726)
+
+    def test_epoch_training_stops_when_loss_plateaus_after_patience(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = LossTrainingManager(
+                base_dir=root,
+                data_dir=root / "data",
+                model_cache_dir=root / "model_cache",
+                losses=[0.5, 0.5, 0.5, 0.5, 0.5],
+            )
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="plateaujob",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            manager._run_train_command_with_epoch_auditions(
+                "plateaujob",
+                ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "5"],
+                output_dir,
+                Path(job.log_path),
+                epochs=5,
+                params={
+                    "adapter_type": "lora",
+                    "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
+                    "loss_early_stop_enabled": True,
+                    "min_epochs_before_loss_stop": 2,
+                    "loss_patience_epochs": 2,
+                    "min_relative_improvement": 0.0,
+                    "min_absolute_improvement": 0.001,
+                },
+            )
+
+            stored = manager.get_job("plateaujob")
+            self.assertEqual(len(manager.commands), 3)
+            self.assertEqual(stored["result"]["completed_epochs"], 3)
+            self.assertEqual(stored["result"]["early_stop_reason"], "loss_plateau")
+            self.assertEqual(stored["result"]["best_loss_epoch"], 1)
+
+    def test_missing_loss_does_not_trigger_plateau_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = LossTrainingManager(
+                base_dir=root,
+                data_dir=root / "data",
+                model_cache_dir=root / "model_cache",
+                losses=[None, None, None, None],
+            )
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="nolossjob",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            manager._run_train_command_with_epoch_auditions(
+                "nolossjob",
+                ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "4"],
+                output_dir,
+                Path(job.log_path),
+                epochs=4,
+                params={
+                    "adapter_type": "lora",
+                    "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
+                    "loss_early_stop_enabled": True,
+                    "min_epochs_before_loss_stop": 1,
+                    "loss_patience_epochs": 1,
+                },
+            )
+
+            stored = manager.get_job("nolossjob")
+            self.assertEqual(len(manager.commands), 4)
+            self.assertEqual(stored["result"]["plateau_status"]["status"], "unavailable")
+            self.assertNotIn("early_stop_reason", stored["result"])
 
     def test_epoch_auditions_run_once_per_epoch_with_checkpoint_path(self):
         with tempfile.TemporaryDirectory() as tmp:

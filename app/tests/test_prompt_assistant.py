@@ -117,6 +117,8 @@ class PromptAssistantTest(unittest.TestCase):
                     "num_tracks": 1,
                     "track_duration": 210,
                     "language": "en",
+                    "embedding_provider": "lmstudio",
+                    "embedding_model": "embed-local",
                     "album_mood": "menacing triumphant",
                     "vocal_type": "male rap lead",
                     "genre_prompt": "G-funk hip-hop with talkbox lead",
@@ -131,6 +133,10 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertEqual(captured["concept"], "Album about systems and ledgers")
         self.assertEqual(captured["language"], "en")
         self.assertTrue(captured["use_crewai"])
+        self.assertEqual(captured["embedding_provider"], "lmstudio")
+        self.assertEqual(captured["embedding_model"], "embed-local")
+        self.assertEqual(captured["options"]["embedding_lm_provider"], "lmstudio")
+        self.assertEqual(captured["options"]["embedding_model"], "embed-local")
 
         # Wizard payload shape: top-level metadata + tracks[] with edit-ready fields
         self.assertTrue(result["success"])
@@ -145,6 +151,9 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertEqual(payload["song_model_strategy"], "single_model_album")
         self.assertEqual(payload["final_song_model"], "acestep-v15-xl-sft")
         self.assertEqual(payload["quality_profile"], "chart_master")
+        self.assertEqual(payload["embedding_provider"], "lmstudio")
+        self.assertEqual(payload["embedding_model"], "embed-local")
+        self.assertIn("Qwen3-Embedding-0.6B", payload["ace_step_text_encoder"])
 
         # Top-level wizard hydrate fields: passthrough from the user's
         # current_payload wins, with album_bible / first track as fallbacks

@@ -41,7 +41,9 @@ interface TrainerForm {
   default_bpm: number;
   default_time_signature: string;
   learning_rate: number;
+  train_epoch_mode: "auto" | "manual";
   train_epochs: number;
+  stop_policy: "max_epochs_or_loss_plateau" | "max_epochs";
   batch_size: number;
   auto_understand_music: boolean;
 }
@@ -73,6 +75,12 @@ interface TrainJobState {
 
 const ALLOWED_AUDIO = /\.(wav|mp3|flac|ogg|m4a|aac)$/i;
 const ALLOWED_SIDECAR = /\.(txt|json|csv)$/i;
+
+function autoEpochTarget(sampleCount: number): number {
+  if (sampleCount <= 20) return 800;
+  if (sampleCount <= 100) return 500;
+  return 300;
+}
 
 interface TrainerUploadItem {
   file: File;
@@ -451,7 +459,9 @@ export function TrainerWizard() {
     default_bpm: 120,
     default_time_signature: "4/4",
     learning_rate: 1e-4,
-    train_epochs: 10,
+    train_epoch_mode: "auto",
+    train_epochs: 500,
+    stop_policy: "max_epochs_or_loss_plateau",
     batch_size: 1,
     auto_understand_music: true,
   });
@@ -476,6 +486,8 @@ export function TrainerWizard() {
     auditionGenres.find((item) => item.key === "rap") ??
     auditionGenres[0];
   const generationTriggerPreview = safeGenerationTriggerTag(form.trigger_tag);
+  const estimatedAutoEpochs = autoEpochTarget(dataset?.files ?? files.filter((item) => ALLOWED_AUDIO.test(item.relativePath || item.file.name)).length);
+  const requestedTrainEpochs = form.train_epoch_mode === "auto" ? "auto" : form.train_epochs;
 
   const setAuditionGenre = (value: string) => {
     const selected = auditionGenres.find((item) => item.key === value);
@@ -682,10 +694,15 @@ export function TrainerWizard() {
         epoch_audition_keyscale: selectedAuditionGenre?.keyscale ?? undefined,
         epoch_audition_timesignature: selectedAuditionGenre?.timesignature ?? undefined,
         auto_understand_music: form.auto_understand_music,
+        train_epochs: requestedTrainEpochs,
+        stop_policy: form.stop_policy,
+        loss_early_stop_enabled: form.stop_policy === "max_epochs_or_loss_plateau",
         training_defaults: {
           learning_rate: form.learning_rate,
-          train_epochs: form.train_epochs,
+          train_epochs: requestedTrainEpochs,
           batch_size: form.batch_size,
+          stop_policy: form.stop_policy,
+          loss_early_stop_enabled: form.stop_policy === "max_epochs_or_loss_plateau",
         },
       }),
     onSuccess: (resp) => {
@@ -712,7 +729,8 @@ export function TrainerWizard() {
           language: form.default_language,
           epoch_audition_genre: form.epoch_audition_genre,
           learning_rate: form.learning_rate,
-          train_epochs: form.train_epochs,
+          train_epochs: requestedTrainEpochs,
+          stop_policy: form.stop_policy,
           batch_size: form.batch_size,
         },
         startedAt: Date.now(),
@@ -1186,7 +1204,7 @@ export function TrainerWizard() {
       isValid: !!dataset?.dataset_id,
       render: () => (
         <FieldGroup title="Hyperparameters">
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-3">
               <div className="flex items-baseline justify-between">
                 <Label>Learning rate</Label>
@@ -1209,18 +1227,43 @@ export function TrainerWizard() {
             </div>
             <div className="space-y-3">
               <div className="flex items-baseline justify-between">
-                <Label>Epochs</Label>
-                <span className="font-mono text-xs">{form.train_epochs}</span>
+                <Label>Epoch beleid</Label>
+                <span className="font-mono text-xs">
+                  {form.train_epoch_mode === "auto" ? `${estimatedAutoEpochs} auto` : form.train_epochs}
+                </span>
               </div>
-              <Slider
-                value={[form.train_epochs]}
-                min={1}
-                max={50}
-                step={1}
-                onValueChange={(v) =>
-                  setForm((f) => ({ ...f, train_epochs: v[0] ?? 10 }))
+              <Select
+                value={form.train_epoch_mode}
+                onValueChange={(value) =>
+                  setForm((f) => ({
+                    ...f,
+                    train_epoch_mode: value === "manual" ? "manual" : "auto",
+                    train_epochs: value === "manual" ? f.train_epochs : estimatedAutoEpochs,
+                  }))
                 }
-              />
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto target ({estimatedAutoEpochs} epochs)</SelectItem>
+                  <SelectItem value="manual">Handmatig target</SelectItem>
+                </SelectContent>
+              </Select>
+              {form.train_epoch_mode === "manual" && (
+                <Input
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={form.train_epochs}
+                  onChange={(event) =>
+                    setForm((f) => ({
+                      ...f,
+                      train_epochs: Math.max(1, Math.min(10000, Number(event.target.value) || 1)),
+                    }))
+                  }
+                />
+              )}
             </div>
             <div className="space-y-3">
               <div className="flex items-baseline justify-between">
@@ -1236,6 +1279,32 @@ export function TrainerWizard() {
                   setForm((f) => ({ ...f, batch_size: v[0] ?? 1 }))
                 }
               />
+            </div>
+            <div className="space-y-3 lg:col-span-3">
+              <div className="flex items-baseline justify-between">
+                <Label>Stopbeleid</Label>
+                <span className="text-xs text-muted-foreground">loss plateau blijft ondergeschikt aan vocal gate</span>
+              </div>
+              <Select
+                value={form.stop_policy}
+                onValueChange={(value) =>
+                  setForm((f) => ({
+                    ...f,
+                    stop_policy: value === "max_epochs" ? "max_epochs" : "max_epochs_or_loss_plateau",
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="max_epochs_or_loss_plateau">Auto stop bij loss-plateau</SelectItem>
+                  <SelectItem value="max_epochs">Altijd trainen tot target epochs</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Auto stop begint pas na genoeg epochs en gebruikt patience, zodat kleine normale schommelingen de training niet te vroeg stoppen.
+              </p>
             </div>
           </div>
         </FieldGroup>

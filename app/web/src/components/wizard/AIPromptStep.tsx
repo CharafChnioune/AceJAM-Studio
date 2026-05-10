@@ -32,6 +32,7 @@ interface AIPromptStepProps {
   mode: WizardMode;
   placeholder: string;
   examples?: string[];
+  currentPayload?: Record<string, unknown>;
   onHydrated?: (payload: Record<string, unknown>) => void;
   onPendingChange?: (pending: boolean) => void;
 }
@@ -44,6 +45,7 @@ export function AIPromptStep({
   mode,
   placeholder,
   examples,
+  currentPayload,
   onHydrated,
   onPendingChange,
 }: AIPromptStepProps) {
@@ -56,6 +58,8 @@ export function AIPromptStep({
   const plannerProvider = useSettingsStore((s) => s.plannerProvider);
   const plannerModel = useSettingsStore((s) => s.plannerModel);
   const setPlanner = useSettingsStore((s) => s.setPlanner);
+  const embeddingProvider = useSettingsStore((s) => s.embeddingProvider);
+  const embeddingModel = useSettingsStore((s) => s.embeddingModel);
 
   const catalogQuery = useQuery({
     queryKey: ["llm-catalog"],
@@ -102,8 +106,12 @@ export function AIPromptStep({
       promptAssistantRun({
         mode,
         user_prompt: prompt,
+        current_payload: currentPayload,
         planner_lm_provider: plannerProvider,
         planner_model: plannerModel || undefined,
+        embedding_provider: embeddingProvider,
+        embedding_lm_provider: embeddingProvider,
+        embedding_model: embeddingModel || catalogQuery.data?.settings?.embedding_model || undefined,
       }),
     onSuccess: (data) => {
       if (!data.success) {

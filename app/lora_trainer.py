@@ -61,7 +61,39 @@ TRUSTED_ONLINE_LYRICS_SOURCES = {
     "online_lyrics_ovh",
     "smart_musicbrainz",
 }
-NONFINITE_TRAINING_LOSS_RE = re.compile(r"\bLoss:\s*(?:nan|[-+]?inf(?:inity)?)\b", re.IGNORECASE)
+TRAINING_LOSS_VALUE_RE = re.compile(
+    r"(?:^|[\s,;|])(?:train[_\s-]*)?loss(?:\s*[:=]\s*|\s+)"
+    r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)",
+    re.IGNORECASE,
+)
+NONFINITE_TRAINING_LOSS_RE = re.compile(
+    r"(?:^|[\s,;|])(?:train[_\s-]*)?loss(?:\s*[:=]\s*|\s+)(nan|[-+]?inf(?:inity)?)\b",
+    re.IGNORECASE,
+)
+CHECKPOINT_LOSS_RE = re.compile(r"(?:^|_)loss_([-+]?\d+(?:[._]\d+)?(?:e[-+]?\d+)?)", re.IGNORECASE)
+DEFAULT_TRAINING_STOP_POLICY = "max_epochs_or_loss_plateau"
+DEFAULT_LOSS_PATIENCE_EPOCHS = 15
+DEFAULT_MIN_RELATIVE_LOSS_IMPROVEMENT = 0.005
+DEFAULT_MIN_ABSOLUTE_LOSS_IMPROVEMENT = 0.002
+LOSS_RESULT_KEYS = (
+    "stop_policy",
+    "loss_early_stop_enabled",
+    "min_epochs_before_loss_stop",
+    "loss_patience_epochs",
+    "min_relative_improvement",
+    "min_absolute_improvement",
+    "loss_history",
+    "last_loss",
+    "last_loss_source",
+    "best_loss",
+    "best_loss_epoch",
+    "plateau_status",
+    "completed_epochs",
+    "target_epochs",
+    "early_stop_reason",
+    "early_stop_message",
+    "loss_warning",
+)
 DEFAULT_LORA_TRAINING_SONG_MODEL = "acestep-v15-xl-sft"
 VARIANT_TO_SONG_MODEL = {
     "turbo": "acestep-v15-turbo",
@@ -489,6 +521,55 @@ def parse_float(value: Any, default: float, minimum: float | None = None, maximu
     if maximum is not None:
         parsed = min(maximum, parsed)
     return parsed
+
+
+def parse_training_loss_line(line: str) -> float | None:
+    match = TRAINING_LOSS_VALUE_RE.search(str(line or ""))
+    if not match:
+        return None
+    try:
+        loss = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    if loss != loss or loss in {float("inf"), float("-inf")}:
+        return None
+    return loss
+
+
+def parse_checkpoint_loss(path: Path | str | None) -> float | None:
+    if path is None:
+        return None
+    match = CHECKPOINT_LOSS_RE.search(Path(str(path)).name)
+    if not match:
+        return None
+    token = match.group(1)
+    if "_" in token and "." not in token:
+        token = token.replace("_", ".", 1)
+    try:
+        loss = float(token)
+    except (TypeError, ValueError):
+        return None
+    if loss != loss or loss in {float("inf"), float("-inf")}:
+        return None
+    return loss
+
+
+def flatten_training_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept the React nested training_defaults shape and legacy flat payloads."""
+    merged = dict(payload or {})
+    defaults = payload.get("training_defaults") if isinstance(payload, dict) else None
+    if isinstance(defaults, dict):
+        for key, value in defaults.items():
+            if merged.get(key) in (None, "", "auto"):
+                merged[key] = value
+            elif key not in merged:
+                merged[key] = value
+    return merged
+
+
+def default_min_epochs_before_loss_stop(target_epochs: int) -> int:
+    target = max(1, int(target_epochs or 1))
+    return min(50, max(10, int(round(target * 0.10))))
 
 
 def _epoch_audition_section_marker(line: str) -> str | None:
@@ -1641,6 +1722,110 @@ class AceTrainingManager:
             return 500
         return 300
 
+    def _loss_stop_params(self, payload: dict[str, Any], target_epochs: int) -> dict[str, Any]:
+        target = max(1, int(target_epochs or 1))
+        policy = str(payload.get("stop_policy") or DEFAULT_TRAINING_STOP_POLICY).strip().lower()
+        if policy in {"auto", "plateau", "loss_plateau", "max_epochs_or_plateau"}:
+            policy = DEFAULT_TRAINING_STOP_POLICY
+        if policy not in {DEFAULT_TRAINING_STOP_POLICY, "max_epochs"}:
+            policy = DEFAULT_TRAINING_STOP_POLICY
+        enabled_default = policy == DEFAULT_TRAINING_STOP_POLICY
+        early_stop_enabled = parse_bool(payload.get("loss_early_stop_enabled"), enabled_default)
+        if policy == "max_epochs":
+            early_stop_enabled = False
+        min_epochs = parse_int(
+            payload.get("min_epochs_before_loss_stop"),
+            default_min_epochs_before_loss_stop(target),
+            1,
+            target,
+        )
+        return {
+            "stop_policy": policy,
+            "loss_early_stop_enabled": early_stop_enabled,
+            "min_epochs_before_loss_stop": min_epochs,
+            "loss_patience_epochs": parse_int(
+                payload.get("loss_patience_epochs"),
+                DEFAULT_LOSS_PATIENCE_EPOCHS,
+                1,
+                max(1, target),
+            ),
+            "min_relative_improvement": parse_float(
+                payload.get("min_relative_improvement"),
+                DEFAULT_MIN_RELATIVE_LOSS_IMPROVEMENT,
+                0.0,
+                1.0,
+            ),
+            "min_absolute_improvement": parse_float(
+                payload.get("min_absolute_improvement"),
+                DEFAULT_MIN_ABSOLUTE_LOSS_IMPROVEMENT,
+                0.0,
+                1.0,
+            ),
+            "target_epochs": target,
+        }
+
+    def _apply_loss_stop_params(self, params: dict[str, Any], target_epochs: int) -> dict[str, Any]:
+        updated = dict(params or {})
+        updated.update(self._loss_stop_params(updated, target_epochs))
+        return updated
+
+    def _meaningful_loss_state(self, history: list[dict[str, Any]], config: dict[str, Any], current_epoch: int) -> dict[str, Any]:
+        finite = [
+            item
+            for item in sorted(history, key=lambda row: parse_int(row.get("epoch"), 0, 0, None))
+            if item.get("loss") is not None
+        ]
+        status = "tracking"
+        reason = ""
+        best_loss: float | None = None
+        best_epoch = 0
+        for item in finite:
+            loss = parse_float(item.get("loss"), 0.0, 0.0, None)
+            epoch = parse_int(item.get("epoch"), 0, 0, None)
+            if best_loss is None:
+                best_loss = loss
+                best_epoch = epoch
+                continue
+            threshold = max(
+                parse_float(config.get("min_absolute_improvement"), DEFAULT_MIN_ABSOLUTE_LOSS_IMPROVEMENT, 0.0, None),
+                abs(best_loss) * parse_float(config.get("min_relative_improvement"), DEFAULT_MIN_RELATIVE_LOSS_IMPROVEMENT, 0.0, None),
+            )
+            if loss < best_loss - threshold:
+                best_loss = loss
+                best_epoch = epoch
+
+        enabled = parse_bool(config.get("loss_early_stop_enabled"), False)
+        min_epochs = parse_int(config.get("min_epochs_before_loss_stop"), default_min_epochs_before_loss_stop(current_epoch), 1, None)
+        patience = parse_int(config.get("loss_patience_epochs"), DEFAULT_LOSS_PATIENCE_EPOCHS, 1, None)
+        should_stop = False
+        epochs_since_best = max(0, current_epoch - best_epoch) if best_epoch else 0
+        if not finite:
+            status = "unavailable"
+            reason = "No finite loss was parsed yet; continuing to target epochs."
+        elif not enabled:
+            status = "disabled"
+            reason = "Loss early stop disabled; training continues to target epochs."
+        elif current_epoch < min_epochs:
+            status = "warming_up"
+            reason = f"Waiting for minimum epoch {min_epochs} before plateau checks."
+        elif best_epoch and epochs_since_best >= patience:
+            status = "plateau"
+            should_stop = True
+            reason = f"Best loss has not meaningfully improved for {epochs_since_best} epochs."
+        else:
+            status = "improving" if best_epoch == current_epoch else "watching"
+            reason = f"Best loss epoch {best_epoch}; {epochs_since_best}/{patience} patience epochs used."
+
+        return {
+            "status": status,
+            "reason": reason,
+            "should_stop": should_stop,
+            "best_loss": best_loss,
+            "best_loss_epoch": best_epoch or None,
+            "epochs_since_best_loss": epochs_since_best,
+            "finite_loss_count": len(finite),
+        }
+
     def _epoch_audition_config(
         self,
         payload: dict[str, Any],
@@ -1883,6 +2068,7 @@ class AceTrainingManager:
         )
 
     def start_train(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = flatten_training_defaults(payload)
         self.require_ready()
         dataset_dir = Path(str(payload.get("dataset_dir") or payload.get("tensor_dir") or "")).expanduser()
         if not dataset_dir.is_dir():
@@ -1898,6 +2084,7 @@ class AceTrainingManager:
         trigger_tag_raw = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
         trigger_tag = safe_generation_trigger_tag(trigger_tag_raw)
         epochs = parse_int(payload.get("train_epochs", payload.get("epochs")), 10, 1, 10000)
+        loss_stop_params = self._loss_stop_params(payload, epochs)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         epoch_audition = self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed)
         device = default_training_device(payload.get("device"))
@@ -2015,7 +2202,9 @@ class AceTrainingManager:
                 "trigger_aliases": _split_trigger_aliases([trigger_tag, trigger_tag_raw]),
                 "display_name": trigger_tag_raw or trigger_tag,
                 "epochs": epochs,
+                "train_epochs": epochs,
                 "save_every_n_epochs": 1,
+                **loss_stop_params,
                 "epoch_audition": epoch_audition,
                 "training_shift": inference_defaults["training_shift"],
                 "num_inference_steps": inference_defaults["num_inference_steps"],
@@ -2455,6 +2644,7 @@ class AceTrainingManager:
         return self.register_adapter(source, display_name=str(name or ""), name=name)
 
     def _one_click_params(self, payload: dict[str, Any], *, dataset_id: str, import_root: Path) -> dict[str, Any]:
+        payload = flatten_training_defaults(payload)
         sample_count = parse_int(payload.get("sample_count"), 0, 0, None)
         epochs = payload.get("train_epochs", payload.get("epochs"))
         trigger_tag_raw = str(payload.get("trigger_tag") or payload.get("custom_tag") or "").strip()
@@ -2465,6 +2655,8 @@ class AceTrainingManager:
         variant = model_to_variant(str(payload.get("model_variant") or requested_song_model))
         song_model = model_from_variant(variant, requested_song_model)
         inference_defaults = training_inference_defaults(variant)
+        parsed_epochs = parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None
+        loss_stop_params = self._loss_stop_params(payload, parsed_epochs or self.auto_epochs(sample_count))
         return {
             "dataset_id": dataset_id,
             "import_root": str(import_root),
@@ -2488,8 +2680,9 @@ class AceTrainingManager:
             "training_target": str(payload.get("training_target") or payload.get("dataset_type") or "vocal").strip().lower() or "vocal",
             "instrumental_training": parse_bool(payload.get("instrumental_training"), False),
             "training_seed": training_seed,
-            "train_epochs": parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None,
+            "train_epochs": parsed_epochs,
             "save_every_n_epochs": 1,
+            **loss_stop_params,
             "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
             "device": device,
@@ -2692,6 +2885,7 @@ class AceTrainingManager:
                 raise ValueError(dataset_block_message(dataset_warnings))
             epochs = params.get("train_epochs") or self.auto_epochs(len(labels))
             params["train_epochs"] = epochs
+            params = self._apply_loss_stop_params(params, int(epochs))
 
             self._set_job_state(job.id, stage="save_dataset", progress=24)
             saved = self.save_dataset(
@@ -2884,6 +3078,12 @@ class AceTrainingManager:
                     "training_shift": params.get("training_shift"),
                     "num_inference_steps": params.get("num_inference_steps"),
                     "lora_scale": params.get("lora_scale"),
+                    "loss_history": list(pre_register_result.get("loss_history") or []),
+                    "best_loss": pre_register_result.get("best_loss"),
+                    "best_loss_epoch": pre_register_result.get("best_loss_epoch"),
+                    "completed_epochs": pre_register_result.get("completed_epochs"),
+                    "target_epochs": pre_register_result.get("target_epochs"),
+                    "early_stop_reason": pre_register_result.get("early_stop_reason"),
                     "source_paths": {
                         "import_root": str(import_root),
                         "dataset_json": dataset_json,
@@ -2936,6 +3136,9 @@ class AceTrainingManager:
                     "epoch_auditions_skipped_reason": existing_result.get("epoch_auditions_skipped_reason", ""),
                     "dataset_warnings": params.get("dataset_warnings") or {},
                 }
+                for key in LOSS_RESULT_KEYS:
+                    if key in existing_result:
+                        current.result[key] = existing_result[key]
                 self._write_job_unlocked(current)
             self._append_log(log_path, f"\n[complete] adapter registered at {registered}\n")
         except Exception as exc:
@@ -2950,10 +3153,11 @@ class AceTrainingManager:
                 self._write_job_unlocked(current)
             self._append_log(log_path, f"\n[failed] {exc}\n")
 
-    def _run_command_step(self, job_id: str, command: list[str], log_path: Path, *, stage: str) -> None:
+    def _run_command_step(self, job_id: str, command: list[str], log_path: Path, *, stage: str) -> dict[str, Any]:
         env = self._training_env()
         self._append_log(log_path, f"\n[{stage}] $ {' '.join(command)}\n\n")
         nonfinite_loss_line = ""
+        loss_samples: list[dict[str, Any]] = []
         with log_path.open("a", encoding="utf-8") as log:
             process = subprocess.Popen(
                 command,
@@ -2978,6 +3182,15 @@ class AceTrainingManager:
                     nonfinite_loss_line = line.strip()
                     process.terminate()
                     break
+                parsed_loss = parse_training_loss_line(line)
+                if parsed_loss is not None:
+                    loss_samples.append(
+                        {
+                            "loss": parsed_loss,
+                            "line": line.strip()[:500],
+                            "timestamp": utc_now(),
+                        }
+                    )
             return_code = process.wait()
         with self._lock:
             self._processes.pop(job_id, None)
@@ -2990,6 +3203,70 @@ class AceTrainingManager:
             raise RuntimeError(f"{stage} produced non-finite loss: {nonfinite_loss_line}")
         if return_code != 0:
             raise RuntimeError(f"{stage} exited with code {return_code}")
+        return {
+            "loss_samples": loss_samples,
+            "last_loss": loss_samples[-1]["loss"] if loss_samples else None,
+        }
+
+    def _record_epoch_loss(
+        self,
+        job_id: str,
+        *,
+        epoch: int,
+        total_epochs: int,
+        checkpoint: Path | None,
+        command_result: dict[str, Any] | None,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        command_result = dict(command_result or {})
+        parsed_loss = command_result.get("last_loss")
+        loss_source = "log"
+        if parsed_loss is None:
+            parsed_loss = parse_checkpoint_loss(checkpoint)
+            loss_source = "checkpoint_name" if parsed_loss is not None else "missing"
+        loss_value = parse_float(parsed_loss, 0.0, 0.0, None) if parsed_loss is not None else None
+        config = self._loss_stop_params(params, total_epochs)
+        with self._lock:
+            current = self._read_job_unlocked(job_id)
+            result = dict(current.result or {})
+            history = [dict(item) for item in list(result.get("loss_history") or []) if isinstance(item, dict)]
+            history = [item for item in history if parse_int(item.get("epoch"), -1, -1, None) != int(epoch)]
+            entry: dict[str, Any] = {
+                "epoch": int(epoch),
+                "target_epochs": int(total_epochs),
+                "loss": loss_value,
+                "source": loss_source,
+                "checkpoint": str(checkpoint or ""),
+                "timestamp": utc_now(),
+            }
+            samples = command_result.get("loss_samples")
+            if isinstance(samples, list) and samples:
+                entry["samples"] = samples[-5:]
+            history.append(entry)
+            history.sort(key=lambda item: parse_int(item.get("epoch"), 0, 0, None))
+            plateau = self._meaningful_loss_state(history, config, int(epoch))
+            result.update(
+                {
+                    **config,
+                    "completed_epochs": int(epoch),
+                    "target_epochs": int(total_epochs),
+                    "loss_history": history,
+                    "last_loss": loss_value,
+                    "last_loss_source": loss_source,
+                    "best_loss": plateau.get("best_loss"),
+                    "best_loss_epoch": plateau.get("best_loss_epoch"),
+                    "plateau_status": plateau,
+                    "loss_warning": plateau.get("reason") if plateau.get("status") == "unavailable" else "",
+                }
+            )
+            if plateau.get("should_stop"):
+                result["early_stop_reason"] = "loss_plateau"
+                result["early_stop_message"] = plateau.get("reason") or "Loss plateau reached"
+            current.result = result
+            current.params = {**dict(current.params or {}), **config}
+            current.updated_at = utc_now()
+            self._write_job_unlocked(current)
+        return plateau
 
     def _epoch_audition_enabled(self, params: dict[str, Any]) -> bool:
         config = params.get("epoch_audition")
@@ -3429,6 +3706,24 @@ class AceTrainingManager:
         start_epoch: int = 1,
         initial_checkpoint: Path | None = None,
     ) -> None:
+        total_epochs = max(1, int(epochs or 1))
+        params = self._apply_loss_stop_params(params, total_epochs)
+        with self._lock:
+            current = self._read_job_unlocked(job_id)
+            current.params = {**dict(current.params or {}), **params}
+            current.result.update(
+                {
+                    "target_epochs": total_epochs,
+                    "stop_policy": params.get("stop_policy"),
+                    "loss_early_stop_enabled": params.get("loss_early_stop_enabled"),
+                    "min_epochs_before_loss_stop": params.get("min_epochs_before_loss_stop"),
+                    "loss_patience_epochs": params.get("loss_patience_epochs"),
+                    "min_relative_improvement": params.get("min_relative_improvement"),
+                    "min_absolute_improvement": params.get("min_absolute_improvement"),
+                }
+            )
+            current.updated_at = utc_now()
+            self._write_job_unlocked(current)
         command = self._command_with_arg(train_command, "--save-every", "1")
         command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
         command = self._command_with_arg(
@@ -3448,9 +3743,9 @@ class AceTrainingManager:
             self._run_command_step(job_id, command, log_path, stage="train")
             return
 
-        total_epochs = max(1, int(epochs or 1))
         first_epoch = max(1, int(start_epoch or 1))
         last_checkpoint: Path | None = initial_checkpoint
+        stopped_for_plateau = False
         for epoch in range(first_epoch, total_epochs + 1):
             before_progress = progress_start + ((epoch - 1) / total_epochs) * (progress_end - progress_start)
             self._set_job_state(job_id, stage=f"train epoch {epoch}/{total_epochs}", progress=before_progress)
@@ -3460,7 +3755,7 @@ class AceTrainingManager:
                 chunk_command = self._command_with_arg(chunk_command, "--resume-from", str(last_checkpoint))
             else:
                 chunk_command = self._command_without_arg(chunk_command, "--resume-from")
-            self._run_command_step(job_id, chunk_command, log_path, stage=f"train epoch {epoch}/{total_epochs}")
+            command_result = self._run_command_step(job_id, chunk_command, log_path, stage=f"train epoch {epoch}/{total_epochs}") or {}
             checkpoint = self._latest_checkpoint_for_epoch(output_dir, epoch)
             if checkpoint is None:
                 raise FileNotFoundError(f"Epoch {epoch} finished but no checkpoint was found in {output_dir / 'checkpoints'}")
@@ -3468,7 +3763,22 @@ class AceTrainingManager:
             audition_progress = progress_start + (epoch / total_epochs) * (progress_end - progress_start)
             self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
             self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path)
-        self._set_job_state(job_id, stage="train", progress=progress_end)
+            plateau = self._record_epoch_loss(
+                job_id,
+                epoch=epoch,
+                total_epochs=total_epochs,
+                checkpoint=checkpoint,
+                command_result=command_result,
+                params=params,
+            )
+            if plateau.get("should_stop"):
+                message = str(plateau.get("reason") or "loss plateau reached")
+                self._append_log(log_path, f"[early stop] loss plateau at epoch {epoch}/{total_epochs}: {message}\n")
+                self._set_job_state(job_id, stage=f"early stopped at epoch {epoch}/{total_epochs}", progress=audition_progress)
+                stopped_for_plateau = True
+                break
+        if not stopped_for_plateau:
+            self._set_job_state(job_id, stage="train", progress=progress_end)
 
     def _run_resume_job(self, job_id: str, total_epochs: int, latest_checkpoint: Path, latest_epoch: int) -> None:
         try:
@@ -3763,6 +4073,9 @@ class AceTrainingManager:
                 "epoch_audition": dict((job.params or {}).get("epoch_audition") or {}),
                 "epoch_auditions": list(existing_result.get("epoch_auditions") or []),
             }
+            for key in LOSS_RESULT_KEYS:
+                if key in existing_result:
+                    result[key] = existing_result[key]
             if existing_result.get("epoch_auditions_skipped_reason"):
                 result["epoch_auditions_skipped_reason"] = existing_result["epoch_auditions_skipped_reason"]
             if result["adapter_exists"]:
@@ -3789,6 +4102,12 @@ class AceTrainingManager:
                         "training_shift": params.get("training_shift"),
                         "num_inference_steps": params.get("num_inference_steps"),
                         "lora_scale": params.get("lora_scale"),
+                        "loss_history": list(existing_result.get("loss_history") or []),
+                        "best_loss": existing_result.get("best_loss"),
+                        "best_loss_epoch": existing_result.get("best_loss_epoch"),
+                        "completed_epochs": existing_result.get("completed_epochs"),
+                        "target_epochs": existing_result.get("target_epochs"),
+                        "early_stop_reason": existing_result.get("early_stop_reason"),
                         "source_paths": {
                             "dataset_dir": job.paths.get("dataset_dir", ""),
                             "output_dir": job.paths.get("output_dir", ""),

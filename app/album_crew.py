@@ -133,8 +133,8 @@ DEFAULT_ALBUM_EMBEDDING_MODEL = os.environ.get(
 )
 ALBUM_EMBEDDING_FALLBACK_MODELS = [
     DEFAULT_ALBUM_EMBEDDING_MODEL,
-    "nomic-embed-text:latest",
     "mxbai-embed-large:latest",
+    "nomic-embed-text:latest",
 ]
 CREWAI_LLM_TIMEOUT_SECONDS = int(os.environ.get("ACEJAM_CREWAI_LLM_TIMEOUT_SECONDS", "86400"))
 CREWAI_EMPTY_RESPONSE_RETRIES = int(os.environ.get("ACEJAM_CREWAI_EMPTY_RESPONSE_RETRIES", "1"))

@@ -77,6 +77,9 @@ export interface PromptAssistantRunRequest {
   planner_model?: string;
   planner_lm_provider?: string;
   planner_ollama_model?: string;
+  embedding_provider?: string;
+  embedding_lm_provider?: string;
+  embedding_model?: string;
 }
 
 export interface PromptAssistantRunResponse {

@@ -36,6 +36,7 @@ import {
   api,
   startAlbumPlanJob,
   getAlbumPlanJob,
+  PROVIDER_LABEL,
 } from "@/lib/api";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
@@ -125,7 +126,10 @@ export function AlbumWizard() {
   const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
   const storePrompt = useWizardStore((s) => s.prompts[MODE]);
   const draft = useWizardStore((s) => s.drafts[MODE]);
+  const plannerProvider = useSettingsStore((s) => s.plannerProvider);
   const plannerModel = useSettingsStore((s) => s.plannerModel);
+  const embeddingProvider = useSettingsStore((s) => s.embeddingProvider);
+  const embeddingModel = useSettingsStore((s) => s.embeddingModel);
   const albumDefaults = React.useMemo<AlbumFormValues>(
     () => ({
       concept: "",
@@ -294,6 +298,28 @@ export function AlbumWizard() {
     });
   }, [plan?.tracks?.length, values.album_title, values.artist_name, values.concept, values.language, values.num_tracks, values.song_model, values.track_duration, values.tracks]);
 
+  const reviewTracks = React.useMemo(
+    () => normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration),
+    [plan?.tracks, values.track_duration, values.tracks],
+  );
+
+  const albumCurrentPayload = React.useMemo(
+    () => ({
+      ...form.getValues(),
+      use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
+      ...normalizeLoraSelection(values),
+      planner_lm_provider: plannerProvider,
+      ollama_model: plannerModel || undefined,
+      planner_model: plannerModel || undefined,
+      embedding_provider: embeddingProvider,
+      embedding_lm_provider: embeddingProvider,
+      embedding_model: embeddingModel || undefined,
+      ace_step_text_encoder: "Qwen3-Embedding-0.6B",
+      tracks: reviewTracks,
+    }),
+    [embeddingModel, embeddingProvider, form, plannerModel, plannerProvider, reviewTracks, values],
+  );
+
   // ---- Async generate ----
   const startJob = useMutation({
     mutationFn: () => {
@@ -323,10 +349,14 @@ export function AlbumWizard() {
         art_prompt: values.art_prompt,
         video_prompt: values.video_prompt,
         ...normalizeLoraSelection(values),
-        planner_lm_provider: "ollama",
+        planner_lm_provider: plannerProvider,
         ollama_model: plannerModel || undefined,
         planner_model: plannerModel || undefined,
-        tracks: normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration),
+        embedding_provider: embeddingProvider,
+        embedding_lm_provider: embeddingProvider,
+        embedding_model: embeddingModel || undefined,
+        ace_step_text_encoder: "Qwen3-Embedding-0.6B",
+        tracks: reviewTracks,
       };
       return startAlbumPlanJob(body);
     },
@@ -364,6 +394,10 @@ export function AlbumWizard() {
         num_tracks: values.num_tracks,
         track_duration: values.track_duration,
         duration_mode: values.duration_mode,
+        planner_provider: plannerProvider,
+        planner_model: plannerModel,
+        embedding_provider: embeddingProvider,
+        embedding_model: embeddingModel,
       },
       startedAt: Date.now(),
     });
@@ -452,6 +486,7 @@ export function AlbumWizard() {
             "10-track epische orkestrale soundtrack voor een sci-fi film",
             "EP van 4 tracks afrobeat × jazz, 100-115 bpm",
           ]}
+          currentPayload={albumCurrentPayload}
           onPendingChange={setAiPromptPending}
           onHydrated={(payload) => {
             const merged = hydrate(payload);
@@ -879,10 +914,7 @@ export function AlbumWizard() {
         <div className="space-y-4">
           <ReviewStep
             payload={{
-              ...form.getValues(),
-              use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
-              ...normalizeLoraSelection(values),
-              tracks: normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration),
+              ...albumCurrentPayload,
             }}
             warnings={warnings}
             primaryFields={[
@@ -894,6 +926,9 @@ export function AlbumWizard() {
               { key: "track_duration", label: "Fallback duur", format: (v) => formatDuration(Number(v) || 0) },
               { key: "song_model", label: "Model" },
               { key: "audio_backend", label: "Backend", format: audioBackendLabel },
+              { key: "planner_model", label: "AI planner", format: (v) => `${PROVIDER_LABEL[plannerProvider]} · ${String(v || "—")}` },
+              { key: "embedding_model", label: "AI Memory", format: (v) => `${PROVIDER_LABEL[embeddingProvider]} · ${String(v || "—")}` },
+              { key: "ace_step_text_encoder", label: "ACE-Step encoder" },
               { key: "lora_adapter_name", label: "LoRA" },
               { key: "lora_trigger_tag", label: "LoRA trigger" },
               { key: "song_model_strategy", label: "Strategie" },

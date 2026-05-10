@@ -48,6 +48,9 @@ function LLMTab() {
   const plannerProvider = useSettingsStore((s) => s.plannerProvider);
   const plannerModel = useSettingsStore((s) => s.plannerModel);
   const setPlanner = useSettingsStore((s) => s.setPlanner);
+  const embeddingProvider = useSettingsStore((s) => s.embeddingProvider);
+  const embeddingModel = useSettingsStore((s) => s.embeddingModel);
+  const setEmbedding = useSettingsStore((s) => s.setEmbedding);
   const addJob = useJobsStore((s) => s.addJob);
   const updateJob = useJobsStore((s) => s.updateJob);
 
@@ -59,7 +62,21 @@ function LLMTab() {
 
   const catalog = catalogQuery.data;
   const chatModels = chatModelDetails(catalog);
-  const embeddingModels = embeddingModelDetails(catalog);
+  const embeddingModels = React.useMemo(() => {
+    const priority = (name: string) => {
+      const lower = name.toLowerCase();
+      if (lower === "charaf/qwen3-vl-embedding-8b:latest") return 0;
+      if (lower === "mxbai-embed-large:latest") return 1;
+      if (lower === "nomic-embed-text:latest") return 2;
+      return 3;
+    };
+    return [...embeddingModelDetails(catalog)].sort((a, b) => {
+      const pa = priority(a.name);
+      const pb = priority(b.name);
+      if (pa !== pb) return pa - pb;
+      return a.name.localeCompare(b.name);
+    });
+  }, [catalog]);
 
   // Group chat models by provider
   const groupedChat = React.useMemo(() => {
@@ -72,16 +89,76 @@ function LLMTab() {
     return m;
   }, [chatModels]);
 
+  const groupedEmbedding = React.useMemo(() => {
+    const m = new Map<LLMProvider, LLMModelDetail[]>();
+    for (const d of embeddingModels) {
+      const arr = m.get(d.provider) ?? [];
+      arr.push(d);
+      m.set(d.provider, arr);
+    }
+    return m;
+  }, [embeddingModels]);
+
+  const saveLocalSettings = useMutation({
+    mutationFn: (patch: Record<string, unknown>) =>
+      api.post<{ success: boolean; settings?: Record<string, unknown>; error?: string }>(
+        "/api/local-llm/settings",
+        {
+          ...(catalog?.settings ?? {}),
+          provider: plannerProvider,
+          chat_model: plannerModel,
+          embedding_provider: embeddingProvider,
+          embedding_model: embeddingModel,
+          ...patch,
+        },
+      ),
+    onSuccess: (r) => {
+      if (!r.success) {
+        toast.error(r.error || "Settings bewaren mislukt");
+        return;
+      }
+      qc.invalidateQueries({ queryKey: ["llm-catalog"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  React.useEffect(() => {
+    if (embeddingModel || !catalog) return;
+    const preferred = String(catalog.settings?.embedding_model || "");
+    const preferredProvider = (catalog.settings?.embedding_provider ?? "ollama") as LLMProvider;
+    if (preferred && embeddingModels.some((m) => m.provider === preferredProvider && m.name === preferred)) {
+      setEmbedding(preferredProvider, preferred);
+      return;
+    }
+    const first = embeddingModels[0];
+    if (first) {
+      setEmbedding(first.provider, first.name);
+    }
+  }, [catalog, embeddingModel, embeddingModels, setEmbedding]);
+
   const testChat = useMutation({
     mutationFn: () =>
-      api.post<{ success: boolean; reply?: string; error?: string }>(
-        "/api/ollama/test",
-        { model: plannerModel, prompt: "Say hi in five words." },
+      api.post<{ success: boolean; response?: string; reply?: string; error?: string }>(
+        "/api/local-llm/test",
+        { provider: plannerProvider, model: plannerModel, kind: "chat", prompt: "Say hi in five words." },
       ),
     onSuccess: (r) =>
       r.success
-        ? toast.success(`Reply: ${r.reply ?? ""}`)
+        ? toast.success(`Reply: ${r.reply ?? r.response ?? ""}`)
         : toast.error(r.error ?? "test mislukt"),
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const testEmbedding = useMutation({
+    mutationFn: () =>
+      api.post<{ success: boolean; dimensions?: number; error?: string }>(
+        "/api/local-llm/test",
+        { provider: embeddingProvider, model: embeddingModel, kind: "embedding" },
+      ),
+    onSuccess: (r) =>
+      r.success
+        ? toast.success(`Embedding OK${r.dimensions ? ` (${r.dimensions} dims)` : ""}`)
+        : toast.error(r.error ?? "embedding-test mislukt"),
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -239,7 +316,10 @@ function LLMTab() {
               onValueChange={(key) => {
                 const idx = key.indexOf(":");
                 if (idx > 0) {
-                  setPlanner(key.slice(0, idx) as LLMProvider, key.slice(idx + 1));
+                  const provider = key.slice(0, idx) as LLMProvider;
+                  const model = key.slice(idx + 1);
+                  setPlanner(provider, model);
+                  saveLocalSettings.mutate({ provider, chat_model: model });
                 }
               }}
             >
@@ -311,25 +391,76 @@ function LLMTab() {
         </CardContent>
       </Card>
 
-      {/* Embeddings (info-only) */}
-      {embeddingModels.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Embedding-modellen</CardTitle>
-            <CardDescription>Gebruikt door album-coherence.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-1.5">
-            {embeddingModels.map((m) => (
-              <div key={m.key} className="rounded-md border bg-card/30 p-2 text-xs">
-                <span className="font-mono">{m.name}</span>
-                <span className="ml-2 text-[10px] text-muted-foreground">
-                  {PROVIDER_LABEL[m.provider]}
-                </span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Layers className="size-4 text-primary" /> AI Memory / RAG embeddings
+          </CardTitle>
+          <CardDescription>
+            Gebruikt door CrewAI album-memory, RAG en knowledge retrieval. ACE-Step audio text encoder blijft: Qwen3-Embedding-0.6B.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Label>Embedding model</Label>
+          {catalogQuery.isLoading ? (
+            <Skeleton className="h-9 w-full" />
+          ) : embeddingModels.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Geen embedding-modellen gevonden. Pull er eentje hieronder, bijvoorbeeld{" "}
+              <code className="rounded bg-background/40 px-1">mxbai-embed-large:latest</code>
+              {" "}of selecteer een embeddingmodel in LM Studio.
+            </p>
+          ) : (
+            <Select
+              value={embeddingModel ? modelKey(embeddingProvider, embeddingModel) : ""}
+              onValueChange={(key) => {
+                const idx = key.indexOf(":");
+                if (idx > 0) {
+                  const provider = key.slice(0, idx) as LLMProvider;
+                  const model = key.slice(idx + 1);
+                  setEmbedding(provider, model);
+                  saveLocalSettings.mutate({
+                    embedding_provider: provider,
+                    embedding_model: model,
+                  });
+                }
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Kies een embedding-model" />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from(groupedEmbedding.entries()).map(([provider, list]) => (
+                  <SelectGroup key={provider}>
+                    <SelectLabel>{PROVIDER_LABEL[provider]}</SelectLabel>
+                    {list.map((m) => (
+                      <SelectItem key={m.key} value={modelKey(m.provider, m.name)}>
+                        {m.profile?.dropdown_label || m.display_name || m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!embeddingModel || testEmbedding.isPending}
+              onClick={() => testEmbedding.mutate()}
+              className="gap-1.5"
+            >
+              <FlaskConical className="size-3" /> Test embedding
+            </Button>
+            {embeddingModel && (
+              <Badge variant="muted" className="font-mono text-[10px]">
+                {PROVIDER_LABEL[embeddingProvider]} · {embeddingModel}
+              </Badge>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

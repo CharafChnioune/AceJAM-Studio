@@ -342,6 +342,10 @@ function LoraDetails({
   const warningList = asArray(warnings.warnings).map((item) => text(item)).filter(Boolean);
   const audition = asRecord(params.epoch_audition);
   const auditions = asArray(result.epoch_auditions).map(asRecord);
+  const lossHistory = asArray(result.loss_history).map(asRecord);
+  const plateauStatus = asRecord(result.plateau_status);
+  const targetEpochs = result.target_epochs || params.target_epochs || result.epochs || params.train_epochs || params.epochs;
+  const completedEpochs = result.completed_epochs || (lossHistory.length > 0 ? lossHistory[lossHistory.length - 1]?.epoch : "");
 
   return (
     <div className="space-y-4">
@@ -350,7 +354,9 @@ function LoraDetails({
           <InfoRow label="Trigger" value={params.trigger_tag} />
           <InfoRow label="Dataset" value={params.dataset_id} />
           <InfoRow label="Samples" value={result.sample_count} />
-          <InfoRow label="Epochs" value={result.epochs || params.train_epochs || params.epochs} />
+          <InfoRow label="Epochs" value={targetEpochs} />
+          <InfoRow label="Completed" value={completedEpochs ? `${text(completedEpochs)} / ${text(targetEpochs)}` : ""} />
+          <InfoRow label="Stop policy" value={result.stop_policy || params.stop_policy} />
           <InfoRow label="Model" value={params.song_model || params.model_variant} />
           <InfoRow label="Device" value={`${text(params.device)} / ${text(params.precision)}`} />
           <InfoRow label="Batch" value={params.train_batch_size || params.batch_size} />
@@ -373,6 +379,31 @@ function LoraDetails({
           </div>
         </Section>
       )}
+
+      <Section title="Loss & early stop">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <InfoRow label="Last loss" value={result.last_loss} />
+          <InfoRow label="Best loss" value={result.best_loss} />
+          <InfoRow label="Best epoch" value={result.best_loss_epoch} />
+          <InfoRow label="Plateau status" value={plateauStatus.status || result.plateau_status} />
+          <InfoRow label="Patience" value={result.loss_patience_epochs || params.loss_patience_epochs} />
+          <InfoRow label="Early stop reason" value={result.early_stop_reason} />
+        </div>
+        {(Boolean(plateauStatus.reason) || Boolean(result.early_stop_message) || Boolean(result.loss_warning)) && (
+          <p className="mt-2 rounded-md bg-background/40 p-2 text-xs text-muted-foreground">
+            {text(result.early_stop_message || plateauStatus.reason || result.loss_warning)}
+          </p>
+        )}
+        {lossHistory.length > 0 && (
+          <div className="mt-3 grid gap-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
+            {lossHistory.slice(-6).map((item, index) => (
+              <div key={index} className="rounded-md border bg-background/35 p-2">
+                Epoch {text(item.epoch)} · loss {text(item.loss)} · {text(item.source)}
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
 
       <Section title="Epoch audition">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

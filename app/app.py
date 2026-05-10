@@ -90,11 +90,11 @@ PAYLOAD_CONTRACT_VERSION = "2026-04-26"
 ACE_STEP_VENDOR_SYNC_CONFIRM = "SYNC_ACE_STEP_VENDOR_PATCH_PRESERVING"
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL = "charaf/qwen3.6-27b-abliterated-mlx:mxfp4-instruct-general"
-DEFAULT_ALBUM_EMBEDDING_MODEL = "nomic-embed-text:latest"
+DEFAULT_ALBUM_EMBEDDING_MODEL = "charaf/qwen3-vl-embedding-8b:latest"
 ALBUM_EMBEDDING_FALLBACK_MODELS = [
     DEFAULT_ALBUM_EMBEDDING_MODEL,
     "mxbai-embed-large:latest",
-    "charaf/qwen3-vl-embedding-8b:latest",
+    "nomic-embed-text:latest",
 ]
 ALBUM_JOB_KEEP_LIMIT = 50
 GENERATION_JOB_KEEP_LIMIT = 50
@@ -2643,6 +2643,22 @@ def _run_prompt_assistant_album_crew(
     except (TypeError, ValueError):
         track_variants = 1
     track_variants = max(1, min(8, track_variants))
+    global_llm_settings = _load_local_llm_settings()
+    embedding_payload = {
+        **global_llm_settings,
+        **(body if isinstance(body, dict) else {}),
+        **(current_payload if isinstance(current_payload, dict) else {}),
+    }
+    embedding_provider = _embedding_provider_from_payload(
+        embedding_payload,
+        str(global_llm_settings.get("embedding_provider") or "ollama"),
+    )
+    embedding_model = str(
+        current_payload.get("embedding_model")
+        or body.get("embedding_model")
+        or global_llm_settings.get("embedding_model")
+        or DEFAULT_ALBUM_EMBEDDING_MODEL
+    ).strip() or DEFAULT_ALBUM_EMBEDDING_MODEL
 
     # Build options through the canonical _album_options_from_payload helper
     # so the crew receives installed_models, model portfolio, render defaults,
@@ -2665,6 +2681,9 @@ def _run_prompt_assistant_album_crew(
     bridge_payload["planner_model"] = planner_model
     bridge_payload["planner_ollama_model"] = planner_model
     bridge_payload["ollama_model"] = planner_model
+    bridge_payload["embedding_provider"] = embedding_provider
+    bridge_payload["embedding_lm_provider"] = embedding_provider
+    bridge_payload["embedding_model"] = embedding_model
     bridge_payload.setdefault("song_model_strategy", "single_model_album")
     bridge_payload.setdefault("final_song_model", "acestep-v15-xl-sft")
     bridge_payload.setdefault("song_model", "acestep-v15-xl-sft")
@@ -2709,6 +2728,9 @@ def _run_prompt_assistant_album_crew(
     options["planner_lm_provider"] = planner_provider
     options["planner_model"] = planner_model
     options["planner_ollama_model"] = planner_model
+    options["embedding_lm_provider"] = embedding_provider
+    options["embedding_provider"] = embedding_provider
+    options["embedding_model"] = embedding_model
     options["concept"] = concept_text
     options["user_prompt"] = user_prompt
 
@@ -2717,7 +2739,8 @@ def _run_prompt_assistant_album_crew(
     _album_crew_stdout_log(f"Concept: {concept_text[:160]}")
     _album_crew_stdout_log(
         f"num_tracks={num_tracks}, duration={int(track_duration)}s, variants={track_variants}, "
-        f"language={language}, planner={planner_provider}/{planner_model}"
+        f"language={language}, planner={planner_provider}/{planner_model}, "
+        f"embedding={embedding_provider}/{embedding_model}"
     )
     if input_tracks:
         _album_crew_stdout_log(f"Locked input tracks from user paste: {len(input_tracks)}")
@@ -2736,11 +2759,12 @@ def _run_prompt_assistant_album_crew(
             track_duration=track_duration,
             ollama_model=planner_model,
             language=language,
+            embedding_model=embedding_model,
             options=options,
             use_crewai=True,
             input_tracks=input_tracks,
             planner_provider=planner_provider,
-            embedding_provider="ollama",
+            embedding_provider=embedding_provider,
             log_callback=_log_to_buffer_and_stdout,
         )
     except Exception as plan_exc:
@@ -2829,6 +2853,15 @@ def _run_prompt_assistant_album_crew(
                             break
 
     album_bible = result.get("album_bible") if isinstance(result.get("album_bible"), dict) else {}
+    toolkit_report = result.get("toolkit_report") if isinstance(result.get("toolkit_report"), dict) else {}
+    actual_memory = toolkit_report.get("memory") if isinstance(toolkit_report.get("memory"), dict) else {}
+    if actual_memory.get("embedding_model"):
+        embedding_model = str(actual_memory.get("embedding_model") or embedding_model)
+    if actual_memory.get("embedding_provider"):
+        embedding_provider = _embedding_provider_from_payload(
+            {"embedding_provider": actual_memory.get("embedding_provider")},
+            embedding_provider,
+        )
     album_level = _derive_album_level_fields(raw_tracks, current_payload, album_bible)
     _album_crew_stdout_log(
         "Wizard hydrate fields: "
@@ -2854,6 +2887,19 @@ def _run_prompt_assistant_album_crew(
         "batch_size": bridge_payload["batch_size"],
         "planner_lm_provider": planner_provider,
         "planner_model": planner_model,
+        "embedding_provider": embedding_provider,
+        "embedding_lm_provider": embedding_provider,
+        "embedding_model": embedding_model,
+        "memory_enabled": bool(actual_memory.get("enabled") or result.get("memory_enabled")),
+        "context_chunks": int(actual_memory.get("context_chunks") or result.get("context_chunks") or 0),
+        "retrieval_rounds": int(actual_memory.get("retrieval_rounds") or result.get("retrieval_rounds") or 0),
+        "agent_context_store": str(
+            actual_memory.get("context_store")
+            or result.get("agent_context_store")
+            or result.get("context_store_index")
+            or ""
+        ),
+        "ace_step_text_encoder": "Qwen3-Embedding-0.6B",
         "ace_lm_model": "none",
         "use_official_lm": False,
         "vocal_language": language,
@@ -3834,6 +3880,7 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
         "lora_adapter_name": name,
         "use_lora_trigger": use_trigger,
         "lora_trigger_tag": safe_trigger if use_trigger else "",
+        "lora_trigger_tag_candidate": safe_trigger,
         "lora_scale": scale,
         "adapter_model_variant": model_variant,
         "adapter_song_model": adapter_song_model,
@@ -3852,12 +3899,68 @@ def _caption_contains_lora_trigger(caption: str, trigger_tag: str) -> bool:
     return re.search(pattern, str(caption or ""), flags=re.IGNORECASE) is not None
 
 
+def _lora_trigger_term_matches(term: str, trigger_tag: str) -> bool:
+    trigger = safe_generation_trigger_tag(trigger_tag).strip().lower()
+    if not trigger:
+        return False
+    cleaned = re.sub(r"\s+", " ", str(term or "").strip()).strip("[]").strip()
+    if not cleaned:
+        return False
+    return cleaned.lower() == trigger or safe_generation_trigger_tag(cleaned).strip().lower() == trigger
+
+
+def _remove_lora_trigger_from_caption(caption: str, trigger_tag: str) -> tuple[str, bool]:
+    trigger = safe_generation_trigger_tag(trigger_tag)
+    text = str(caption or "").strip()
+    if not text or not trigger:
+        return text, False
+    terms = split_terms(text)
+    if terms:
+        filtered = [term for term in terms if not _lora_trigger_term_matches(term, trigger)]
+        removed = len(filtered) != len(terms)
+        return ", ".join(filtered).strip(), removed
+    pattern = rf"(?:(?<=^)|(?<=[,;\n|]))\s*{re.escape(trigger)}\s*(?=([,;\n|]|$))"
+    stripped = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    stripped = re.sub(r"\s*[,;|]\s*[,;|]\s*", ", ", stripped)
+    stripped = re.sub(r"^[\s,;|]+|[\s,;|]+$", "", stripped).strip()
+    return stripped, stripped != text
+
+
+def _strip_lora_trigger_conditioning(
+    params: dict[str, Any],
+    trigger_tag: str | None = None,
+    *,
+    warning: str = "lora_trigger_stripped_for_no_lora",
+) -> bool:
+    trigger = safe_generation_trigger_tag(
+        trigger_tag
+        or params.get("lora_trigger_tag")
+        or params.get("lora_trigger_tag_candidate")
+    )
+    if not trigger:
+        return False
+    caption, removed = _remove_lora_trigger_from_caption(str(params.get("caption") or ""), trigger)
+    if removed:
+        params["caption"] = caption
+        params["tag_list"] = split_terms(caption)
+        warnings = list(params.get("payload_warnings") or [])
+        if warning not in warnings:
+            warnings.append(warning)
+        params["payload_warnings"] = warnings
+    return removed
+
+
 def _apply_lora_trigger_conditioning(params: dict[str, Any]) -> None:
     if not params.get("use_lora"):
+        stripped = _strip_lora_trigger_conditioning(params)
         params["use_lora_trigger"] = False
         params["lora_trigger_tag"] = ""
         params["lora_trigger_applied"] = False
-        params["lora_trigger_conditioning_audit"] = {"status": "disabled", "caption_only": True}
+        params["lora_trigger_conditioning_audit"] = {
+            "status": "disabled",
+            "caption_only": True,
+            "stripped_from_caption": stripped,
+        }
         return
 
     trigger = safe_generation_trigger_tag(params.get("lora_trigger_tag"))
@@ -6591,6 +6694,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "print_agent_io": parse_bool(payload.get("print_agent_io"), True),
         "planner_ollama_model": str(payload.get("planner_ollama_model") or payload.get("ollama_model") or ""),
         "embedding_lm_provider": _embedding_provider_from_payload(payload),
+        "embedding_model": str(payload.get("embedding_model") or ""),
         "ace_lm_model": "none",
         "album_model_portfolio": album_model_portfolio(installed_models),
         "quality_target": str(payload.get("quality_target") or "hit"),
@@ -7314,6 +7418,18 @@ _GENERATION_PROMPT_2PAC_RE = re.compile(r"(?<![A-Za-z0-9])2\s*[-_ ]?\s*pac(?![A-
 
 def _apply_generation_safe_prompt_tokens(payload: dict[str, Any]) -> dict[str, Any]:
     updated = dict(payload)
+    preserve_raw_lora_trigger = parse_bool(
+        updated.get("preserve_raw_lora_trigger_caption")
+        or updated.get("allow_raw_lora_trigger_caption"),
+        False,
+    ) and parse_bool(updated.get("use_lora"), False)
+    if preserve_raw_lora_trigger:
+        warnings = list(updated.get("payload_warnings") or [])
+        warning = "generation_prompt_token_2pac_preserved_for_lora_trigger_test"
+        if warning not in warnings:
+            warnings.append(warning)
+        updated["payload_warnings"] = warnings
+        return updated
     changed = False
     for key in ("caption", "tags", "global_caption", "custom_tags"):
         value = updated.get(key)
@@ -9668,12 +9784,21 @@ def _short_vocal_attempt_params(
         if lora_scale is not None:
             attempt["lora_scale"] = round(float(lora_scale), 4)
     else:
+        _strip_lora_trigger_conditioning(
+            attempt,
+            warning="lora_trigger_stripped_for_no_lora_preflight",
+        )
         attempt["lora_adapter_path"] = ""
         attempt["lora_adapter_name"] = ""
         attempt["lora_scale"] = 0.0
         attempt["adapter_model_variant"] = ""
         attempt["adapter_song_model"] = ""
         attempt["adapter_metadata"] = {}
+        attempt["use_lora_trigger"] = False
+        attempt["lora_trigger_tag"] = ""
+        attempt["lora_trigger_source"] = ""
+        attempt["lora_trigger_aliases"] = []
+        attempt["lora_trigger_candidates"] = []
     warnings = list(attempt.get("payload_warnings") or [])
     for warning in [warning_prefix, f"{warning_prefix}_{label}"]:
         if warning not in warnings:
