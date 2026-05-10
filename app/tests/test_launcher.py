@@ -38,6 +38,13 @@ class LauncherScriptTest(unittest.TestCase):
         self.assertIn("patch_bitsandbytes_non_cuda_warning", patcher)
         self.assertIn("if torch.cuda.is_available()", patcher)
 
+    def test_training_bootstrap_preserves_cli_args_and_skips_prompt(self):
+        root = Path(__file__).resolve().parents[2]
+        bootstrap = (root / "app" / "_acejam_train_bootstrap.py").read_text(encoding="utf-8")
+
+        self.assertIn("sys.argv = [str(_target)] + _user_args", bootstrap)
+        self.assertIn("_config_panel.confirm_start = lambda skip=False: True", bootstrap)
+
     def test_start_script_binds_localhost_and_captures_url(self):
         root = Path(__file__).resolve().parents[2]
         start_js = (root / "start.js").read_text(encoding="utf-8")

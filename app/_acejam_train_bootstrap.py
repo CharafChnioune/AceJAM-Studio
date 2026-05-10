@@ -128,10 +128,22 @@ try:
 except Exception:
     pass
 
-# Run the actual ACE-Step training CLI by directly executing the file
-sys.argv = sys.argv[1:]
+# Run the actual ACE-Step training CLI by directly executing the file. Keep a
+# real argv[0], because argparse reads sys.argv[1:] and would otherwise drop
+# the first user flag. Also force the confirmation helper when --yes is present:
+# some upstream Side-Step paths still reach the UI prompt during non-interactive
+# background jobs.
 _target = _VENDOR / "acestep" / "training_v2" / "cli" / "train_fixed.py"
 if not _target.is_file():
     print(f"[FAIL] Training CLI not found: {_target}", file=sys.stderr)
     sys.exit(1)
+_user_args = sys.argv[1:]
+sys.argv = [str(_target)] + _user_args
+if "--yes" in _user_args or "-y" in _user_args:
+    try:
+        import acestep.training_v2.ui.config_panel as _config_panel
+
+        _config_panel.confirm_start = lambda skip=False: True
+    except Exception:
+        pass
 exec(compile(_target.read_text(encoding="utf-8"), str(_target), "exec"), {"__name__": "__main__", "__file__": str(_target)})
