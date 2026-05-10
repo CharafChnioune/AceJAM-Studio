@@ -1943,7 +1943,13 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("folderInputRef", trainer)
         self.assertIn('setAttribute("webkitdirectory"', trainer)
         self.assertIn("Map kiezen", trainer)
+        self.assertIn("folderInputRef.current?.click()", trainer)
+        self.assertIn("Losse bestanden kiezen", trainer)
         self.assertIn('fd.append("files", item.file, item.relativePath', trainer)
+        self.assertIn('fd.append("genre_label_mode"', trainer)
+        self.assertIn("AI per track als fallback", trainer)
+        self.assertIn("MusicBrainz artist-tags", trainer)
+        self.assertIn("genre_label_source", trainer)
         self.assertIn("uploadItemsFromDataTransfer", trainer)
         self.assertIn("Auto stop bij loss-plateau", trainer)
         self.assertIn("autoEpochTarget", trainer)
@@ -2616,6 +2622,87 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("artist/session/song.txt", data["copied_files"])
             self.assertTrue((target / "artist" / "session" / "song.wav").exists())
             self.assertTrue((target / "artist" / "session" / "song.txt").exists())
+
+    def test_training_genre_label_prefers_sidecar_metadata_before_musicbrainz_or_ai(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "Artist - Track.wav"
+            audio.write_bytes(b"fake")
+            (Path(tmp) / "Artist - Track.json").write_text(
+                json.dumps({"genre": "neo soul", "style_profile": "soul", "caption_tags": "warm soul vocal"}),
+                encoding="utf-8",
+            )
+
+            with patch.object(acejam_app, "_detect_bpm_key", return_value=(88, "C minor")), \
+                patch.object(acejam_app, "_search_lyrics_online", return_value="[Verse]\nReal lyric line"), \
+                patch.object(acejam_app, "_musicbrainz_artist_tags", side_effect=AssertionError("MusicBrainz should not run")), \
+                patch.object(acejam_app, "local_llm_chat_completion_response", side_effect=AssertionError("AI should not run")):
+                result = acejam_app._training_lookup_online_lyrics(
+                    audio,
+                    {"language": "en", "genre_label_mode": "ai_auto"},
+                )
+
+            self.assertEqual(result["genre"], "neo soul")
+            self.assertEqual(result["style_profile"], "soul")
+            self.assertEqual(result["genre_label_source"], "metadata")
+            self.assertIn("warm soul vocal", result["caption"])
+
+    def test_training_genre_label_uses_musicbrainz_before_ai_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "Artist - Track.wav"
+            audio.write_bytes(b"fake")
+
+            with patch.object(acejam_app, "_detect_bpm_key", return_value=(94, "A minor")), \
+                patch.object(acejam_app, "_search_lyrics_online", return_value="[Verse]\nReal lyric line"), \
+                patch.object(acejam_app, "_musicbrainz_artist_tags", return_value=["hip hop", "rap"]), \
+                patch.object(acejam_app, "local_llm_chat_completion_response", side_effect=AssertionError("AI should not run")):
+                result = acejam_app._training_lookup_online_lyrics(
+                    audio,
+                    {"language": "en", "genre_label_mode": "ai_auto"},
+                )
+
+            self.assertEqual(result["genre"], "hip hop, rap")
+            self.assertEqual(result["style_profile"], "rap")
+            self.assertEqual(result["genre_label_source"], "musicbrainz")
+            self.assertIn("hip hop", result["caption"].lower())
+            self.assertIn("[Verse - rap", result["lyrics"])
+
+    def test_training_genre_label_uses_local_llm_only_when_metadata_and_musicbrainz_are_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "Unknown - Track.wav"
+            audio.write_bytes(b"fake")
+            llm_response = {
+                "content": json.dumps(
+                    {
+                        "genre": "country, americana",
+                        "style_profile": "country",
+                        "caption_tags": "warm acoustic guitars, heartfelt country vocal",
+                        "confidence": 0.82,
+                        "reason": "Folder and lyrics indicate country storytelling.",
+                    }
+                )
+            }
+
+            with patch.object(acejam_app, "_detect_bpm_key", return_value=(96, "G major")), \
+                patch.object(acejam_app, "_search_lyrics_online", return_value="[Verse]\nReal lyric line"), \
+                patch.object(acejam_app, "_musicbrainz_artist_tags", return_value=[]), \
+                patch.object(acejam_app, "_resolve_local_llm_model_selection", return_value="qwen-local"), \
+                patch.object(acejam_app, "local_llm_chat_completion_response", return_value=llm_response):
+                result = acejam_app._training_lookup_online_lyrics(
+                    audio,
+                    {
+                        "language": "en",
+                        "genre_label_mode": "ai_auto",
+                        "genre_label_provider": "lmstudio",
+                        "genre_label_model": "qwen-local",
+                    },
+                )
+
+            self.assertEqual(result["genre"], "country, americana")
+            self.assertEqual(result["style_profile"], "country")
+            self.assertEqual(result["genre_label_source"], "ai_local_llm")
+            self.assertEqual(result["genre_label_provider"], "lmstudio")
+            self.assertEqual(result["genre_label_model"], "qwen-local")
+            self.assertIn("warm acoustic guitars", result["caption"])
 
     def test_official_runner_stream_keeps_conditioning_prompt_blocks_by_default(self):
         state = {}

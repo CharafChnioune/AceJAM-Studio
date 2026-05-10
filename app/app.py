@@ -3502,6 +3502,35 @@ def _extract_artist_title_from_id3(audio_path: Path) -> tuple[str, str]:
         return ("", "")
 
 
+def _extract_easy_audio_tags(audio_path: Path) -> dict[str, Any]:
+    try:
+        from mutagen import File as MutagenFile  # type: ignore[import-not-found]
+    except Exception:
+        return {}
+    try:
+        mf = MutagenFile(str(audio_path), easy=True)
+    except Exception:
+        return {}
+    if mf is None:
+        return {}
+
+    def first_list(key: str) -> list[str]:
+        try:
+            values = mf.get(key) or []
+        except Exception:
+            values = []
+        return [str(item).strip() for item in values if str(item).strip()]
+
+    tags = {
+        "artist": " / ".join(first_list("artist")),
+        "title": " / ".join(first_list("title")),
+        "album": " / ".join(first_list("album")),
+        "date": " / ".join(first_list("date")),
+        "genre": first_list("genre"),
+    }
+    return {key: value for key, value in tags.items() if value}
+
+
 def _extract_artist_title_from_filename(audio_path: Path) -> tuple[str, str]:
     stem = audio_path.stem
     parts = [p.strip() for p in stem.split(" - ")]
@@ -3557,6 +3586,359 @@ def _resolve_audio_artist_title(audio_path: Path) -> tuple[str, str]:
     resolved_artist = artist or fa
     resolved_title = title or ft
     return (resolved_artist, _strip_artist_prefix_from_title(resolved_artist, resolved_title))
+
+
+def _training_read_existing_label_sidecars(audio_path: Path) -> dict[str, Any]:
+    stem = audio_path.stem
+    metadata_path = audio_path.with_name(f"{stem}.json")
+    caption_path = audio_path.with_name(f"{stem}.caption.txt")
+    lyrics_path = audio_path.with_name(f"{stem}.lyrics.txt")
+    legacy_lyrics_path = audio_path.with_suffix(".txt")
+    metadata: dict[str, Any] = {}
+    if metadata_path.is_file():
+        try:
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                metadata.update(raw)
+        except Exception:
+            metadata = {}
+    if caption_path.is_file() and not str(metadata.get("caption") or "").strip():
+        try:
+            metadata["caption"] = caption_path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception:
+            pass
+    if not str(metadata.get("lyrics") or "").strip():
+        for candidate in (lyrics_path, legacy_lyrics_path):
+            if not candidate.is_file():
+                continue
+            try:
+                metadata["lyrics"] = candidate.read_text(encoding="utf-8", errors="replace").strip()
+                break
+            except Exception:
+                pass
+    return metadata
+
+
+def _training_split_genre_terms(*values: Any) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in ("genre", "genres", "style", "style_profile", "caption_tags", "musicbrainz_tags", "id3_genre"):
+                add(value.get(key))
+            return
+        if isinstance(value, (list, tuple, set)):
+            for child in value:
+                add(child)
+            return
+        for part in re.split(r"[,;/\n|]+", str(value or "")):
+            cleaned = re.sub(r"\s+", " ", part).strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower().replace("-", " ")
+            if key in seen:
+                continue
+            seen.add(key)
+            terms.append(cleaned)
+
+    for item in values:
+        add(item)
+    return terms
+
+
+def _training_style_profile_from_terms(*values: Any) -> str:
+    haystack = " ".join(_training_split_genre_terms(*values))
+    haystack = re.sub(r"[^a-z0-9]+", " ", haystack.lower()).strip()
+    if not haystack:
+        return ""
+    for profile in audio_style_profiles(include_auto=False):
+        candidates = [
+            profile.get("key"),
+            profile.get("label"),
+            profile.get("caption_tags"),
+            *(profile.get("terms") or []),
+        ]
+        for candidate in candidates:
+            token = re.sub(r"[^a-z0-9]+", " ", str(candidate or "").lower()).strip()
+            if token and token in haystack:
+                return str(profile.get("key") or "").strip()
+    return ""
+
+
+def _training_style_caption_tags(style_profile: str) -> str:
+    wanted = str(style_profile or "").strip().lower()
+    if not wanted:
+        return ""
+    for profile in audio_style_profiles(include_auto=False):
+        if str(profile.get("key") or "").strip().lower() == wanted:
+            return str(profile.get("caption_tags") or "").strip()
+    return ""
+
+
+def _training_compose_caption(
+    *,
+    artist: str = "",
+    title: str = "",
+    bpm: Any = None,
+    keyscale: str = "",
+    has_vocals: bool = True,
+    genre_terms: list[str] | None = None,
+    style_profile: str = "",
+    caption_tags: str = "",
+    fallback_caption: str = "",
+) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        for term in _training_split_genre_terms(value):
+            key = term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(term)
+
+    add(caption_tags)
+    add(_training_style_caption_tags(style_profile))
+    add(genre_terms or [])
+    if bpm:
+        add(f"{bpm} BPM")
+    if keyscale:
+        add(keyscale)
+    add("vocals" if has_vocals else "instrumental")
+    if not parts:
+        add(fallback_caption or "music track")
+    return ", ".join(parts)
+
+
+def _normalize_training_genre_label_mode(value: Any) -> str:
+    mode = str(value or "ai_auto").strip().lower().replace("-", "_")
+    aliases = {
+        "ai": "ai_auto",
+        "auto": "ai_auto",
+        "ai_per_track": "ai_auto",
+        "manual": "manual_global",
+        "global": "manual_global",
+        "manual_genre": "manual_global",
+        "preserve": "metadata_musicbrainz",
+        "off": "metadata_musicbrainz",
+        "existing": "metadata_musicbrainz",
+        "metadata": "metadata_musicbrainz",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"ai_auto", "manual_global", "metadata_musicbrainz"}:
+        mode = "ai_auto"
+    return mode
+
+
+def _training_ai_genre_label(
+    audio_path: Path,
+    *,
+    body: dict[str, Any],
+    artist: str,
+    title: str,
+    caption: str,
+    lyrics: str,
+    bpm: Any,
+    keyscale: str,
+) -> dict[str, Any]:
+    settings = _load_local_llm_settings()
+    provider = normalize_provider(
+        body.get("genre_label_provider")
+        or body.get("planner_lm_provider")
+        or settings.get("provider")
+        or "ollama"
+    )
+    if provider not in {"ollama", "lmstudio"}:
+        provider = "ollama"
+    requested_model = str(
+        body.get("genre_label_model")
+        or body.get("planner_model")
+        or body.get("chat_model")
+        or settings.get("chat_model")
+        or ""
+    ).strip()
+    try:
+        model = _resolve_local_llm_model_selection(provider, requested_model, "chat", "trainer genre labeling")
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "genre": {"type": "string"},
+                "style_profile": {"type": "string"},
+                "caption_tags": {"type": "string"},
+                "confidence": {"type": "number"},
+                "reason": {"type": "string"},
+            },
+            "required": ["genre", "style_profile", "caption_tags", "confidence", "reason"],
+        }
+        style_keys = [str(item.get("key") or "") for item in audio_style_profiles(include_auto=False)]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Classify one music training sample for ACE-Step LoRA training. "
+                    "Use concise music genres and production tags. "
+                    f"style_profile must be one of: {', '.join(style_keys)}. "
+                    "Return JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "filename": audio_path.name,
+                        "folder": str(audio_path.parent.name),
+                        "artist": artist,
+                        "title": title,
+                        "existing_caption": caption,
+                        "lyrics_preview": _compact_text_for_prompt(lyrics, 900),
+                        "bpm": bpm,
+                        "keyscale": keyscale,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        response = local_llm_chat_completion_response(
+            provider,
+            model,
+            messages,
+            options=planner_llm_options_for_provider(
+                provider,
+                {**settings, **body, "planner_temperature": 0.1, "planner_max_tokens": 512},
+                default_max_tokens=512,
+                default_timeout=180.0,
+            ),
+            json_schema=schema,
+        )
+        parsed = _loads_json_lenient_object(str(response.get("content") or ""))
+        genre_terms = _training_split_genre_terms(parsed.get("genre"))
+        profile = _training_style_profile_from_terms(parsed.get("style_profile"), genre_terms) or _training_style_profile_from_terms(parsed.get("caption_tags"))
+        if not profile:
+            profile = "pop"
+        return {
+            "genre": ", ".join(genre_terms[:6]),
+            "style_profile": profile,
+            "caption_tags": str(parsed.get("caption_tags") or "").strip(),
+            "genre_label_source": "ai_local_llm",
+            "genre_label_provider": provider,
+            "genre_label_model": model,
+            "genre_confidence": clamp_float(parsed.get("confidence"), 0.55, 0.0, 1.0),
+            "genre_reason": str(parsed.get("reason") or "").strip(),
+        }
+    except OllamaPullStarted as exc:
+        return {
+            "genre_label_source": "ai_unavailable",
+            "genre_label_error": exc.message,
+            "genre_label_provider": provider,
+            "genre_label_model": requested_model,
+        }
+    except Exception as exc:
+        return {
+            "genre_label_source": "ai_unavailable",
+            "genre_label_error": str(exc),
+            "genre_label_provider": provider,
+            "genre_label_model": requested_model,
+        }
+
+
+def _training_genre_label(
+    audio_path: Path,
+    *,
+    body: dict[str, Any],
+    artist: str,
+    title: str,
+    metadata: dict[str, Any],
+    id3_tags: dict[str, Any],
+    lyrics: str,
+    bpm: Any,
+    keyscale: str,
+) -> dict[str, Any]:
+    mode = _normalize_training_genre_label_mode(body.get("genre_label_mode"))
+    overwrite = parse_bool(body.get("overwrite_existing_labels"), False)
+    caption_seed = str(metadata.get("caption") or "").strip() or " – ".join(bit for bit in [artist, title] if bit).strip() or audio_path.stem
+
+    metadata_terms = _training_split_genre_terms(
+        metadata.get("genre"),
+        metadata.get("genres"),
+    )
+    metadata_style_terms = _training_split_genre_terms(
+        metadata.get("style_profile"),
+        metadata.get("caption_tags"),
+    )
+    if metadata_terms and not overwrite:
+        profile = str(metadata.get("style_profile") or "").strip() or _training_style_profile_from_terms(metadata_terms, metadata_style_terms)
+        return {
+            "genre": ", ".join(metadata_terms[:6]),
+            "style_profile": profile,
+            "caption_tags": str(metadata.get("caption_tags") or _training_style_caption_tags(profile) or "").strip(),
+            "genre_label_source": "metadata",
+            "genre_confidence": clamp_float(metadata.get("genre_confidence"), 1.0, 0.0, 1.0),
+            "genre_reason": "Existing sidecar metadata genre preserved.",
+        }
+
+    id3_terms = _training_split_genre_terms(id3_tags.get("genre"))
+    if id3_terms:
+        profile = _training_style_profile_from_terms(id3_terms)
+        return {
+            "genre": ", ".join(id3_terms[:6]),
+            "style_profile": profile,
+            "caption_tags": _training_style_caption_tags(profile),
+            "id3_genre": ", ".join(id3_terms[:6]),
+            "genre_label_source": "id3_metadata",
+            "genre_confidence": 0.95,
+            "genre_reason": "Genre read from audio metadata.",
+        }
+
+    mb_terms = _musicbrainz_artist_tags(artist) if artist else []
+    if mb_terms:
+        profile = _training_style_profile_from_terms(mb_terms)
+        return {
+            "genre": ", ".join(mb_terms[:6]),
+            "style_profile": profile,
+            "caption_tags": _training_style_caption_tags(profile),
+            "musicbrainz_tags": mb_terms,
+            "genre_label_source": "musicbrainz",
+            "genre_confidence": 0.85,
+            "genre_reason": "Genre inferred from MusicBrainz artist tags.",
+        }
+
+    if mode == "manual_global":
+        manual_terms = _training_split_genre_terms(body.get("genre") or body.get("caption_tags"))
+        profile = _training_style_profile_from_terms(manual_terms)
+        return {
+            "genre": ", ".join(manual_terms[:6]),
+            "style_profile": profile,
+            "caption_tags": _training_style_caption_tags(profile) or ", ".join(manual_terms[:6]),
+            "genre_label_source": "manual_global",
+            "genre_confidence": 0.75 if manual_terms else 0.0,
+            "genre_reason": "Manual global genre used because metadata and MusicBrainz had no genre.",
+        }
+
+    if mode == "ai_auto":
+        ai = _training_ai_genre_label(
+            audio_path,
+            body=body,
+            artist=artist,
+            title=title,
+            caption=caption_seed,
+            lyrics=lyrics,
+            bpm=bpm,
+            keyscale=keyscale,
+        )
+        if str(ai.get("genre") or "").strip() or str(ai.get("caption_tags") or "").strip():
+            return ai
+
+    return {
+        "genre": "",
+        "style_profile": "",
+        "caption_tags": "",
+        "genre_label_source": "filename_fallback",
+        "genre_confidence": 0.0,
+        "genre_reason": "No metadata, MusicBrainz, manual, or AI genre was available.",
+    }
 
 
 def _strip_paren_suffix(title: str) -> str:
@@ -3723,8 +4105,9 @@ def _training_lookup_online_lyrics(audio_path: Path, body: dict[str, Any]) -> di
     """Look up lyrics for an audio file online and return an understand_music
     -shaped dict that `write_label_sidecars` can consume.
 
-    No LM, no audio-codes extraction — just ID3 + HTTP + lightweight
-    audio analysis. Returns:
+    No ACE-Step LM, no audio-codes extraction — just sidecars/ID3,
+    MusicBrainz, HTTP lyrics, lightweight audio analysis, and optional local
+    Ollama/LM Studio genre fallback. Returns:
         caption       — "{artist} – {title}" derived from tags/filename
         lyrics        — section-tagged lyrics (or "[Instrumental]" if not found)
         bpm/key_scale — detected from audio when possible
@@ -3733,6 +4116,8 @@ def _training_lookup_online_lyrics(audio_path: Path, body: dict[str, Any]) -> di
         is_instrumental — true when lyrics lookup failed
         label_source  — online source used, or "online_lyrics_missing"
     """
+    existing_metadata = _training_read_existing_label_sidecars(audio_path)
+    id3_tags = _extract_easy_audio_tags(audio_path)
     artist, title = _resolve_audio_artist_title(audio_path)
     source = "online_lyrics_missing"
     online = ""
@@ -3744,25 +4129,81 @@ def _training_lookup_online_lyrics(audio_path: Path, body: dict[str, Any]) -> di
             online = _fetch_lyrics_ovh(artist, title)
             if online:
                 source = "online_lyrics_ovh"
+    existing_lyrics = str(existing_metadata.get("lyrics") or "").strip()
     tagged = _apply_acestep_section_tags(online) if online else ""
+    if not tagged.strip() and existing_lyrics and not is_missing_vocal_lyrics({"lyrics": existing_lyrics}):
+        tagged = _apply_acestep_section_tags(existing_lyrics)
+        source = str(existing_metadata.get("label_source") or "existing_sidecar")
     has_lyrics = bool(tagged.strip())
     bpm, keyscale = _detect_bpm_key(str(audio_path))
+    bpm = bpm or existing_metadata.get("bpm")
+    keyscale = keyscale or str(existing_metadata.get("key_scale") or existing_metadata.get("keyscale") or "")
     caption_bits = [bit for bit in [artist, title] if bit]
-    caption = " – ".join(caption_bits).strip() or audio_path.stem
+    caption_seed = str(existing_metadata.get("caption") or "").strip() or " – ".join(caption_bits).strip() or audio_path.stem
+    lyrics_for_genre = tagged or existing_lyrics
+    genre_label = _training_genre_label(
+        audio_path,
+        body=body,
+        artist=artist,
+        title=title,
+        metadata=existing_metadata,
+        id3_tags=id3_tags,
+        lyrics=lyrics_for_genre,
+        bpm=bpm,
+        keyscale=keyscale,
+    )
+    genre_terms = _training_split_genre_terms(genre_label.get("genre"))
+    style_profile = str(genre_label.get("style_profile") or "").strip()
+    caption = _training_compose_caption(
+        artist=artist,
+        title=title,
+        bpm=bpm,
+        keyscale=keyscale,
+        has_vocals=has_lyrics,
+        genre_terms=genre_terms,
+        style_profile=style_profile,
+        caption_tags=str(genre_label.get("caption_tags") or ""),
+        fallback_caption=caption_seed,
+    )
+    conditioned = apply_audio_style_conditioning(
+        {
+            "caption": caption,
+            "lyrics": tagged or "[Instrumental]",
+            "style_profile": style_profile or "auto",
+        }
+    )
+    caption = str(conditioned.get("caption") or caption).strip()
+    lyrics_out = str(conditioned.get("lyrics") or tagged or "[Instrumental]").strip()
+    lyrics_status = "verified" if has_lyrics else "missing"
+    requires_review = not has_lyrics
     return {
         "caption": caption,
-        "lyrics": tagged or "[Instrumental]",
-        "lyrics_status": "verified" if has_lyrics else "missing",
-        "requires_review": not has_lyrics,
+        "lyrics": lyrics_out,
+        "lyrics_status": lyrics_status,
+        "requires_review": requires_review,
         "bpm": bpm,
         "key_scale": keyscale,
         "time_signature": "4",
-        "language": str(body.get("language") or body.get("vocal_language") or "").strip() or "unknown",
+        "language": str(existing_metadata.get("language") or body.get("language") or body.get("vocal_language") or "").strip() or "unknown",
         "is_instrumental": not has_lyrics,
         "label_source": source if has_lyrics else "online_lyrics_missing",
         "ace_lm_model": "",
         "online_artist": artist,
         "online_title": title,
+        "genre": str(genre_label.get("genre") or "").strip(),
+        "style_profile": style_profile,
+        "genre_profile": style_profile,
+        "caption_tags": str(genre_label.get("caption_tags") or "").strip(),
+        "genre_label_source": str(genre_label.get("genre_label_source") or "").strip(),
+        "genre_confidence": genre_label.get("genre_confidence"),
+        "genre_reason": str(genre_label.get("genre_reason") or "").strip(),
+        "genre_label_provider": str(genre_label.get("genre_label_provider") or "").strip(),
+        "genre_label_model": str(genre_label.get("genre_label_model") or "").strip(),
+        "genre_label_error": str(genre_label.get("genre_label_error") or "").strip(),
+        "id3_genre": str(genre_label.get("id3_genre") or "").strip(),
+        "musicbrainz_tags": genre_label.get("musicbrainz_tags") or [],
+        "style_lyric_tags_applied": conditioned.get("style_lyric_tags_applied") or [],
+        "style_conditioning_audit": conditioned.get("style_conditioning_audit") or {},
     }
 
 
@@ -3789,6 +4230,20 @@ def _training_write_label_sidecars(audio_path: Path, payload: dict[str, Any]) ->
         "ace_lm_model": str(payload.get("ace_lm_model") or ""),
         "online_artist": str(payload.get("online_artist") or ""),
         "online_title": str(payload.get("online_title") or ""),
+        "genre": str(payload.get("genre") or "").strip(),
+        "style_profile": str(payload.get("style_profile") or payload.get("genre_profile") or "").strip(),
+        "genre_profile": str(payload.get("genre_profile") or payload.get("style_profile") or "").strip(),
+        "caption_tags": str(payload.get("caption_tags") or "").strip(),
+        "genre_label_source": str(payload.get("genre_label_source") or "").strip(),
+        "genre_confidence": payload.get("genre_confidence"),
+        "genre_reason": str(payload.get("genre_reason") or "").strip(),
+        "genre_label_provider": str(payload.get("genre_label_provider") or "").strip(),
+        "genre_label_model": str(payload.get("genre_label_model") or "").strip(),
+        "genre_label_error": str(payload.get("genre_label_error") or "").strip(),
+        "id3_genre": str(payload.get("id3_genre") or "").strip(),
+        "musicbrainz_tags": payload.get("musicbrainz_tags") or [],
+        "style_lyric_tags_applied": payload.get("style_lyric_tags_applied") or [],
+        "style_conditioning_audit": payload.get("style_conditioning_audit") or {},
     }
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
     return {"lyrics_path": str(lyrics_path), "metadata_path": str(metadata_path)}
@@ -13468,6 +13923,17 @@ def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
     total_duration = round(sum(durations), 2)
     avg_duration = round(total_duration / len(durations), 2) if durations else 0.0
     languages = sorted({str(item.get("language") or "unknown") for item in items})
+    genre_values = sorted(
+        {
+            term
+            for item in items
+            for term in _training_split_genre_terms(item.get("genre"), item.get("style_profile"), item.get("genre_profile"))
+        }
+    )
+    genre_sources: dict[str, int] = {}
+    for item in items:
+        source = str(item.get("genre_label_source") or "").strip() or "unknown"
+        genre_sources[source] = genre_sources.get(source, 0) + 1
     score = 0
     checks = []
 
@@ -13483,6 +13949,14 @@ def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
     add("duration_total", total_duration >= 300, f"{total_duration}s total", 20)
     add("duration_shape", not durations or 5 <= avg_duration <= 300, f"{avg_duration}s average", 10)
     add("language_metadata", not vocal_health.get("blocking") and bool(languages), ", ".join(languages[:6]) or "unknown", 5)
+    checks.append(
+        {
+            "id": "genre_labels",
+            "status": "pass" if genre_values else "warn",
+            "detail": ", ".join(genre_values[:8]) if genre_values else "no genre/style labels yet",
+            "points": 0,
+        }
+    )
     status = "needs_work" if vocal_health.get("blocking") else ("ready" if score >= 85 else "usable" if score >= 65 else "needs_work")
     health = {
         "version": PRO_QUALITY_AUDIT_VERSION,
@@ -13494,6 +13968,12 @@ def _lora_dataset_health(files: list[dict[str, Any]] | None) -> dict[str, Any]:
         "total_duration_seconds": total_duration,
         "average_duration_seconds": avg_duration,
         "languages": languages,
+        "genres": genre_values,
+        "genre_labeled_count": sum(1 for item in items if str(item.get("genre") or item.get("style_profile") or "").strip()),
+        "ai_genre_labeled_count": genre_sources.get("ai_local_llm", 0),
+        "metadata_genre_labeled_count": genre_sources.get("metadata", 0) + genre_sources.get("id3_metadata", 0),
+        "musicbrainz_genre_labeled_count": genre_sources.get("musicbrainz", 0),
+        "genre_label_sources": genre_sources,
         "checks": checks,
         "audition_plan": {
             "adapter_scales": [0.3, 0.6, 0.8, 1.0],
@@ -16350,6 +16830,11 @@ async def api_lora_dataset_import_folder(
     dataset_id: str = Form(""),
     trigger_tag: str = Form(""),
     language: str = Form("unknown"),
+    genre: str = Form(""),
+    genre_label_mode: str = Form("ai_auto"),
+    genre_label_provider: str = Form(""),
+    genre_label_model: str = Form(""),
+    overwrite_existing_labels: str = Form("false"),
 ):
     try:
         if not files:
@@ -16380,6 +16865,8 @@ async def api_lora_dataset_import_folder(
             trigger_tag=trigger_tag,
             language=language,
             tag_position="prepend",
+            genre=genre,
+            genre_label_mode=genre_label_mode,
         )
         return JSONResponse(
             {
@@ -16390,6 +16877,10 @@ async def api_lora_dataset_import_folder(
                 "skipped_files": skipped,
                 "files": labels_preview,
                 "dataset_health": _lora_dataset_health(labels_preview),
+                "genre_label_mode": _normalize_training_genre_label_mode(genre_label_mode),
+                "genre_label_provider": normalize_provider(genre_label_provider or _load_local_llm_settings().get("provider") or "ollama"),
+                "genre_label_model": str(genre_label_model or _load_local_llm_settings().get("chat_model") or "").strip(),
+                "overwrite_existing_labels": parse_bool(overwrite_existing_labels, False),
                 "scan": data,
             }
         )
@@ -16977,6 +17468,7 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
         succeeded = 0
         failed = 0
         skip_existing = parse_bool(body.get("skip_existing"), True)
+        overwrite_existing_labels = parse_bool(body.get("overwrite_existing_labels"), False)
         request_body = dict(body)
         request_body.setdefault("vocal_language", body.get("language") or "unknown")
 
@@ -16992,11 +17484,17 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                 current_file=str(relative),
                 status=f"[{idx + 1}/{total}] {relative}",
             )
-            if skip_existing and existing_lyrics.is_file() and existing_meta.is_file():
+            if skip_existing and not overwrite_existing_labels and existing_lyrics.is_file() and existing_meta.is_file():
                 try:
                     existing_lyric_text = existing_lyrics.read_text(encoding="utf-8", errors="replace").strip()
                 except Exception:
                     existing_lyric_text = ""
+                try:
+                    existing_metadata = json.loads(existing_meta.read_text(encoding="utf-8"))
+                    if not isinstance(existing_metadata, dict):
+                        existing_metadata = {}
+                except Exception:
+                    existing_metadata = {}
                 missing_existing = is_missing_vocal_lyrics({"lyrics": existing_lyric_text})
                 labels.append(
                     {
@@ -17006,6 +17504,16 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                         "lyrics_status": "missing" if missing_existing else "present",
                         "requires_review": missing_existing,
                         "label_source": "existing_sidecar",
+                        "caption": str(existing_metadata.get("caption") or ""),
+                        "language": str(existing_metadata.get("language") or "unknown"),
+                        "bpm": existing_metadata.get("bpm"),
+                        "keyscale": str(existing_metadata.get("keyscale") or existing_metadata.get("key_scale") or ""),
+                        "genre": str(existing_metadata.get("genre") or ""),
+                        "style_profile": str(existing_metadata.get("style_profile") or existing_metadata.get("genre_profile") or ""),
+                        "caption_tags": str(existing_metadata.get("caption_tags") or ""),
+                        "genre_label_source": str(existing_metadata.get("genre_label_source") or "metadata"),
+                        "genre_confidence": existing_metadata.get("genre_confidence"),
+                        "genre_reason": str(existing_metadata.get("genre_reason") or ""),
                     }
                 )
                 if missing_existing:
@@ -17032,6 +17540,15 @@ def _lora_autolabel_worker(job_id: str, body: dict[str, Any]) -> None:
                         "bpm": understood.get("bpm"),
                         "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
                         "label_source": str(understood.get("label_source") or ("online_lyrics_missing" if missing else "official_ace_step_understand_music")),
+                        "genre": str(understood.get("genre") or ""),
+                        "style_profile": str(understood.get("style_profile") or understood.get("genre_profile") or ""),
+                        "caption_tags": str(understood.get("caption_tags") or ""),
+                        "genre_label_source": str(understood.get("genre_label_source") or ""),
+                        "genre_confidence": understood.get("genre_confidence"),
+                        "genre_reason": str(understood.get("genre_reason") or ""),
+                        "genre_label_provider": str(understood.get("genre_label_provider") or ""),
+                        "genre_label_model": str(understood.get("genre_label_model") or ""),
+                        "genre_label_error": str(understood.get("genre_label_error") or ""),
                         **paths,
                     }
                 )

@@ -290,6 +290,69 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(labels[0]["lyrics_status"], "missing")
             self.assertTrue(labels[0]["requires_review"])
 
+    def test_label_entries_applies_per_track_style_profile_before_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            labels = manager.label_entries(
+                [
+                    {
+                        "path": str(root / "rap.wav"),
+                        "filename": "rap.wav",
+                        "caption": "west coast vocal",
+                        "lyrics": "[Verse]\nEvery line hits with a steady drum",
+                        "style_profile": "rap",
+                        "genre": "hip hop, rap",
+                    }
+                ],
+                trigger_tag="2pac",
+                language="en",
+            )
+
+            self.assertTrue(labels[0]["caption"].startswith("pac, "))
+            self.assertIn("hip hop", labels[0]["caption"].lower())
+            self.assertIn("[Verse - rap", labels[0]["lyrics"])
+            self.assertEqual(labels[0]["style_profile"], "rap")
+
+    def test_manual_global_genre_only_applies_in_manual_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            ai_mode = manager.label_entries(
+                [
+                    {
+                        "path": str(root / "song.wav"),
+                        "filename": "song.wav",
+                        "caption": "clean vocal",
+                        "lyrics": "[Verse]\nA real lyric line",
+                    }
+                ],
+                trigger_tag="tag",
+                language="en",
+                genre="rap, hip hop",
+                genre_ratio=100,
+                genre_label_mode="ai_auto",
+            )
+            manual_mode = manager.label_entries(
+                [
+                    {
+                        "path": str(root / "song.wav"),
+                        "filename": "song.wav",
+                        "caption": "clean vocal",
+                        "lyrics": "[Verse]\nA real lyric line",
+                    }
+                ],
+                trigger_tag="tag",
+                language="en",
+                genre="rap, hip hop",
+                genre_ratio=100,
+                genre_label_mode="manual_global",
+            )
+
+            self.assertNotIn("hip hop", ai_mode[0]["caption"].lower())
+            self.assertIn("hip hop", manual_mode[0]["caption"].lower())
+            self.assertEqual(manual_mode[0]["genre_label_source"], "manual_global")
+
     def test_vocal_dataset_health_counts_instrumental_and_failed_labels_as_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

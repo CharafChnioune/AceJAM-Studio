@@ -1675,6 +1675,8 @@ class AceTrainingManager:
         language: str,
         tag_position: str = "prepend",
         genre_ratio: int | float | str = 0,
+        genre: str = "",
+        genre_label_mode: str = "ai_auto",
     ) -> list[dict[str, Any]]:
         """Create ACE-Step training labels without language detection or LM guessing."""
         trigger_raw = str(trigger_tag or "").strip()
@@ -1684,13 +1686,41 @@ class AceTrainingManager:
         if position not in {"prepend", "append", "replace"}:
             position = "prepend"
         ratio = parse_int(genre_ratio, 0, 0, 100)
+        label_mode = str(genre_label_mode or "ai_auto").strip().lower().replace("-", "_")
+        if label_mode in {"manual", "manual_genre", "global"}:
+            label_mode = "manual_global"
+        manual_genre = str(genre or "").strip()
         labeled: list[dict[str, Any]] = []
-        for item in entries:
+        for index, item in enumerate(entries):
             entry = dict(item or {})
             fallback_caption = self._caption_fallback(entry)
             caption = str(entry.get("caption") or fallback_caption).strip() or fallback_caption
-            caption = self._apply_trigger_tag(caption, trigger, position)
             lyrics = str(entry.get("lyrics") or "").strip() or INSTRUMENTAL_SENTINEL
+            style_profile = str(entry.get("style_profile") or entry.get("genre_profile") or "").strip()
+            if label_mode == "manual_global" and manual_genre and ratio > 0:
+                apply_manual = ratio >= 100 or ((index * 100) // max(len(entries), 1)) < ratio
+                if apply_manual:
+                    caption = _dedupe_csv_terms(manual_genre, caption)
+                    if not style_profile:
+                        style_profile = str(epoch_audition_genre_profile(manual_genre).get("key") or "").strip()
+                    entry.setdefault("genre", manual_genre)
+                    entry.setdefault("genre_label_source", "manual_global")
+            if style_profile:
+                conditioned = apply_audio_style_conditioning(
+                    {
+                        "caption": caption,
+                        "lyrics": lyrics,
+                        "style_profile": style_profile,
+                    }
+                )
+                caption = str(conditioned.get("caption") or caption).strip() or caption
+                lyrics = str(conditioned.get("lyrics") or lyrics).strip() or lyrics
+                entry["style_profile"] = str(conditioned.get("style_profile") or style_profile)
+                entry["genre_profile"] = entry["style_profile"]
+                entry["style_caption_tags"] = str(conditioned.get("style_caption_tags") or "")
+                entry["style_lyric_tags_applied"] = conditioned.get("style_lyric_tags_applied") or []
+                entry["style_conditioning_audit"] = conditioned.get("style_conditioning_audit") or {}
+            caption = self._apply_trigger_tag(caption, trigger, position)
             missing_vocal_lyrics = is_missing_vocal_lyrics({**entry, "lyrics": lyrics})
             entry.update(
                 {
@@ -1705,6 +1735,7 @@ class AceTrainingManager:
                     "generation_trigger_tag": trigger,
                     "tag_position": position,
                     "genre_ratio": ratio,
+                    "genre_label_mode": label_mode,
                     "label_source": entry.get("label_source")
                     or ("sidecar_metadata" if entry.get("caption_path") or entry.get("metadata_path") else "deterministic_filename"),
                     "is_instrumental": parse_bool(entry.get("is_instrumental"), _instrumental_like_lyrics(lyrics)),
@@ -2667,7 +2698,12 @@ class AceTrainingManager:
             "language": str(payload.get("language") or payload.get("vocal_language") or "").strip(),
             "adapter_type": str(payload.get("adapter_type") or "lora").strip().lower(),
             "tag_position": str(payload.get("tag_position") or "prepend").strip().lower(),
+            "genre": str(payload.get("genre") or payload.get("caption_tags") or "").strip(),
             "genre_ratio": parse_int(payload.get("genre_ratio"), 0, 0, 100),
+            "genre_label_mode": str(payload.get("genre_label_mode") or "ai_auto").strip().lower().replace("-", "_"),
+            "genre_label_provider": str(payload.get("genre_label_provider") or payload.get("planner_lm_provider") or "").strip(),
+            "genre_label_model": str(payload.get("genre_label_model") or payload.get("planner_model") or "").strip(),
+            "overwrite_existing_labels": parse_bool(payload.get("overwrite_existing_labels"), False),
             "song_model": song_model,
             "model_variant": variant,
             "train_batch_size": parse_int(payload.get("train_batch_size", payload.get("batch_size")), 1, 1, 64),
@@ -2726,7 +2762,8 @@ class AceTrainingManager:
             # pipeline gets real lyric conditioning.
             auto_understand = parse_bool(params.get("auto_understand_music"), True)
             if auto_understand and self.understand_music and self.write_label_sidecars:
-                missing = [item for item in files if self._needs_understand(item)]
+                overwrite_existing_labels = parse_bool(params.get("overwrite_existing_labels"), False)
+                missing = list(files) if overwrite_existing_labels else [item for item in files if self._needs_understand(item)]
                 if missing:
                     self._set_job_state(
                         job.id,
@@ -2735,7 +2772,8 @@ class AceTrainingManager:
                     )
                     self._append_log(
                         log_path,
-                        f"[transcribe] looking up online lyrics for {len(missing)} file(s) without sidecars\n",
+                        f"[transcribe] looking up online lyrics/genres for {len(missing)} file(s)"
+                        + (" with overwrite enabled\n" if overwrite_existing_labels else " without complete sidecars\n"),
                     )
                     request_body = {
                         "vocal_language": language,
@@ -2743,6 +2781,12 @@ class AceTrainingManager:
                         "ace_lm_model": params.get("ace_lm_model") or "auto",
                         "song_model": params.get("song_model"),
                         "lm_backend": params.get("lm_backend"),
+                        "genre": params.get("genre"),
+                        "genre_ratio": params.get("genre_ratio"),
+                        "genre_label_mode": params.get("genre_label_mode"),
+                        "genre_label_provider": params.get("genre_label_provider"),
+                        "genre_label_model": params.get("genre_label_model"),
+                        "overwrite_existing_labels": params.get("overwrite_existing_labels"),
                     }
                     transcribed_ok = 0
                     transcribed_failed = 0
@@ -2788,6 +2832,15 @@ class AceTrainingManager:
                                     "bpm": understood.get("bpm"),
                                     "keyscale": str(understood.get("key_scale") or understood.get("keyscale") or ""),
                                     "label_source": str(understood.get("label_source") or "online_lyrics"),
+                                    "genre": str(understood.get("genre") or ""),
+                                    "style_profile": str(understood.get("style_profile") or understood.get("genre_profile") or ""),
+                                    "caption_tags": str(understood.get("caption_tags") or ""),
+                                    "genre_label_source": str(understood.get("genre_label_source") or ""),
+                                    "genre_confidence": understood.get("genre_confidence"),
+                                    "genre_reason": str(understood.get("genre_reason") or ""),
+                                    "genre_label_provider": str(understood.get("genre_label_provider") or ""),
+                                    "genre_label_model": str(understood.get("genre_label_model") or ""),
+                                    "genre_label_error": str(understood.get("genre_label_error") or ""),
                                 }
                             )
                             self._append_log(
@@ -2832,6 +2885,8 @@ class AceTrainingManager:
                 language=language,
                 tag_position=str(params.get("tag_position") or "prepend"),
                 genre_ratio=params.get("genre_ratio", 0),
+                genre=params.get("genre", ""),
+                genre_label_mode=params.get("genre_label_mode", "ai_auto"),
             )
             excluded_missing_lyrics: list[dict[str, Any]] = []
             if is_vocal_training_request(params):
@@ -4276,6 +4331,17 @@ class AceTrainingManager:
             "lyrics_status": lyrics_status,
             "requires_review": requires_review,
             "genre": str(metadata.get("genre") or csv_row.get("Genre") or ""),
+            "style_profile": str(metadata.get("style_profile") or metadata.get("genre_profile") or ""),
+            "genre_profile": str(metadata.get("genre_profile") or metadata.get("style_profile") or ""),
+            "caption_tags": str(metadata.get("caption_tags") or ""),
+            "genre_label_source": str(metadata.get("genre_label_source") or ""),
+            "genre_confidence": metadata.get("genre_confidence"),
+            "genre_reason": str(metadata.get("genre_reason") or ""),
+            "genre_label_provider": str(metadata.get("genre_label_provider") or ""),
+            "genre_label_model": str(metadata.get("genre_label_model") or ""),
+            "genre_label_error": str(metadata.get("genre_label_error") or ""),
+            "id3_genre": str(metadata.get("id3_genre") or ""),
+            "musicbrainz_tags": metadata.get("musicbrainz_tags") or [],
             "bpm": metadata.get("bpm") or csv_row.get("BPM") or None,
             "keyscale": metadata.get("keyscale") or metadata.get("key_scale") or csv_row.get("Key") or "",
             "timesignature": metadata.get("timesignature") or metadata.get("time_signature") or "4",

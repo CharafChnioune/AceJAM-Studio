@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Loader2, Music4, Upload, GraduationCap, X, FileMusic, Mic2, SkipForward,
+  Loader2, Music4, Upload, GraduationCap, X, FileMusic, Mic2, SkipForward, FolderOpen,
 } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
@@ -22,8 +22,11 @@ import {
 } from "@/components/ui/select";
 import {
   api,
+  getLLMCatalog,
   getLoraAutolabelJob,
   startLoraAutolabelJob,
+  PROVIDER_LABEL,
+  type LLMProvider,
   type LoraAutolabelJob,
   type LoraAutolabelLabel,
 } from "@/lib/api";
@@ -37,6 +40,10 @@ interface TrainerForm {
   genre: string;
   epoch_audition_genre: string;
   genre_ratio: number;
+  genre_label_mode: "ai_auto" | "manual_global" | "metadata_musicbrainz";
+  genre_label_provider: LLMProvider;
+  genre_label_model: string;
+  overwrite_existing_labels: boolean;
   default_language: string;
   default_bpm: number;
   default_time_signature: string;
@@ -130,6 +137,17 @@ function uploadRelativePath(file: File): string {
 
 function isTrainerUploadSupported(path: string): boolean {
   return ALLOWED_AUDIO.test(path) || ALLOWED_SIDECAR.test(path);
+}
+
+function uploadStats(items: TrainerUploadItem[]) {
+  const audio = items.filter((item) => ALLOWED_AUDIO.test(item.relativePath || item.file.name)).length;
+  const sidecars = items.filter((item) => ALLOWED_SIDECAR.test(item.relativePath || item.file.name)).length;
+  const folders = new Set(
+    items
+      .map((item) => (item.relativePath || item.file.name).replace(/\\/g, "/").split("/").slice(0, -1).join("/"))
+      .filter(Boolean),
+  ).size;
+  return { audio, sidecars, folders };
 }
 
 function fileFromEntry(entry: FileSystemFileEntryLike): Promise<File> {
@@ -288,6 +306,14 @@ function labelSourceBadge(source?: string) {
     return { variant: "muted" as const, label: "geen match" };
   if (source === "official_ace_step_understand_music")
     return { variant: "default" as const, label: "AI gelabeld" };
+  if (source === "ai_local_llm")
+    return { variant: "default" as const, label: "AI genre" };
+  if (source === "musicbrainz")
+    return { variant: "default" as const, label: "MusicBrainz" };
+  if (source === "metadata" || source === "id3_metadata")
+    return { variant: "muted" as const, label: "metadata genre" };
+  if (source === "manual_global")
+    return { variant: "outline" as const, label: "handmatig genre" };
   if (source === "understand_music_failed")
     return { variant: "destructive" as const, label: "fout" };
   return { variant: "muted" as const, label: source };
@@ -385,6 +411,7 @@ function AutolabelLiveView({ job }: { job: LoraAutolabelJob }) {
 
 function LiveLabelRow({ label }: { label: LoraAutolabelLabel }) {
   const badge = labelSourceBadge(label.label_source);
+  const genreBadge = labelSourceBadge(label.genre_label_source);
   const lyrics = (label.lyrics ?? "").replace(/\s+/g, " ").trim();
   const lyricsPreview =
     lyrics.length > 140 ? `${lyrics.slice(0, 140)}…` : lyrics;
@@ -404,6 +431,11 @@ function LiveLabelRow({ label }: { label: LoraAutolabelLabel }) {
         <Badge variant={badge.variant} className="text-[10px]">
           {badge.label}
         </Badge>
+        {label.genre_label_source && (
+          <Badge variant={genreBadge.variant} className="text-[10px]">
+            genre: {genreBadge.label}
+          </Badge>
+        )}
       </div>
       {label.caption && (
         <p className="mt-1 truncate text-[10px] text-muted-foreground">
@@ -428,9 +460,25 @@ function LiveLabelRow({ label }: { label: LoraAutolabelLabel }) {
         {label.keyscale && (
           <span className="rounded bg-background/60 px-1.5">{label.keyscale}</span>
         )}
+        {label.genre && (
+          <span className="rounded bg-primary/15 px-1.5 text-primary">{label.genre}</span>
+        )}
+        {label.style_profile && (
+          <span className="rounded bg-background/60 px-1.5">style: {label.style_profile}</span>
+        )}
+        {label.genre_confidence != null && Number.isFinite(Number(label.genre_confidence)) && (
+          <span className="rounded bg-background/60 px-1.5">
+            genre {Math.round(Number(label.genre_confidence) * 100)}%
+          </span>
+        )}
         {label.error && (
           <span className="rounded bg-destructive/30 px-1.5 text-destructive-foreground">
             {label.error.slice(0, 60)}
+          </span>
+        )}
+        {label.genre_label_error && (
+          <span className="rounded bg-destructive/30 px-1.5 text-destructive-foreground">
+            genre AI: {label.genre_label_error.slice(0, 60)}
           </span>
         )}
       </div>
@@ -455,6 +503,10 @@ export function TrainerWizard() {
     genre: "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
     epoch_audition_genre: "rap",
     genre_ratio: 0,
+    genre_label_mode: "ai_auto",
+    genre_label_provider: "ollama",
+    genre_label_model: "",
+    overwrite_existing_labels: false,
     default_language: "en",
     default_bpm: 120,
     default_time_signature: "4/4",
@@ -477,6 +529,11 @@ export function TrainerWizard() {
       ),
     staleTime: 5 * 60 * 1000,
   });
+  const llmCatalogQuery = useQuery({
+    queryKey: ["trainer-local-llm-catalog"],
+    queryFn: getLLMCatalog,
+    staleTime: 30 * 1000,
+  });
   const auditionGenres = React.useMemo(() => {
     const fromApi = genreQuery.data?.genres?.filter((item) => item.key) ?? [];
     return fromApi.length > 0 ? fromApi : FALLBACK_AUDITION_GENRES;
@@ -488,6 +545,18 @@ export function TrainerWizard() {
   const generationTriggerPreview = safeGenerationTriggerTag(form.trigger_tag);
   const estimatedAutoEpochs = autoEpochTarget(dataset?.files ?? files.filter((item) => ALLOWED_AUDIO.test(item.relativePath || item.file.name)).length);
   const requestedTrainEpochs = form.train_epoch_mode === "auto" ? "auto" : form.train_epochs;
+  const stats = React.useMemo(() => uploadStats(files), [files]);
+  const llmSettings = llmCatalogQuery.data?.settings;
+  const effectiveGenreProvider: LLMProvider =
+    form.genre_label_provider || (llmSettings?.provider as LLMProvider | undefined) || "ollama";
+  const effectiveGenreModel = form.genre_label_model || String(llmSettings?.chat_model || "");
+  const genreProviderOptions = (llmCatalogQuery.data?.providers ?? []).filter((provider) =>
+    provider.id === "ollama" || provider.id === "lmstudio",
+  );
+  const genreModelOptions =
+    llmCatalogQuery.data?.catalogs?.[effectiveGenreProvider]?.chat_models ??
+    llmCatalogQuery.data?.chat_models ??
+    [];
 
   const setAuditionGenre = (value: string) => {
     const selected = auditionGenres.find((item) => item.key === value);
@@ -558,12 +627,18 @@ export function TrainerWizard() {
       if (form.dataset_id) fd.append("dataset_id", form.dataset_id);
       if (form.trigger_tag) fd.append("trigger_tag", form.trigger_tag);
       if (form.default_language) fd.append("language", form.default_language);
+      fd.append("genre", form.genre);
+      fd.append("genre_label_mode", form.genre_label_mode);
+      fd.append("genre_label_provider", effectiveGenreProvider);
+      fd.append("genre_label_model", effectiveGenreModel);
+      fd.append("overwrite_existing_labels", String(form.overwrite_existing_labels));
       return api.post<{
         success: boolean;
         dataset_id?: string;
         copied_files?: string[];
         skipped_files?: string[];
         files?: unknown[];
+        dataset_health?: Record<string, unknown>;
         error?: string;
       }>("/api/lora/dataset/import-folder", fd);
     },
@@ -580,6 +655,7 @@ export function TrainerWizard() {
         copied_files: resp.copied_files,
         skipped_files: resp.skipped_files,
         status: "imported",
+        health: resp.dataset_health,
       });
       setForm((f) => ({ ...f, dataset_id: datasetId }));
       toast.success(
@@ -604,6 +680,11 @@ export function TrainerWizard() {
         dataset_id: id,
         language: form.default_language,
         skip_existing: true,
+        genre: form.genre,
+        genre_label_mode: form.genre_label_mode,
+        genre_label_provider: effectiveGenreProvider,
+        genre_label_model: effectiveGenreModel,
+        overwrite_existing_labels: form.overwrite_existing_labels,
       });
     },
     onSuccess: (resp, variables) => {
@@ -689,6 +770,10 @@ export function TrainerWizard() {
         language: form.default_language,
         genre: form.genre,
         genre_ratio: form.genre_ratio,
+        genre_label_mode: form.genre_label_mode,
+        genre_label_provider: effectiveGenreProvider,
+        genre_label_model: effectiveGenreModel,
+        overwrite_existing_labels: form.overwrite_existing_labels,
         epoch_audition_genre: form.epoch_audition_genre,
         epoch_audition_bpm: selectedAuditionGenre?.bpm ?? undefined,
         epoch_audition_keyscale: selectedAuditionGenre?.keyscale ?? undefined,
@@ -732,6 +817,9 @@ export function TrainerWizard() {
           train_epochs: requestedTrainEpochs,
           stop_policy: form.stop_policy,
           batch_size: form.batch_size,
+          genre_label_mode: form.genre_label_mode,
+          genre_label_provider: effectiveGenreProvider,
+          genre_label_model: effectiveGenreModel,
         },
         startedAt: Date.now(),
       });
@@ -941,7 +1029,7 @@ export function TrainerWizard() {
               setDrag(false);
               void onDropUpload(e.dataTransfer);
             }}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => folderInputRef.current?.click()}
             role="button"
             tabIndex={0}
             className={cn(
@@ -955,10 +1043,21 @@ export function TrainerWizard() {
             <div className="space-y-1">
               <p className="font-medium">Sleep audio, sidecars of folders hierheen</p>
               <p className="text-xs text-muted-foreground">
-                klik voor losse bestanden, of kies een hele map met subfolders
+                klik om de bovenste map te kiezen; alle nummers in subfolders gaan mee
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
+              <Button
+                size="sm"
+                variant="default"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  folderInputRef.current?.click();
+                }}
+                className="gap-1.5"
+              >
+                <FolderOpen className="size-3.5" /> Map kiezen
+              </Button>
               <Button
                 size="sm"
                 variant="secondary"
@@ -967,17 +1066,7 @@ export function TrainerWizard() {
                   inputRef.current?.click();
                 }}
               >
-                Bestanden kiezen
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  folderInputRef.current?.click();
-                }}
-              >
-                Map kiezen
+                Losse bestanden kiezen
               </Button>
             </div>
           </motion.div>
@@ -986,6 +1075,11 @@ export function TrainerWizard() {
             <FieldGroup
               title={`${files.length} bestand${files.length === 1 ? "" : "en"} geselecteerd`}
             >
+              <div className="flex flex-wrap gap-1.5 text-[10px]">
+                <Badge variant="muted">{stats.audio} audio</Badge>
+                <Badge variant="muted">{stats.sidecars} sidecars</Badge>
+                <Badge variant="muted">{stats.folders} subfolder{stats.folders === 1 ? "" : "s"}</Badge>
+              </div>
               <div className="max-h-48 space-y-1 overflow-y-auto pr-1">
                 <AnimatePresence initial={false}>
                   {files.map((item, idx) => (
@@ -1063,6 +1157,115 @@ export function TrainerWizard() {
       render: () => (
         <div className="space-y-4">
           <FieldGroup
+            title="Genre labeling"
+            description="Bronvolgorde per clip: bestaande metadata/sidecar → ID3 genre → MusicBrainz artist-tags → pas daarna AI via Ollama/LM Studio."
+          >
+            <div className="grid gap-3 lg:grid-cols-[240px_180px_1fr]">
+              <div className="space-y-1.5">
+                <Label>Labelmodus</Label>
+                <Select
+                  value={form.genre_label_mode}
+                  onValueChange={(value) =>
+                    setForm((f) => ({
+                      ...f,
+                      genre_label_mode:
+                        value === "manual_global"
+                          ? "manual_global"
+                          : value === "metadata_musicbrainz"
+                            ? "metadata_musicbrainz"
+                            : "ai_auto",
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ai_auto">AI per track als fallback</SelectItem>
+                    <SelectItem value="manual_global">Handmatig globaal genre</SelectItem>
+                    <SelectItem value="metadata_musicbrainz">Alleen metadata + MusicBrainz</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>AI provider</Label>
+                <Select
+                  value={effectiveGenreProvider}
+                  onValueChange={(value) =>
+                    setForm((f) => ({
+                      ...f,
+                      genre_label_provider: value === "lmstudio" ? "lmstudio" : "ollama",
+                      genre_label_model: "",
+                    }))
+                  }
+                  disabled={form.genre_label_mode !== "ai_auto"}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(genreProviderOptions.length ? genreProviderOptions : [
+                      { id: "ollama" as LLMProvider, label: "Ollama", host: "", ready: true },
+                      { id: "lmstudio" as LLMProvider, label: "LM Studio", host: "", ready: true },
+                    ]).map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {PROVIDER_LABEL[provider.id] || provider.label || provider.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>AI genre-model</Label>
+                <Select
+                  value={effectiveGenreModel || "__auto__"}
+                  onValueChange={(value) =>
+                    setForm((f) => ({
+                      ...f,
+                      genre_label_model: value === "__auto__" ? "" : value,
+                    }))
+                  }
+                  disabled={form.genre_label_mode !== "ai_auto"}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Gebruik Settings default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__auto__">Settings default</SelectItem>
+                    {genreModelOptions.map((model) => (
+                      <SelectItem key={model} value={model}>
+                        {model}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background/35 p-3 text-xs">
+              <span className="text-muted-foreground">
+                Actief: {form.genre_label_mode === "ai_auto"
+                  ? `${PROVIDER_LABEL[effectiveGenreProvider]} · ${effectiveGenreModel || "Settings default"}`
+                  : form.genre_label_mode === "manual_global"
+                    ? "handmatige genre-tags na metadata/MusicBrainz"
+                    : "geen AI fallback"}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant={form.overwrite_existing_labels ? "default" : "outline"}
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    overwrite_existing_labels: !f.overwrite_existing_labels,
+                  }))
+                }
+              >
+                {form.overwrite_existing_labels ? "Bestaande labels overschrijven" : "Bestaande labels behouden"}
+              </Button>
+            </div>
+          </FieldGroup>
+
+          <FieldGroup
             title="Test-WAV genre"
             description="Kies welke veilige testtekst en tags de epoch-audition gebruikt. Rap krijgt rap-lyrics/tags, pop krijgt pop-lyrics/tags, soul krijgt soul/R&B-lyrics/tags."
           >
@@ -1100,12 +1303,13 @@ export function TrainerWizard() {
                   min={0}
                   max={100}
                   step={5}
+                  disabled={form.genre_label_mode !== "manual_global"}
                   onValueChange={(v) =>
                     setForm((f) => ({ ...f, genre_ratio: v[0] ?? 0 }))
                   }
                 />
                 <p className="text-[10px] text-muted-foreground">
-                  Hoeveel % van de samples krijgt expliciet de genre-tag.
+                  Alleen bij handmatig globaal genre; AI/metadata-labeling gebruikt per-track tags.
                 </p>
               </div>
             </div>
@@ -1146,7 +1350,7 @@ export function TrainerWizard() {
 
           <FieldGroup
             title="Auto-label vóór training"
-            description="Bij Start training leest de trainer de ID3-tags van elke clip, zoekt de echte lyrics op via lyrics.ovh en plakt er ACE-Step section-tags ([Verse N]/[Chorus]/[Bridge]) op. Snel (geen LM, alleen HTTP), en geen kapotte transcribe-output. Sidecars die al bestaan worden overgeslagen."
+            description="Bij Start training leest de trainer metadata/ID3, haalt MusicBrainz genre-tags op, zoekt echte lyrics online en gebruikt alleen daarna Ollama/LM Studio als genre-fallback. ACE-Step LM wordt hiervoor niet gebruikt."
           >
             <div className="flex items-start justify-between gap-3 rounded-md border bg-card/40 p-3">
               <div className="min-w-0 flex-1 space-y-1">
@@ -1154,9 +1358,7 @@ export function TrainerWizard() {
                   <Mic2 className="size-3.5" /> Online lyrics + ACE-Step section-tags
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  Aan = vocal LoRA's krijgen echte lyric-conditioning, opgehaald
-                  van lyrics.ovh op basis van ID3 artist/title (of filename als
-                  fallback) met automatische{" "}
+                  Aan = vocal LoRA's krijgen echte lyric-conditioning, genre-tags uit metadata/MusicBrainz en automatische{" "}
                   <code className="rounded bg-background/40 px-1">[Verse N]</code>
                   /<code className="rounded bg-background/40 px-1">[Chorus]</code>
                   /<code className="rounded bg-background/40 px-1">[Bridge]</code>{" "}

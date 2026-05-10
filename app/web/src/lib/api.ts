@@ -467,6 +467,15 @@ export interface LoraAutolabelLabel {
   filename: string;
   lyrics?: string;
   caption?: string;
+  genre?: string;
+  style_profile?: string;
+  caption_tags?: string;
+  genre_label_source?: string;
+  genre_confidence?: number | string;
+  genre_reason?: string;
+  genre_label_provider?: string;
+  genre_label_model?: string;
+  genre_label_error?: string;
   language?: string;
   bpm?: number | string;
   keyscale?: string;
@@ -498,6 +507,11 @@ export const startLoraAutolabelJob = (body: {
   language?: string;
   song_model?: string;
   skip_existing?: boolean;
+  genre?: string;
+  genre_label_mode?: "ai_auto" | "manual_global" | "metadata_musicbrainz";
+  genre_label_provider?: LLMProvider;
+  genre_label_model?: string;
+  overwrite_existing_labels?: boolean;
 }) =>
   api.post<{ success: boolean; job_id?: string; job?: LoraAutolabelJob; error?: string }>(
     "/api/lora/dataset/autolabel/jobs",
