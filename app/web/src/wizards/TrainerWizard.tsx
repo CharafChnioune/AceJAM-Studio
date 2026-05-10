@@ -575,7 +575,35 @@ export function TrainerWizard() {
     if (!input) return;
     input.setAttribute("webkitdirectory", "");
     input.setAttribute("directory", "");
+    input.setAttribute("mozdirectory", "");
+    input.removeAttribute("accept");
   }, []);
+
+  const openFolderPicker = () => {
+    const input = folderInputRef.current;
+    if (!input) return;
+    const directoryInput = input as HTMLInputElement & {
+      directory?: boolean;
+      mozdirectory?: boolean;
+      webkitdirectory?: boolean;
+    };
+    directoryInput.webkitdirectory = true;
+    directoryInput.directory = true;
+    directoryInput.mozdirectory = true;
+    input.setAttribute("webkitdirectory", "");
+    input.setAttribute("directory", "");
+    input.setAttribute("mozdirectory", "");
+    input.removeAttribute("accept");
+    input.value = "";
+    input.click();
+  };
+
+  const openLooseFilePicker = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.value = "";
+    input.click();
+  };
 
   const addUploadItems = (incoming: TrainerUploadItem[]) => {
     const arr = incoming.filter((item) => isTrainerUploadSupported(item.relativePath || item.file.name));
@@ -981,8 +1009,8 @@ export function TrainerWizard() {
             ref={folderInputRef}
             type="file"
             multiple
-            accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.txt,.json,.csv,audio/*"
             className="hidden"
+            aria-label="Kies een map met audio en sidecars"
             onChange={(e) => onPickFiles(e.target.files)}
           />
 
@@ -1029,7 +1057,7 @@ export function TrainerWizard() {
               setDrag(false);
               void onDropUpload(e.dataTransfer);
             }}
-            onClick={() => folderInputRef.current?.click()}
+            onClick={openFolderPicker}
             role="button"
             tabIndex={0}
             className={cn(
@@ -1052,7 +1080,7 @@ export function TrainerWizard() {
                 variant="default"
                 onClick={(e) => {
                   e.stopPropagation();
-                  folderInputRef.current?.click();
+                  openFolderPicker();
                 }}
                 className="gap-1.5"
               >
@@ -1063,7 +1091,7 @@ export function TrainerWizard() {
                 variant="secondary"
                 onClick={(e) => {
                   e.stopPropagation();
-                  inputRef.current?.click();
+                  openLooseFilePicker();
                 }}
               >
                 Losse bestanden kiezen
