@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import {
   Sparkles,
   Music2,
+  ListMusic,
   Image as ImageIcon,
   Video,
   Disc3,
@@ -64,6 +65,14 @@ const cards: ModeCard[] = [
     title: "Custom",
     blurb: "Volledige controle: tags, lyrics, bpm, key, render-instellingen.",
     icon: Music2,
+    enabled: true,
+  },
+  {
+    to: "/wizard/batch",
+    title: "Batch Songs",
+    blurb: "Vul meerdere songs volledig in en render ze daarna één voor één.",
+    icon: ListMusic,
+    badge: "Queue",
     enabled: true,
   },
   {

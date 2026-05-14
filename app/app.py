@@ -77,6 +77,7 @@ SONGS_DIR = DATA_DIR / "songs"
 UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
 ALBUMS_DIR = DATA_DIR / "albums"
+SONG_BATCHES_DIR = DATA_DIR / "song_batches"
 ART_DIR = DATA_DIR / "art"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
@@ -98,6 +99,7 @@ ALBUM_EMBEDDING_FALLBACK_MODELS = [
 ]
 ALBUM_JOB_KEEP_LIMIT = 50
 GENERATION_JOB_KEEP_LIMIT = 50
+SONG_BATCH_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
 ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=True)
@@ -244,6 +246,7 @@ SONGS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
+SONG_BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 ART_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -5277,6 +5280,8 @@ _album_jobs: dict[str, dict[str, Any]] = {}
 _album_jobs_lock = threading.Lock()
 _api_generation_tasks: dict[str, dict[str, Any]] = {}
 _api_generation_tasks_lock = threading.Lock()
+_song_batch_jobs: dict[str, dict[str, Any]] = {}
+_song_batch_jobs_lock = threading.Lock()
 _lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
 _lora_autolabel_jobs_lock = threading.Lock()
 
@@ -8401,6 +8406,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "latent_rescale": clamp_float(payload.get("latent_rescale"), 1.0, 0.1, 3.0),
         "device": str(payload.get("device") or "auto").strip() or "auto",
         "dtype": str(payload.get("dtype") or "auto").strip() or "auto",
+        "vae_checkpoint": str(payload.get("vae_checkpoint") or "official").strip() or "official",
         "audio_backend": _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit")),
         "use_flash_attention": payload.get("use_flash_attention", "auto"),
         "use_mlx_dit": payload.get("use_mlx_dit", "auto"),
@@ -9016,6 +9022,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "save_dir": str(save_dir),
         "ace_step_text_budget": _jsonable(params.get("ace_step_text_budget") or {}),
         "song_model": params["song_model"],
+        "vae_checkpoint": params.get("vae_checkpoint") or "official",
         "lm_model": lm_model,
         "official_api_fields": _jsonable(official_api_fields),
         "guarded_api_fields": _jsonable(guarded_api_fields),
@@ -13078,6 +13085,12 @@ def generate_album(
             },
         )
         planned_tracks = _json_list(request_payload.get("tracks") or request_payload.get("planned_tracks"))
+        render_from_existing_tracks = bool(planned_tracks) and (
+            parse_bool(request_payload.get("render_from_existing_tracks"), False)
+            or parse_bool(request_payload.get("skip_album_planning"), False)
+            or str(request_payload.get("album_generation_mode") or "").strip().lower()
+            in {"render_existing_tracks", "direct_render", "ui_tracks"}
+        )
         album_lora_request = _lora_adapter_request(request_payload)
         if album_lora_request.get("use_lora") and album_lora_request.get("adapter_song_model"):
             adapter_song_model = str(album_lora_request.get("adapter_song_model") or "").strip()
@@ -13142,33 +13155,92 @@ def generate_album(
                 f"trigger={album_lora_request.get('lora_trigger_tag') or 'off'}."
             )
 
-        _ensure_album_agent_modules_current()
-        from album_crew import plan_album as _plan_album
+        if render_from_existing_tracks:
+            album_options["album_writer_mode"] = "render_existing_tracks"
+            logs.append(
+                f"Phase 1 skipped: rendering {len(planned_tracks)} UI-approved track(s) directly; "
+                "no album agents will run on Generate."
+            )
+            _album_job_log(
+                album_job_id,
+                f"Phase 1 skipped: rendering {len(planned_tracks)} UI-approved track(s) directly.",
+                status="Rendering approved UI tracks",
+                stage="render_existing_tracks",
+                current_task="Render existing Album Wizard tracks",
+                progress=8,
+                planning_engine="existing_ui_tracks",
+                album_writer_mode="render_existing_tracks",
+                custom_agents_used=False,
+                crewai_used=False,
+            )
+            tracks = []
+            for index, raw_track in enumerate(planned_tracks, start=1):
+                track = dict(raw_track) if isinstance(raw_track, dict) else {}
+                track["track_number"] = clamp_int(track.get("track_number"), index, 1, 999)
+                track["title"] = str(track.get("title") or f"Track {index}").strip()
+                track["duration"] = parse_duration_seconds(track.get("duration") or track_duration, track_duration)
+                track["language"] = str(track.get("language") or track.get("vocal_language") or language or "en")
+                track["vocal_language"] = str(track.get("vocal_language") or track.get("language") or language or "en")
+                track["bpm"] = clamp_int(track.get("bpm") or request_payload.get("bpm"), DEFAULT_BPM, 40, 220)
+                track["key_scale"] = normalize_key_scale(track.get("key_scale") or track.get("key") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE)
+                track["time_signature"] = str(track.get("time_signature") or request_payload.get("time_signature") or "4")
+                if track.get("caption") and not track.get("tags"):
+                    track["tags"] = str(track.get("caption") or "")
+                if track.get("tags") and not track.get("caption"):
+                    track["caption"] = str(track.get("tags") or "")
+                track["planning_status"] = str(track.get("planning_status") or "ui_approved")
+                track["agent_complete_payload"] = False
+                tracks.append(track)
+            result = {
+                "success": True,
+                "tracks": tracks,
+                "logs": [
+                    "Album Generate used existing UI tracks and skipped album_crew.plan_album.",
+                ],
+                "planning_engine": "existing_ui_tracks",
+                "album_writer_mode": "render_existing_tracks",
+                "custom_agents_used": False,
+                "crewai_used": False,
+                "toolbelt_fallback": False,
+                "agent_debug_dir": str(album_debug.root),
+                "agent_rounds": [],
+                "agent_repair_count": 0,
+                "memory_enabled": False,
+                "context_chunks": 0,
+                "retrieval_rounds": 0,
+                "input_contract_applied": False,
+                "contract_repair_count": 0,
+                "blocked_unsafe_count": 0,
+                "toolkit_report": {},
+            }
+        else:
+            _ensure_album_agent_modules_current()
+            from album_crew import plan_album as _plan_album
 
-        logs.append(f"Phase 1: Planning album with {planning_engine_label} and deterministic gates...")
-        logs.append(f"Album writer mode: {album_options.get('album_writer_mode')}; per-track AI writing, audit, repair and debug before render.")
-        _album_job_log(
-            album_job_id,
-            f"Phase 1: Planning album with {planning_engine_label} and deterministic gates.",
-            status="Planning album",
-            progress=3,
-            planning_engine=planning_engine,
-            album_writer_mode=album_options.get("album_writer_mode"),
-            crewai_used=planning_engine == "crewai_micro",
-        )
-        result = _plan_album(
-            concept=concept,
-            num_tracks=num_tracks,
-            track_duration=track_duration,
-            ollama_model=ollama_model,
-            language=language,
-            embedding_model=embedding_model,
-            options=album_options,
-            use_crewai=True,
-            input_tracks=planned_tracks if planned_tracks else None,
-            planner_provider=planner_lm_provider,
-            embedding_provider=embedding_lm_provider,
-        )
+            logs.append(f"Phase 1: Planning album with {planning_engine_label} and deterministic gates...")
+            logs.append(f"Album writer mode: {album_options.get('album_writer_mode')}; per-track AI writing, audit, repair and debug before render.")
+            _album_job_log(
+                album_job_id,
+                f"Phase 1: Planning album with {planning_engine_label} and deterministic gates.",
+                status="Planning album",
+                progress=3,
+                planning_engine=planning_engine,
+                album_writer_mode=album_options.get("album_writer_mode"),
+                crewai_used=planning_engine == "crewai_micro",
+            )
+            result = _plan_album(
+                concept=concept,
+                num_tracks=num_tracks,
+                track_duration=track_duration,
+                ollama_model=ollama_model,
+                language=language,
+                embedding_model=embedding_model,
+                options=album_options,
+                use_crewai=True,
+                input_tracks=planned_tracks if planned_tracks else None,
+                planner_provider=planner_lm_provider,
+                embedding_provider=embedding_lm_provider,
+            )
         tracks = result.get("tracks", [])
         album_debug.write_json("04_plan_outputs.json", result)
         logs.extend(result.get("logs", []))
@@ -13234,12 +13306,19 @@ def generate_album(
                 f"failed tracks: {', '.join(str(item.get('track_number') or '?') for item in planning_failed_tracks)}."
             )
 
-        logs.append(f"Phase 1 complete: {len(tracks)} tracks planned")
         logs.append(
-            f"Local AI Writer/Planner: {provider_label(planner_lm_provider)} ({ollama_model}) for lyrics, tags, BPM, key and captions; "
-            "ACE-Step LM disabled for album agents."
+            f"Phase 1 complete: {len(tracks)} UI track(s) ready"
+            if render_from_existing_tracks
+            else f"Phase 1 complete: {len(tracks)} tracks planned"
         )
-        logs.append("ACE-Step LM disabled for album agents.")
+        if render_from_existing_tracks:
+            logs.append("Local AI Writer/Planner skipped on Generate; using the Album Wizard tracks already filled in the UI.")
+        else:
+            logs.append(
+                f"Local AI Writer/Planner: {provider_label(planner_lm_provider)} ({ollama_model}) for lyrics, tags, BPM, key and captions; "
+                "ACE-Step LM disabled for album agents."
+            )
+            logs.append("ACE-Step LM disabled for album agents.")
         logs.append(f"Album model policy: {len(album_models)} full model album(s), {len(tracks) * len(album_models)} total render(s)")
         agent_direct_payloads = str(result.get("planning_engine") or "") in {"acejam_agents", "crewai_micro"}
         album_global_caption = "" if agent_direct_payloads else build_album_global_sonic_caption(
@@ -13762,7 +13841,30 @@ def generate_album(
                             + _ace_payload_debug_block("rejected_payload_json", generation_payload),
                             flush=True,
                         )
-                        raise ValueError(f"AlbumPayloadQualityGate failed: {issue_preview or gate.get('status')}")
+                        if render_from_existing_tracks:
+                            track["payload_gate_non_blocking"] = True
+                            track["payload_gate_status"] = gate.get("status") or "needs_review"
+                            track["payload_gate_passed"] = False
+                            track["payload_gate_blocking_issues"] = blocking_issues
+                            if model_index == 1:
+                                base_track["payload_gate_non_blocking"] = True
+                                base_track["payload_gate_status"] = track["payload_gate_status"]
+                                base_track["payload_gate_passed"] = False
+                                base_track["payload_gate_blocking_issues"] = _jsonable(blocking_issues)
+                            logs.append(
+                                "    Payload gate warning on UI-approved track "
+                                f"{track_title}: {issue_preview or gate.get('status')}. Continuing render without another agent loop."
+                            )
+                            _album_job_log(
+                                album_job_id,
+                                f"Payload gate warning on UI-approved track {i + 1}: {track_title}; continuing render.",
+                                current_track=f"{i + 1}/{len(tracks)} {track_title}",
+                                stage="render_existing_tracks",
+                                current_task="Render existing Album Wizard tracks",
+                                warnings=[issue_preview or str(gate.get("status") or "payload_gate_warning")],
+                            )
+                        else:
+                            raise ValueError(f"AlbumPayloadQualityGate failed: {issue_preview or gate.get('status')}")
                     if gate.get("status") == "auto_repair" and not direct_agent_payload:
                         logs.append(
                             f"    Payload gate auto-repaired {track_title}: "
@@ -15215,6 +15317,402 @@ def _submit_api_generation_task(payload: dict[str, Any]) -> dict[str, Any]:
     return {"task_id": task_id, "job_id": task_id, "status": 0, "job": _generation_job_snapshot(task_id)}
 
 
+def _song_batch_job_path(job_id: str) -> Path:
+    return SONG_BATCHES_DIR / safe_id(job_id) / "job.json"
+
+
+def _persist_song_batch_job(job: dict[str, Any]) -> None:
+    job_id = safe_id(str(job.get("id") or ""))
+    if not job_id:
+        return
+    path = _song_batch_job_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(_jsonable(job), ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _song_batch_audio_urls(result: dict[str, Any] | None) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+    urls: list[str] = []
+    for key in ("audio_url", "download_url"):
+        value = str(result.get(key) or "").strip()
+        if value and value not in urls:
+            urls.append(value)
+    for audio in result.get("audios") or []:
+        if not isinstance(audio, dict):
+            continue
+        for key in ("audio_url", "download_url"):
+            value = str(audio.get(key) or "").strip()
+            if value and value not in urls:
+                urls.append(value)
+    return urls
+
+
+def _song_batch_payload_summary(body: dict[str, Any]) -> dict[str, Any]:
+    songs = body.get("songs") if isinstance(body.get("songs"), list) else []
+    return {
+        "batch_title": str(body.get("batch_title") or body.get("title") or "Batch Songs").strip(),
+        "song_count": len(songs),
+        "stop_on_error": parse_bool(body.get("stop_on_error"), False),
+    }
+
+
+def _song_batch_song_entry(index: int, payload: dict[str, Any]) -> dict[str, Any]:
+    summary = _generation_payload_summary(payload)
+    title = str(summary.get("title") or payload.get("title") or f"Song {index + 1}").strip()
+    return {
+        "index": index,
+        "track_number": index + 1,
+        "title": title,
+        "state": "queued",
+        "status": "Queued",
+        "progress": 0,
+        "generation_job_id": "",
+        "payload": _jsonable(payload),
+        "payload_summary": summary,
+        "result": None,
+        "result_summary": {},
+        "audio_urls": [],
+        "error": "",
+        "started_at": None,
+        "finished_at": None,
+    }
+
+
+def _normalise_song_batch_body(body: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(body, dict):
+        raise ValueError("Batch payload must be an object.")
+    raw_songs = body.get("songs")
+    if not isinstance(raw_songs, list) or not raw_songs:
+        raise ValueError("Batch payload requires at least one song in songs[].")
+    if len(raw_songs) > 40:
+        raise ValueError("Batch Songs supports maximaal 40 nummers per queue.")
+
+    songs: list[dict[str, Any]] = []
+    field_errors: list[str] = []
+    for index, item in enumerate(raw_songs):
+        if not isinstance(item, dict):
+            field_errors.append(f"Song {index + 1}: payload must be an object.")
+            continue
+        payload = dict(item)
+        payload.setdefault("task_type", "text2music")
+        payload.setdefault("wizard_mode", "batch")
+        if "audio_backend" in payload or "use_mlx_dit" in payload:
+            backend = _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit"))
+            payload["audio_backend"] = backend
+            payload["use_mlx_dit"] = backend == "mlx"
+        validation = _validate_generation_payload(payload)
+        if not validation.get("valid"):
+            errors = validation.get("field_errors") if isinstance(validation.get("field_errors"), dict) else {}
+            reason = "; ".join(f"{key}: {value}" for key, value in errors.items()) or "invalid payload"
+            field_errors.append(f"Song {index + 1}: {reason}")
+        songs.append(payload)
+    if field_errors:
+        raise ValueError("Batch validation failed: " + " | ".join(field_errors))
+
+    normalised = {
+        "batch_title": str(body.get("batch_title") or body.get("title") or "Batch Songs").strip() or "Batch Songs",
+        "stop_on_error": parse_bool(body.get("stop_on_error"), False),
+        "songs": songs,
+    }
+    return normalised, [_song_batch_song_entry(index, payload) for index, payload in enumerate(songs)]
+
+
+def _set_song_batch_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _song_batch_jobs_lock:
+        job = _song_batch_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "kind": "song_batch",
+                "state": "queued",
+                "status": "Queued",
+                "stage": "queued",
+                "progress": 0,
+                "batch_title": "Batch Songs",
+                "payload": {},
+                "payload_summary": {},
+                "songs": [],
+                "logs": [],
+                "errors": [],
+                "current_song": 0,
+                "total_songs": 0,
+                "completed_songs": 0,
+                "failed_songs": 0,
+                "remaining_songs": 0,
+                "child_generation_job_id": "",
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "updated_at": now,
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-500:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-500:]
+        if "errors" in updates:
+            old_errors = list(job.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                job["errors"] = (old_errors + [str(item) for item in new_errors])[-100:]
+            elif new_errors:
+                job["errors"] = (old_errors + [str(new_errors)])[-100:]
+        updates.setdefault("updated_at", now)
+        job.update(_jsonable(updates))
+        if len(_song_batch_jobs) > SONG_BATCH_JOB_KEEP_LIMIT:
+            removable = sorted(
+                _song_batch_jobs.values(),
+                key=lambda item: str(item.get("finished_at") or item.get("created_at") or ""),
+            )
+            for old in removable[: max(0, len(_song_batch_jobs) - SONG_BATCH_JOB_KEEP_LIMIT)]:
+                if old.get("state") not in {"queued", "running"}:
+                    _song_batch_jobs.pop(str(old.get("id")), None)
+        snapshot = dict(job)
+    try:
+        _persist_song_batch_job(snapshot)
+    except Exception as exc:
+        print(f"[song_batch] failed to persist {job_id}: {exc}")
+    return snapshot
+
+
+def _song_batch_job_view(job: dict[str, Any]) -> dict[str, Any]:
+    return _jsonable(dict(job))
+
+
+def _song_batch_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _song_batch_jobs_lock:
+        if job_id:
+            job = dict(_song_batch_jobs.get(job_id) or {})
+            if not job:
+                path = _song_batch_job_path(job_id)
+                if path.is_file():
+                    try:
+                        job = json.loads(path.read_text(encoding="utf-8"))
+                        _song_batch_jobs[job_id] = dict(job)
+                    except Exception:
+                        job = {}
+            return _song_batch_job_view(job) if job else {}
+        jobs = [dict(job) for job in _song_batch_jobs.values()]
+        known_ids = {str(job.get("id") or "") for job in jobs}
+    for path in SONG_BATCHES_DIR.glob("*/job.json"):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        job_id_from_disk = str(job.get("id") or path.parent.name)
+        if job_id_from_disk in known_ids:
+            continue
+        with _song_batch_jobs_lock:
+            _song_batch_jobs[job_id_from_disk] = dict(job)
+        jobs.append(dict(job))
+    return [
+        _song_batch_job_view(job)
+        for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
+    ]
+
+
+def _song_batch_worker(job_id: str, payload: dict[str, Any]) -> None:
+    songs = list(payload.get("songs") or [])
+    existing = _song_batch_snapshot(job_id)
+    entries = list(existing.get("songs") or []) if isinstance(existing, dict) else []
+    total = len(songs)
+    completed = 0
+    failed = 0
+    stop_on_error = parse_bool(payload.get("stop_on_error"), False)
+    _set_song_batch_job(
+        job_id,
+        state="running",
+        status="Batch running",
+        stage="running",
+        progress=1,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        total_songs=total,
+        remaining_songs=total,
+        logs=[f"Batch {job_id} started with {total} song(s)."],
+    )
+    try:
+        for index, song_payload in enumerate(songs):
+            track_number = index + 1
+            if not isinstance(song_payload, dict):
+                continue
+            if entries and index < len(entries):
+                entries[index] = {
+                    **entries[index],
+                    "state": "running",
+                    "status": "Rendering",
+                    "progress": 0,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "error": "",
+                }
+            title = str((entries[index] if index < len(entries) else {}).get("title") or song_payload.get("title") or f"Song {track_number}")
+            base_progress = int((index / max(1, total)) * 100)
+            _set_song_batch_job(
+                job_id,
+                songs=entries,
+                current_song=track_number,
+                stage="rendering",
+                status=f"Rendering song {track_number}/{total}",
+                progress=max(1, base_progress),
+                remaining_songs=max(0, total - index),
+                logs=[f"Song {track_number}/{total} queued: {title}"],
+            )
+            child_payload = {
+                **song_payload,
+                "wizard_mode": "batch",
+                "song_batch_id": job_id,
+                "song_batch_index": track_number,
+            }
+            child = _submit_api_generation_task(child_payload)
+            child_id = str(child.get("job_id") or child.get("task_id") or "")
+            if entries and index < len(entries):
+                entries[index]["generation_job_id"] = child_id
+            _set_song_batch_job(
+                job_id,
+                child_generation_job_id=child_id,
+                songs=entries,
+                logs=[f"Song {track_number}/{total} render started: generation job {child_id}."],
+            )
+            last_progress = -1
+            child_snapshot: dict[str, Any] = {}
+            while True:
+                child_snapshot = _generation_job_snapshot(child_id)
+                if not isinstance(child_snapshot, dict) or not child_snapshot:
+                    raise RuntimeError(f"Child generation job missing: {child_id}")
+                child_progress = clamp_int(child_snapshot.get("progress"), 0, 0, 100)
+                combined_progress = int(((index + child_progress / 100.0) / max(1, total)) * 100)
+                if child_progress != last_progress:
+                    last_progress = child_progress
+                    if entries and index < len(entries):
+                        entries[index]["progress"] = child_progress
+                        entries[index]["status"] = str(child_snapshot.get("status") or child_snapshot.get("stage") or "Rendering")
+                    _set_song_batch_job(
+                        job_id,
+                        songs=entries,
+                        progress=max(base_progress, min(99, combined_progress)),
+                        status=f"Rendering song {track_number}/{total}",
+                        stage=str(child_snapshot.get("stage") or "rendering").lower() or "rendering",
+                        logs=[f"Song {track_number}/{total}: {child_progress}%"],
+                    )
+                state = str(child_snapshot.get("state") or "").lower()
+                if state in {"succeeded", "complete", "completed", "success", "failed", "error", "stopped"}:
+                    break
+                time.sleep(2.0)
+            result = child_snapshot.get("result") if isinstance(child_snapshot.get("result"), dict) else None
+            result_summary = child_snapshot.get("result_summary") if isinstance(child_snapshot.get("result_summary"), dict) else _generation_result_summary(result)
+            state = str(child_snapshot.get("state") or "").lower()
+            if state == "succeeded" and (not isinstance(result, dict) or result.get("success") is not False):
+                completed += 1
+                if entries and index < len(entries):
+                    entries[index].update(
+                        state="succeeded",
+                        status="Complete",
+                        progress=100,
+                        result=result,
+                        result_summary=result_summary,
+                        audio_urls=_song_batch_audio_urls(result),
+                        error="",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                _set_song_batch_job(
+                    job_id,
+                    songs=entries,
+                    completed_songs=completed,
+                    failed_songs=failed,
+                    remaining_songs=max(0, total - completed - failed),
+                    progress=int(((index + 1) / max(1, total)) * 100),
+                    logs=[f"Song {track_number}/{total} complete: {title}"],
+                )
+            else:
+                failed += 1
+                error = str(child_snapshot.get("error") or (result or {}).get("error") or "Generation failed")
+                if entries and index < len(entries):
+                    entries[index].update(
+                        state="failed",
+                        status="Failed",
+                        progress=100,
+                        result=result,
+                        result_summary=result_summary,
+                        audio_urls=_song_batch_audio_urls(result),
+                        error=error,
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                _set_song_batch_job(
+                    job_id,
+                    songs=entries,
+                    completed_songs=completed,
+                    failed_songs=failed,
+                    remaining_songs=max(0, total - completed - failed),
+                    errors=[f"Song {track_number}: {error}"],
+                    logs=[f"Song {track_number}/{total} failed: {error}"],
+                )
+                if stop_on_error:
+                    break
+        finished = datetime.now(timezone.utc).isoformat()
+        if failed and stop_on_error:
+            state = "failed"
+            status = "Batch stopped after failed song"
+        elif failed:
+            state = "succeeded"
+            status = "Batch completed with errors"
+        else:
+            state = "succeeded"
+            status = "Batch completed"
+        _set_song_batch_job(
+            job_id,
+            state=state,
+            status=status,
+            stage="complete" if state == "succeeded" else "failed",
+            progress=100,
+            current_song=completed + failed,
+            completed_songs=completed,
+            failed_songs=failed,
+            remaining_songs=max(0, total - completed - failed),
+            child_generation_job_id="",
+            finished_at=finished,
+            logs=[status],
+        )
+    except Exception as exc:
+        _set_song_batch_job(
+            job_id,
+            state="failed",
+            status="Batch failed",
+            stage="failed",
+            progress=100,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            child_generation_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        _cleanup_accelerator_memory()
+
+
+def _submit_song_batch_job(body: dict[str, Any]) -> dict[str, Any]:
+    payload, song_entries = _normalise_song_batch_body(body)
+    job_id = uuid.uuid4().hex[:12]
+    summary = _song_batch_payload_summary(payload)
+    _set_song_batch_job(
+        job_id,
+        payload=payload,
+        payload_summary=summary,
+        batch_title=summary["batch_title"],
+        total_songs=len(song_entries),
+        remaining_songs=len(song_entries),
+        songs=song_entries,
+        logs=[f"Batch {job_id} queued with {len(song_entries)} song(s)."],
+    )
+    thread = threading.Thread(target=_song_batch_worker, args=(job_id, payload), daemon=True)
+    thread.start()
+    return {"job_id": job_id, "job": _song_batch_snapshot(job_id)}
+
+
 def _official_query_item(task_id: str) -> dict[str, Any]:
     with _api_generation_tasks_lock:
         task = dict(_api_generation_tasks.get(task_id) or {})
@@ -15312,6 +15810,11 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "active_generation_jobs": [
             job
             for job in _generation_job_snapshot()
+            if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
+        ],
+        "active_song_batch_jobs": [
+            job
+            for job in _song_batch_snapshot()
             if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
         ],
         "ollama": json.loads(ollama_models()),
@@ -15576,11 +16079,20 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
     planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
     planning_engine_label = _album_agent_engine_label_value(planning_engine)
     album_writer_mode = str(body.get("album_writer_mode") or "per_track_writer_loop").strip() or "per_track_writer_loop"
+    direct_render_tracks = _json_list(body.get("tracks") or body.get("planned_tracks"))
+    direct_existing_render = bool(direct_render_tracks) and (
+        parse_bool(body.get("render_from_existing_tracks"), False)
+        or parse_bool(body.get("skip_album_planning"), False)
+        or str(body.get("album_generation_mode") or "").strip().lower()
+        in {"render_existing_tracks", "direct_render", "ui_tracks"}
+    )
     started = datetime.now(timezone.utc).isoformat()
     _set_album_job(
         job_id,
         state="running",
-        status=f"Running {planning_engine_label} album planner",
+        status="Rendering approved UI tracks" if direct_existing_render else f"Running {planning_engine_label} album planner",
+        stage="render_existing_tracks" if direct_existing_render else "planning",
+        current_task="Render existing Album Wizard tracks" if direct_existing_render else "Planning album",
         progress=1,
         started_at=started,
         finished_at=None,
@@ -15589,20 +16101,36 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
         planner_provider=planner_provider,
         embedding_model=embedding_model,
         embedding_provider=embedding_provider,
-        planning_engine=planning_engine,
-        album_writer_mode=album_writer_mode,
-        custom_agents_used=True,
-        crewai_used=planning_engine == "crewai_micro",
+        planning_engine="existing_ui_tracks" if direct_existing_render else planning_engine,
+        album_writer_mode="render_existing_tracks" if direct_existing_render else album_writer_mode,
+        custom_agents_used=False if direct_existing_render else True,
+        crewai_used=False if direct_existing_render else planning_engine == "crewai_micro",
         memory_enabled=False,
         logs=[
             f"Album job {job_id} started.",
-            f"Planning Engine: {planning_engine_label} ({planning_engine})",
-            f"Album writer mode: {album_writer_mode}",
-            f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})",
-            f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled.",
+            (
+                f"Direct render: {len(direct_render_tracks)} UI-approved track(s); no album agents will run."
+                if direct_existing_render
+                else f"Planning Engine: {planning_engine_label} ({planning_engine})"
+            ),
+            f"Album writer mode: {'render_existing_tracks' if direct_existing_render else album_writer_mode}",
+            (
+                "Local AI Writer/Planner skipped for Generate; existing UI tracks are the source of truth."
+                if direct_existing_render
+                else f"Local AI Writer/Planner: {provider_label(planner_provider)} ({planner_model})"
+            ),
+            (
+                "Album memory embedding skipped for Generate."
+                if direct_existing_render
+                else f"Album memory embedding: {provider_label(embedding_provider)} ({embedding_model}); hidden unless memory/debug is enabled."
+            ),
             "ACE-Step Audio Models render final music after local text/settings planning.",
             "ACE-Step LM disabled for album agents.",
-            "Agent memory: pending embedding preflight; deterministic debug logs are job-scoped.",
+            (
+                "Agent memory skipped; deterministic render debug logs are job-scoped."
+                if direct_existing_render
+                else "Agent memory: pending embedding preflight; deterministic debug logs are job-scoped."
+            ),
         ],
     )
     try:
@@ -15618,7 +16146,11 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
                 body["song_model_strategy"] = "single_model_album"
                 _set_album_job(
                     job_id,
-                    status=f"Planning album with LoRA model lock: {adapter_song_model}",
+                    status=(
+                        f"Rendering album with LoRA model lock: {adapter_song_model}"
+                        if direct_existing_render
+                        else f"Planning album with LoRA model lock: {adapter_song_model}"
+                    ),
                     logs=[
                         *(_album_jobs.get(job_id, {}).get("logs") or []),
                         f"LoRA adapter requires {adapter_song_model}; album model strategy locked to single_model_album.",
@@ -15631,7 +16163,12 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
             str(body.get("requested_song_model") or body.get("song_model") or ""),
         )
         expected_count = len(expected_models) * num_tracks
-        _set_album_job(job_id, expected_count=expected_count, status="Planning album", progress=2)
+        _set_album_job(
+            job_id,
+            expected_count=expected_count,
+            status="Rendering album tracks" if direct_existing_render else "Planning album",
+            progress=2,
+        )
         request_body = dict(body)
         request_body["album_job_id"] = job_id
         request_body["planner_lm_provider"] = planner_provider
@@ -17263,6 +17800,41 @@ async def api_generation_job_log(job_id: str):
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
 
 
+@app.get("/api/song-batches/jobs")
+async def api_song_batch_jobs_list():
+    jobs = _song_batch_snapshot()
+    return JSONResponse({"success": True, "jobs": jobs})
+
+
+@app.post("/api/song-batches/jobs")
+async def api_song_batch_jobs_start(request: Request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Batch payload must be an object")
+        task = _submit_song_batch_job(payload)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/song-batches/jobs/{job_id}")
+async def api_song_batch_job_detail(job_id: str):
+    job = _song_batch_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Song batch job not found")
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/song-batches/jobs/{job_id}/log")
+async def api_song_batch_job_log(job_id: str):
+    job = _song_batch_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Song batch job not found")
+    logs = [str(item) for item in (job.get("logs") or []) if str(item)]
+    return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
 @app.post("/api/generate_advanced")
 async def api_generate_advanced(request: Request):
     payload: dict[str, Any] = {}
@@ -18559,20 +19131,36 @@ async def api_generate_album(request: Request):
 async def api_create_album_job(request: Request):
     try:
         body = _album_ace_lm_disabled_payload(await request.json())
+        direct_render_tracks = _json_list(body.get("tracks") or body.get("planned_tracks"))
+        direct_existing_render = bool(direct_render_tracks) and (
+            parse_bool(body.get("render_from_existing_tracks"), False)
+            or parse_bool(body.get("skip_album_planning"), False)
+            or str(body.get("album_generation_mode") or "").strip().lower()
+            in {"render_existing_tracks", "direct_render", "ui_tracks"}
+        )
         planner_provider = _album_planner_provider_from_payload(body)
         embedding_provider = _embedding_provider_from_payload(body)
-        planner_model = _resolve_local_llm_model_selection(
-            planner_provider,
-            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
-            "chat",
-            "album job planning",
-        )
-        embedding_model = _resolve_local_llm_model_selection(
-            embedding_provider,
-            str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL),
-            "embedding",
-            "album job embeddings",
-        )
+        if direct_existing_render:
+            planner_model = str(
+                body.get("planner_model")
+                or body.get("planner_ollama_model")
+                or body.get("ollama_model")
+                or ""
+            ).strip()
+            embedding_model = str(body.get("embedding_model") or "").strip()
+        else:
+            planner_model = _resolve_local_llm_model_selection(
+                planner_provider,
+                str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
+                "chat",
+                "album job planning",
+            )
+            embedding_model = _resolve_local_llm_model_selection(
+                embedding_provider,
+                str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL),
+                "embedding",
+                "album job embeddings",
+            )
         job_id = uuid.uuid4().hex[:12]
         planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
         planning_engine_label = _album_agent_engine_label_value(planning_engine)
@@ -18595,13 +19183,17 @@ async def api_create_album_job(request: Request):
             planner_provider=planner_provider,
             embedding_model=embedding_model,
             embedding_provider=embedding_provider,
-            planning_engine=planning_engine,
-            custom_agents_used=True,
-            crewai_used=planning_engine == "crewai_micro",
+            planning_engine="existing_ui_tracks" if direct_existing_render else planning_engine,
+            custom_agents_used=False if direct_existing_render else True,
+            crewai_used=False if direct_existing_render else planning_engine == "crewai_micro",
             memory_enabled=False,
             logs=[
                 f"Queued album job {job_id}.",
-                f"Planning Engine: {planning_engine_label} ({planning_engine})",
+                (
+                    f"Direct render: {len(direct_render_tracks)} UI-approved track(s); no album agents will run."
+                    if direct_existing_render
+                    else f"Planning Engine: {planning_engine_label} ({planning_engine})"
+                ),
                 "ACE-Step LM disabled for album agents.",
             ],
         )

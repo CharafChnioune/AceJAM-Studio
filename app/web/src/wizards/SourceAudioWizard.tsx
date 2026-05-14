@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type WizardMode, api } from "@/lib/api";
+import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
@@ -576,7 +577,22 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
               <div className="grid gap-3 sm:grid-cols-[200px_1fr]">
                 <div className="space-y-1.5">
                   <Label>Taal</Label>
-                  <Input {...form.register("vocal_language")} />
+                  <Controller
+                    control={form.control}
+                    name="vocal_language"
+                    render={({ field }) => (
+                      <Select value={field.value || "unknown"} onValueChange={field.onChange}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ACE_STEP_LANGUAGE_OPTIONS.map(([code, label]) => (
+                            <SelectItem key={code} value={code}>{label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">

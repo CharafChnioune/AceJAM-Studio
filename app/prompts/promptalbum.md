@@ -30,8 +30,8 @@ Do not wrap JSON in markdown fences.
 AceJAM current policy:
 - Album planning uses the selected local LLM provider. Set "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected local provider.
 - Album writing is track-by-track. Set "album_writer_mode": "per_track_writer_loop" so every track gets its own brief, section map, hook, lyrics, enrichment, audit and repair loop before rendering.
-- Default album strategy is "xl_sft_final": AceJAM renders the approved album plan with ACE-Step v1.5 XL SFT unless the user explicitly requests a model portfolio.
-- The portfolio is: acestep-v15-turbo, acestep-v15-turbo-shift3, acestep-v15-sft, acestep-v15-base, acestep-v15-xl-turbo, acestep-v15-xl-sft, acestep-v15-xl-base.
+- Default album strategy is "single_model_album": AceJAM renders the approved album plan with ACE-Step v1.5 XL SFT unless the user explicitly requests a model portfolio.
+- The only valid song_model_strategy values are "single_model_album" and "all_models_album". The model portfolio is: acestep-v15-turbo, acestep-v15-turbo-shift1, acestep-v15-sft, acestep-v15-base, acestep-v15-xl-turbo, acestep-v15-xl-sft, acestep-v15-xl-base.
 - Per-track defaults are docs-correct: SFT/Base/XL SFT/XL Base use 50 steps and shift 1.0; Turbo/XL Turbo use 8 steps and shift 3.0; wav32 output.
 - LoRA, when selected by the user, is album-wide: preserve `use_lora`, `lora_adapter_path`, `lora_adapter_name`, `lora_scale`, `use_lora_trigger`, `lora_trigger_tag`, and adapter model fields. The trigger belongs in caption/tags only, never in lyrics.
 
@@ -44,8 +44,11 @@ The album JSON must include:
   "album_writer_mode": "per_track_writer_loop",
   "max_track_repair_rounds": 3,
   "language": "en",
-  "song_model_strategy": "xl_sft_final",
+  "song_model_strategy": "single_model_album",
   "final_song_model": "acestep-v15-xl-sft",
+  "song_model": "acestep-v15-xl-sft",
+  "audio_backend": "mps_torch",
+  "use_mlx_dit": false,
   "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": false,
@@ -104,6 +107,8 @@ Each track must include:
   "role": "opener | single | escalation | breather | climax | cooldown | closer",
   "duration": 210,
   "song_model": "acestep-v15-xl-sft",
+  "audio_backend": "mps_torch",
+  "use_mlx_dit": false,
   "quality_profile": "chart_master",
   "caption": "",
   "tags": "",
@@ -123,6 +128,13 @@ Each track must include:
   "auto_score": false,
   "auto_lrc": false,
   "return_audio_codes": true,
+  "use_lora": false,
+  "lora_adapter_path": "",
+  "lora_adapter_name": "",
+  "use_lora_trigger": true,
+  "lora_trigger_tag": "",
+  "lora_scale": 1.0,
+  "adapter_song_model": "",
   "production_team": {
     "executive_producer": "",
     "artist_performer": "",
@@ -161,6 +173,8 @@ User-provided album spec — LOCK these fields verbatim, do not paraphrase:
 - `num_tracks` MUST equal the user's track count. If they list 10 tracks, set `num_tracks: 10` and produce all 10 in `tracks[]`.
 
 Caption/tag rules: per track build a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Vary the stacks across tracks while keeping one sonic identity. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax in lyrics only, parentheses-for-background-vocals, no BPM/key/time-signature in caption, no standalone vocal-technique or energy/emotion brackets in lyrics (those words go comma-separated in the tags field).
+
+Every track must be render-ready before output. Do not return concepts-only tracks. Every non-instrumental `tracks[]` item needs final `caption`, `tags`, `negative_tags`, `bpm`, `key_scale`, `time_signature`, `duration`, `song_model`, `audio_backend`, `inference_steps`, `shift`, `guidance_scale`, LoRA fields, and full lyrics with section tags.
 
 Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 tags from that entry. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each cookbook entry and merge.
 

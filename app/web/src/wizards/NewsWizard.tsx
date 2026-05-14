@@ -32,6 +32,7 @@ import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
+import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { formatDuration } from "@/lib/utils";
 
@@ -370,7 +371,22 @@ export function NewsWizard() {
               </div>
               <div className="space-y-1.5">
                 <Label>Taal</Label>
-                <Input {...form.register("vocal_language")} />
+                <Controller
+                  control={form.control}
+                  name="vocal_language"
+                  render={({ field }) => (
+                    <Select value={field.value || "unknown"} onValueChange={field.onChange}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ACE_STEP_LANGUAGE_OPTIONS.map(([code, label]) => (
+                          <SelectItem key={code} value={code}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
             </div>
           </FieldGroup>

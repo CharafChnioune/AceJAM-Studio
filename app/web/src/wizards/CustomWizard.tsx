@@ -16,6 +16,7 @@ import { AutomationFields } from "@/components/wizard/AutomationFields";
 import { TagInput } from "@/components/wizard/TagInput";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
+import { AceStepAdvancedSettings } from "@/components/wizard/AceStepAdvancedSettings";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +32,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { customSchema, simpleDefaults, type CustomFormValues } from "@/lib/schemas";
+import {
+  ACE_STEP_ADVANCED_DEFAULTS,
+  ACE_STEP_ADVANCED_PAYLOAD_FIELDS,
+  ACE_STEP_KEY_SCALE_OPTIONS,
+  ACE_STEP_TIME_SIGNATURE_OPTIONS,
+  OFFICIAL_AUDIO_FORMAT_OPTIONS,
+} from "@/lib/aceStepSettings";
+import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
@@ -39,21 +48,6 @@ import { useWizardStore } from "@/store/wizard";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "custom" as const;
-
-const LANGUAGES = [
-  ["en", "English"],
-  ["nl", "Nederlands"],
-  ["es", "Español"],
-  ["fr", "Français"],
-  ["de", "Deutsch"],
-  ["pt", "Português"],
-  ["it", "Italiano"],
-  ["ja", "日本語"],
-  ["ko", "한국어"],
-  ["zh", "中文"],
-  ["ar", "العربية"],
-  ["hi", "हिन्दी"],
-] as const;
 
 const SONG_MODELS = [
   ["acestep-v15-xl-sft", "ACE-Step v1.5 XL SFT (aanbevolen)"],
@@ -109,6 +103,7 @@ export function CustomWizard() {
       shift: 1,
       audio_format: "wav32",
       batch_size: 1,
+      ...(ACE_STEP_ADVANCED_DEFAULTS as Partial<CustomFormValues>),
     }),
     [],
   );
@@ -152,6 +147,13 @@ export function CustomWizard() {
     }
   };
 
+  const setAdvancedValue = (key: string, value: unknown) => {
+    form.setValue(key as keyof CustomFormValues, value as never, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+  };
+
   const hydrate = (payload: Record<string, unknown>) => {
     const next: Partial<CustomFormValues> = {};
     for (const [k, v] of Object.entries(payload)) {
@@ -168,6 +170,12 @@ export function CustomWizard() {
 
   const buildPayload = () => {
     const v = form.getValues();
+    const advanced: Record<string, unknown> = {};
+    for (const key of ACE_STEP_ADVANCED_PAYLOAD_FIELDS) {
+      const value = v[key as keyof CustomFormValues];
+      if (value === undefined || value === "") continue;
+      advanced[key] = value;
+    }
     return {
       task_type: v.task_type,
       title: v.title,
@@ -194,6 +202,7 @@ export function CustomWizard() {
       shift: v.shift,
       audio_format: v.audio_format,
       batch_size: v.batch_size,
+      ...advanced,
       auto_song_art: v.auto_song_art,
       auto_album_art: false,
       auto_video_clip: v.auto_video_clip,
@@ -276,7 +285,7 @@ export function CustomWizard() {
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {LANGUAGES.map(([code, name]) => (
+                        {ACE_STEP_LANGUAGE_OPTIONS.map(([code, name]) => (
                           <SelectItem key={code} value={code}>{name}</SelectItem>
                         ))}
                       </SelectContent>
@@ -411,11 +420,43 @@ export function CustomWizard() {
               </div>
               <div className="space-y-1.5">
                 <Label>Toonsoort</Label>
-                <Input placeholder="C major" {...form.register("key_scale")} />
+                <Controller
+                  control={form.control}
+                  name="key_scale"
+                  render={({ field }) => (
+                    <Select
+                      value={field.value || "auto"}
+                      onValueChange={(value) => field.onChange(value === "auto" ? undefined : value)}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {ACE_STEP_KEY_SCALE_OPTIONS.map((value) => (
+                          <SelectItem key={value} value={value}>{value === "auto" ? "Auto" : value}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>Maatsoort</Label>
-                <Input placeholder="4/4" {...form.register("time_signature")} />
+                <Controller
+                  control={form.control}
+                  name="time_signature"
+                  render={({ field }) => (
+                    <Select
+                      value={field.value || "auto"}
+                      onValueChange={(value) => field.onChange(value === "auto" ? undefined : value)}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {ACE_STEP_TIME_SIGNATURE_OPTIONS.map(([value, label]) => (
+                          <SelectItem key={value || "auto"} value={value || "auto"}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
             </div>
           </FieldGroup>
@@ -541,10 +582,9 @@ export function CustomWizard() {
                     <Select value={field.value} onValueChange={field.onChange}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="wav32">WAV 32-bit float</SelectItem>
-                        <SelectItem value="wav16">WAV 16-bit</SelectItem>
-                        <SelectItem value="mp3">MP3</SelectItem>
-                        <SelectItem value="flac">FLAC</SelectItem>
+                        {OFFICIAL_AUDIO_FORMAT_OPTIONS.map(([value, label]) => (
+                          <SelectItem key={value} value={value}>{label}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   )}
@@ -572,6 +612,12 @@ export function CustomWizard() {
                 />
               </div>
             </div>
+          </FieldGroup>
+          <FieldGroup
+            title="Official ACE-Step controls"
+            description="Alle officiële extra velden uit de ACE-Step inference docs: DCW, CFG, output, retake, source/repaint en runtime."
+          >
+            <AceStepAdvancedSettings values={values} onChange={setAdvancedValue} />
           </FieldGroup>
         </div>
       ),

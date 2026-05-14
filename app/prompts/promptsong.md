@@ -23,25 +23,27 @@ Do not wrap the JSON in markdown fences. Keep all JSON valid.
 
 AceJAM current policy:
 - Planning, writing, formatting, and creative decisions use the selected local LLM provider. Do not use ACE-Step LM.
-- Always set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
-- Premium final text2music default is "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 3.0, infer_method "ode", audio_format "wav32".
-- Use turbo models only if the user explicitly asks for fast draft: turbo/XL turbo use 8 steps, optional 20 high cap, and shift 3.0.
+- Always set "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected local provider.
+- Premium final text2music default is "acestep-v15-xl-sft", inference_steps 50, guidance_scale 7.0, shift 1.0, infer_method "ode", audio_backend "mps_torch", audio_format "wav32".
+- Use turbo models only if the user explicitly asks for fast draft: turbo/XL turbo use 8 steps and shift 3.0.
 - For extract, lego, or complete tasks use "acestep-v15-xl-base"; otherwise use XL SFT for finished vocal songs.
 
 The JSON must include:
 {
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
+  "audio_backend": "mps_torch",
+  "use_mlx_dit": false,
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
-  "thinking": true,
+  "thinking": false,
   "use_format": false,
-  "use_cot_metas": true,
-  "use_cot_caption": true,
+  "use_cot_metas": false,
+  "use_cot_caption": false,
   "use_cot_lyrics": false,
-  "use_cot_language": true,
-  "use_constrained_decoding": true,
+  "use_cot_language": false,
+  "use_constrained_decoding": false,
   "lm_temperature": 0.85,
   "lm_cfg_scale": 2.0,
   "lm_top_p": 0.9,
@@ -60,18 +62,25 @@ The JSON must include:
   "key_scale": "C major",
   "time_signature": "4",
   "vocal_language": "en",
-  "batch_size": 3,
+  "batch_size": 1,
   "seed": "-1",
   "use_random_seed": true,
-  "inference_steps": 64,
-  "guidance_scale": 8.0,
-  "shift": 3.0,
+  "inference_steps": 50,
+  "guidance_scale": 7.0,
+  "shift": 1.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,
   "auto_lrc": false,
   "return_audio_codes": true,
   "save_to_library": true,
+  "use_lora": false,
+  "lora_adapter_path": "",
+  "lora_adapter_name": "",
+  "use_lora_trigger": true,
+  "lora_trigger_tag": "",
+  "lora_scale": 1.0,
+  "adapter_song_model": "",
   "quality_notes": {
     "hook": "",
     "metaphor_world": "",

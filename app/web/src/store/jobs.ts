@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type JobKind =
   | "generation"
+  | "song-batch"
   | "album"
   | "mflux"
   | "mlx-video"

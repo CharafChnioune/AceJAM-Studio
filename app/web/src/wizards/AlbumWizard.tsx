@@ -32,12 +32,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { albumSchema, type AlbumFormValues } from "@/lib/schemas";
+import { ACE_STEP_KEY_SCALE_OPTIONS, ACE_STEP_TIME_SIGNATURE_OPTIONS } from "@/lib/aceStepSettings";
 import {
   api,
-  startAlbumPlanJob,
+  startAlbumJob,
   getAlbumPlanJob,
   PROVIDER_LABEL,
 } from "@/lib/api";
+import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
@@ -367,8 +369,11 @@ export function AlbumWizard() {
         embedding_model: embeddingModel || undefined,
         ace_step_text_encoder: "Qwen3-Embedding-0.6B",
         tracks: reviewTracks,
+        album_generation_mode: "render_existing_tracks",
+        render_from_existing_tracks: true,
+        skip_album_planning: true,
       };
-      return startAlbumPlanJob(body);
+      return startAlbumJob(body);
     },
     onSuccess: (resp) => {
       if (!resp.success || !resp.job_id) {
@@ -723,28 +728,40 @@ export function AlbumWizard() {
                       </div>
                       <div className="space-y-1">
                         <Label className="text-xs">Key</Label>
-                        <Input
-                          value={t.key_scale ?? ""}
-                          onChange={(e) => {
+                        <Select
+                          value={t.key_scale || "auto"}
+                          onValueChange={(value) => {
                             const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
-                            next[idx] = { ...next[idx], key_scale: e.target.value };
+                            next[idx] = { ...next[idx], key_scale: value === "auto" ? undefined : value };
                             updatePlanTracks(next);
                           }}
-                          placeholder="D minor"
-                        />
+                        >
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {ACE_STEP_KEY_SCALE_OPTIONS.map((value) => (
+                              <SelectItem key={value} value={value}>{value === "auto" ? "Auto" : value}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                     <div className="space-y-1">
                       <Label className="text-xs">Time signature</Label>
-                      <Input
-                        value={t.time_signature ?? ""}
-                        onChange={(e) => {
+                      <Select
+                        value={t.time_signature || "auto"}
+                        onValueChange={(value) => {
                           const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
-                          next[idx] = { ...next[idx], time_signature: e.target.value };
+                          next[idx] = { ...next[idx], time_signature: value === "auto" ? undefined : value };
                           updatePlanTracks(next);
                         }}
-                        placeholder="4"
-                      />
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {ACE_STEP_TIME_SIGNATURE_OPTIONS.map(([value, label]) => (
+                            <SelectItem key={value || "auto"} value={value || "auto"}>{label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                     <details className="rounded-lg border bg-background/40 p-2">
                       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
@@ -963,7 +980,22 @@ export function AlbumWizard() {
               </div>
               <div className="space-y-1.5">
                 <Label>Taal</Label>
-                <Input {...form.register("language")} />
+                <Controller
+                  control={form.control}
+                  name="language"
+                  render={({ field }) => (
+                    <Select value={field.value || "unknown"} onValueChange={field.onChange}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ACE_STEP_LANGUAGE_OPTIONS.map(([code, label]) => (
+                          <SelectItem key={code} value={code}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
             </div>
           </FieldGroup>

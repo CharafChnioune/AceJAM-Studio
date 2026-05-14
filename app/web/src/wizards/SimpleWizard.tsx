@@ -32,6 +32,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { simpleSchema, simpleDefaults, type SimpleFormValues } from "@/lib/schemas";
+import { ACE_STEP_KEY_SCALE_OPTIONS, ACE_STEP_TIME_SIGNATURE_OPTIONS } from "@/lib/aceStepSettings";
+import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
@@ -40,19 +42,6 @@ import { useWizardStore } from "@/store/wizard";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "simple" as const;
-
-const LANGUAGES = [
-  ["en", "English"],
-  ["nl", "Nederlands"],
-  ["es", "Español"],
-  ["fr", "Français"],
-  ["de", "Deutsch"],
-  ["pt", "Português"],
-  ["it", "Italiano"],
-  ["ja", "日本語"],
-  ["ko", "한국어"],
-  ["zh", "中文"],
-] as const;
 
 const SONG_MODELS = [
   ["acestep-v15-xl-sft", "ACE-Step v1.5 XL SFT (aanbevolen)"],
@@ -238,7 +227,7 @@ export function SimpleWizard() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {LANGUAGES.map(([code, name]) => (
+                        {ACE_STEP_LANGUAGE_OPTIONS.map(([code, name]) => (
                           <SelectItem key={code} value={code}>{name}</SelectItem>
                         ))}
                       </SelectContent>
@@ -380,11 +369,43 @@ export function SimpleWizard() {
               </div>
               <div className="space-y-1.5">
                 <Label>Key</Label>
-                <Input placeholder="bv. C major" {...form.register("key_scale")} />
+                <Controller
+                  control={form.control}
+                  name="key_scale"
+                  render={({ field }) => (
+                    <Select
+                      value={field.value || "auto"}
+                      onValueChange={(value) => field.onChange(value === "auto" ? undefined : value)}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {ACE_STEP_KEY_SCALE_OPTIONS.map((value) => (
+                          <SelectItem key={value} value={value}>{value === "auto" ? "Auto" : value}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>Time signature</Label>
-                <Input placeholder="4/4" {...form.register("time_signature")} />
+                <Controller
+                  control={form.control}
+                  name="time_signature"
+                  render={({ field }) => (
+                    <Select
+                      value={field.value || "auto"}
+                      onValueChange={(value) => field.onChange(value === "auto" ? undefined : value)}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {ACE_STEP_TIME_SIGNATURE_OPTIONS.map(([value, label]) => (
+                          <SelectItem key={value || "auto"} value={value || "auto"}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
             </div>
             <div className="space-y-1.5">

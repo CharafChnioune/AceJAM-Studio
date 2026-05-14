@@ -285,6 +285,69 @@ export const startGenerationJob = (body: Record<string, unknown>) =>
 export const getGenerationJob = (jobId: string) =>
   api.get<GenerationJobResponse>(`/api/generation/jobs/${encodeURIComponent(jobId)}`);
 
+// ---- Song batches ----
+
+export interface SongBatchSong {
+  index?: number;
+  track_number?: number;
+  title?: string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  generation_job_id?: string;
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  result?: GenerateAdvancedResponse | Record<string, unknown> | null;
+  result_summary?: Record<string, unknown>;
+  audio_urls?: string[];
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface SongBatchJob {
+  id: string;
+  kind?: "song_batch";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  batch_title?: string;
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  songs?: SongBatchSong[];
+  logs?: string[];
+  errors?: string[];
+  current_song?: number;
+  total_songs?: number;
+  completed_songs?: number;
+  failed_songs?: number;
+  remaining_songs?: number;
+  child_generation_job_id?: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+}
+
+export interface SongBatchJobResponse {
+  success: boolean;
+  job_id?: string;
+  job?: SongBatchJob;
+  jobs?: SongBatchJob[];
+  error?: string;
+}
+
+export const startSongBatchJob = (body: Record<string, unknown>) =>
+  api.post<SongBatchJobResponse>("/api/song-batches/jobs", body);
+
+export const getSongBatchJob = (jobId: string) =>
+  api.get<SongBatchJobResponse>(`/api/song-batches/jobs/${encodeURIComponent(jobId)}`);
+
+export const listSongBatchJobs = () =>
+  api.get<SongBatchJobResponse>("/api/song-batches/jobs");
+
 // ---- LoRA adapters -------------------------------------------------------
 
 export interface LoraAdapter {
@@ -339,6 +402,9 @@ export interface AlbumPlanJobResponse {
 
 export const startAlbumPlanJob = (body: AlbumPlanJobRequest) =>
   api.post<AlbumPlanJobResponse>("/api/album/plan/jobs", body);
+
+export const startAlbumJob = (body: AlbumPlanJobRequest) =>
+  api.post<AlbumPlanJobResponse>("/api/album/jobs", body);
 
 export const getAlbumPlanJob = (jobId: string) =>
   api.get<{

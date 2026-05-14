@@ -569,6 +569,82 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("audio_backend", text, path)
             self.assertIn("use_mlx_dit", text, path)
 
+    def test_react_audio_wizards_use_full_ace_step_language_dropdown(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        languages = (web_src / "lib" / "languages.ts").read_text(encoding="utf-8")
+        self.assertIn("ACE_STEP_LANGUAGE_OPTIONS", languages)
+        for code in ["unknown", "en", "zh", "ja", "ko", "es", "fr", "de", "it", "pt", "nl", "ar", "ru", "yue", "uk", "vi"]:
+            self.assertIn(f'["{code}",', languages)
+        self.assertEqual(languages.count('["'), 51)
+
+        for name in [
+            "SimpleWizard.tsx",
+            "CustomWizard.tsx",
+            "SourceAudioWizard.tsx",
+            "AlbumWizard.tsx",
+            "NewsWizard.tsx",
+            "BatchSongsWizard.tsx",
+            "TrainerWizard.tsx",
+        ]:
+            text = (web_src / "wizards" / name).read_text(encoding="utf-8")
+            self.assertIn("ACE_STEP_LANGUAGE_OPTIONS", text, name)
+            self.assertIn("<Select", text, name)
+
+        source = (web_src / "wizards" / "SourceAudioWizard.tsx").read_text(encoding="utf-8")
+        news = (web_src / "wizards" / "NewsWizard.tsx").read_text(encoding="utf-8")
+        album = (web_src / "wizards" / "AlbumWizard.tsx").read_text(encoding="utf-8")
+        trainer = (web_src / "wizards" / "TrainerWizard.tsx").read_text(encoding="utf-8")
+        self.assertNotIn('<Input {...form.register("vocal_language")}', source)
+        self.assertNotIn('<Input {...form.register("vocal_language")}', news)
+        self.assertNotIn('<Input {...form.register("language")}', album)
+        self.assertNotIn('value={form.default_language}\n                  onChange', trainer)
+
+    def test_react_custom_and_batch_expose_official_ace_step_controls(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        settings = (web_src / "lib" / "aceStepSettings.ts").read_text(encoding="utf-8")
+        schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
+        advanced = (web_src / "components" / "wizard" / "AceStepAdvancedSettings.tsx").read_text(encoding="utf-8")
+        custom = (web_src / "wizards" / "CustomWizard.tsx").read_text(encoding="utf-8")
+        batch = (web_src / "wizards" / "BatchSongsWizard.tsx").read_text(encoding="utf-8")
+        simple = (web_src / "wizards" / "SimpleWizard.tsx").read_text(encoding="utf-8")
+        album = (web_src / "wizards" / "AlbumWizard.tsx").read_text(encoding="utf-8")
+
+        for fmt in ['"wav32"', '"wav"', '"flac"', '"mp3"', '"opus"', '"aac"']:
+            self.assertIn(fmt, settings)
+        self.assertNotIn('"wav16"', settings)
+        self.assertIn('value === "wav16" ? "wav"', schemas)
+
+        for field in [
+            "cfg_interval_start",
+            "cfg_interval_end",
+            "dcw_enabled",
+            "dcw_mode",
+            "dcw_wavelet",
+            "retake_variance",
+            "return_audio_codes",
+            "save_to_library",
+            "use_tiled_decode",
+            "latent_shift",
+            "latent_rescale",
+            "flow_edit_morph",
+            "track_classes",
+            "vae_checkpoint",
+        ]:
+            self.assertIn(field, settings)
+            self.assertIn(field, schemas)
+            self.assertIn(field, advanced)
+
+        self.assertIn("AceStepAdvancedSettings", custom)
+        self.assertIn("AceStepAdvancedSettings", batch)
+        self.assertIn("ACE_STEP_KEY_SCALE_OPTIONS", custom)
+        self.assertIn("ACE_STEP_KEY_SCALE_OPTIONS", batch)
+        self.assertIn("ACE_STEP_KEY_SCALE_OPTIONS", simple)
+        self.assertIn("ACE_STEP_KEY_SCALE_OPTIONS", album)
+        self.assertIn("OFFICIAL_AUDIO_FORMAT_OPTIONS", custom)
+        self.assertIn("OFFICIAL_AUDIO_FORMAT_OPTIONS", batch)
+        self.assertIn("ACE_STEP_ADVANCED_PAYLOAD_FIELDS", custom)
+        self.assertIn("ACE_STEP_ADVANCED_PAYLOAD_FIELDS", batch)
+
     def test_audio_backend_defaults_to_mps_torch_and_allows_explicit_mlx(self):
         with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
@@ -719,6 +795,7 @@ class AppParityTest(unittest.TestCase):
                     "is_format_caption": True,
                     "track_name": "vocals",
                     "track_classes": ["vocals", "drums"],
+                    "vae_checkpoint": "scragvae",
                     "song_intent": {"genre_family": "rap", "caption": "structured intent caption"},
                     "source_task_intent": "clean source vocal before morph",
                 }
@@ -750,6 +827,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["official_api_fields"]["is_format_caption"], True)
         self.assertEqual(request["official_api_fields"]["track_name"], "vocals")
         self.assertEqual(request["official_api_fields"]["track_classes"], ["vocals", "drums"])
+        self.assertEqual(request["vae_checkpoint"], "scragvae")
         self.assertEqual(params["song_intent"]["genre_family"], "rap")
         self.assertEqual(params["source_task_intent"], "clean source vocal before morph")
 
@@ -2083,6 +2161,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("current_payload?: Record<string, unknown>", api_ts)
         self.assertIn("embedding_provider?: string", api_ts)
         self.assertIn("embedding_model?: string", api_ts)
+        self.assertIn("startAlbumJob", api_ts)
+        self.assertIn('api.post<AlbumPlanJobResponse>("/api/album/jobs"', api_ts)
         self.assertIn("currentPayload?: Record<string, unknown>", ai_step)
         self.assertIn("current_payload: currentPayload", ai_step)
         self.assertIn("embeddingModelDetails", ai_step)
@@ -2095,6 +2175,10 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("embeddingProvider", settings_store)
         self.assertIn("setEmbedding", settings_store)
         self.assertIn("currentPayload={albumCurrentPayload}", album)
+        self.assertIn("startAlbumJob", album)
+        self.assertIn("render_from_existing_tracks: true", album)
+        self.assertIn("skip_album_planning: true", album)
+        self.assertNotIn("return startAlbumPlanJob(body);", album)
         self.assertIn("embedding_provider: embeddingProvider", album)
         self.assertIn("embedding_model: embeddingModel", album)
         self.assertIn("AI Memory / RAG embeddings", album)
@@ -3232,6 +3316,89 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(data["tracks"][0]["lora_scale"], 1.0)
         self.assertEqual(data["tracks"][0]["lora_trigger_tag"], "pac")
         self.assertTrue(data["tracks"][0]["lora_trigger_applied"])
+
+    def test_album_generate_renders_existing_ui_tracks_without_second_agent_loop(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            return {
+                "success": True,
+                "result_id": "album-direct-01",
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": payload,
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": "take-1",
+                        "result_id": "album-direct-01",
+                        "filename": "take.wav",
+                        "audio_url": "/media/results/album-direct-01/take.wav",
+                        "download_url": "/media/results/album-direct-01/take.wav",
+                        "title": payload["title"],
+                        "seed": payload["seed"],
+                    }
+                ],
+            }
+
+        def fake_gate(payload, **_kwargs):
+            return {
+                "status": "needs_review",
+                "gate_passed": False,
+                "blocking_issues": [{"id": "unit_warning", "detail": "test-only warning"}],
+                "issues": [{"id": "unit_warning", "detail": "test-only warning", "severity": "fail"}],
+                "repaired_payload": payload,
+                "lyrics_quality": {},
+                "repair_actions": [],
+            }
+
+        request_payload = {
+            "song_model_strategy": "single_model_album",
+            "song_model": "acestep-v15-xl-sft",
+            "render_from_existing_tracks": True,
+            "skip_album_planning": True,
+            "album_generation_mode": "render_existing_tracks",
+            "save_to_library": False,
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "artist_name": "Unit Signal",
+                    "title": "Already Written Track",
+                    "caption": "rap, hip hop, hard drums, clear vocal, finished UI caption",
+                    "lyrics": _LONG_TEST_LYRICS,
+                    "duration": 30,
+                    "bpm": 92,
+                    "key_scale": "D minor",
+                    "time_signature": "4",
+                }
+            ],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(album_crew_module, "plan_album", side_effect=AssertionError("album planner must not run on Generate")), \
+            patch.object(acejam_app, "evaluate_album_payload_quality", side_effect=fake_gate), \
+            patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+            patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+            patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
+            raw = acejam_app.generate_album(
+                concept="direct render album",
+                num_tracks=1,
+                track_duration=30,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["planning_engine"], "existing_ui_tracks")
+        self.assertEqual(data["album_writer_mode"], "render_existing_tracks")
+        self.assertFalse(data["custom_agents_used"])
+        self.assertFalse(data["crewai_used"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["title"], "Already Written Track")
+        self.assertIn("finished UI caption", calls[0]["caption"])
+        self.assertTrue(data["tracks"][0]["model_results"][0]["payload_gate_non_blocking"])
+        self.assertIn("no album agents will run", " ".join(data["logs"]).lower())
 
     def test_album_lora_model_mismatch_locks_album_to_adapter_model(self):
         calls = []
@@ -5126,6 +5293,137 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("After audio render", automation)
         self.assertIn("AutomationFields", wizard_text)
         self.assertIn("auto_video_clip: v.auto_video_clip", wizard_text)
+
+    def test_batch_songs_wizard_route_api_and_prompt_contracts_exist(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        app_tsx = (web_src / "App.tsx").read_text(encoding="utf-8")
+        home = (web_src / "pages" / "Home.tsx").read_text(encoding="utf-8")
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
+        jobs_store = (web_src / "store" / "jobs.ts").read_text(encoding="utf-8")
+        tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
+        batch = (web_src / "wizards" / "BatchSongsWizard.tsx").read_text(encoding="utf-8")
+        audio_backend = (web_src / "lib" / "audioBackend.ts").read_text(encoding="utf-8")
+        promptsong = (acejam_app.BASE_DIR / "prompts" / "promptsong.md").read_text(encoding="utf-8")
+        promptalbum = (acejam_app.BASE_DIR / "prompts" / "promptalbum.md").read_text(encoding="utf-8")
+
+        self.assertIn('path="/wizard/batch"', app_tsx)
+        self.assertIn("BatchSongsWizard", app_tsx)
+        self.assertIn('to: "/wizard/batch"', home)
+        self.assertIn("startSongBatchJob", api_ts)
+        self.assertIn("/api/song-batches/jobs", api_ts)
+        self.assertIn('"song-batch"', jobs_store)
+        self.assertIn("SongBatchDetails", tracker)
+        self.assertIn("/api/song-batches/jobs", tracker)
+        self.assertIn("AudioStyleSelector", batch)
+        self.assertIn("AudioBackendSelector", batch)
+        self.assertIn("LoraSelector", batch)
+        self.assertIn("GenerationAudioList", batch)
+        self.assertIn("JSON toepassen", batch)
+        self.assertIn("Pas huidige instellingen toe op alle songs", batch)
+        self.assertIn('raw === "mlx"', audio_backend)
+        self.assertIn('"audio_backend": "mps_torch"', promptsong)
+        self.assertIn('"ace_lm_model": "none"', promptsong)
+        self.assertNotIn('"ace_lm_model": "acestep-5Hz-lm-4B"', promptsong)
+        self.assertIn('"song_model_strategy": "single_model_album"', promptalbum)
+        self.assertIn("Every track must be render-ready", promptalbum)
+
+    def test_song_batch_body_normalizes_mlx_backend_before_queue(self):
+        with patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):
+            payload, entries = acejam_app._normalise_song_batch_body(
+                {
+                    "batch_title": "Unit Batch",
+                    "songs": [
+                        {
+                            "title": "One",
+                            "caption": "rap, drums",
+                            "lyrics": "[Verse]\nbar",
+                            "audio_backend": "mlx",
+                            "use_mlx_dit": False,
+                        }
+                    ],
+                }
+            )
+
+        self.assertEqual(payload["batch_title"], "Unit Batch")
+        self.assertEqual(payload["songs"][0]["audio_backend"], "mlx")
+        self.assertTrue(payload["songs"][0]["use_mlx_dit"])
+        self.assertEqual(entries[0]["title"], "One")
+        self.assertEqual(entries[0]["state"], "queued")
+
+    def test_song_batch_validation_blocks_invalid_payload_before_rendering(self):
+        with patch.object(
+            acejam_app,
+            "_validate_generation_payload",
+            return_value={"valid": False, "field_errors": {"lyrics": "required"}},
+        ):
+            with self.assertRaisesRegex(ValueError, "Song 1: lyrics: required"):
+                acejam_app._normalise_song_batch_body({"songs": [{"title": "Bad"}]})
+
+    def test_song_batch_worker_runs_child_generation_jobs_sequentially_and_continues_after_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with acejam_app._song_batch_jobs_lock:
+                acejam_app._song_batch_jobs.clear()
+
+            with patch.object(acejam_app, "SONG_BATCHES_DIR", root), \
+                patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}), \
+                patch.object(acejam_app, "_cleanup_accelerator_memory"):
+                payload, entries = acejam_app._normalise_song_batch_body(
+                    {
+                        "batch_title": "Sequential",
+                        "stop_on_error": False,
+                        "songs": [{"title": "Pass"}, {"title": "Fail"}, {"title": "Still Runs"}],
+                    }
+                )
+                acejam_app._set_song_batch_job(
+                    "unitbatch",
+                    payload=payload,
+                    batch_title="Sequential",
+                    total_songs=3,
+                    remaining_songs=3,
+                    songs=entries,
+                )
+                submitted: list[str] = []
+
+                def fake_submit(body):
+                    child_id = f"child{len(submitted) + 1}"
+                    submitted.append(body["title"])
+                    return {"job_id": child_id, "task_id": child_id, "status": 0, "job": {"id": child_id}}
+
+                def fake_snapshot(child_id):
+                    if child_id == "child2":
+                        return {
+                            "id": child_id,
+                            "state": "failed",
+                            "progress": 100,
+                            "error": "unit failure",
+                            "result": {"success": False, "error": "unit failure"},
+                        }
+                    return {
+                        "id": child_id,
+                        "state": "succeeded",
+                        "progress": 100,
+                        "result": {
+                            "success": True,
+                            "title": child_id,
+                            "audio_url": f"/media/results/{child_id}/take.wav",
+                            "audios": [{"audio_url": f"/media/results/{child_id}/take.wav"}],
+                        },
+                        "result_summary": {"title": child_id},
+                    }
+
+                with patch.object(acejam_app, "_submit_api_generation_task", side_effect=fake_submit), \
+                    patch.object(acejam_app, "_generation_job_snapshot", side_effect=fake_snapshot):
+                    acejam_app._song_batch_worker("unitbatch", payload)
+
+                job = acejam_app._song_batch_snapshot("unitbatch")
+
+        self.assertEqual(submitted, ["Pass", "Fail", "Still Runs"])
+        self.assertEqual(job["state"], "succeeded")
+        self.assertEqual(job["completed_songs"], 2)
+        self.assertEqual(job["failed_songs"], 1)
+        self.assertEqual([song["state"] for song in job["songs"]], ["succeeded", "failed", "succeeded"])
+        self.assertEqual(job["songs"][0]["audio_urls"], ["/media/results/child1/take.wav"])
 
     def test_mlx_video_upload_endpoint_accepts_image_audio_and_rejects_text(self):
         client = TestClient(acejam_app.app)

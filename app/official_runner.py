@@ -498,6 +498,7 @@ def _run(request_path: Path, response_path: Path) -> None:
         offload_to_cpu=_bool_or_auto(request.get("offload_to_cpu", False)),
         offload_dit_to_cpu=_bool_or_auto(request.get("offload_dit_to_cpu", False)),
         use_mlx_dit=use_mlx_dit,
+        vae_checkpoint=str(request.get("vae_checkpoint") or "official"),
     )
     if not ready:
         raise RuntimeError(status)

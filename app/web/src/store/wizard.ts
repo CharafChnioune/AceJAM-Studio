@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { DEFAULT_AUDIO_BACKEND } from "@/lib/audioBackend";
+import { DEFAULT_AUDIO_BACKEND, normalizeAudioBackend } from "@/lib/audioBackend";
 
 export interface PasteBlock {
   label?: string;
@@ -74,8 +74,11 @@ function migrateAudioBackendDefaults(record: unknown): unknown {
   const next = { ...(record as Record<string, unknown>) };
   const hasAceStepModel = String(next.song_model ?? "").startsWith("acestep-v15-");
   if (hasAceStepModel || "audio_backend" in next || "use_mlx_dit" in next) {
-    next.audio_backend = DEFAULT_AUDIO_BACKEND;
-    next.use_mlx_dit = false;
+    const backend = normalizeAudioBackend(
+      next.audio_backend ?? (next.use_mlx_dit === true ? "mlx" : DEFAULT_AUDIO_BACKEND),
+    );
+    next.audio_backend = backend;
+    next.use_mlx_dit = backend === "mlx";
   }
   return next;
 }

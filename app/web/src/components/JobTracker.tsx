@@ -11,6 +11,7 @@ import {
   ExternalLink,
   GraduationCap,
   Image as ImageIcon,
+  ListMusic,
   Loader2,
   Music4,
   PauseCircle,
@@ -41,6 +42,7 @@ import { useJobsStore, type JobEntry, type JobKind } from "@/store/jobs";
 
 const ICONS: Record<JobKind, React.ComponentType<{ className?: string }>> = {
   generation: Music4,
+  "song-batch": ListMusic,
   album: Disc3,
   mflux: ImageIcon,
   "mlx-video": Video,
@@ -178,6 +180,7 @@ function formatTime(value: unknown): string {
 
 function kindLabel(kind: JobKind): string {
   if (kind === "generation") return "Song render";
+  if (kind === "song-batch") return "Song batch";
   if (kind === "lora") return "LoRA training";
   if (kind === "mflux") return "MFLUX image";
   if (kind === "mlx-video") return "MLX video";
@@ -316,6 +319,28 @@ function jobPatchFromAlbum(job: JsonRecord): JobEntry {
     error: text(job.error, ""),
     startedAt: job.started_at ? new Date(String(job.started_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.last_update_at || job.finished_at, ""),
+  };
+}
+
+function jobPatchFromSongBatch(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const id = text(job.id, "song-batch-job");
+  const label = text(job.batch_title || payload.batch_title || id, "Song batch");
+  return {
+    id,
+    kind: "song-batch",
+    label,
+    progress: progressOf({ id, kind: "song-batch", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "song-batch", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "song-batch", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "Song batch",
+    detailsPath: `/api/song-batches/jobs/${encodeURIComponent(id)}`,
+    logPath: `/api/song-batches/jobs/${encodeURIComponent(id)}/log`,
+    metadata: job,
+    error: text(job.error || asArray(job.errors)[0], ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
   };
 }
 
@@ -1047,6 +1072,84 @@ function AlbumDetails({ job }: { job: JsonRecord }) {
   );
 }
 
+function SongBatchDetails({
+  job,
+  log,
+}: {
+  job: JsonRecord;
+  log: string;
+}) {
+  const payload = asRecord(job.payload);
+  const songs = asArray(job.songs).map(asRecord);
+  const logs = log ? log.split("\n") : asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
+  const activeSong = songs.find((song) => ["running", "queued"].includes(String(song.state || "").toLowerCase()));
+  return (
+    <div className="space-y-4">
+      <Section title="Batch setup" icon={ListMusic}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <InfoRow label="Batch title" value={job.batch_title || payload.batch_title} />
+          <InfoRow label="Current song" value={job.current_song ? `${text(job.current_song)} / ${text(job.total_songs)}` : ""} />
+          <InfoRow label="Completed" value={job.completed_songs} />
+          <InfoRow label="Failed" value={job.failed_songs} />
+          <InfoRow label="Remaining" value={job.remaining_songs} />
+          <InfoRow label="Child job" value={job.child_generation_job_id} />
+          <InfoRow label="Stop on error" value={payload.stop_on_error} />
+          <InfoRow label="Active title" value={activeSong?.title} />
+        </div>
+      </Section>
+
+      <Section title="Songs">
+        <div className="space-y-3">
+          {songs.map((song, index) => {
+            const result = asRecord(song.result);
+            const summary = asRecord(song.payload_summary);
+            const songProgress = Number(song.progress);
+            return (
+              <div key={`${song.track_number || index}-${song.generation_job_id || song.title}`} className="rounded-lg border bg-background/35 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {text(song.track_number || index + 1)}. {text(song.title, `Song ${index + 1}`)}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {text(summary.song_model || asRecord(song.payload).song_model, "auto")} · job {text(song.generation_job_id)}
+                    </p>
+                  </div>
+                  <Badge variant={String(song.state).toLowerCase() === "failed" ? "destructive" : String(song.state).toLowerCase() === "succeeded" ? "default" : "outline"}>
+                    {text(song.status || song.state)}
+                  </Badge>
+                </div>
+                {Number.isFinite(songProgress) && (
+                  <Progress value={Math.max(0, Math.min(100, songProgress))} className="mt-2 h-1" />
+                )}
+                {Boolean(song.error) && (
+                  <p className="mt-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                    {text(song.error)}
+                  </p>
+                )}
+                {Object.keys(result).length > 0 && (
+                  <GenerationAudioList
+                    result={result}
+                    title={text(song.title, `Song ${index + 1}`)}
+                    artist={text(summary.artist_name, "")}
+                    className="mt-3 space-y-2"
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -1129,6 +1232,23 @@ function JobDetailsDialog({
           updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
           metadata: next,
           error: text(next.error, ""),
+        });
+      } else if (job.kind === "song-batch") {
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/song-batches/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/song-batches/jobs/${encodeURIComponent(job.id)}/log`);
+        const next = asRecord(jobResp.job);
+        setRemoteJob(next);
+        if (nextLog !== null) setLog(nextLog);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
+          metadata: next,
+          error: text(next.error || asArray(next.errors)[0], ""),
         });
       } else if (job.kind === "album") {
         const resp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
@@ -1362,6 +1482,8 @@ function JobDetailsDialog({
             <LoraDetails job={remote} log={log} />
           ) : job.kind === "generation" ? (
             <GenerationDetails job={remote} log={log} />
+          ) : job.kind === "song-batch" ? (
+            <SongBatchDetails job={remote} log={log} />
           ) : job.kind === "album" ? (
             <AlbumDetails job={remote} />
           ) : job.kind === "mflux" ? (
@@ -1391,9 +1513,10 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
     let cancelled = false;
     const hydrateRemoteJobs = async () => {
       try {
-        const [loraResult, generationResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
+        const [loraResult, generationResult, songBatchResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/song-batches/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mflux/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mlx-video/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/album/jobs"),
@@ -1403,6 +1526,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         const current = useJobsStore.getState().jobs;
         const loraJobs = loraResult.status === "fulfilled" ? loraResult.value.jobs || [] : [];
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
+        const songBatchJobs = songBatchResult.status === "fulfilled" ? songBatchResult.value.jobs || [] : [];
         const mfluxJobs = mfluxResult.status === "fulfilled" ? mfluxResult.value.jobs || [] : [];
         const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
         const albumJobs = albumResult.status === "fulfilled" ? albumResult.value.jobs || [] : [];
@@ -1418,6 +1542,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           if (!id) continue;
           if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
           addJob(jobPatchFromGeneration(rawJob));
+        }
+        for (const [index, rawJob] of songBatchJobs.entries()) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromSongBatch(rawJob));
         }
         for (const [index, rawJob] of mfluxJobs.entries()) {
           const id = text(rawJob.id, "");

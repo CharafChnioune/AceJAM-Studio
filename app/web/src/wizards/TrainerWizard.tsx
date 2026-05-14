@@ -32,6 +32,7 @@ import {
   type LoraAutolabelJob,
   type LoraAutolabelLabel,
 } from "@/lib/api";
+import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
@@ -1060,12 +1061,21 @@ export function TrainerWizard() {
               </div>
               <div className="space-y-1.5">
                 <Label>Default taal</Label>
-                <Input
-                  value={form.default_language}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, default_language: e.target.value }))
+                <Select
+                  value={form.default_language || "unknown"}
+                  onValueChange={(value) =>
+                    setForm((f) => ({ ...f, default_language: value }))
                   }
-                />
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ACE_STEP_LANGUAGE_OPTIONS.map(([code, label]) => (
+                      <SelectItem key={code} value={code}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           </FieldGroup>

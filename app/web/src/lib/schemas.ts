@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_LORA_SCALE } from "@/lib/lora";
 import { DEFAULT_AUDIO_BACKEND } from "@/lib/audioBackend";
+import { OFFICIAL_AUDIO_FORMAT_VALUES } from "@/lib/aceStepSettings";
 
 /**
  * Zod schemas per wizard step. Kept loose enough that AI-fill can hydrate
@@ -29,6 +30,26 @@ const tagsField = z
     if (!v) return "";
     if (Array.isArray(v)) return v.filter(Boolean).join(", ");
     return String(v);
+  });
+
+const audioFormatField = z
+  .preprocess((value) => (value === "wav16" ? "wav" : value), z.enum(OFFICIAL_AUDIO_FORMAT_VALUES as [string, ...string[]]))
+  .default("wav32");
+
+const optionalBoolean = z.boolean().optional();
+
+const optionalStringArray = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .transform((value) => {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value === "string") {
+      return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return undefined;
   });
 
 // ---- Simple ----
@@ -112,8 +133,64 @@ export const customSchema = simpleSchema.extend({
   inference_steps: z.number().int().min(4).max(100).default(50),
   guidance_scale: z.number().min(1).max(15).default(7.0),
   shift: z.number().min(0).max(10).default(1.0),
-  audio_format: z.enum(["wav32", "wav16", "mp3", "flac"]).default("wav32"),
+  audio_format: audioFormatField,
   batch_size: z.number().int().min(1).max(8).default(1),
+  infer_method: z.enum(["ode", "sde"]).optional(),
+  sampler_mode: z.enum(["euler", "heun"]).optional(),
+  use_adg: optionalBoolean,
+  cfg_interval_start: optionalNumber,
+  cfg_interval_end: optionalNumber,
+  timesteps: optionalString,
+  dcw_enabled: optionalBoolean,
+  dcw_mode: z.enum(["low", "high", "double", "pix"]).optional(),
+  dcw_scaler: optionalNumber,
+  dcw_high_scaler: optionalNumber,
+  dcw_wavelet: z.enum(["haar", "db4", "sym8", "coif1", "bior2.2"]).optional(),
+  retake_seed: optionalString,
+  retake_variance: optionalNumber,
+  enable_normalization: optionalBoolean,
+  normalization_db: optionalNumber,
+  fade_in_duration: optionalNumber,
+  fade_out_duration: optionalNumber,
+  latent_shift: optionalNumber,
+  latent_rescale: optionalNumber,
+  mp3_bitrate: optionalString,
+  mp3_sample_rate: optionalNumber,
+  auto_score: optionalBoolean,
+  auto_lrc: optionalBoolean,
+  return_audio_codes: optionalBoolean,
+  save_to_library: optionalBoolean,
+  use_tiled_decode: optionalBoolean,
+  is_format_caption: optionalBoolean,
+  device: z.enum(["auto", "mps", "cuda", "cpu"]).optional(),
+  dtype: z.enum(["auto", "float32", "float16", "bfloat16"]).optional(),
+  use_flash_attention: z.enum(["auto", "true", "false"]).optional(),
+  compile_model: optionalBoolean,
+  offload_to_cpu: optionalBoolean,
+  offload_dit_to_cpu: optionalBoolean,
+  vae_checkpoint: optionalString,
+  reference_audio: optionalString,
+  src_audio: optionalString,
+  audio_codes: optionalString,
+  global_caption: optionalString,
+  instruction: optionalString,
+  audio_cover_strength: optionalNumber,
+  cover_noise_strength: optionalNumber,
+  repainting_start: optionalNumber,
+  repainting_end: optionalNumber,
+  chunk_mask_mode: z.enum(["auto", "explicit"]).optional(),
+  repaint_mode: z.enum(["balanced", "conservative", "aggressive"]).optional(),
+  repaint_strength: optionalNumber,
+  repaint_latent_crossfade_frames: optionalNumber,
+  repaint_wav_crossfade_sec: optionalNumber,
+  flow_edit_morph: optionalBoolean,
+  flow_edit_source_caption: optionalString,
+  flow_edit_source_lyrics: optionalString,
+  flow_edit_n_min: optionalNumber,
+  flow_edit_n_max: optionalNumber,
+  flow_edit_n_avg: optionalNumber,
+  track_name: optionalString,
+  track_classes: optionalStringArray,
 });
 
 export type CustomFormValues = z.infer<typeof customSchema>;

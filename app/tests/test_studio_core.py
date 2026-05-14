@@ -323,6 +323,8 @@ class StudioCoreTest(unittest.TestCase):
             self.assertIn(field, schema["official_only_fields"])
         self.assertEqual(schema["official_parity_endpoint"], "/api/ace-step/parity")
         self.assertIn("runtime", schema["custom_sections"])
+        self.assertIn("vae_checkpoint", schema["custom_sections"]["runtime"])
+        self.assertIn("scragvae", schema["options"]["vae_checkpoint"])
         self.assertIn("api_service", schema["custom_sections"])
         self.assertIn("analysis_only", schema["custom_sections"]["api_service"])
         self.assertIn("track_classes", schema["custom_sections"]["api_service"])
