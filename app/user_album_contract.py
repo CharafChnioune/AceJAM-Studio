@@ -16,7 +16,7 @@ TRACK_HEADER_RE = re.compile(
 LABEL_PATTERNS = [
     "album", "album title", "album name", "concept", "language", "track", "bpm", "key", "keyscale", "key scale", "duration",
     "track duration", "style",
-    "vibe", "the vibe", "narrative", "the narrative", "verse", "the verse", "lyrics", "explicit lyrics", "required lyrics",
+    "vibe", "the vibe", "narrative", "the narrative", "hook", "verse concept", "verse", "the verse", "lyrics", "explicit lyrics", "required lyrics",
     "naming drop", "naming drop style", "required hook phrase", "required phrase", "required phrases", "hook phrase",
     "produced by", "producer", "prod", "prod.", "engineered by", "engineer", "mixed by", "artist", "performer",
 ]
@@ -187,6 +187,54 @@ def _parse_duration_value(value: Any) -> int | None:
     return None
 
 
+def _parse_parenthetical_track_meta(paren: str) -> dict[str, Any]:
+    """Parse compact track metadata from headers like
+    `(Dr. Dre-style G-Funk | 78 BPM)`.
+
+    Album prompts from the UI often put producer/style/BPM hints in the title
+    line rather than in separate `Style:` / `BPM:` fields. Treat that
+    parenthetical as locked user intent so the crew does not flatten everything
+    back to generic/default tags.
+    """
+    raw = str(paren or "").strip()
+    if not raw:
+        return {}
+    parts = [part.strip(" \t-") for part in re.split(r"\s*\|\s*", raw) if part.strip(" \t-")]
+    meta: dict[str, Any] = {"style_parts": []}
+    for part in parts or [raw]:
+        lower = part.lower()
+        if "bpm" in lower:
+            bpm_match = re.search(r"\b(\d{2,3})(?:\s*(?:→|->|to)\s*\d{2,3})?\s*bpm\b", part, flags=re.I)
+            if bpm_match:
+                meta["bpm"] = int(bpm_match.group(1))
+            continue
+        duration = _parse_duration_value(part)
+        if duration is not None and re.search(r"\b(?:duration|length|runtime|min|mins|sec|secs|seconds?)\b", lower):
+            meta["duration"] = duration
+            continue
+        key_match = re.search(
+            r"\b([A-G](?:#|b|♯|♭)?\s*(?:major|minor|maj|min))\b",
+            part,
+            flags=re.I,
+        )
+        if key_match and re.search(r"\bkey\b", lower):
+            key_scale = key_match.group(1)
+            key_scale = re.sub(r"\bmaj\b", "major", key_scale, flags=re.I)
+            key_scale = re.sub(r"\bmin\b", "minor", key_scale, flags=re.I)
+            meta["key_scale"] = key_scale
+            continue
+        if re.search(r"(?i)\b(?:produced\s+by|prod\.?)\b", part):
+            meta["producer_credit"] = re.sub(r"(?i)^\s*(?:produced\s+by|prod\.?)\s*", "", part).strip()
+            continue
+        cleaned_style = re.sub(r"\b\d{2,3}\s*bpm\b", "", part, flags=re.I).strip(" ,;|-")
+        if cleaned_style:
+            meta["style_parts"].append(cleaned_style)
+    if meta.get("style_parts"):
+        meta["style"] = " | ".join(meta["style_parts"])
+    meta.pop("style_parts", None)
+    return meta
+
+
 def _track_blocks(text: str) -> list[tuple[re.Match[str], str]]:
     matches = list(TRACK_HEADER_RE.finditer(text or ""))
     blocks: list[tuple[re.Match[str], str]] = []
@@ -205,10 +253,9 @@ def extract_user_album_contract(
 ) -> dict[str, Any]:
     payload = payload or {}
     text = _contract_concept_source(prompt, payload) or str(prompt or "")
-    album_title = (
-        str(payload.get("album_title") or payload.get("album_name") or "").strip()
-        or _capture_field(text, ["album title", "album name", "album"], multiline=False)
-    )
+    text_album_title = _capture_field(text, ["album title", "album name", "album"], multiline=False)
+    payload_album_title = str(payload.get("album_title") or payload.get("album_name") or "").strip()
+    album_title = text_album_title or payload_album_title
     concept_source = text
     concept = _capture_field(concept_source, ["concept"], multiline=True) or _clip(concept_source, 900)
     requested_tracks = int(num_tracks or payload.get("num_tracks") or 0)
@@ -221,8 +268,11 @@ def extract_user_album_contract(
             continue
         paren = str(match.group(5) or "")
         producer_credit = ""
+        paren_meta = _parse_parenthetical_track_meta(paren)
         if re.search(r"(?i)\b(?:produced\s+by|prod\.?)\b", paren):
             producer_credit = re.sub(r"(?i)^\s*(?:produced\s+by|prod\.?)\s*", "", paren).strip()
+        elif paren_meta.get("producer_credit"):
+            producer_credit = str(paren_meta.get("producer_credit") or "").strip()
         producer_credit = producer_credit or _capture_field(block, ["produced by", "producer", "prod.", "prod"], multiline=False)
         producer_credit = re.sub(r"(?i)^\s*(?:produced\s+by|producer|prod\.?)\s*", "", producer_credit).strip()
         engineer_credit = _capture_field(block, ["engineered by", "engineer", "mixed by"], multiline=False)
@@ -242,13 +292,24 @@ def extract_user_album_contract(
             or _capture_field(block, ["key scale", "keyscale", "key"], multiline=False)
         )
         style = _capture_inline(block, "Style") or _capture_field(block, ["style"], multiline=False)
+        if not bpm_match and paren_meta.get("bpm"):
+            bpm_match = re.search(r"\d{2,3}", str(paren_meta.get("bpm")))
+        if duration is None and paren_meta.get("duration"):
+            duration = int(paren_meta["duration"])
+        if not key_scale and paren_meta.get("key_scale"):
+            key_scale = str(paren_meta["key_scale"])
+        if not style and paren_meta.get("style"):
+            style = str(paren_meta["style"])
         vibe = _capture_field(block, ["the vibe", "vibe"], multiline=True)
         narrative = _capture_field(block, ["the narrative", "narrative"], multiline=True)
+        verse_concept = _capture_field(block, ["verse concept"], multiline=True)
+        if verse_concept:
+            narrative = (narrative + "\n" + verse_concept).strip() if narrative else verse_concept
         lyrics = _capture_field(block, ["explicit lyrics", "required lyrics", "lyrics", "the verse", "verse"], multiline=True)
         naming_drop = _capture_field(block, ["naming drop style", "naming drop"], multiline=True)
         required_phrase_text = _capture_field(
             block,
-            ["required hook phrase", "required phrase", "required phrases", "hook phrase"],
+            ["hook", "required hook phrase", "required phrase", "required phrases", "hook phrase"],
             multiline=True,
         )
         required_phrases = _quoted_phrases(naming_drop) + _lyric_lines(lyrics) + _lyric_lines(required_phrase_text)
@@ -274,6 +335,9 @@ def extract_user_album_contract(
                 "source_excerpt": _clip(block, 650),
             }
         )
+    explicit_track_count = max((int(track.get("track_number") or 0) for track in tracks), default=0)
+    if explicit_track_count > requested_tracks:
+        requested_tracks = explicit_track_count
     if requested_tracks <= 0:
         requested_tracks = len(tracks)
     if requested_tracks:

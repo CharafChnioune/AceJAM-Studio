@@ -645,19 +645,16 @@ def section_sequence(duration: float, preset: str = "auto", rap: bool = False) -
         return ["Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Outro"]
     if dur <= 90:
         return ["Intro", "Verse - rap" if rap else "Verse", "Chorus - rap" if rap else "Chorus", "Verse 2", "Final Chorus"]
-    # Rap full songs >90s now always get 3 [Verse - rap] sections so the
-    # 16-bar floor in album_crew matches a real 48-bar verse pool. Previously
-    # the 90<rap<=150 band capped at 2 verses (forcing thin lyrics on 120s
-    # rap tracks); that boundary moved up to 90 so any rap track 91-240s
-    # follows the 3-verse template.
+    # Rap full songs use two clear 16-bar verses. Stricter alternate verse
+    # counts made long album planning too brittle and caused repair loops.
     if rap and dur <= 240:
-        return ["Intro", "Verse 1 - rap", "Hook", "Verse 2 - rap", "Hook", "Bridge", "Verse 3 - rap", "Final Hook", "Outro"]
+        return ["Intro", "Verse 1 - rap", "Hook", "Verse 2 - rap", "Hook", "Bridge", "Final Hook", "Outro"]
     if dur <= 150:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus - rap" if rap else "Chorus", "Verse 2", "Bridge", "Final Chorus", "Outro"]
     if dur <= 240:
         return ["Intro", "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Final Chorus", "Outro"]
     if rap and dur <= 360:
-        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2", "Second Chorus", "Verse 3 - Beat Switch", "Bridge", "Final Chorus", "Outro"]
+        return ["Intro", "Verse 1 - rap", "Chorus - rap", "Verse 2 - rap", "Second Chorus", "Bridge", "Final Chorus", "Outro"]
     if dur <= 360:
         return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Breakdown", "Final Chorus", "Outro"]
     return ["Intro", "Verse 1 - rap" if rap else "Verse 1", "Pre-Chorus", "Chorus", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Verse 3", "Instrumental Break", "Verse 4", "Final Chorus", "Outro"]
@@ -722,11 +719,11 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
     if rap:
         rap_line_bands = [
             (60, 30, 42),
-            (120, 56, 74),
-            (180, 78, 96),
-            (240, 92, 112),
-            (300, 104, 124),
-            (600, 116, 136),
+            (120, 48, 66),
+            (180, 58, 76),
+            (240, 66, 86),
+            (300, 78, 98),
+            (600, 96, 120),
         ]
         rap_min_lines, rap_target_lines = rap_line_bands[-1][1:]
         for limit, low, high in rap_line_bands:
@@ -738,11 +735,11 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
     if sparse_genre:
         target_lines = max(len(sections), min(len(sections) * 3, target_lines))
         min_lines = max(0 if min_words == 0 else len(sections), int(target_lines * 0.5))
-    # Bar allocation per section type. 1 bar = 4 beats. Full rap songs prefer
-    # three 16-bar verses; if a two-verse structure is chosen, the album gate
-    # requires 24 bars per verse so the track still has a real verse pool.
+    # Bar allocation per section type. 1 bar = 4 beats. Full rap songs use
+    # two 16-bar verses so the target is strong without forcing impossible
+    # lyric budgets under ACE-Step's 4096-character ceiling.
     rap_verse_bar_target = 16 if dur >= 120 else max(8, min(16, target_lines // max(1, len(sections) - 1)))
-    two_verse_rap_bar_target = 24 if rap and dur >= 150 else rap_verse_bar_target
+    two_verse_rap_bar_target = rap_verse_bar_target
     sung_verse_bar_target = max(8, min(16, target_words // 60)) if not sparse_genre else max(4, min(8, target_lines // 2))
     hook_bar_target = 8 if dur > 120 else 4
     bars_per_section_template = {
@@ -769,10 +766,10 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
         "min_lines": min_lines,
         "bars_per_section": bars_per_section_template,
         "min_bars_per_rap_verse": rap_verse_bar_target,
-        "min_rap_verses_full_song": 3 if rap and dur >= 150 else 2 if rap else 0,
+        "min_rap_verses_full_song": 2 if rap else 0,
         "alternate_min_bars_if_two_rap_verses": two_verse_rap_bar_target,
         "rap_full_song_rule": (
-            "Full rap songs need 3 rap verses of at least 16 bars each, or 2 rap verses of at least 24 bars each."
+            "Full rap songs need 2 rap verses of at least 16 bars each."
             if rap and dur >= 150
             else ""
         ),

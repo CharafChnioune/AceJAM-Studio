@@ -695,7 +695,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "epoch_audition_enabled": True,
                     "epoch_audition_genre": "rap",
                     "epoch_audition_caption": "bright pop",
-                    "epoch_audition_lyrics": "[Verse]\nUser draft line should stay out of the generated test",
+                    "epoch_audition_lyrics": "[Verse]\nUser draft line should feed the generated test",
                     "epoch_audition_seed": 123,
                     "epoch_audition_scale": 0.75,
                 }
@@ -707,13 +707,12 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("charaf hook", audition["caption"])
             self.assertIn("bright pop", audition["caption"])
             self.assertIn("clear intelligible vocal", audition["caption"])
-            self.assertEqual(audition["lyrics_source"], "genre_default")
+            self.assertEqual(audition["lyrics_source"], "user")
             self.assertEqual(audition["genre"], "rap")
             self.assertEqual(audition["genre_profile"], "rap")
-            self.assertIn("Every bar lands clean", audition["lyrics"])
+            self.assertIn("User draft line should feed the generated test", audition["lyrics"])
             self.assertNotIn("charaf hook", audition["lyrics"])
-            self.assertNotIn("User draft line", audition["lyrics"])
-            self.assertEqual(audition["user_lyrics"], "[Verse]\nUser draft line should stay out of the generated test")
+            self.assertEqual(audition["user_lyrics"], "[Verse]\nUser draft line should feed the generated test")
             self.assertEqual(audition["seed"], 123)
             self.assertEqual(audition["bpm"], 95)
             self.assertEqual(audition["keyscale"], "A minor")
@@ -746,9 +745,9 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(audition["lyrics_source"], "genre_default")
             self.assertIn("Pac", audition["caption"])
             self.assertIn("west coast rap", audition["caption"])
-            self.assertIn("clear rap flow", audition["caption"])
-            self.assertIn("hard drums", audition["caption"])
-            self.assertIn("Every bar lands clean", audition["lyrics"])
+            self.assertIn("clear aggressive rap flow", audition["caption"])
+            self.assertIn("deep 808 bassline", audition["caption"])
+            self.assertIn("Bullshit crown", audition["lyrics"])
             self.assertEqual(audition["bpm"], 95)
             self.assertEqual(audition["keyscale"], "A minor")
             self.assertEqual(audition["timesignature"], "4")
@@ -780,6 +779,7 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertNotIn("Pac", lyrics)
         self.assertIn("[Verse - rap, rhythmic spoken flow]", lyrics)
         self.assertIn("[Chorus - rap hook]", lyrics)
+        self.assertIn("Bullshit crown", lyrics)
 
     def test_epoch_audition_genre_options_expose_ui_lyrics_and_tags(self):
         options = {item["key"]: item for item in epoch_audition_genre_options()}
@@ -787,12 +787,53 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertIn("rap", options)
         self.assertIn("pop", options)
         self.assertIn("rnb", options)
-        self.assertIn("Every bar lands clean", options["rap"]["lyrics"])
-        self.assertIn("clear rap flow", options["rap"]["caption_tags"])
+        self.assertIn("Bullshit crown", options["rap"]["lyrics"])
+        self.assertIn("deep 808 bassline", options["rap"]["caption_tags"])
         self.assertEqual(options["rap"]["lyrics_section_tags"]["verse"], "rap, rhythmic spoken flow")
-        self.assertIn("modern pop groove", options["pop"]["caption_tags"])
-        self.assertIn("smooth rnb groove", options["rnb"]["caption_tags"])
+        self.assertIn("radio-ready mix", options["pop"]["caption_tags"])
+        self.assertIn("warm rhodes keys", options["rnb"]["caption_tags"])
         self.assertEqual(default_epoch_audition_lyrics("", genre_key="soul")[1]["genre_profile"], "rnb")
+
+    def test_epoch_audition_genre_defaults_avoid_ai_cliches_and_artist_names(self):
+        forbidden = (
+            "neon dreams",
+            "fire inside",
+            "shattered dreams",
+            "endless night",
+            "empty streets",
+            "we rise",
+            "let it burn",
+            "chasing the night",
+            "broken heart",
+            "2pac",
+            "tupac",
+        )
+        for option in epoch_audition_genre_options():
+            if option["key"] == "auto":
+                continue
+            combined = f"{option.get('caption_tags', '')}\n{option.get('lyrics', '')}".lower()
+            for phrase in forbidden:
+                self.assertNotIn(phrase, combined)
+
+    def test_epoch_audition_config_uses_user_editable_lyrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AceTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            config = manager._epoch_audition_config(
+                {
+                    "epoch_audition_genre": "rap",
+                    "epoch_audition_caption": "rap, boom-bap drums, dry vocal",
+                    "epoch_audition_lyrics": "[Verse]\nUser bars stay right here\n\n[Chorus]\nHook stays too",
+                },
+                trigger_tag="2pac",
+            )
+
+        self.assertEqual(config["lyrics_source"], "user")
+        self.assertIn("User bars stay right here", config["lyrics"])
+        self.assertIn("Hook stays too", config["lyrics"])
+        self.assertIn("rap, boom-bap drums", config["caption"])
+        self.assertIn("pac", config["caption"].lower())
+        self.assertNotIn("2pac", config["lyrics"].lower())
 
     def test_audio_style_conditioning_adds_rap_tags_without_trigger_in_lyrics(self):
         payload = apply_audio_style_conditioning(
@@ -888,6 +929,17 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertIn("[Verse - rap", fitted)
         self.assertIn("Borrowed soil", fitted)
         self.assertNotIn("[Outro]", fitted)
+
+    def test_rap_epoch_audition_fit_keeps_enough_style_lines_for_thirty_seconds(self):
+        lyrics, _ = default_epoch_audition_lyrics("west coast rap", genre_key="rap")
+
+        fitted, meta = fit_epoch_audition_lyrics(lyrics, duration=30)
+        sung_lines = [line for line in fitted.splitlines() if line.strip() and not line.startswith("[")]
+
+        self.assertGreaterEqual(len(sung_lines), 6)
+        self.assertIn("[Verse - rap", fitted)
+        self.assertIn("[Chorus - rap", fitted)
+        self.assertEqual(meta["duration"], 30)
 
     def test_training_command_step_fails_on_nonfinite_loss(self):
         with tempfile.TemporaryDirectory() as tmp:

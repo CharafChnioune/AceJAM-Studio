@@ -59,6 +59,136 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function stableJson(value: unknown): string {
+  try {
+    return JSON.stringify(value && typeof value === "object" ? value : {}, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+function stripJsonFence(value: string): string {
+  let text = value.trim();
+  if (text.startsWith("```")) {
+    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/m, "").trim();
+  }
+  return text;
+}
+
+function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, unknown> {
+  let text = stripJsonFence(raw);
+  if (!text) return {};
+  const markerIndex = text.indexOf("ACEJAM_PAYLOAD_JSON");
+  if (markerIndex >= 0) {
+    text = text.slice(markerIndex + "ACEJAM_PAYLOAD_JSON".length).trim();
+  }
+  const jsonStart = text.search(/[\[{]/);
+  if (jsonStart > 0) text = text.slice(jsonStart);
+  const parsed = JSON.parse(text) as unknown;
+  let payload: unknown = parsed;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    if (record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)) {
+      payload = record.payload;
+    } else if (
+      record.ACEJAM_PAYLOAD_JSON &&
+      typeof record.ACEJAM_PAYLOAD_JSON === "object" &&
+      !Array.isArray(record.ACEJAM_PAYLOAD_JSON)
+    ) {
+      const nested = record.ACEJAM_PAYLOAD_JSON as Record<string, unknown>;
+      payload =
+        nested.payload && typeof nested.payload === "object" && !Array.isArray(nested.payload)
+          ? nested.payload
+          : nested;
+    }
+  }
+  if (Array.isArray(payload)) {
+    return mode === "album" ? { tracks: payload } : { items: payload };
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error("JSON root must be an object.");
+  }
+  return payload as Record<string, unknown>;
+}
+
+const ALBUM_CONTRACT_NEGATIVE_TAGS =
+  "low quality, muddy mix, distorted vocals, off-key vocals, clipped audio, noisy artifacts";
+
+function styleProfileFromText(value: unknown): string {
+  const text = asText(value).toLowerCase();
+  if (/\b(rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b/.test(text)) return "rap";
+  if (/\b(r&b|rnb|soul)\b/.test(text)) return "soul";
+  if (/\b(edm|dance|house|techno|club|trance|bounce)\b/.test(text)) return "edm";
+  if (/\b(rock|punk|metal|guitar)\b/.test(text)) return "rock";
+  if (/\b(country|americana|folk)\b/.test(text)) return "country";
+  if (/\b(cinematic|score|orchestral|trailer)\b/.test(text)) return "cinematic";
+  return "pop";
+}
+
+function contractCaptionTags(style: string, profile: string): string {
+  const base =
+    profile === "rap"
+      ? "rap, hip hop, clear rap vocal, rhythmic spoken flow, punchy drums, deep bass, crisp studio mix"
+      : profile === "soul"
+        ? "soul, R&B, warm vocal, live bass, tight drums, rich harmonies, polished studio mix"
+        : profile === "edm"
+          ? "dance, club groove, driving kick, deep bass, energetic vocal, polished electronic mix"
+          : profile === "cinematic"
+            ? "cinematic, orchestral texture, dramatic percussion, wide stereo mix, emotional vocal"
+            : "pop, catchy vocal hook, polished drums, warm bass, radio-ready mix";
+  return [style, base].filter(Boolean).join(", ");
+}
+
+function albumInitialPayloadFromJob(
+  job: Record<string, unknown>,
+  fallbackPayload: Record<string, unknown>,
+): Record<string, unknown> {
+  const contract = asRecord(job.input_contract ?? job.user_album_contract);
+  const rawTracks = Array.isArray(contract.tracks) ? contract.tracks.map(asRecord) : [];
+  if (!rawTracks.length && !asText(contract.album_title)) return {};
+  const tracks = rawTracks.map((track, index) => {
+    const style = asText(track.style);
+    const profile = styleProfileFromText(`${style} ${track.narrative ?? ""} ${track.source_excerpt ?? ""}`);
+    const title = asText(track.locked_title) || asText(track.title) || `Track ${index + 1}`;
+    const requiredPhrases = Array.isArray(track.required_phrases)
+      ? track.required_phrases.map(String).filter(Boolean)
+      : [];
+    return {
+      track_number: asNumber(track.track_number, index + 1),
+      title,
+      locked_title: title,
+      source_title: asText(track.source_title) || title,
+      role: index === 0 ? "opener" : index === rawTracks.length - 1 ? "closer" : "full_song",
+      duration: asNumber(track.duration, asNumber(fallbackPayload.track_duration, 180)) || 180,
+      bpm: asNumber(track.bpm, 0) || undefined,
+      key_scale: asText(track.key_scale),
+      style,
+      style_profile: profile,
+      genre_profile: style || profile,
+      genre_direction: style || profile,
+      caption_tags: contractCaptionTags(style, profile),
+      album_tags: asText(fallbackPayload.genre_prompt) || style || profile,
+      negative_tags: ALBUM_CONTRACT_NEGATIVE_TAGS,
+      narrative: asText(track.narrative) || asText(track.source_excerpt),
+      description: asText(track.narrative) || asText(track.source_excerpt) || style,
+      hook_promise: requiredPhrases.slice(0, 6).join("\n"),
+      required_phrases: requiredPhrases,
+      lyrics: asText(track.required_lyrics),
+      input_contract_applied: true,
+      payload_gate_status: "contract_pending_crewai",
+    };
+  });
+  return {
+    ...fallbackPayload,
+    album_title: asText(contract.album_title) || asText(fallbackPayload.album_title),
+    concept: asText(contract.concept) || asText(fallbackPayload.concept),
+    num_tracks: asNumber(contract.track_count, tracks.length || asNumber(fallbackPayload.num_tracks, 0)),
+    tracks,
+    input_contract: contract,
+    input_contract_applied: true,
+  };
+}
+
 export function AIPromptStep({
   mode,
   placeholder,
@@ -69,8 +199,11 @@ export function AIPromptStep({
 }: AIPromptStepProps) {
   const prompt = useWizardStore((s) => s.prompts[mode]) ?? "";
   const warnings = normalizeWarnings(useWizardStore((s) => s.warnings[mode]));
-  const pasteBlocks = normalizePasteBlocks(useWizardStore((s) => s.pasteBlocks[mode]));
+  const storedPayload = useWizardStore((s) => s.payloads[mode]);
+  const storedPasteBlocks = useWizardStore((s) => s.pasteBlocks[mode]);
+  const pasteBlocks = normalizePasteBlocks(storedPasteBlocks);
   const setPrompt = useWizardStore((s) => s.setPrompt);
+  const setPasteBlocks = useWizardStore((s) => s.setPasteBlocks);
   const setHydration = useWizardStore((s) => s.setHydration);
 
   const plannerProvider = useSettingsStore((s) => s.plannerProvider);
@@ -265,6 +398,17 @@ export function AIPromptStep({
           toast.error("Album AI job kon niet worden gestart.");
           return;
         }
+        const initialPayload = albumInitialPayloadFromJob(asRecord(response.job), currentPayload ?? {});
+        if (Object.keys(initialPayload).length > 0) {
+          setHydration(mode, {
+            payload: initialPayload,
+            warnings: [
+              "Albumcontract alvast ingevuld; CrewAI werkt nu track-voor-track aan verdere verrijking.",
+            ],
+            paste_blocks: null,
+          });
+          onHydrated?.(initialPayload);
+        }
         setAlbumJobId(jobId);
         setAlbumJob(asRecord(response.job));
         toast.success("Album AI Fill gestart. Je ziet live welke taak bezig is.");
@@ -366,6 +510,58 @@ export function AIPromptStep({
   const albumWaiting =
     Boolean(albumJob?.waiting_on_llm) ||
     asText(albumJob?.waiting_on_llm).toLowerCase() === "true";
+  const pasteEditorFallback = React.useMemo(
+    () => stableJson(currentPayload ?? storedPayload ?? {}),
+    [currentPayload, storedPayload],
+  );
+  const editablePasteBlocks = React.useMemo(
+    () =>
+      storedPasteBlocks && storedPasteBlocks.length > 0
+        ? storedPasteBlocks
+        : [
+            {
+              label: "Huidige wizard JSON",
+              content: pasteEditorFallback,
+            },
+          ],
+    [pasteEditorFallback, storedPasteBlocks],
+  );
+  const pasteEditorValue = editablePasteBlocks[0]?.content ?? pasteEditorFallback;
+
+  const updatePasteBlock = (index: number, content: string) => {
+    const next = editablePasteBlocks.map((block) => ({ ...block }));
+    next[index] = {
+      label: next[index]?.label || `Paste block ${index + 1}`,
+      content,
+    };
+    setPasteBlocks(mode, next);
+  };
+
+  const resetPasteEditor = () => {
+    setPasteBlocks(mode, [
+      {
+        label: "Huidige wizard JSON",
+        content: pasteEditorFallback,
+      },
+    ]);
+  };
+
+  const applyPasteEditor = (index = 0) => {
+    const block = editablePasteBlocks[index] ?? editablePasteBlocks[0];
+    const content = block?.content ?? pasteEditorValue;
+    try {
+      const manualPayload = parseManualPastePayload(content, mode);
+      setHydration(mode, {
+        payload: manualPayload,
+        warnings,
+        paste_blocks: editablePasteBlocks,
+      });
+      onHydrated?.(manualPayload);
+      toast.success("JSON toegepast op de wizard.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "JSON kon niet worden gelezen.");
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -545,41 +741,72 @@ export function AIPromptStep({
         </motion.div>
       )}
 
-      {(warnings.length > 0 || pasteBlocks.length > 0) && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-3 rounded-xl border border-border/60 bg-card/40 p-4"
-        >
-          {warnings.length > 0 && (
-            <div className="flex gap-2 text-sm">
-              <AlertTriangle className="size-4 shrink-0 text-yellow-400" />
-              <ul className="space-y-1">
-                {warnings.map((w, i) => (
-                  <li key={i} className="text-yellow-200/90">{w}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {pasteBlocks.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
-                <Wand2 className="size-3" /> Paste blocks
-              </div>
-              {pasteBlocks.map((b, i) => (
-                <details key={i} className="rounded-md border border-border/40 bg-background/40 p-2 text-xs">
-                  <summary className="cursor-pointer font-medium">
-                    {b.label || `Block ${i + 1}`}
-                  </summary>
-                  <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-                    {b.content}
-                  </pre>
-                </details>
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="space-y-3 rounded-xl border border-border/60 bg-card/40 p-4"
+      >
+        {warnings.length > 0 && (
+          <div className="flex gap-2 text-sm">
+            <AlertTriangle className="size-4 shrink-0 text-yellow-400" />
+            <ul className="space-y-1">
+              {warnings.map((w, i) => (
+                <li key={i} className="text-yellow-200/90">{w}</li>
               ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+              <Wand2 className="size-3" /> JSON / paste block
             </div>
-          )}
-        </motion.div>
-      )}
+            <Badge variant="outline">Altijd zichtbaar</Badge>
+          </div>
+          <Textarea
+            value={pasteEditorValue}
+            onChange={(e) => updatePasteBlock(0, e.target.value)}
+            rows={9}
+            spellCheck={false}
+            className="font-mono text-xs leading-relaxed"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" onClick={() => applyPasteEditor()}>
+              Pas JSON toe
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={resetPasteEditor}>
+              Vul met huidig formulier
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Plak direct een payload-object, een <code>payload</code>-wrapper of een album-track array.
+          </p>
+        </div>
+
+        {pasteBlocks.length > 1 && (
+          <div className="space-y-1.5">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">
+              Bewerkbare extra paste blocks
+            </div>
+            {pasteBlocks.slice(1).map((b, i) => (
+              <div key={i} className="space-y-2 rounded-md border border-border/40 bg-background/40 p-2 text-xs">
+                <div className="font-medium">{b.label || `Block ${i + 2}`}</div>
+                <Textarea
+                  value={editablePasteBlocks[i + 1]?.content ?? b.content}
+                  onChange={(event) => updatePasteBlock(i + 1, event.target.value)}
+                  rows={7}
+                  spellCheck={false}
+                  className="font-mono text-[11px] leading-relaxed"
+                />
+                <Button type="button" size="sm" variant="outline" onClick={() => applyPasteEditor(i + 1)}>
+                  Pas dit blok toe
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </motion.div>
     </div>
   );
 }

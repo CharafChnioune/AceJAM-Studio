@@ -56,6 +56,7 @@ interface WizardSlice {
   setPrompt: (mode: string, value: string) => void;
   setDraft: (mode: string, value: Record<string, unknown>) => void;
   clearDraft: (mode: string) => void;
+  setPasteBlocks: (mode: string, blocks: PasteBlock[] | undefined) => void;
   setHydration: (
     mode: string,
     data: {
@@ -110,6 +111,13 @@ export const useWizardStore = create<WizardSlice>()(
         set((s) => ({ drafts: { ...s.drafts, [mode]: value } })),
       clearDraft: (mode) =>
         set((s) => ({ drafts: { ...s.drafts, [mode]: undefined } })),
+      setPasteBlocks: (mode, blocks) =>
+        set((s) => ({
+          pasteBlocks: {
+            ...s.pasteBlocks,
+            [mode]: blocks && blocks.length > 0 ? blocks : undefined,
+          },
+        })),
       setHydration: (mode, data) =>
         set((s) => ({
           payloads: { ...s.payloads, [mode]: data.payload },

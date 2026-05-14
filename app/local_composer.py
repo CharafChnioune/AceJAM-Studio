@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from local_llm import (
+    PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
     chat_completion,
     model_catalog,
     normalize_provider,
@@ -511,7 +512,7 @@ class LocalComposer:
         planner_settings = planner_llm_settings_from_payload(
             planner_llm_settings or {},
             default_max_tokens=2048,
-            default_timeout=600.0,
+            default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
         )
         compose_started_at = time.perf_counter()
         print(
@@ -545,7 +546,7 @@ class LocalComposer:
                     provider,
                     planner_settings,
                     default_max_tokens=2048,
-                    default_timeout=600.0,
+                    default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
                 ),
                 json_format=True,
             )

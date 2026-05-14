@@ -195,7 +195,7 @@ class OllamaManagerTest(unittest.TestCase):
             "planner_seed": "42",
             "planner_max_tokens": 99999,
             "planner_context_length": 999999,
-            "planner_timeout": 99999,
+            "planner_timeout": 99999999,
         }
 
         settings = local_llm.planner_llm_settings_from_payload(payload)
@@ -209,7 +209,7 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(settings["planner_max_tokens"], 8192)
         # New ceiling is 262144 (Qwen native context max)
         self.assertEqual(settings["planner_context_length"], 262144)
-        self.assertEqual(settings["planner_timeout"], 1800.0)
+        self.assertEqual(settings["planner_timeout"], 2592000.0)
         self.assertEqual(options["temperature"], 2.0)
         self.assertEqual(options["top_p"], 0.0)
         self.assertEqual(options["top_k"], 200)
@@ -217,6 +217,10 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(options["seed"], 42)
         self.assertEqual(options["num_ctx"], 262144)
         self.assertEqual(options["num_predict"], 8192)
+
+    def test_planner_llm_default_timeout_allows_large_local_album_calls(self):
+        settings = local_llm.planner_llm_settings_from_payload({})
+        self.assertEqual(settings["planner_timeout"], 604800.0)
 
     def test_planner_llm_settings_map_to_lmstudio_without_context_option(self):
         options = local_llm.planner_llm_options_for_provider(

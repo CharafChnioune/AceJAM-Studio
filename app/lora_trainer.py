@@ -39,8 +39,8 @@ AUDIO_EXTENSIONS = {
 }
 JOB_ACTIVE_STATES = {"queued", "running", "stopping"}
 EPOCH_AUDITION_DURATION_SECONDS = 30
-EPOCH_AUDITION_CHARS_PER_SECOND = 8
-EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 2
+EPOCH_AUDITION_CHARS_PER_SECOND = 9
+EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION = 4
 EPOCH_AUDITION_SECONDS_PER_SUNG_LINE = 5.0
 EPOCH_AUDITION_SECTION_STYLE = "clear dry lead vocal, intelligible delivery"
 EPOCH_AUDITION_CLARITY_CAPTION = (
@@ -124,9 +124,24 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "rap",
         "label": "Rap / Hip-hop",
         "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster", "2pac", "tupac"),
-        "caption_tags": "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
+        "caption_tags": (
+            "rap, hip hop, west coast bounce, rhythmic spoken-word vocal, clear aggressive rap flow, "
+            "punchy boom-bap drums, deep 808 bassline, rubbery g-funk synth lead, chopped piano stab, "
+            "dry upfront male vocal, crisp modern mix, street-corner pocket"
+        ),
         "lyrics_section_tags": {"verse": "rap, rhythmic spoken flow", "chorus": "rap hook"},
-        "lyrics": "[Verse - rap, rhythmic spoken flow]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus - rap hook]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+        "lyrics": (
+            "[Verse - rap, rhythmic spoken flow]\n"
+            "Boots on the curb, court date in my jacket\n"
+            "Ledger got blood, I rhyme through the static\n"
+            "Rent man knocks, I knock back with a classic\n"
+            "Bullshit crown gets cracked into plastic\n"
+            "Sirens draw loops round the block like brackets\n"
+            "Cold cash talks, I talk back with matches\n\n"
+            "[Chorus - rap hook]\n"
+            "Fuck that crown, make the bassline answer\n"
+            "Whole damn room move sharp like a dancer"
+        ),
         "bpm": 95,
         "keyscale": "A minor",
         "timesignature": "4",
@@ -136,9 +151,21 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "pop",
         "label": "Pop",
         "terms": ("pop", "radio", "dance pop", "synth pop", "electropop"),
-        "caption_tags": "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
+        "caption_tags": (
+            "modern pop, tight live drums, bright analog synth bass, glassy guitar mutes, "
+            "clean lead vocal, doubled hook, wide polished chorus, bittersweet drive, radio-ready mix"
+        ),
         "lyrics_section_tags": {"verse": "clean pop vocal", "chorus": "bright pop hook"},
-        "lyrics": "[Verse - clean pop vocal]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus - bright pop hook]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+        "lyrics": (
+            "[Verse - clean pop vocal]\n"
+            "Coffee gone cold on the dashboard tray\n"
+            "You said forever, then drove away\n"
+            "I changed the lock, kept the cheap motel key\n"
+            "Damn near smiled when your song found me\n\n"
+            "[Chorus - bright pop hook]\n"
+            "I don't miss you, I miss the noise\n"
+            "Two bad choices making one loud voice"
+        ),
         "bpm": 118,
         "keyscale": "C major",
         "timesignature": "4",
@@ -148,9 +175,21 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "rnb",
         "label": "Soul / R&B",
         "terms": ("r&b", "rnb", "soul", "neo soul", "smooth", "slow jam"),
-        "caption_tags": "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
+        "caption_tags": (
+            "smooth rnb groove, warm rhodes keys, brushed trap-soul drums, round sub bass, "
+            "close dry lead vocal, soft stacked harmonies, late room tone, tape-warm mix"
+        ),
         "lyrics_section_tags": {"verse": "smooth rnb vocal", "chorus": "soulful rnb hook"},
-        "lyrics": "[Verse - smooth rnb vocal]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus - soulful rnb hook]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+        "lyrics": (
+            "[Verse - smooth rnb vocal]\n"
+            "Your robe on the chair still holds your shape\n"
+            "I pour two cups, let mine go late\n"
+            "You left no note, just a half-lit screen\n"
+            "Damn, that silence knows where I've been\n\n"
+            "[Chorus - soulful rnb hook]\n"
+            "Come back slow if you mean it this time\n"
+            "No more sweet talk stealing my spine"
+        ),
         "bpm": 82,
         "keyscale": "D minor",
         "timesignature": "4",
@@ -160,9 +199,21 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "rock",
         "label": "Rock",
         "terms": ("rock", "guitar", "punk", "metal", "alt rock", "indie rock"),
-        "caption_tags": "driving rock drums, electric guitars, clear lead vocal, strong chorus",
+        "caption_tags": (
+            "gritty rock, live kick and snare, overdriven rhythm guitars, pick-bass low end, "
+            "raw lead vocal, gang-hook chorus, garage room bleed, punchy analog mix"
+        ),
         "lyrics_section_tags": {"verse": "rock lead vocal", "chorus": "strong rock chorus"},
-        "lyrics": "[Verse - rock lead vocal]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus - strong rock chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+        "lyrics": (
+            "[Verse - rock lead vocal]\n"
+            "Brake dust black on the motel sink\n"
+            "I spit out smoke, try not to think\n"
+            "Your fake halo hangs by a wire\n"
+            "Hell no, it snaps when I kick the tire\n\n"
+            "[Chorus - strong rock chorus]\n"
+            "Kick it down, let the amps talk back\n"
+            "We don't bend for a polished track"
+        ),
         "bpm": 128,
         "keyscale": "E minor",
         "timesignature": "4",
@@ -172,9 +223,21 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "edm",
         "label": "EDM / Dance",
         "terms": ("edm", "house", "techno", "trance", "club", "dance", "electronic"),
-        "caption_tags": "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
+        "caption_tags": (
+            "electronic dance, four-on-floor kick, pulsing sidechain bass, metallic synth plucks, "
+            "chopped vocal hook, dark club groove, clean festival drop, tight stereo mix"
+        ),
         "lyrics_section_tags": {"verse": "dance vocal", "chorus": "club vocal hook"},
-        "lyrics": "[Verse - dance vocal]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus - club vocal hook]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+        "lyrics": (
+            "[Verse - dance vocal]\n"
+            "Wristband torn, bass hits my chest\n"
+            "Sweat on the rail, no time to rest\n"
+            "You texted sorry, I killed the screen\n"
+            "Damn, this kick says what I mean\n\n"
+            "[Chorus - club vocal hook]\n"
+            "Move your body, cut that fake-ass talk\n"
+            "Bassline bites when the lights drop"
+        ),
         "bpm": 124,
         "keyscale": "F# minor",
         "timesignature": "4",
@@ -184,9 +247,21 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "cinematic",
         "label": "Cinematic",
         "terms": ("cinematic", "orchestral", "score", "trailer", "choir", "epic"),
-        "caption_tags": "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
+        "caption_tags": (
+            "cinematic hip-hop hybrid, heavy trailer drums, low brass stabs, tense strings, "
+            "sub bass hits, clear dramatic vocal, spacious dark mix, marching groove"
+        ),
         "lyrics_section_tags": {"verse": "dramatic vocal", "chorus": "cinematic anthem"},
-        "lyrics": "[Verse - dramatic vocal]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus - cinematic anthem]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+        "lyrics": (
+            "[Verse - dramatic vocal]\n"
+            "Ash on the ledger, rain on the gate\n"
+            "Old men gamble with a child's plate\n"
+            "I name the bill, I name the knife\n"
+            "Damn the machine that prices life\n\n"
+            "[Chorus - cinematic anthem]\n"
+            "Count every crown, count every scar\n"
+            "Truth kicks back from under the floor"
+        ),
         "bpm": 88,
         "keyscale": "D minor",
         "timesignature": "4",
@@ -196,9 +271,21 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "key": "country",
         "label": "Country / Folk",
         "terms": ("country", "folk", "americana", "acoustic", "banjo"),
-        "caption_tags": "warm acoustic guitars, steady country drums, clear heartfelt vocal",
+        "caption_tags": (
+            "outlaw country, acoustic guitar strums, brushed snare, walking bass, pedal steel bends, "
+            "clear gritty lead vocal, barroom harmony, dry warm mix"
+        ),
         "lyrics_section_tags": {"verse": "country lead vocal", "chorus": "heartfelt country hook"},
-        "lyrics": "[Verse - country lead vocal]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus - heartfelt country hook]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+        "lyrics": (
+            "[Verse - country lead vocal]\n"
+            "Truck won't start by the county line\n"
+            "Paycheck gone, but the dog eats fine\n"
+            "Preacher said hush, boss said grin\n"
+            "Damn them boys, I won't fold in\n\n"
+            "[Chorus - heartfelt country hook]\n"
+            "Pour it straight, let the truth sit down\n"
+            "Small town teeth in a courthouse crown"
+        ),
         "bpm": 96,
         "keyscale": "G major",
         "timesignature": "4",
@@ -962,12 +1049,15 @@ def fit_epoch_audition_lyrics(lyrics: str | None, *, duration: int = EPOCH_AUDIT
     if not blocks and normalized_lines:
         blocks = [{"section": "[Verse]", "lines": [line for line in normalized_lines if _epoch_audition_section_marker(line) is None]}]
 
+    eligible_blocks = [block for block in blocks if block.get("lines")]
     output_blocks: list[dict[str, Any]] = []
     sung_lines = 0
-    for block in blocks:
+    for block_index, block in enumerate(eligible_blocks):
         if sung_lines >= max_sung_lines:
             break
-        lines = list(block.get("lines") or [])[:EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION]
+        remaining_blocks_after = max(0, len(eligible_blocks) - block_index - 1)
+        section_line_limit = max(1, min(EPOCH_AUDITION_MAX_SUNG_LINES_PER_SECTION, max_sung_lines - sung_lines - remaining_blocks_after))
+        lines = list(block.get("lines") or [])[:section_line_limit]
         if not lines:
             continue
         section = str(block.get("section") or "[Verse]")
@@ -1884,12 +1974,23 @@ class AceTrainingManager:
         profile = epoch_audition_genre_profile(user_caption, user_lyrics, user_genre)
         safe_trigger = safe_generation_trigger_tag(trigger_tag)
         profile_metadata = _profile_audition_metadata(profile)
-        lyrics, lyrics_meta = default_epoch_audition_lyrics(
-            user_caption,
-            trigger_tag=safe_trigger,
-            lyrics_hint=user_lyrics,
-            genre_key=user_genre,
-        )
+        if user_lyrics:
+            lyrics = user_lyrics
+            lyrics_meta = {
+                "lyrics_source": "user",
+                "genre_profile": str(profile.get("key") or EPOCH_AUDITION_DEFAULT_PROFILE_KEY),
+                "trigger_in_lyrics": bool(
+                    safe_trigger and re.search(re.escape(safe_trigger), user_lyrics, flags=re.IGNORECASE)
+                ),
+                "user_lyrics_chars": len(user_lyrics),
+            }
+        else:
+            lyrics, lyrics_meta = default_epoch_audition_lyrics(
+                user_caption,
+                trigger_tag=safe_trigger,
+                lyrics_hint=user_lyrics,
+                genre_key=user_genre,
+            )
         if not enabled:
             lyrics = ""
         caption = build_epoch_audition_caption(user_caption, trigger_tag=safe_trigger, genre_key=user_genre, genre_profile=profile) if enabled else ""

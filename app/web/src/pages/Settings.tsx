@@ -164,6 +164,18 @@ function LLMTab() {
 
   // Ollama pull flow
   const [pullModelName, setPullModelName] = React.useState("");
+  const plannerTimeoutDefault = 7 * 24 * 60 * 60;
+  const plannerTimeoutMax = 30 * 24 * 60 * 60;
+  const [plannerTimeout, setPlannerTimeout] = React.useState(String(plannerTimeoutDefault));
+  React.useEffect(() => {
+    const value = Number(catalog?.settings?.planner_timeout ?? plannerTimeoutDefault);
+    if (Number.isFinite(value) && value > 0) setPlannerTimeout(String(Math.round(value)));
+  }, [catalog?.settings?.planner_timeout, plannerTimeoutDefault]);
+  const savePlannerTimeout = () => {
+    const seconds = Math.max(30, Math.min(plannerTimeoutMax, Number(plannerTimeout) || plannerTimeoutDefault));
+    setPlannerTimeout(String(seconds));
+    saveLocalSettings.mutate({ planner_timeout: seconds });
+  };
   const startPull = useMutation({
     mutationFn: () =>
       api.post<{ success: boolean; job?: { id: string }; error?: string }>(
@@ -357,6 +369,31 @@ function LLMTab() {
               className="gap-1.5"
             >
               <RefreshCw className="size-3" /> Refresh
+            </Button>
+          </div>
+          <div className="grid gap-2 rounded-lg border border-border/60 bg-background/40 p-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div className="space-y-1.5">
+              <Label>Max wachttijd per AI-agent</Label>
+              <Input
+                type="number"
+                min={30}
+                max={plannerTimeoutMax}
+                step={300}
+                value={plannerTimeout}
+                onChange={(e) => setPlannerTimeout(e.target.value)}
+                onBlur={savePlannerTimeout}
+              />
+              <p className="text-xs text-muted-foreground">
+                Album CrewAI gebruikt dit per lokale Ollama/LM Studio-call. Standaard is 7 dagen zodat trage lokale modellen niet je albumplan weggooien.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={savePlannerTimeout}
+              disabled={saveLocalSettings.isPending}
+            >
+              Bewaar
             </Button>
           </div>
         </CardContent>

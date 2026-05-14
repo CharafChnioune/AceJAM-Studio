@@ -26,6 +26,8 @@ print = _safe_print
 
 OLLAMA_DEFAULT_HOST = "http://localhost:11434"
 LMSTUDIO_DEFAULT_HOST = "http://localhost:1234"
+PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS = 7 * 24 * 60 * 60.0
+PLANNER_LLM_MAX_TIMEOUT_SECONDS = 30 * 24 * 60 * 60.0
 PLANNER_LLM_DEFAULTS: dict[str, Any] = {
     "planner_creativity_preset": "balanced",
     "planner_temperature": 0.45,
@@ -35,7 +37,7 @@ PLANNER_LLM_DEFAULTS: dict[str, Any] = {
     "planner_seed": "",
     "planner_max_tokens": 8192,
     "planner_context_length": 65536,
-    "planner_timeout": 600.0,
+    "planner_timeout": PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
 }
 PLANNER_LLM_PRESETS: dict[str, dict[str, Any]] = {
     "stable": {
@@ -222,7 +224,7 @@ def planner_llm_settings_from_payload(
         or base["planner_timeout"],
         float(base["planner_timeout"]),
         30.0,
-        1800.0,
+        PLANNER_LLM_MAX_TIMEOUT_SECONDS,
     )
     seed_raw = str(
         _payload_first(source, "planner_seed", "local_llm_seed")

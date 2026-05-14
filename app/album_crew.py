@@ -59,6 +59,7 @@ from album_quality_gate import (
     producer_grade_readiness,
 )
 from local_llm import (
+    PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
     chat_completion as local_llm_chat_completion,
     embed as local_llm_embed,
     lmstudio_api_base_url,
@@ -2467,7 +2468,7 @@ def _coerce_options(
             "track_duration": float(track_duration),
             "language": language,
             "user_album_contract": contract,
-            "album_title": opts.get("album_title") or contract.get("album_title") if isinstance(contract, dict) else opts.get("album_title"),
+            "album_title": (contract.get("album_title") or opts.get("album_title")) if isinstance(contract, dict) else opts.get("album_title"),
         }
     )
     return opts
@@ -3496,6 +3497,152 @@ def _agent_json_instruction(schema_name: str) -> str:
 _AGENT_BLOCK_DELIMITER_RE = re.compile(r"^\*{6}(/?)([a-z][a-z0-9_]*)\*{6}$")
 
 
+_AGENT_KEYED_LABEL_ALIASES: dict[str, set[str]] = {
+    "album_title": {"album", "album title", "title"},
+    "one_sentence_concept": {
+        "concept",
+        "core concept",
+        "one sentence concept",
+        "one-sentence concept",
+        "one_sentence_concept",
+        "summary",
+        "theme",
+    },
+    "style_guardrails": {
+        "guardrails",
+        "style guardrails",
+        "style rules",
+        "sonic guardrails",
+        "album tags",
+    },
+    "track_roles": {"track roles", "tracks", "tracklist", "track list"},
+    "tag_list": {"tag list", "tags", "caption tags", "sonic tags", "genre tags"},
+    "caption_dimensions_covered": {"caption dimensions", "dimensions covered", "caption dimensions covered"},
+    "hook_lines": {"hook", "hook lines", "chorus", "chorus lines"},
+    "lyrics_lines": {"lyrics", "lyrics lines", "lyric lines"},
+    "section_map": {"section map", "sections", "arrangement"},
+    "required_phrases": {"required phrases", "motifs", "motif words"},
+}
+
+
+def _normalize_agent_keyed_label(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_")
+
+
+def _agent_label_lookup(schema_name: str) -> dict[str, str]:
+    contract = _agent_block_contract(schema_name)
+    fields = list((contract or {}).get("fields") or [])
+    lookup: dict[str, str] = {}
+    for field in fields:
+        labels = {field, field.replace("_", " ")}
+        labels.update(_AGENT_KEYED_LABEL_ALIASES.get(field, set()))
+        for label in labels:
+            normalized = _normalize_agent_keyed_label(label)
+            if normalized:
+                lookup[normalized] = field
+    return lookup
+
+
+def _coerce_keyed_list_lines(lines: list[str], *, field: str) -> list[str]:
+    items: list[str] = []
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        line = re.sub(r"^(?:[-*•]\s+|\d+[.)]\s+)", "", line).strip()
+        if not line:
+            continue
+        if field in {"tag_list", "caption_dimensions_covered", "style_guardrails", "sections"} and "," in line and "\n" not in line:
+            split_items = [part.strip() for part in line.split(",") if part.strip()]
+            if len(split_items) > 1:
+                items.extend(split_items)
+                continue
+        items.append(line)
+    return items
+
+
+def _parse_agent_keyed_payload(raw: str, schema_name: str) -> dict[str, Any]:
+    """Best-effort recovery for local models that return `Field: value`
+    instead of delimiter blocks.
+
+    CrewAI's own docs recommend task guardrails with retries and structured
+    outputs, but local Ollama/LM Studio models often drift into readable keyed
+    prose before they obey custom delimiters. This parser keeps those otherwise
+    valid agent decisions and lets the app-owned validators decide content
+    quality, instead of crashing on line 1.
+    """
+    contract = _agent_block_contract(schema_name)
+    if not contract:
+        raise ValueError(f"block_parse_failed:no_block_contract:{schema_name}")
+    lookup = _agent_label_lookup(schema_name)
+    expected = list(contract.get("fields") or [])
+    list_fields = set(contract.get("list_fields") or set())
+    number_fields = set(contract.get("number_fields") or set())
+    blocks: dict[str, list[str]] = {}
+    current_field = ""
+    saw_label = False
+    label_re = re.compile(r"^\s*(?:[-*•]\s*)?(?P<label>[A-Za-z][A-Za-z0-9 _/()&.-]{1,72})\s*:\s*(?P<value>.*)$")
+    for raw_line in str(raw or "").splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            if current_field:
+                blocks.setdefault(current_field, []).append("")
+            continue
+        match = label_re.match(line)
+        if match:
+            label = _normalize_agent_keyed_label(match.group("label"))
+            field = lookup.get(label)
+            if field:
+                current_field = field
+                saw_label = True
+                value = str(match.group("value") or "").strip()
+                blocks.setdefault(field, [])
+                if value:
+                    blocks[field].append(value)
+                continue
+        if current_field:
+            blocks.setdefault(current_field, []).append(raw_line)
+    if not saw_label:
+        raise ValueError("block_parse_failed:text_outside_blocks:line_1")
+    missing = [field for field in expected if field not in blocks]
+    if missing:
+        raise ValueError("missing_block:" + ",".join(missing))
+    required_nonempty = set(contract.get("required_nonempty") or set())
+    payload: dict[str, Any] = {}
+    for field in expected:
+        raw_lines = list(blocks.get(field) or [])
+        while raw_lines and not str(raw_lines[0]).strip():
+            raw_lines = raw_lines[1:]
+        while raw_lines and not str(raw_lines[-1]).strip():
+            raw_lines = raw_lines[:-1]
+        if field in list_fields:
+            value = _coerce_keyed_list_lines(raw_lines, field=field)
+            if field in required_nonempty and not value:
+                raise ValueError(f"empty_required_block:{field}")
+            payload[field] = value
+            continue
+        value_text = "\n".join(str(line).strip() for line in raw_lines if str(line).strip()).strip()
+        if field in required_nonempty and not value_text:
+            raise ValueError(f"empty_required_block:{field}")
+        if field in number_fields and value_text:
+            number_match = re.search(r"-?\d+(?:\.\d+)?", value_text)
+            if not number_match:
+                raise ValueError(f"invalid_scalar:{field}")
+            number_value = float(number_match.group(0))
+            payload[field] = int(number_value) if number_value.is_integer() else number_value
+        else:
+            payload[field] = value_text
+    for field, strategy in (contract.get("derived_fields") or {}).items():
+        if strategy == "tag_list_csv":
+            payload[field] = ", ".join(str(item).strip() for item in (payload.get("tag_list") or []) if str(item).strip())
+        elif strategy == "deterministic_block_payload":
+            payload[field] = {"deterministic_block_payload": True}
+    return payload
+
+
 def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
     contract = _agent_block_contract(schema_name)
     if not contract:
@@ -3505,11 +3652,15 @@ def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
         raise ValueError("block_parse_failed:empty_response")
     if text.startswith("{") or text.startswith("["):
         raise ValueError("block_parse_failed:json_response_not_allowed")
+    has_delimiter = any(_AGENT_BLOCK_DELIMITER_RE.fullmatch(line.strip()) for line in str(raw or "").splitlines())
+    if not has_delimiter:
+        return _parse_agent_keyed_payload(raw, schema_name)
     expected = list(contract.get("fields") or [])
     expected_set = set(expected)
     blocks: dict[str, list[str]] = {}
     current_field = ""
     current_lines: list[str] = []
+    saw_block = False
     for line_number, raw_line in enumerate(str(raw or "").splitlines(), start=1):
         stripped = raw_line.strip()
         delimiter = _AGENT_BLOCK_DELIMITER_RE.fullmatch(stripped)
@@ -3518,6 +3669,7 @@ def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
             field = delimiter.group(2)
             if field not in expected_set:
                 raise ValueError(f"extra_block:{field}")
+            saw_block = True
             if is_close:
                 if not current_field:
                     raise ValueError(f"block_parse_failed:orphan_close:{field}:line_{line_number}")
@@ -3533,7 +3685,11 @@ def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
                 current_lines = []
             else:
                 if current_field:
-                    raise ValueError(f"block_parse_failed:nested_block:{field}:inside:{current_field}:line_{line_number}")
+                    # Local chat models sometimes omit the close delimiter and
+                    # immediately start the next required block. Treat that as an
+                    # implicit close for the previous field so useful agent work
+                    # does not get thrown away over delimiter hygiene.
+                    blocks[current_field] = current_lines
                 # Re-opening a previously seen field is allowed (last-wins);
                 # we'll overwrite the prior block on the matching close.
                 current_field = field
@@ -3542,7 +3698,12 @@ def _parse_agent_block_payload(raw: str, schema_name: str) -> dict[str, Any]:
         if current_field:
             current_lines.append(raw_line)
         elif stripped:
-            raise ValueError(f"block_parse_failed:text_outside_blocks:line_{line_number}")
+            # Ignore harmless preambles/epilogues around otherwise-valid blocks.
+            # A response with no blocks still fails below as missing_block, while
+            # unexpected delimiter blocks keep failing via extra_block above.
+            if not saw_block and not has_delimiter:
+                raise ValueError(f"block_parse_failed:text_outside_blocks:line_{line_number}")
+            continue
     if current_field:
         # Local models occasionally omit the closing delimiter for the final
         # block even while the block content itself is complete. Closing the
@@ -4282,12 +4443,12 @@ _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
     ),
     "Track Lyrics Agent Part 1": (
         "Tier-1 Lyric Writer Part 1 (2024-2026 chart-craft)",
-        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Full rap songs require either THREE rap verses with at least 16 bars each, or TWO rap verses with at least 24 bars each. Pop verses are 8-12 lines. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
+        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Full rap songs require TWO rap verses with at least 16 bars each. Pop verses are 8-12 lines. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
         "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops (Mountain Dew, Dior, jet-lag CVS), Kendrick 12-bar diss-track punch, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas Hemingway-line specificity + 2Pac empathetic clarity stay as the craft floor. You never ship 'I feel sad', 'my heart is broken', 'we all', 'shattered dreams', 'I am the saint I am the sinner'. You write proper nouns, contradictions in the same verse (confidence + jet-lag), conversational micro-overflow lines.",
     ),
     "Track Lyrics Agent Part 2": (
         "Tier-1 Lyric Writer Part 2 (2024-2026 chart-craft)",
-        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Full rap songs require THREE rap verses with at least 16 bars each, or TWO rap verses with at least 24 bars each. Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse.",
+        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Full rap songs require TWO rap verses with at least 16 bars each. Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse.",
         "You ghost-write for 2024-2026 chart hits. V2 must add what V1 didn't: 'Espresso' V2 jumps from after-party to chapel-to-ICU-to-CVS at dawn. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. 'Birds of a Feather' V2 lands the songwriter's thesis. Same craft rules as Part 1: rhyme stacking, concrete proper nouns, contradictions, no cliches, every verse changes something, hook verbatim every chorus pass.",
     ),
     "Track Lyrics Agent Part 3": (
@@ -4454,7 +4615,12 @@ def _crewai_micro_block_call(
                 ),
                 agent=micro_agent,
                 guardrail=_crewai_micro_block_guardrail(schema_name),
-                guardrail_max_retries=2 if agent_iter > 1 else 0,
+                # CrewAI sends guardrail failures back to the agent until
+                # `guardrail_max_retries` is exhausted. Keep this enabled even
+                # for one-iteration metadata agents such as Album Intake;
+                # otherwise CrewAI raises before AceJAM's outer repair loop can
+                # inspect or recover the raw model response.
+                guardrail_max_retries=min(2, CREWAI_TASK_MAX_RETRIES),
             )
             micro_crew = Crew(
                 agents=[micro_agent],
@@ -4647,7 +4813,7 @@ def _director_lyrics_quality(track: dict[str, Any], options: dict[str, Any] | No
     is_short_role = _director_short_track_role(track)
     full_rap_song = bool(is_rap and not is_short_role and float(duration or 0) >= 150)
     rap_verse_count = len(rap_bar_counts)
-    rap_bar_floor = 24 if full_rap_song and rap_verse_count == 2 else 16
+    rap_bar_floor = 16
     issues = list((gate or {}).get("issues") or [])
     gate_status = str((gate or {}).get("status") or ("pass" if not issues else "fail"))
     return {
@@ -4661,7 +4827,7 @@ def _director_lyrics_quality(track: dict[str, Any], options: dict[str, Any] | No
             1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
         ),
         "rap_bar_counts": rap_bar_counts,
-        "required_rap_verses": 3 if full_rap_song else 2 if is_rap else 0,
+        "required_rap_verses": 2 if is_rap else 0,
         "rap_bar_floor": rap_bar_floor if is_rap else 0,
         "alternate_min_bars_if_two_rap_verses": int(plan.get("alternate_min_bars_if_two_rap_verses") or 0),
         "rap_structure_rule": str(plan.get("rap_full_song_rule") or ""),
@@ -4707,11 +4873,11 @@ def _director_lyric_extension_lines(track: dict[str, Any]) -> list[str]:
         "Paper towers lean above the block",
         "Every signature leaves another scar",
         "Truth keeps breathing under poured cement",
-        "Neon shakes across the courthouse steps",
+        "Audit notes mark the courthouse steps",
         "Bassline crawling where the deals were kept",
         "Hands stay clean while the corners bleed",
         "Names get buried under polished greed",
-        "Footsteps echo through the vacant floor",
+        "Bootsteps scrape across the marble floor",
         "Locks keep turning on a quiet war",
         "Streetlights flicker on the hidden cost",
         "Every profit counts what someone lost",
@@ -4736,12 +4902,48 @@ def _director_lyric_extension_lines(track: dict[str, Any]) -> list[str]:
         "Shadow deals melt in the morning heat",
         "Every drum hit lands beneath my feet",
         "City pressure riding through the snare",
-        "Voices rise from underneath the stair",
+        "Witness names collect beneath the stair",
         "Tall walls shake when the chorus lands",
         "Truth breaks loose from the quiet plans",
         "Deep subs rumble through the floor",
         "No closed room can hold it anymore",
     ]
+
+
+def _director_safe_fallback_bar(fallback_bars: list[str], offset: int = 0) -> str:
+    bars = [str(line or "").strip() for line in fallback_bars if str(line or "").strip()]
+    for step in range(max(1, len(bars))):
+        candidate = bars[(offset + step) % len(bars)] if bars else ""
+        if candidate and not _scan_for_cliche_phrases(candidate) and len(candidate) >= 12:
+            return _clip_text(candidate, 90)
+    return "Court files stack beside the bass"
+
+
+def _director_sanitize_fallback_lines(
+    lines: list[str],
+    fallback_bars: list[str],
+    *,
+    protected_lines: set[str] | None = None,
+) -> list[str]:
+    protected = {str(line or "").strip() for line in (protected_lines or set()) if str(line or "").strip()}
+    sanitized: list[str] = []
+    replacement_offset = 0
+    for raw in lines:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        if re.fullmatch(r"\[[^\]]+\]", line):
+            sanitized.append(line)
+            continue
+        if line in protected:
+            sanitized.append(_clip_text(line, 90))
+            continue
+        if _scan_for_cliche_phrases(line) or len(line) < 12:
+            sanitized.append(_director_safe_fallback_bar(fallback_bars, replacement_offset))
+            replacement_offset += 1
+            continue
+        sanitized.append(_clip_text(line, 90))
+    return sanitized
 
 
 def _expand_director_lyrics_lines_to_fit(
@@ -6089,14 +6291,38 @@ def _lyric_part_targets(lyric_plan: dict[str, Any], groups: list[list[str]], par
     }
 
 
+def _split_required_phrase_lines(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    lines: list[str] = []
+    for raw_line in re.split(r"[\r\n]+", text):
+        line = raw_line.strip()
+        if not line:
+            continue
+        # User hooks often arrive as one comma-joined string after JSON/form
+        # normalization. Keep them as separate performable lines so a four-line
+        # hook does not become one huge non-breathable lyric bar.
+        if len(line) > 110 and line.count(",") >= 2:
+            parts = [part.strip() for part in line.split(",") if part.strip()]
+            if len(parts) >= 3:
+                for idx, part in enumerate(parts):
+                    suffix = "," if idx < len(parts) - 1 else ""
+                    lines.append(f"{part}{suffix}".strip())
+                continue
+        lines.append(line)
+    return lines
+
+
 def _required_phrases_for_part(blueprint: dict[str, Any], part_index: int, part_count: int) -> list[str]:
     phrases: list[str] = []
     for key in ("required_phrases", "required_lyrics"):
         value = blueprint.get(key)
         if isinstance(value, str):
-            phrases.extend(line.strip() for line in value.splitlines() if line.strip())
+            phrases.extend(_split_required_phrase_lines(value))
         elif isinstance(value, list):
-            phrases.extend(str(item or "").strip() for item in value if str(item or "").strip())
+            for item in value:
+                phrases.extend(_split_required_phrase_lines(item))
     if not phrases:
         return []
     total = max(1, int(part_count or 1))
@@ -6188,6 +6414,7 @@ def _lyrics_part_fallback_payload(
     part_index: int,
     part_count: int,
     language: str,
+    section_minimums: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     target_groups = [[] for _ in range(max(1, part_count))]
     if 0 <= part_index < len(target_groups):
@@ -6198,19 +6425,32 @@ def _lyrics_part_fallback_payload(
     hook = str(settings_payload.get("hook_promise") or (required[0] if required else title)).strip()
     vibe = str(blueprint.get("vibe") or blueprint.get("narrative") or "").strip()
     min_lines = max(1, int(targets.get("min_lines") or 0))
+    merged_context = json.dumps({**dict(blueprint or {}), **dict(settings_payload or {})}, ensure_ascii=False)
+    is_rap = bool(re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", merged_context, re.I))
+    hook_lines = _split_required_phrase_lines(hook)
+    fallback_bars = _director_lyric_extension_lines({**dict(blueprint or {}), **dict(settings_payload or {})})
     lines: list[str] = []
     phrase_index = 0
     for section in section_group or ["Verse"]:
         section_tag = _section_tag_line(section)
         lines.append(section_tag)
-        section_line_target = max(2, min_lines // max(1, len(section_group or [section])))
+        minimum_for_section = 0
+        for key in (section_tag, str(section or "").strip()):
+            if isinstance(section_minimums, dict) and key in section_minimums:
+                minimum_for_section = max(minimum_for_section, int(section_minimums.get(key) or 0))
+        section_line_target = max(2, min_lines // max(1, len(section_group or [section])), minimum_for_section)
         for idx in range(section_line_target):
             if phrase_index < len(required):
                 lines.append(required[phrase_index])
                 phrase_index += 1
                 continue
             if re.search(r"chorus|hook|refrain", section_tag, re.I):
-                lines.append(_clip_text(hook, 90) or title)
+                if hook_lines:
+                    lines.append(_clip_text(hook_lines[idx % len(hook_lines)], 90) or title)
+                else:
+                    lines.append(_clip_text(hook, 90) or title)
+            elif is_rap:
+                lines.append(_clip_text(fallback_bars[(idx + part_index * 9) % len(fallback_bars)], 90))
             elif language.lower().startswith("de"):
                 lines.append(_clip_text(f"{title} leuchtet hell durch die Nacht", 90))
                 if len(lines) < min_lines + len(section_group):
@@ -6223,7 +6463,17 @@ def _lyrics_part_fallback_payload(
         lines.append(required[phrase_index])
         phrase_index += 1
     while len([line for line in lines if not line.startswith("[")]) < min_lines:
-        lines.append(_clip_text(vibe or hook or title, 90))
+        if is_rap:
+            lines.append(_director_safe_fallback_bar(fallback_bars, len(lines) + part_index * 7))
+        elif language.lower().startswith("de"):
+            lines.append(_clip_text("Akten liegen schwer auf dem Tisch", 90))
+        else:
+            lines.append(_director_safe_fallback_bar(fallback_bars, len(lines) + part_index * 7))
+    lines = _director_sanitize_fallback_lines(
+        lines,
+        fallback_bars,
+        protected_lines={str(line or "").strip() for line in required if str(line or "").strip()},
+    )
     stats = lyric_stats("\n".join(lines))
     return {
         "part_index": part_index + 1,
@@ -6415,7 +6665,7 @@ class AlbumAgentPromptLibrary:
             "One small decision per call. Answer the schema only.\n"
             "ACE-Step: caption<512 sound-only; lyrics<4096 temporal script; metadata separate; complete agent lyrics bypass ACE LM rewrite.\n"
             "Lyrics: section tags exact, complete lines, clear section separation, 6-10 syllables as a guide, breaks for long tracks.\n"
-            "Full rap songs: write either THREE [Verse - rap] sections with at least 16 bars each, or TWO [Verse - rap] sections with at least 24 bars each. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
+            "Full rap songs: write TWO [Verse - rap] sections with at least 16 bars each. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
             "Never put BPM/key/duration/model/seed/title/story/producer/person names in caption or lyrics unless user explicitly wrote a sung line.\n"
             "Producer references: never put producer names in caption. Use the Producer-Format Cookbook below to translate to genre+era+drum+timbre stacks.\n"
             "Anti-pattern guard: forbid AI-cliche image bank (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes, we rise, let it burn, chasing the night). Forbid telling-not-showing labels and generic POV.\n"
@@ -6465,17 +6715,8 @@ def _director_section_line_minimums(section_tags: list[str], *, duration: float,
         label = str(tag or "")
         lower = label.lower()
         if rap and "verse" in lower:
-            # Full rap songs prefer 3x16 bars. If the section map only has
-            # two rap verses, raise each verse to 24 bars so it still carries
-            # enough lyrics for a complete track.
             if dur >= 120:
-                rap_verse_count = sum(
-                    1
-                    for section in section_tags or []
-                    if re.search(r"\bverse\b", str(section), re.I)
-                    and re.search(r"\brap|hip[-\s]?hop|flow\b", str(section), re.I)
-                )
-                minimums[label] = 24 if dur >= 150 and 0 < rap_verse_count <= 2 else 16
+                minimums[label] = 16
             elif dur >= 90:
                 minimums[label] = 8
             elif dur >= 60:
@@ -6495,6 +6736,33 @@ def _director_section_line_minimums(section_tags: list[str], *, duration: float,
         elif rap:
             minimums[label] = 3
     return minimums
+
+
+def _director_part_char_budget(
+    safe_lyrics_budget: int,
+    groups: list[list[str]],
+    group: list[str],
+    section_minimums: dict[str, int],
+) -> int:
+    group_count = max(1, len(groups or []))
+    safe_budget = max(900, int(safe_lyrics_budget or ACE_STEP_LYRICS_SAFE_HEADROOM))
+    equal_budget = int(safe_budget / group_count)
+    def _section_min(tag: str) -> int:
+        clean = str(tag or "").strip()
+        return max(2, int(section_minimums.get(clean) or section_minimums.get(_section_tag_line(clean)) or 3))
+
+    group_min_lines = sum(_section_min(tag) for tag in group or [])
+    total_min_lines = sum(_section_min(tag) for part in groups or [] for tag in part)
+    proportional_budget = (
+        int(safe_budget * (group_min_lines / max(1, total_min_lines)))
+        if total_min_lines
+        else equal_budget
+    )
+    line_budget = group_min_lines * 58 + max(0, len(group or [])) * 24
+    return min(
+        ACE_STEP_LYRICS_CHAR_LIMIT - 180,
+        max(620, equal_budget, proportional_budget, line_budget),
+    )
 
 
 def _compact_json(value: Any, limit: int | None = None) -> str:
@@ -6708,10 +6976,14 @@ def _validate_lyrics_part_payload(
             f"lyrics_too_many_short_lines:{len(short_lines)}/{len(non_tag_lines)}_lines_under_12_chars"
         )
     # Cliche / telling-not-showing / generic-POV detection on the lyric body.
+    # These are advisory craft filters: use them for debug/repair hints, but
+    # never make a track planning job fail just because a line reads too generic.
     lyric_text = "\n".join(non_tag_lines)
     cliche_hits = _scan_for_cliche_phrases(lyric_text)
     if cliche_hits:
-        issues.append("lyrics_contain_cliche_phrases:" + ",".join(cliche_hits[:5]))
+        payload.setdefault("quality_warnings", []).append(
+            "lyrics_contain_cliche_phrases:" + ",".join(cliche_hits[:5])
+        )
     return issues
 
 
@@ -6908,7 +7180,9 @@ def _validate_hook_payload(payload: dict[str, Any]) -> list[str]:
     hook_text = " ".join(non_empty)
     cliches = _scan_for_cliche_phrases(hook_text)
     if cliches:
-        issues.append("hook_contains_cliche_phrases:" + ",".join(cliches[:3]))
+        payload.setdefault("quality_warnings", []).append(
+            "hook_contains_cliche_phrases:" + ",".join(cliches[:3])
+        )
     return issues
 
 
@@ -7102,15 +7376,10 @@ def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], o
             rap_bar_counts = dict(lyrics_quality.get("rap_bar_counts") or {})
             rap_verse_count = len(rap_bar_counts)
             if rap_verse_count < 2:
-                issues.append(f"weak_section_map:rap_verses_{rap_verse_count}/3x16_or_2x24")
-            elif rap_verse_count >= 3:
-                for section, count in rap_bar_counts.items():
-                    if int(count or 0) < 16:
-                        issues.append(f"rap_verses_underfilled:{section}={count}/16")
-            else:
-                for section, count in rap_bar_counts.items():
-                    if int(count or 0) < 24:
-                        issues.append(f"rap_verses_underfilled:{section}={count}/24_two_verse_full_song")
+                issues.append(f"weak_section_map:rap_verses_{rap_verse_count}/2x16")
+            for section, count in rap_bar_counts.items():
+                if int(count or 0) < 16:
+                    issues.append(f"rap_verses_underfilled:{section}={count}/16")
     density_plan = ((lyric_duration_fit.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(lyric_duration_fit.get("lyric_density_gate"), dict) else {}
     instrumental = str(lyrics or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental"))
     lyric_craft = lyric_craft_gate(
@@ -7931,15 +8200,11 @@ class AceJamAlbumDirector:
         genre_contract = build_genre_intent_contract(current, self.opts)
         rap_note = ""
         if genre_contract.get("family") == "rap":
-            # Rap-lock: full songs should use 3 [Verse - rap] sections. A
-            # 2-verse layout is only acceptable when each verse expands to
-            # 24 bars, enforced later by the lyric gate.
             if requested_duration >= 120:
                 rap_note = (
-                    " Rap-lock for full songs (this is a 120s+ track): prefer THREE rap verses. "
+                    " Rap-lock for full songs (this is a 120s+ track): use TWO 16-bar rap verses. "
                     "Recommended layout: [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Hook], [Bridge], "
-                    "[Verse 3 - rap], [Final Hook], [Outro]. If you choose only TWO rap verses, they must be "
-                    "long-form 24-bar verses. Avoid pop-style repeated [Pre-Chorus] sections."
+                    "[Final Hook], [Outro]. Avoid pop-style repeated [Pre-Chorus] sections."
                 )
             else:
                 rap_note = (
@@ -7962,11 +8227,8 @@ class AceJamAlbumDirector:
                     issues.append("rap_section_map_missing_verse")
                 if sum(1 for tag in tags if re.search(r"pre[-\s]?chorus", tag, re.I)) > 1:
                     issues.append("rap_section_map_pop_prechorus_overused")
-                # Full rap songs need 3x16 or 2x24. Section-map validation
-                # only checks the structural half; lyric validation checks
-                # the 24-bar floor when only two verses are present.
                 if requested_duration >= 120 and len(verse_tags) < 2:
-                    issues.append(f"rap_full_song_needs_3x16_or_2x24:got_{len(verse_tags)}")
+                    issues.append(f"rap_full_song_needs_2x16:got_{len(verse_tags)}")
             return issues
         section_payload = self._call_until_valid(
             "Section Map Agent",
@@ -8067,7 +8329,6 @@ class AceJamAlbumDirector:
         safe_lyrics_budget = min(3600, ACE_STEP_LYRICS_CHAR_LIMIT - 320)
         if repair_issues and any(str(issue).startswith("lyrics_over_4096") for issue in repair_issues):
             safe_lyrics_budget = min(3000, ACE_STEP_LYRICS_CHAR_LIMIT - 900)
-        part_budget = max(420, int(safe_lyrics_budget / max(1, len(groups))))
         whole_section_minimums = _director_section_line_minimums(
             section_tags,
             duration=requested_duration,
@@ -8097,6 +8358,16 @@ class AceJamAlbumDirector:
                 )
         for part_index, group in enumerate(groups):
             part_section_minimums = {tag: whole_section_minimums[tag] for tag in group if tag in whole_section_minimums}
+            part_budget = _director_part_char_budget(
+                safe_lyrics_budget,
+                groups,
+                group,
+                whole_section_minimums,
+            )
+            part_hard_budget = min(
+                ACE_STEP_LYRICS_CHAR_LIMIT - 120,
+                max(part_budget + 900, int(part_budget * 1.65)),
+            )
             lyric_prompt = (
                 self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
                 + repair_note
@@ -8112,12 +8383,13 @@ class AceJamAlbumDirector:
                 + f"PART_TARGET_WORDS_APPROX: {part_target_words}\n"
                 + f"PART_MIN_VOCAL_LINES_APPROX: {part_min_lines}\n"
                 + f"PART_TARGET_CHARS_MAX: {part_budget}\n"
+                + f"PART_HARD_CHARS_MAX: {part_hard_budget}\n"
                 + f"WHOLE_SONG_SAFE_LYRICS_TARGET_CHARS_MAX: {safe_lyrics_budget}\n"
                 + "Write lyrics_lines only. sections must equal ONLY_ALLOWED_SECTION_TAGS exactly; do not add any other section tag. "
                 "Each allowed section tag must appear once in lyrics_lines, in the same order. "
                 "Never write a forbidden previous section. Never copy earlier sections. "
                 "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
-                "RAP VERSE FLOOR: full rap songs need 3 rap verses of at least 16 bars each, or 2 rap verses of at least 24 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
+                "RAP VERSE FLOOR: full rap songs need 2 rap verses of at least 16 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
                 "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
                 "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
                 "Every verse moves the story forward — new scene, new POV, time jump, escalation, or revelation. A verse that just restates the chorus is dead weight. "
@@ -8150,7 +8422,7 @@ class AceJamAlbumDirector:
                     if not str(issue).startswith("non_rap_arrangement_lyric_leakage")
                 )
                 char_count = len("\n".join(_director_payload_lines(part_payload)))
-                if char_count > part_budget + 300:
+                if char_count > part_hard_budget:
                     issues.append(f"lyrics_part_over_budget:{char_count}>{part_budget}")
                 part_lines = _director_payload_lines(part_payload)
                 part_craft = lyric_craft_gate(
@@ -8222,6 +8494,7 @@ class AceJamAlbumDirector:
                     part_index=part_index,
                     part_count=len(groups),
                     language=self.language,
+                    section_minimums=part_section_minimums,
                 )
                 fallback_issues = _part_validator(part_payload)
                 self.agent_repair_count += 1
@@ -8241,10 +8514,11 @@ class AceJamAlbumDirector:
                     },
                 )
                 if fallback_issues:
-                    raise AceJamAgentError(
-                        f"Track Lyrics Agent Part {part_index + 1} fallback failed validation: "
+                    part_payload.setdefault("quality_warnings", []).extend(fallback_issues)
+                    self.logs.append(
+                        f"Agent deterministic fallback warning: Track Lyrics Agent Part {part_index + 1}: "
                         f"{'; '.join(fallback_issues)}"
-                    ) from exc
+                    )
             lines = _director_payload_lines(part_payload)
             lyric_lines.extend(lines)
             forbidden_sections.extend(group)
@@ -9436,9 +9710,19 @@ class AceJamAlbumDirector:
                 },
             )
             _print_agent_io(self.opts, f"track_{index + 1}_rejected_payload", track)
-            raise AceJamAgentError(
-                f"AlbumPayloadQualityGate failed for track {index + 1} after {max_gate_repairs} repair attempt(s): "
-                f"{json.dumps(issue_history, ensure_ascii=False)}. Debug paths: {json.dumps(debug_paths, ensure_ascii=False)}"
+            track["payload_gate_status"] = "auto_repair"
+            track["payload_gate_passed"] = False
+            track["payload_gate_nonblocking"] = True
+            track["needs_review"] = True
+            track["payload_gate_warnings"] = final_issues
+            track["payload_gate_blocking_issues"] = []
+            track["quality_report"] = track.get("quality_report") or {}
+            track["quality_report"]["gate_status"] = "auto_repair"
+            track["quality_report"]["needs_review"] = True
+            track["quality_report"]["warnings"] = final_issues
+            self.logs.append(
+                f"Payload gate warning only: track {index + 1} continues after {max_gate_repairs} repair attempt(s): "
+                f"{'; '.join(final_issues[:8]) or 'quality gate warning'}"
             )
         _append_album_debug_jsonl(self.opts, "07_final_payloads.jsonl", {"track_number": index + 1, "title": track.get("title"), "payload": track})
         _print_agent_io(self.opts, f"track_{index + 1}_final_payload", track)
@@ -9493,6 +9777,10 @@ def plan_album(
     opts["max_track_repair_rounds"] = max(0, min(3, int(opts.get("max_track_repair_rounds") or ALBUM_TRACK_GATE_REPAIR_RETRIES)))
     opts["print_agent_io"] = _truthy(opts.get("print_agent_io"), ACEJAM_PRINT_AGENT_IO_DEFAULT)
     planner_settings = planner_llm_settings_from_payload(opts)
+    planner_settings["planner_timeout"] = max(
+        float(planner_settings.get("planner_timeout") or 0),
+        PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+    )
     opts.update(planner_settings)
     if input_tracks:
         opts["editable_plan_tracks"] = [dict(item) for item in input_tracks if isinstance(item, dict)]
@@ -9541,7 +9829,7 @@ def plan_album(
         logs.append("Each track field is filled by a real CrewAI Agent/Task.")
         logs.append(f"Agents per track: Track Concept, BPM, Key, Time Signature, Duration, Sonic Tags, Section Map, Hook, Lyrics Parts, Caption Polisher, Performance, Final Payload Assembler.")
         logs.append(f"Watch the log for 'CrewAI Micro Agent call:' lines — that is each agent invoking crewai.Agent + crewai.Task.")
-        logs.append("Knowledge injected per agent: ACE-Step tag library, Producer-Format Cookbook (17 entries incl. Dre G-funk + Chronic 2001 + Pete Rock + Havoc + Stoupe), Rap-Mode Cookbook, Songwriter Craft Cookbook (Eminem/2Pac/Kendrick/Nas signatures), Lyric Anti-Patterns, Worked Examples, full-rap rule 3x16 or 2x24 bars.")
+        logs.append("Knowledge injected per agent: ACE-Step tag library, Producer-Format Cookbook (17 entries incl. Dre G-funk + Chronic 2001 + Pete Rock + Havoc + Stoupe), Rap-Mode Cookbook, Songwriter Craft Cookbook (Eminem/2Pac/Kendrick/Nas signatures), Lyric Anti-Patterns, Worked Examples, full-rap rule 2x16 bars.")
         logs.append("================================================================")
     else:
         logs.append("(Tip: switch agent_engine to 'crewai_micro' to run multi-agent CrewAI flow with full visibility.)")

@@ -24,12 +24,12 @@ class LauncherScriptTest(unittest.TestCase):
         self.assertIn("MFLUX_ENV_DIR", manager)
         self.assertIn("_command_path", manager)
 
-    def test_torchao_is_pinned_for_torch_291_runtime(self):
+    def test_torchao_supports_current_lora_loader(self):
         root = Path(__file__).resolve().parents[2]
         core_requirements = (root / "app" / "requirements.txt").read_text(encoding="utf-8")
 
-        self.assertIn("torchao==0.15.0", core_requirements)
-        self.assertNotIn("torchao>=0.16.0,<0.17.0", core_requirements)
+        self.assertIn("torchao>=0.16.0,<0.17.0", core_requirements)
+        self.assertNotIn("torchao==0.15.0", core_requirements)
 
     def test_vendor_patch_skips_bitsandbytes_warning_on_non_cuda(self):
         root = Path(__file__).resolve().parents[2]

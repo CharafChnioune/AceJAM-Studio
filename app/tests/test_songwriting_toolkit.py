@@ -469,9 +469,9 @@ Lyrics:
         )
         self.assertIn("Lyric Writer", lyric_role)
         self.assertIn("2024-2026", lyric_role)
-        # Full rap albums now use a hard long-form rule: 3x16 or 2x24.
-        self.assertIn("THREE rap verses", lyric_goal)
-        self.assertIn("24 bars", lyric_goal)
+        # Full rap albums use a clear, stable 2x16 long-form rule.
+        self.assertIn("TWO rap verses", lyric_goal)
+        self.assertIn("16 bars", lyric_goal)
         self.assertIn("multisyllabic", lyric_goal.lower())
         # Backstory references modern chart-toppers, not just classic
         self.assertIn("Sabrina Carpenter", lyric_backstory)
@@ -551,11 +551,15 @@ Lyrics:
         self.assertEqual(clean, [])
 
     def test_hook_validator_rejects_short_lines_and_cliches(self):
-        # Hook with cliche image bank phrase fails validation
-        issues = album_crew_module._validate_hook_payload(
-            {"hook_lines": ["We rise from neon dreams tonight", "Endless night, endless flight"], "hook_promise": "About light"}
-        )
-        self.assertTrue(any("hook_contains_cliche_phrases" in issue for issue in issues))
+        # Hook with cliche image bank phrase is an advisory warning, not a
+        # hard blocker: repair or continue, but do not fail the album plan.
+        payload = {
+            "hook_lines": ["We rise from neon dreams tonight", "Endless night, endless flight"],
+            "hook_promise": "About light",
+        }
+        issues = album_crew_module._validate_hook_payload(payload)
+        self.assertTrue(any("hook_contains_cliche_phrases" in issue for issue in payload["quality_warnings"]))
+        self.assertFalse(any("hook_contains_cliche_phrases" in issue for issue in issues))
         # Short hook promise fails
         self.assertTrue(any("hook_promise_too_short" in issue for issue in issues))
         # Clean concrete hook passes
@@ -750,6 +754,65 @@ Lyrics:
 
         self.assertEqual(payload["album_title"], "Market Lights")
         self.assertEqual(payload["track_roles"], ["Track 1 opener", "Track 2 closer"])
+
+    def test_agent_block_parser_tolerates_prose_and_implicit_block_close(self):
+        raw = (
+            "Here are the requested blocks.\n"
+            "******tag_list******\n"
+            "West Coast hip-hop\n"
+            "boom-bap drums\n"
+            "808 bass\n"
+            "******caption_dimensions_covered******\n"
+            "primary_genre\n"
+            "drum_groove\n"
+            "low_end_bass\n"
+            "melodic_identity\n"
+            "vocal_delivery\n"
+            "arrangement_movement\n"
+            "texture_space\n"
+            "mix_master\n"
+            "******/caption_dimensions_covered******\n"
+            "Done."
+        )
+
+        payload = album_crew_module._parse_agent_block_payload(raw, "tag_agent_payload")
+
+        self.assertEqual(payload["tag_list"][:3], ["West Coast hip-hop", "boom-bap drums", "808 bass"])
+        self.assertIn("mix_master", payload["caption_dimensions_covered"])
+
+    def test_agent_block_parser_recovers_keyed_album_intake_output(self):
+        raw = (
+            "Album Title: You Buried the Wrong Man (System Cut)\n"
+            "Core Concept: A rap album about capital, control, and inherited violence.\n"
+            "Style Guardrails:\n"
+            "- West Coast rap drums with cinematic low end\n"
+            "- no generic ballad drift\n"
+            "Track Roles:\n"
+            "1. Concrete Canyons — opener about erased foundations\n"
+            "2. Rubble State — minimal bounce about crisis as policy\n"
+        )
+
+        payload = album_crew_module._parse_agent_block_payload(raw, "album_intake_payload")
+
+        self.assertEqual(payload["album_title"], "You Buried the Wrong Man (System Cut)")
+        self.assertIn("capital, control", payload["one_sentence_concept"])
+        self.assertEqual(payload["style_guardrails"][0], "West Coast rap drums with cinematic low end")
+        self.assertEqual(payload["track_roles"][1], "Rubble State — minimal bounce about crisis as policy")
+
+    def test_crewai_micro_guardrail_accepts_keyed_album_intake_output(self):
+        guardrail = album_crew_module._crewai_micro_block_guardrail("album_intake_payload")
+
+        ok, _ = guardrail(SimpleNamespace(raw=(
+            "Album Title: Concrete Ledger\n"
+            "One Sentence Concept: A political rap record with system-level stakes.\n"
+            "Style Guardrails:\n"
+            "- hard drums\n"
+            "- clear rap vocal\n"
+            "Track Roles:\n"
+            "- Track 1 opener\n"
+        )))
+
+        self.assertTrue(ok)
 
     def test_agent_block_parser_reports_missing_and_extra_blocks(self):
         with self.assertRaisesRegex(ValueError, "missing_block:one_sentence_concept,style_guardrails,track_roles"):
@@ -1405,6 +1468,65 @@ Naming Drop Style: "Death Row", "East Coast", "Closed doors"
         self.assertIn("Death Row", track["required_phrases"])
         self.assertNotIn("Death Row", track["style"])
 
+    def test_user_album_contract_prompt_tracks_win_over_stale_num_tracks(self):
+        prompt = """
+Album Title: You Buried the Wrong Man (System Cut)
+Core Theme: Niet één volk, maar een systeem dat zichzelf reproduceert.
+Motif Words: Legacy, Archive, Dominion, Machine, Ledger, Crown
+
+Track 1: “Concrete Canyons” (Dr. Dre-style G-Funk | 78 BPM)
+Narrative: Steden gebouwd op vergeten fundamenten.
+Hook:
+They paved the ground, said “progress, don’t ask,”
+Verse concept:
+Niet “zij”, maar dit systeem dat ruimte opslokt.
+
+Track 2: “Rubble State” (Pharrell-style Minimal Bounce | 102 BPM)
+Narrative: Crisis als beleid.
+
+Track 3: “The Skyline Grave” (Kanye-style Soul Chop | 96 BPM)
+Narrative: Oorlog als businessmodel.
+
+Track 4: “Lines in the Sand” (Just Blaze horns | 89 BPM)
+Narrative: Grenzen als constructie.
+
+Track 5: “Sanctioned Soil” (Timbaland glitch | 106 BPM)
+Narrative: Gentrificatie, financiële verdringing.
+
+Track 6: “The Invisible Border” (DJ Premier boom-bap | 91 BPM)
+Narrative: Macht als netwerk.
+
+Track 7: “Children of Dust” (Stoupe orchestral | 84 BPM)
+Narrative: Oorlog door de ogen van kinderen.
+
+Track 8: “The Drone’s Hum” (Timbaland x Stoupe glitch | 108 BPM)
+Narrative: Surveillance, tech, data-exploitatie.
+
+Track 9: “Biblical Irony” (Dre x Blaze power | 94 BPM)
+Narrative: Terugkeer als bewustzijn.
+
+Track 10: “The Final Census” (Stoupe x Timbaland | 92→70 BPM)
+Narrative: Iedereen medeplichtig.
+"""
+        contract = extract_user_album_contract(
+            prompt,
+            5,
+            "nl",
+            {"album_title": "Old Draft Title", "raw_user_prompt": prompt},
+        )
+
+        self.assertEqual(contract["album_title"], "You Buried the Wrong Man (System Cut)")
+        self.assertEqual(contract["track_count"], 10)
+        self.assertEqual(len(contract["tracks"]), 10)
+        self.assertEqual(contract["tracks"][0]["locked_title"], "Concrete Canyons")
+        self.assertEqual(contract["tracks"][0]["style"], "Dr. Dre-style G-Funk")
+        self.assertEqual(contract["tracks"][0]["bpm"], 78)
+        self.assertTrue(any("They paved the ground" in phrase for phrase in contract["tracks"][0]["required_phrases"]))
+        self.assertIn("ruimte opslokt", contract["tracks"][0]["narrative"])
+        self.assertEqual(contract["tracks"][9]["locked_title"], "The Final Census")
+        self.assertIn("Stoupe x Timbaland", contract["tracks"][9]["style"])
+        self.assertEqual(contract["tracks"][9]["bpm"], 92)
+
     def test_user_album_contract_ignores_generated_lyrics_as_fake_track_title(self):
         clean_prompt = """
 Album: You Buried the Wrong Man
@@ -1632,11 +1754,9 @@ kill all the rivals
         self.assertLess(long["target_words"], ten_minutes["target_words"])
         self.assertGreaterEqual(short["min_words"], 45)
         self.assertGreaterEqual(long["min_words"], 340)
-        # 3-verse rap template (used for 90<dur<=240) renames the third
-        # rap verse to "Verse 3 - rap" to keep the modifier-syntax
-        # consistent with the other two verses. Beat Switch lives only on
-        # tracks >240s now.
-        self.assertIn("Verse 3 - rap", long["sections"])
+        self.assertIn("Verse 1 - rap", long["sections"])
+        self.assertIn("Verse 2 - rap", long["sections"])
+        self.assertNotIn("Verse 3 - rap", long["sections"])
         self.assertLessEqual(long["safe_lyrics_char_target"], 3600)
         self.assertLessEqual(ten_minutes["max_lyrics_chars"], 4096)
         self.assertGreaterEqual(short["min_lines"], len(short["sections"]))
@@ -1647,10 +1767,10 @@ kill all the rivals
         self.assertEqual(plan["density"], "rap_dense")
         self.assertGreaterEqual(plan["min_words"], 430)
         self.assertGreaterEqual(plan["target_words"], 480)
-        self.assertGreaterEqual(plan["min_lines"], 75)
-        # See note above: 3-verse rap template uses "Verse 3 - rap" for the
-        # third verse instead of "Verse 3 - Beat Switch".
-        self.assertIn("Verse 3 - rap", plan["sections"])
+        self.assertGreaterEqual(plan["min_lines"], 64)
+        self.assertIn("Verse 1 - rap", plan["sections"])
+        self.assertIn("Verse 2 - rap", plan["sections"])
+        self.assertNotIn("Verse 3 - rap", plan["sections"])
         self.assertLessEqual(plan["safe_lyrics_char_target"], 3600)
 
     def test_trim_lyrics_to_limit_never_slices_mid_line_or_adds_outro(self):
@@ -1688,6 +1808,106 @@ kill all the rivals
         self.assertLessEqual(len(lyrics), targets["max_chars"])
         self.assertTrue(repaired["quality_checks"]["budget_repaired"])
 
+    def test_required_phrases_split_comma_collapsed_hook_lines(self):
+        phrases = album_crew_module._required_phrases_for_part(
+            {
+                "required_phrases": [
+                    "The ledger closes, the numbers stand, No more excuses, no more demand. "
+                    "The law is clear, the pattern's known, We reap what the powers have sown."
+                ]
+            },
+            0,
+            1,
+        )
+
+        self.assertGreaterEqual(len(phrases), 4)
+        self.assertLess(max(len(line) for line in phrases), 110)
+        self.assertIn("The ledger closes,", phrases)
+
+    def test_rap_lyric_part_budget_scales_with_section_bar_floor(self):
+        section_tags = ["[Intro]", "[Verse 1 - rap]", "[Hook]", "[Verse 2 - rap]", "[Final Chorus]", "[Outro]"]
+        groups = album_crew_module._director_section_groups(section_tags)
+        minimums = album_crew_module._director_section_line_minimums(
+            section_tags,
+            duration=180,
+            genre_hint="west coast rap",
+        )
+        budget = album_crew_module._director_part_char_budget(3600, groups, groups[0], minimums)
+
+        self.assertGreaterEqual(minimums["[Verse 1 - rap]"], 16)
+        self.assertGreater(budget, 1200)
+
+    def test_rap_lyrics_fallback_respects_section_minimums(self):
+        plan = lyric_length_plan(180, "dense", genre_hint="west coast rap")
+        section_group = ["[Intro]", "[Verse 1 - rap]", "[Hook]"]
+        minimums = {"[Intro]": 2, "[Verse 1 - rap]": 16, "[Hook]": 3}
+
+        payload = album_crew_module._lyrics_part_fallback_payload(
+            blueprint={
+                "title": "The Final Census",
+                "style": "west coast rap",
+                "required_phrases": [
+                    "The ledger closes, the numbers stand, No more excuses, no more demand. "
+                    "The law is clear, the pattern's known, We reap what the powers have sown."
+                ],
+            },
+            settings_payload={"caption": "west coast rap, hard drums, clear rap flow"},
+            lyric_plan=plan,
+            section_group=section_group,
+            part_index=0,
+            part_count=3,
+            language="en",
+            section_minimums=minimums,
+        )
+
+        lines = payload["lyrics_lines"]
+        verse_count = 0
+        active = ""
+        for line in lines:
+            if str(line).startswith("["):
+                active = str(line)
+                continue
+            if active == "[Verse 1 - rap]":
+                verse_count += 1
+        self.assertGreaterEqual(verse_count, 16)
+        self.assertLess(max(len(str(line)) for line in lines), 120)
+
+    def test_rap_lyrics_fallback_sanitizes_cliche_context_without_blocking(self):
+        plan = lyric_length_plan(180, "dense", genre_hint="west coast rap")
+        section_group = ["[Intro]", "[Verse 1 - rap]", "[Hook]"]
+        minimums = {"[Intro]": 2, "[Verse 1 - rap]": 16, "[Hook]": 3}
+
+        payload = album_crew_module._lyrics_part_fallback_payload(
+            blueprint={
+                "title": "Neon Dreams",
+                "style": "west coast rap",
+                "vibe": "embers in empty streets",
+                "narrative": "we rise from shattered dreams",
+            },
+            settings_payload={
+                "caption": "west coast rap, hard drums, clear rap flow",
+                "hook_promise": "embers in empty streets",
+            },
+            lyric_plan=plan,
+            section_group=section_group,
+            part_index=0,
+            part_count=3,
+            language="en",
+            section_minimums=minimums,
+        )
+
+        lyric_text = "\n".join(str(line) for line in payload["lyrics_lines"])
+        self.assertEqual(album_crew_module._scan_for_cliche_phrases(lyric_text), [])
+        self.assertEqual(
+            album_crew_module._validate_lyrics_part_payload(
+                payload,
+                expected_sections=section_group,
+                forbidden_sections=[],
+                expected_part_index=1,
+            ),
+            [],
+        )
+
     def test_sparse_genres_use_sparse_section_timeline(self):
         plan = lyric_length_plan(240, "dense", genre_hint="instrumental techno club track")
         self.assertEqual(plan["density"], "sparse")
@@ -1701,9 +1921,9 @@ kill all the rivals
         # 16-bar floor for rap verses on tracks >=120s
         self.assertGreaterEqual(bars["Verse_rap"], 16)
         self.assertEqual(plan["min_bars_per_rap_verse"], bars["Verse_rap"])
-        self.assertEqual(plan["min_rap_verses_full_song"], 3)
-        self.assertEqual(plan["alternate_min_bars_if_two_rap_verses"], 24)
-        self.assertIn("3 rap verses", plan["rap_full_song_rule"])
+        self.assertEqual(plan["min_rap_verses_full_song"], 2)
+        self.assertEqual(plan["alternate_min_bars_if_two_rap_verses"], 16)
+        self.assertIn("2 rap verses", plan["rap_full_song_rule"])
         # Bars per line factor: 1.0 for rap (1 line ~ 1 bar)
         self.assertEqual(plan["bars_per_line_factor"], 1.0)
         # Hook gets 8 bars on tracks >120s
@@ -2422,16 +2642,16 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertGreaterEqual(report["lyric_duration_fit"]["min_words"], 340)
         self.assertGreaterEqual(report["lyric_duration_fit"]["min_lines"], 36)
 
-    def test_director_rap_section_minimums_use_24_bar_floor_for_two_verse_full_songs(self):
+    def test_director_rap_section_minimums_use_16_bar_floor_for_two_verse_full_songs(self):
         minimums = album_crew_module._director_section_line_minimums(
             ["[Verse - rap]", "[Chorus - rap hook]", "[Verse 2 - rap]"],
             duration=180,
             genre_hint="West Coast rap",
         )
 
-        self.assertEqual(minimums["[Verse - rap]"], 24)
-        self.assertEqual(minimums["[Verse 2 - rap]"], 24)
-        self.assertLess(minimums["[Chorus - rap hook]"], 24)
+        self.assertEqual(minimums["[Verse - rap]"], 16)
+        self.assertEqual(minimums["[Verse 2 - rap]"], 16)
+        self.assertLess(minimums["[Chorus - rap hook]"], 16)
 
     def test_director_rap_section_minimums_keep_16_bar_floor_for_three_verse_full_songs(self):
         minimums = album_crew_module._director_section_line_minimums(
@@ -2481,7 +2701,7 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertGreaterEqual(quality["rap_bar_counts"]["[Verse 2 - rap]"], 16)
         self.assertEqual(quality["gate_status"], "pass")
 
-    def test_director_minimal_gate_flags_two_rap_verses_under_24_bars(self):
+    def test_director_minimal_gate_flags_two_rap_verses_under_16_bars(self):
         sections = ["[Intro]", "[Verse - rap]", "[Chorus - rap hook]", "[Verse 2 - rap]", "[Bridge]", "[Final Chorus - rap hook]", "[Outro]"]
         short_verse = [f"Concrete truth keeps knocking on the city door {idx}" for idx in range(8)]
         lyrics = "\n".join(
@@ -2518,7 +2738,7 @@ The Narrative: friends read old letters on a roof as the lights come back.
         )
 
         self.assertFalse(report["gate_passed"])
-        self.assertTrue(any("/24_two_verse_full_song" in str(issue) for issue in report["issues"]))
+        self.assertTrue(any(str(issue).endswith("/16") for issue in report["issues"]))
         self.assertIn("lyrics_quality", report)
 
     def test_director_minimal_gate_blocks_non_rap_payload_for_rap_request(self):
@@ -3516,7 +3736,7 @@ Lyrics:
 
         self.assertTrue(ok)
         effective_min = repaired["lyric_duration_fit"]["plan"].get("effective_min_lines") or repaired["lyric_duration_fit"]["plan"]["min_lines"]
-        self.assertGreaterEqual(effective_min, 75)
+        self.assertGreaterEqual(effective_min, 64)
         self.assertGreaterEqual(repaired["lyrics_line_count"], effective_min)
         self.assertGreaterEqual(len(repaired["caption_dimensions_covered"]), 8)
 

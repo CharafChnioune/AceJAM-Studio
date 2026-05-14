@@ -1550,12 +1550,11 @@ def section_map_for(duration: Any, genre_hint: Any = "", instrumental: bool = Fa
         else:
             sections = [
                 ("Intro", 0, 12),
-                ("Verse 1", 12, 58),
-                ("Chorus", 58, 84),
-                ("Verse 2", 84, 130),
-                ("Second Chorus", 130, 154),
-                ("Verse 3 - rap", 154, max(188, dur - 52)),
-                ("Bridge", max(188, dur - 52), max(210, dur - 30)),
+                ("Verse 1", 12, 62),
+                ("Chorus", 62, 90),
+                ("Verse 2", 90, 140),
+                ("Second Chorus", 140, 164),
+                ("Bridge", 164, max(210, dur - 30)),
                 ("Final Chorus", max(210, dur - 30), max(226, dur - 12)),
                 ("Outro", max(224, dur - 12), dur),
             ]

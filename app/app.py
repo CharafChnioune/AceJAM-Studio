@@ -264,6 +264,7 @@ from fastapi.staticfiles import StaticFiles
 from gradio import Server
 
 from local_llm import (
+    PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
     chat_completion as local_llm_chat_completion,
     chat_completion_response as local_llm_chat_completion_response,
     lmstudio_download_model,
@@ -1068,6 +1069,15 @@ def _docs_correct_render_shift(song_model: str, quality_profile: str | None, raw
     return clamp_float(raw_shift, default_shift, 1.0, 5.0)
 
 
+def _docs_correct_render_guidance(song_model: str, quality_profile: str | None, raw_guidance: Any) -> float:
+    profile = normalize_quality_profile(quality_profile)
+    model_defaults = quality_profile_model_settings(song_model, profile)
+    default_guidance = float(model_defaults["guidance_scale"])
+    if profile != QUALITY_PROFILE_OFFICIAL_RAW:
+        return default_guidance
+    return clamp_float(raw_guidance, default_guidance, 1.0, 15.0)
+
+
 def _enforce_model_correct_render_settings(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Keep stale UI drafts from sending Turbo inference schedules to SFT/Base models."""
     song_model = str(params.get("song_model") or "").strip()
@@ -1076,16 +1086,20 @@ def _enforce_model_correct_render_settings(params: dict[str, Any], *, source: st
         return params
     before_steps = params.get("inference_steps")
     before_shift = params.get("shift")
+    before_guidance = params.get("guidance_scale")
     corrected_steps = _docs_correct_render_steps(song_model, quality_profile, before_steps)
     corrected_shift = _docs_correct_render_shift(song_model, quality_profile, before_shift)
+    corrected_guidance = _docs_correct_render_guidance(song_model, quality_profile, before_guidance)
     params["inference_steps"] = corrected_steps
     params["shift"] = corrected_shift
-    if before_steps != corrected_steps or before_shift != corrected_shift:
+    params["guidance_scale"] = corrected_guidance
+    if before_steps != corrected_steps or before_shift != corrected_shift or before_guidance != corrected_guidance:
         warnings = list(params.get("payload_warnings") or [])
         warning = (
             "model_corrected_render_settings:"
             f"{source}:{song_model}:steps={before_steps}->{corrected_steps},"
-            f"shift={before_shift}->{corrected_shift}"
+            f"shift={before_shift}->{corrected_shift},"
+            f"guidance={before_guidance}->{corrected_guidance}"
         )
         if warning not in warnings:
             warnings.append(warning)
@@ -1128,6 +1142,62 @@ def _apply_mac_mlx_xl_repetition_guard(params: dict[str, Any], *, source: str) -
         if warning not in warnings:
             warnings.append(warning)
         params["payload_warnings"] = warnings
+    return params
+
+
+def _mps_long_lora_memory_guard_required(params: dict[str, Any]) -> bool:
+    if not _IS_APPLE_SILICON:
+        return False
+    if normalize_task_type(params.get("task_type")) != "text2music":
+        return False
+    if _audio_backend_uses_mlx(params):
+        return False
+    if str(params.get("device") or "auto").strip().lower() not in {"auto", "mps", "metal"}:
+        return False
+    song_model = str(params.get("song_model") or "").strip().lower()
+    if "xl" not in song_model or "turbo" in song_model:
+        return False
+    if not parse_bool(params.get("use_lora"), False):
+        return False
+    return clamp_float(params.get("duration"), 60.0, DURATION_MIN, DURATION_MAX) >= 240.0
+
+
+def _apply_mps_long_lora_memory_guard(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Reduce avoidable MPS memory pressure for full-song XL-SFT/Base LoRA renders.
+
+    The model, steps, shift, backend and user LoRA scale stay untouched. DCW is
+    the only automatic change here because it is an optional correction pass and
+    materially increases long-render memory pressure on PyTorch/MPS.
+    """
+    if not parse_bool(os.environ.get("ACEJAM_MPS_LONG_LORA_MEMORY_GUARD"), True):
+        return params
+    if not _mps_long_lora_memory_guard_required(params):
+        return params
+    before_dcw = parse_bool(params.get("dcw_enabled"), True)
+    if not before_dcw:
+        return params
+    params["dcw_enabled"] = False
+    warnings = list(params.get("payload_warnings") or [])
+    warning = (
+        "mps_long_lora_memory_guard:"
+        f"{source}:duration={params.get('duration')},"
+        f"song_model={params.get('song_model')},dcw_enabled=True->False"
+    )
+    if warning not in warnings:
+        warnings.append(warning)
+    params["payload_warnings"] = warnings
+    repairs = list(params.get("repair_actions") or [])
+    repairs.append(
+        {
+            "type": "mps_long_lora_memory_guard",
+            "source": source,
+            "duration": params.get("duration"),
+            "song_model": params.get("song_model"),
+            "use_lora": True,
+            "dcw_enabled": False,
+        }
+    )
+    params["repair_actions"] = repairs
     return params
 
 
@@ -1966,7 +2036,13 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized["ace_lm_model"] = _requested_ace_lm_model({"ace_lm_model": body_ace_lm}) if body_ace_lm else "none"
     normalized["planner_lm_provider"] = planner_provider
     normalized["planner_model"] = planner_model
-    normalized.update(planner_llm_settings_from_payload({**normalized, **body}, default_max_tokens=2048, default_timeout=600.0))
+    normalized.update(
+        planner_llm_settings_from_payload(
+            {**normalized, **body},
+            default_max_tokens=2048,
+            default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+        )
+    )
     if planner_provider == "ollama":
         normalized["planner_ollama_model"] = planner_model
     else:
@@ -2056,6 +2132,24 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             normalized["blocked_unsafe_count"] = int(user_album_contract.get("blocked_unsafe_count") or 0)
             if user_album_contract.get("album_title"):
                 normalized["album_title"] = user_album_contract.get("album_title")
+            contract_count = int(user_album_contract.get("track_count") or 0)
+            contract_tracks = tracks_from_user_album_contract(user_album_contract)
+            normalized["num_tracks"] = max(
+                int(normalized.get("num_tracks") or body.get("num_tracks") or 0),
+                contract_count,
+                len(contract_tracks),
+                1,
+            )
+            primary_prompt = next(
+                (
+                    str(normalized.get(key) or body.get(key) or "").strip()
+                    for key in ("raw_user_prompt", "user_prompt", "prompt")
+                    if str(normalized.get(key) or body.get(key) or "").strip()
+                ),
+                "",
+            )
+            if contract_tracks and primary_prompt:
+                normalized["tracks"] = contract_tracks
         album_defaults = quality_profile_model_settings(ALBUM_FINAL_MODEL, quality_profile)
         normalized["audio_format"] = album_defaults["audio_format"]
         normalized["inference_steps"] = album_defaults["inference_steps"]
@@ -2311,7 +2405,7 @@ def _run_prompt_assistant_local(
                     provider,
                     option_payload,
                     default_max_tokens=8192,
-                    default_timeout=600.0,
+                    default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
                 ),
                 json_schema=schema,
             )
@@ -2633,6 +2727,17 @@ def _run_prompt_assistant_album_crew(
             "warnings": [],
             "raw_text": "",
         }
+
+    current_payload = _album_prepare_contract_request_body(
+        {
+            **(current_payload or {}),
+            **(body or {}),
+            "concept": concept_text,
+            "user_prompt": user_prompt,
+            "prompt": user_prompt,
+        },
+        fallback_tracks=7,
+    )
 
     try:
         num_tracks = int(current_payload.get("num_tracks") or body.get("num_tracks") or 7)
@@ -6462,7 +6567,11 @@ def _local_llm_default_settings() -> dict[str, Any]:
         "embedding_models",
         ALBUM_EMBEDDING_FALLBACK_MODELS,
     )
-    planner = planner_llm_settings_from_payload({}, default_max_tokens=8192, default_timeout=600.0)
+    planner = planner_llm_settings_from_payload(
+        {},
+        default_max_tokens=8192,
+        default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+    )
     return {
         "provider": "ollama",
         "chat_model": chat_model,
@@ -6492,7 +6601,11 @@ def _normalize_local_llm_settings(payload: dict[str, Any] | None) -> dict[str, A
     embedding_provider = normalize_provider(merged.get("embedding_provider") or provider)
     if embedding_provider not in {"ollama", "lmstudio"}:
         embedding_provider = "ollama"
-    planner = planner_llm_settings_from_payload(merged, default_max_tokens=8192, default_timeout=600.0)
+    planner = planner_llm_settings_from_payload(
+        merged,
+        default_max_tokens=8192,
+        default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+    )
     normalized = {
         **defaults,
         **planner,
@@ -7008,6 +7121,62 @@ def _album_contract_source_from_payload(payload: dict[str, Any], body: dict[str,
     return "\n\n".join(deduped)
 
 
+def _album_prepare_contract_request_body(body: dict[str, Any], *, fallback_tracks: int = 5) -> dict[str, Any]:
+    """Normalize album-plan request shape before a background job starts.
+
+    The album wizard can have stale form values from a previous draft
+    (`album_title`, `num_tracks`, `tracks`) while the textarea contains a new
+    explicit album contract. The pasted contract must win, otherwise CrewAI
+    plans the wrong title/count and the UI appears to have ignored the user.
+    """
+    payload = dict(body or {})
+    source = _album_contract_source_from_payload(payload, payload)
+    existing_contract = payload.get("user_album_contract")
+    if isinstance(existing_contract, dict):
+        contract = existing_contract
+    else:
+        contract = extract_user_album_contract(
+            source,
+            int(payload.get("num_tracks") or 0) or None,
+            str(payload.get("language") or payload.get("target_language") or "en"),
+            payload,
+        )
+    body_tracks = _json_list(payload.get("tracks"))
+    contract_tracks = tracks_from_user_album_contract(contract)
+    body_count = clamp_int(payload.get("num_tracks"), 0, 0, 40)
+    contract_count = clamp_int(contract.get("track_count") if isinstance(contract, dict) else 0, 0, 0, 40)
+    explicit_count = max(
+        body_count,
+        len(body_tracks),
+        contract_count,
+        len(contract_tracks),
+        int(fallback_tracks or 0),
+    )
+    if isinstance(contract, dict) and contract.get("applied"):
+        payload["user_album_contract"] = contract
+        payload["input_contract"] = contract_prompt_context(contract)
+        payload["input_contract_applied"] = True
+        payload["input_contract_version"] = USER_ALBUM_CONTRACT_VERSION
+        payload["blocked_unsafe_count"] = int(contract.get("blocked_unsafe_count") or 0)
+        if str(contract.get("album_title") or "").strip():
+            payload["album_title"] = str(contract.get("album_title") or "").strip()
+        # When a fresh textarea prompt supplied explicit tracks, those locked
+        # tracks are more trustworthy than stale draft rows from the form.
+        primary_prompt = next(
+            (
+                str(payload.get(key) or "").strip()
+                for key in ("raw_user_prompt", "user_prompt", "prompt")
+                if str(payload.get(key) or "").strip()
+            ),
+            "",
+        )
+        if contract_tracks and primary_prompt:
+            payload["tracks"] = contract_tracks
+    if explicit_count:
+        payload["num_tracks"] = max(1, min(40, explicit_count))
+    return payload
+
+
 def _effective_direct_min_lyric_lines(raw_min_lines: int, min_words: int) -> int:
     raw = int(raw_min_lines or 0)
     if raw <= 0:
@@ -7226,7 +7395,7 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "save_to_library": parse_bool(payload.get("save_to_library"), True),
         "installed_models": installed_models,
         "global_caption": str(payload.get("global_caption") or ""),
-        "album_title": str(payload.get("album_title") or user_album_contract.get("album_title") or ""),
+        "album_title": str(user_album_contract.get("album_title") or payload.get("album_title") or ""),
         "user_album_contract": user_album_contract,
         "input_contract_applied": bool(user_album_contract.get("applied")),
         "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
@@ -8256,6 +8425,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     _apply_lora_trigger_conditioning(parsed)
     _enforce_model_correct_render_settings(parsed, source="parse")
     _apply_mac_mlx_xl_repetition_guard(parsed, source="parse")
+    _apply_mps_long_lora_memory_guard(parsed, source="parse")
     settings_compliance = ace_step_settings_compliance(
         parsed,
         task_type=task_type,
@@ -8576,7 +8746,8 @@ def _preview_generation_payload(payload: dict[str, Any], task_type: str, song_mo
         "requires_official_runner": use_official,
         "runner_plan": "official" if use_official else "fast",
     }
-    return _apply_mac_mlx_xl_repetition_guard(preview, source="preview")
+    _apply_mac_mlx_xl_repetition_guard(preview, source="preview")
+    return _apply_mps_long_lora_memory_guard(preview, source="preview")
 
 
 def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -8772,6 +8943,7 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[str, Any]:
     params = _enforce_model_correct_render_settings(dict(params), source="official_request")
     _apply_audio_backend_defaults(params, source="official_request")
+    _apply_mps_long_lora_memory_guard(params, source="official_request")
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
     seed_text = str(params.get("seed") or "-1").strip()
@@ -11039,9 +11211,48 @@ def _copy_official_audio(
     return target, filename
 
 
+def _should_retry_mps_oom_without_dcw(params: dict[str, Any], error: Any) -> bool:
+    if not _is_mps_oom_error(error):
+        return False
+    if not _IS_APPLE_SILICON:
+        return False
+    if _audio_backend_uses_mlx(params):
+        return False
+    if str(params.get("device") or "auto").strip().lower() not in {"auto", "mps", "metal"}:
+        return False
+    if not parse_bool(params.get("dcw_enabled"), False):
+        return False
+    if "xl" not in str(params.get("song_model") or "").strip().lower():
+        return False
+    return normalize_task_type(params.get("task_type")) == "text2music"
+
+
+def _disable_dcw_for_mps_oom_retry(params: dict[str, Any], *, source: str) -> dict[str, Any]:
+    retry = dict(params)
+    retry["dcw_enabled"] = False
+    warnings = list(retry.get("payload_warnings") or [])
+    warning = f"mps_oom_retry_without_dcw:{source}:dcw_enabled=True->False"
+    if warning not in warnings:
+        warnings.append(warning)
+    retry["payload_warnings"] = warnings
+    repairs = list(retry.get("repair_actions") or [])
+    repairs.append(
+        {
+            "type": "mps_oom_retry_without_dcw",
+            "source": source,
+            "song_model": retry.get("song_model"),
+            "duration": retry.get("duration"),
+            "lora_scale": retry.get("lora_scale"),
+        }
+    )
+    retry["repair_actions"] = repairs
+    return retry
+
+
 def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
     params = _enforce_model_correct_render_settings(_album_ace_lm_disabled_payload(dict(params)), source="official_generation")
     _apply_audio_backend_defaults(params, source="official_generation")
+    _apply_mps_long_lora_memory_guard(params, source="official_generation")
     result_id = uuid.uuid4().hex[:12]
     result_dir = RESULTS_DIR / result_id
     official_dir = result_dir / "official"
@@ -11377,6 +11588,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
         official_request["actual_runner_batch_size"] = memory_plan["actual_runner_batch_size"]
         if not metadata_audit:
             metadata_audit = _generation_metadata_audit(take_params, official_request)
+        retry_reason = ""
         try:
             with _official_generation_runner_lock:
                 memory_events.append(
@@ -11387,14 +11599,83 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 )
                 official = _run_official_runner_request(official_request, take_work_dir)
         except Exception as exc:
-            if _is_mps_oom_error(exc):
+            if _should_retry_mps_oom_without_dcw(take_params, exc):
+                retry_reason = "mps_oom_retry_without_dcw"
+                take_params = _disable_dcw_for_mps_oom_retry(
+                    take_params,
+                    source=f"take_{pass_index + 1}",
+                )
+                params["dcw_enabled"] = False
+                params["payload_warnings"] = list(
+                    dict.fromkeys([*params.get("payload_warnings", []), *take_params.get("payload_warnings", [])])
+                )
+                params["repair_actions"] = list(params.get("repair_actions") or []) + [
+                    item
+                    for item in list(take_params.get("repair_actions") or [])
+                    if isinstance(item, dict) and item.get("type") == "mps_oom_retry_without_dcw"
+                ]
+                official_request = _official_request_payload(take_params, take_save_dir)
+                official_request["memory_policy"] = _jsonable(memory_plan)
+                official_request["requested_take_count"] = memory_plan["requested_take_count"]
+                official_request["actual_runner_batch_size"] = memory_plan["actual_runner_batch_size"]
+                try:
+                    with _official_generation_runner_lock:
+                        memory_events.append(
+                            _prepare_audio_generation_memory(
+                                f"official_generation_take_{pass_index + 1}:retry_without_dcw",
+                                release_handler=True,
+                            )
+                        )
+                        official = _run_official_runner_request(official_request, take_work_dir)
+                except Exception as retry_exc:
+                    if _is_mps_oom_error(retry_exc):
+                        return memory_failure(retry_exc)
+                    if _is_acestep_generation_timeout_error(retry_exc):
+                        return timeout_failure(retry_exc)
+                    raise
+            elif _is_mps_oom_error(exc):
                 return memory_failure(exc)
-            if _is_acestep_generation_timeout_error(exc):
+            elif _is_acestep_generation_timeout_error(exc):
                 return timeout_failure(exc)
-            raise
+            else:
+                raise
         if not official.get("success"):
             error = official.get("error") or official.get("status_message") or "Official ACE-Step generation failed"
-            if _is_mps_oom_error(error):
+            if _should_retry_mps_oom_without_dcw(take_params, error):
+                retry_reason = "mps_oom_retry_without_dcw"
+                take_params = _disable_dcw_for_mps_oom_retry(
+                    take_params,
+                    source=f"take_{pass_index + 1}",
+                )
+                params["dcw_enabled"] = False
+                params["payload_warnings"] = list(
+                    dict.fromkeys([*params.get("payload_warnings", []), *take_params.get("payload_warnings", [])])
+                )
+                params["repair_actions"] = list(params.get("repair_actions") or []) + [
+                    item
+                    for item in list(take_params.get("repair_actions") or [])
+                    if isinstance(item, dict) and item.get("type") == "mps_oom_retry_without_dcw"
+                ]
+                official_request = _official_request_payload(take_params, take_save_dir)
+                official_request["memory_policy"] = _jsonable(memory_plan)
+                official_request["requested_take_count"] = memory_plan["requested_take_count"]
+                official_request["actual_runner_batch_size"] = memory_plan["actual_runner_batch_size"]
+                with _official_generation_runner_lock:
+                    memory_events.append(
+                        _prepare_audio_generation_memory(
+                            f"official_generation_take_{pass_index + 1}:retry_without_dcw",
+                            release_handler=True,
+                        )
+                    )
+                    official = _run_official_runner_request(official_request, take_work_dir)
+                if not official.get("success"):
+                    error = official.get("error") or official.get("status_message") or "Official ACE-Step generation failed"
+                    if _is_mps_oom_error(error):
+                        return memory_failure(error)
+                    if _is_acestep_generation_timeout_error(error):
+                        return timeout_failure(error)
+                    raise RuntimeError(error)
+            elif _is_mps_oom_error(error):
                 return memory_failure(error)
             if _is_acestep_generation_timeout_error(error):
                 return timeout_failure(error)
@@ -11413,6 +11694,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 "seed": take_params.get("seed"),
                 "batch_size": take_params.get("batch_size"),
                 "success": True,
+                "retry_reason": retry_reason,
+                "dcw_enabled": take_params.get("dcw_enabled"),
                 "mps_memory": _jsonable(official.get("mps_memory") or {}),
                 "audio_backend_status": _jsonable(official.get("audio_backend_status") or {}),
             }
@@ -12795,6 +13078,20 @@ def generate_album(
             },
         )
         planned_tracks = _json_list(request_payload.get("tracks") or request_payload.get("planned_tracks"))
+        album_lora_request = _lora_adapter_request(request_payload)
+        if album_lora_request.get("use_lora") and album_lora_request.get("adapter_song_model"):
+            adapter_song_model = str(album_lora_request.get("adapter_song_model") or "").strip()
+            if adapter_song_model:
+                request_payload["song_model"] = adapter_song_model
+                request_payload["requested_song_model"] = adapter_song_model
+                request_payload["song_model_strategy"] = "single_model_album"
+                album_options["requested_song_model"] = adapter_song_model
+                album_options["song_model_strategy"] = "single_model_album"
+                song_model = adapter_song_model
+                logs.append(
+                    "Album LoRA model lock: using "
+                    f"{adapter_song_model} because the selected adapter was trained for that model."
+                )
         strategy = str(album_options.get("song_model_strategy") or "all_models_album")
         album_models = album_models_for_strategy(
             strategy,
@@ -12820,7 +13117,6 @@ def generate_album(
                     album_model_portfolio=album_models,
                 )
             )
-        album_lora_request = _lora_adapter_request(request_payload)
         if album_lora_request.get("use_lora"):
             for item in album_models:
                 _validate_lora_request_for_song_model(album_lora_request, str(item["model"]))
@@ -15312,6 +15608,22 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
     try:
         track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
         num_tracks = clamp_int(body.get("num_tracks"), 7, 1, 40)
+        lora_request = _lora_adapter_request(body)
+        if lora_request.get("use_lora") and lora_request.get("adapter_song_model"):
+            body = dict(body)
+            adapter_song_model = str(lora_request.get("adapter_song_model") or "").strip()
+            if adapter_song_model:
+                body["song_model"] = adapter_song_model
+                body["requested_song_model"] = adapter_song_model
+                body["song_model_strategy"] = "single_model_album"
+                _set_album_job(
+                    job_id,
+                    status=f"Planning album with LoRA model lock: {adapter_song_model}",
+                    logs=[
+                        *(_album_jobs.get(job_id, {}).get("logs") or []),
+                        f"LoRA adapter requires {adapter_song_model}; album model strategy locked to single_model_album.",
+                    ],
+                )
         strategy = str(body.get("song_model_strategy") or "all_models_album")
         expected_models = album_models_for_strategy(
             strategy,
@@ -15389,7 +15701,7 @@ def _album_job_worker(job_id: str, body: dict[str, Any]) -> None:
 
 
 def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[str], None] | None = None) -> dict[str, Any]:
-    body = _album_ace_lm_disabled_payload(body)
+    body = _album_prepare_contract_request_body(_album_ace_lm_disabled_payload(body), fallback_tracks=5)
     concept = _recover_album_request_concept(body.get("concept") or "", body)
     num_tracks = int(body.get("num_tracks") or 5)
     track_duration = parse_duration_seconds(body.get("track_duration") or body.get("duration") or 180.0, 180.0)
@@ -15438,7 +15750,7 @@ def _run_album_plan_from_payload(body: dict[str, Any], log_callback: Callable[[s
 
 
 def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
-    body = _album_ace_lm_disabled_payload(body)
+    body = _album_prepare_contract_request_body(_album_ace_lm_disabled_payload(body), fallback_tracks=5)
     planner_provider = _album_planner_provider_from_payload(body)
     embedding_provider = _embedding_provider_from_payload(body)
     planner_model = str(body.get("planner_model") or body.get("ollama_model") or body.get("planner_ollama_model") or DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL)
@@ -15447,12 +15759,14 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     requested_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
     requested_engine_label = _album_agent_engine_label_value(requested_engine)
     crewai_output_log_file = str(body.get("crewai_output_log_file") or "")
-    user_album_contract = extract_user_album_contract(
-        _album_contract_source_from_payload(body, body),
-        int(body.get("num_tracks") or 0) or None,
-        str(body.get("language") or "en"),
-        body,
-    )
+    user_album_contract = body.get("user_album_contract")
+    if not isinstance(user_album_contract, dict):
+        user_album_contract = extract_user_album_contract(
+            _album_contract_source_from_payload(body, body),
+            int(body.get("num_tracks") or 0) or None,
+            str(body.get("language") or "en"),
+            body,
+        )
     num_tracks = clamp_int(body.get("num_tracks") or len(_json_list(body.get("tracks"))) or 5, 5, 1, 40)
     start_logs = [
         f"Album plan job {job_id} started.",
@@ -15505,7 +15819,25 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     )
     try:
         wait_warn_seconds = max(10.0, _env_float("ACEJAM_ALBUM_PLAN_LLM_WAIT_WARN_SECONDS", 45.0))
-        hard_timeout_seconds = max(0.0, _env_float("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS", 900.0))
+        planner_timeout_seconds = float(
+            planner_llm_settings_from_payload(
+                body,
+                default_max_tokens=8192,
+                default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+            ).get("planner_timeout")
+            or PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS
+        )
+        default_hard_timeout = max(PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS, planner_timeout_seconds + 300.0)
+        hard_timeout_seconds = max(
+            0.0,
+            _env_float("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS", default_hard_timeout),
+        )
+        _album_job_log(
+            job_id,
+            f"Album LLM wait policy: warn_after={int(wait_warn_seconds)}s; hard_timeout={int(hard_timeout_seconds)}s.",
+            planner_timeout=planner_timeout_seconds,
+            llm_hard_timeout_seconds=hard_timeout_seconds,
+        )
         wait_state: dict[str, Any] = {"running": True, "waiting": False, "started": 0.0, "agent": "", "provider": "", "timed_out": False}
 
         def _wait_watchdog() -> None:
@@ -15557,6 +15889,10 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         def _stream_plan_log(line: str) -> None:
             compact = str(line).replace("\n", " ")[:700]
             job = _album_job_snapshot(job_id)
+            if isinstance(job, dict) and job.get("timed_out"):
+                print(f"[album_plan_job][{job_id}] {compact}", file=sys.__stdout__, flush=True)
+                _set_album_job(job_id, logs=[compact])
+                return
             updates = _album_plan_progress_updates_from_log(compact, job if isinstance(job, dict) else {})
             if updates.get("waiting_on_llm"):
                 wait_state.update(
@@ -15893,7 +16229,7 @@ async def api_album_plan(request: Request):
 @app.post("/api/album/plan/jobs")
 async def api_create_album_plan_job(request: Request):
     try:
-        body = _album_ace_lm_disabled_payload(await request.json())
+        body = _album_prepare_contract_request_body(_album_ace_lm_disabled_payload(await request.json()), fallback_tracks=5)
         global_llm_settings = _load_local_llm_settings_fast()
         planner_provider = _album_planner_provider_from_payload(body)
         embedding_provider = _embedding_provider_from_payload(body)
@@ -16597,7 +16933,7 @@ async def api_prompt_assistant_run(request: Request):
         planner_settings = planner_llm_settings_from_payload(
             {**global_llm_settings, **body},
             default_max_tokens=8192,
-            default_timeout=600.0,
+            default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
         )
         if planner_provider == "ace_step_lm":
             fallback_provider = normalize_provider(global_llm_settings.get("provider") or "ollama")
@@ -16730,7 +17066,11 @@ async def api_compose(request: Request):
         provider = _writer_provider_from_payload(body)
         global_llm_settings = _load_local_llm_settings()
         planner_model = str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or global_llm_settings.get("chat_model") or "").strip()
-        planner_settings = planner_llm_settings_from_payload({**global_llm_settings, **body}, default_max_tokens=8192, default_timeout=600.0)
+        planner_settings = planner_llm_settings_from_payload(
+            {**global_llm_settings, **body},
+            default_max_tokens=8192,
+            default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+        )
         raw = compose(
             description=str(body.get("description") or ""),
             audio_duration=float(body.get("audio_duration") or body.get("duration") or 60.0),
@@ -16763,7 +17103,11 @@ async def api_create_sample(request: Request):
             ollama_model=str(body.get("ollama_model") or ""),
             planner_lm_provider=provider,
             planner_model=planner_model,
-            planner_llm_settings=planner_llm_settings_from_payload({**global_llm_settings, **body}, default_max_tokens=8192, default_timeout=600.0),
+            planner_llm_settings=planner_llm_settings_from_payload(
+                {**global_llm_settings, **body},
+                default_max_tokens=8192,
+                default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+            ),
         )
         data = json.loads(raw)
         data["artist_name"] = normalize_artist_name(
@@ -16791,7 +17135,11 @@ async def api_format_sample(request: Request):
             ollama_model=str(body.get("ollama_model") or ""),
             planner_lm_provider=str(body.get("planner_lm_provider") or body.get("planner_provider") or "ollama"),
             planner_model=str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or ""),
-            planner_llm_settings=planner_llm_settings_from_payload(body, default_max_tokens=2048, default_timeout=600.0),
+            planner_llm_settings=planner_llm_settings_from_payload(
+                body,
+                default_max_tokens=2048,
+                default_timeout=PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+            ),
         )
         data = json.loads(raw)
         data["artist_name"] = normalize_artist_name(

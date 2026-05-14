@@ -223,6 +223,62 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertEqual(result["payload"]["track_variants"], 3)
         self.assertEqual(result["payload"]["batch_size"], 3)
 
+    def test_album_plan_request_uses_explicit_prompt_contract_over_stale_draft(self):
+        prompt = """
+Album Title: You Buried the Wrong Man (System Cut)
+Track 1: “Concrete Canyons” (Dr. Dre-style G-Funk | 78 BPM)
+Narrative: Steden gebouwd op vergeten fundamenten.
+Track 2: “Rubble State” (Pharrell-style Minimal Bounce | 102 BPM)
+Narrative: Crisis als beleid.
+Track 3: “The Skyline Grave” (Kanye-style Soul Chop | 96 BPM)
+Narrative: Oorlog als businessmodel.
+Track 4: “Lines in the Sand” (Just Blaze horns | 89 BPM)
+Narrative: Grenzen als constructie.
+Track 5: “Sanctioned Soil” (Timbaland glitch | 106 BPM)
+Narrative: Gentrificatie.
+Track 6: “The Invisible Border” (DJ Premier boom-bap | 91 BPM)
+Narrative: Macht als netwerk.
+Track 7: “Children of Dust” (Stoupe orchestral | 84 BPM)
+Narrative: Oorlog door kinderogen.
+Track 8: “The Drone’s Hum” (Timbaland x Stoupe glitch | 108 BPM)
+Narrative: Surveillance.
+Track 9: “Biblical Irony” (Dre x Blaze power | 94 BPM)
+Narrative: Bewustzijn.
+Track 10: “The Final Census” (Stoupe x Timbaland | 92→70 BPM)
+Narrative: Iedereen medeplichtig.
+"""
+        body = acejam_app._album_prepare_contract_request_body(
+            {
+                "album_title": "Shadows of the Freeway",
+                "num_tracks": 5,
+                "tracks": [{"track_number": index + 1, "title": f"Old {index + 1}"} for index in range(5)],
+                "user_prompt": prompt,
+                "prompt": prompt,
+                "language": "nl",
+            },
+            fallback_tracks=5,
+        )
+
+        self.assertEqual(body["album_title"], "You Buried the Wrong Man (System Cut)")
+        self.assertEqual(body["num_tracks"], 10)
+        self.assertEqual(len(body["tracks"]), 10)
+        self.assertEqual(body["tracks"][0]["title"], "Concrete Canyons")
+        self.assertEqual(body["tracks"][0]["style"], "Dr. Dre-style G-Funk")
+        self.assertEqual(body["tracks"][0]["bpm"], 78)
+        self.assertEqual(body["tracks"][-1]["title"], "The Final Census")
+
+    def test_album_plan_progress_parses_crewai_agent_calls(self):
+        updates = acejam_app._album_plan_progress_updates_from_log(
+            "CrewAI Micro Agent call: Track Concept Agent attempt 2 via Ollama (prompt_chars=123, system=90, user=33).",
+            {"total_tracks": 10, "current_track": 3, "progress": 20},
+        )
+
+        self.assertEqual(updates["stage"], "waiting_on_llm")
+        self.assertEqual(updates["current_agent"], "Track Concept Agent")
+        self.assertEqual(updates["agent_attempt"], 2)
+        self.assertIn("Track Concept Agent", updates["current_task"])
+        self.assertTrue(updates["waiting_on_llm"])
+
     def test_album_wizard_fill_derives_mood_and_vocal_when_user_did_not_lock_them(self):
         """When the wizard fires AI Fill without pre-locking album_mood or
         vocal_type (the common case — user only types a concept and clicks

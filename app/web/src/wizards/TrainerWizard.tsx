@@ -4,12 +4,14 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Loader2, Music4, Upload, GraduationCap, X, FileMusic, Mic2, SkipForward, FolderOpen,
+  RotateCcw,
 } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -39,6 +41,8 @@ interface TrainerForm {
   trigger_tag: string;
   genre: string;
   epoch_audition_genre: string;
+  epoch_audition_caption: string;
+  epoch_audition_lyrics: string;
   genre_ratio: number;
   genre_label_mode: "ai_auto" | "manual_global" | "metadata_musicbrainz";
   genre_label_provider: LLMProvider;
@@ -220,10 +224,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "rap",
     label: "Rap / Hip-hop",
-    caption_tags: "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
+    caption_tags:
+      "rap, hip hop, west coast bounce, rhythmic spoken-word vocal, clear aggressive rap flow, punchy boom-bap drums, deep 808 bassline, rubbery g-funk synth lead, chopped piano stab, dry upfront male vocal, crisp modern mix, street-corner pocket",
     lyrics_section_tags: { verse: "rap, rhythmic spoken flow", chorus: "rap hook" },
     lyrics:
-      "[Verse - rap, rhythmic spoken flow]\nI step to the light with the pressure on ten\nEvery bar lands clean when the drums come in\n\n[Chorus - rap hook]\nHands in the air when the bassline rolls\nSay it one time and the whole room knows",
+      "[Verse - rap, rhythmic spoken flow]\nBoots on the curb, court date in my jacket\nLedger got blood, I rhyme through the static\nRent man knocks, I knock back with a classic\nBullshit crown gets cracked into plastic\nSirens draw loops round the block like brackets\nCold cash talks, I talk back with matches\n\n[Chorus - rap hook]\nFuck that crown, make the bassline answer\nWhole damn room move sharp like a dancer",
     bpm: 95,
     keyscale: "A minor",
     timesignature: "4",
@@ -231,10 +236,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "pop",
     label: "Pop",
-    caption_tags: "modern pop groove, bright hook, clean lead vocal, radio-ready drums",
+    caption_tags:
+      "modern pop, tight live drums, bright analog synth bass, glassy guitar mutes, clean lead vocal, doubled hook, wide polished chorus, bittersweet drive, radio-ready mix",
     lyrics_section_tags: { verse: "clean pop vocal", chorus: "bright pop hook" },
     lyrics:
-      "[Verse - clean pop vocal]\nCity lights are turning gold tonight\nWe chase the spark until the morning light\n\n[Chorus - bright pop hook]\nHold on hold on we are alive\nHearts beat louder when the chorus arrives",
+      "[Verse - clean pop vocal]\nCoffee gone cold on the dashboard tray\nYou said forever, then drove away\nI changed the lock, kept the cheap motel key\nDamn near smiled when your song found me\n\n[Chorus - bright pop hook]\nI don't miss you, I miss the noise\nTwo bad choices making one loud voice",
     bpm: 118,
     keyscale: "C major",
     timesignature: "4",
@@ -242,10 +248,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "rnb",
     label: "Soul / R&B",
-    caption_tags: "smooth rnb groove, warm keys, clean intimate lead vocal, soft harmonies",
+    caption_tags:
+      "smooth rnb groove, warm rhodes keys, brushed trap-soul drums, round sub bass, close dry lead vocal, soft stacked harmonies, late room tone, tape-warm mix",
     lyrics_section_tags: { verse: "smooth rnb vocal", chorus: "soulful rnb hook" },
     lyrics:
-      "[Verse - smooth rnb vocal]\nLate night glow on the window frame\nYour voice comes close and it says my name\n\n[Chorus - soulful rnb hook]\nStay right here where the rhythm is slow\nLet the whole room breathe when the candles glow",
+      "[Verse - smooth rnb vocal]\nYour robe on the chair still holds your shape\nI pour two cups, let mine go late\nYou left no note, just a half-lit screen\nDamn, that silence knows where I've been\n\n[Chorus - soulful rnb hook]\nCome back slow if you mean it this time\nNo more sweet talk stealing my spine",
     bpm: 82,
     keyscale: "D minor",
     timesignature: "4",
@@ -253,10 +260,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "rock",
     label: "Rock",
-    caption_tags: "driving rock drums, electric guitars, clear lead vocal, strong chorus",
+    caption_tags:
+      "gritty rock, live kick and snare, overdriven rhythm guitars, pick-bass low end, raw lead vocal, gang-hook chorus, garage room bleed, punchy analog mix",
     lyrics_section_tags: { verse: "rock lead vocal", chorus: "strong rock chorus" },
     lyrics:
-      "[Verse - rock lead vocal]\nRoad lights flash on the edge of town\nWe hit the floor when the walls come down\n\n[Chorus - strong rock chorus]\nRaise it up with the thunder and fire\nOne loud heart in a live wire choir",
+      "[Verse - rock lead vocal]\nBrake dust black on the motel sink\nI spit out smoke, try not to think\nYour fake halo hangs by a wire\nHell no, it snaps when I kick the tire\n\n[Chorus - strong rock chorus]\nKick it down, let the amps talk back\nWe don't bend for a polished track",
     bpm: 128,
     keyscale: "E minor",
     timesignature: "4",
@@ -264,10 +272,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "edm",
     label: "EDM / Dance",
-    caption_tags: "electronic dance beat, pulsing synth bass, clean vocal hook, club energy",
+    caption_tags:
+      "electronic dance, four-on-floor kick, pulsing sidechain bass, metallic synth plucks, chopped vocal hook, dark club groove, clean festival drop, tight stereo mix",
     lyrics_section_tags: { verse: "dance vocal", chorus: "club vocal hook" },
     lyrics:
-      "[Verse - dance vocal]\nBlue lights move when the kick comes through\nEvery heartbeat locks into the groove\n\n[Chorus - club vocal hook]\nLift me higher when the drop arrives\nWe come alive under flashing lights",
+      "[Verse - dance vocal]\nWristband torn, bass hits my chest\nSweat on the rail, no time to rest\nYou texted sorry, I killed the screen\nDamn, this kick says what I mean\n\n[Chorus - club vocal hook]\nMove your body, cut that fake-ass talk\nBassline bites when the lights drop",
     bpm: 124,
     keyscale: "F# minor",
     timesignature: "4",
@@ -275,10 +284,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "cinematic",
     label: "Cinematic",
-    caption_tags: "cinematic drums, wide strings, clear dramatic vocal, spacious arrangement",
+    caption_tags:
+      "cinematic hip-hop hybrid, heavy trailer drums, low brass stabs, tense strings, sub bass hits, clear dramatic vocal, spacious dark mix, marching groove",
     lyrics_section_tags: { verse: "dramatic vocal", chorus: "cinematic anthem" },
     lyrics:
-      "[Verse - dramatic vocal]\nStars lean close as the shadows rise\nWe hold the line under open skies\n\n[Chorus - cinematic anthem]\nStand as one when the thunder calls\nLight breaks through every ancient wall",
+      "[Verse - dramatic vocal]\nAsh on the ledger, rain on the gate\nOld men gamble with a child's plate\nI name the bill, I name the knife\nDamn the machine that prices life\n\n[Chorus - cinematic anthem]\nCount every crown, count every scar\nTruth kicks back from under the floor",
     bpm: 88,
     keyscale: "D minor",
     timesignature: "4",
@@ -286,10 +296,11 @@ const FALLBACK_AUDITION_GENRES: EpochAuditionGenre[] = [
   {
     key: "country",
     label: "Country / Folk",
-    caption_tags: "warm acoustic guitars, steady country drums, clear heartfelt vocal",
+    caption_tags:
+      "outlaw country, acoustic guitar strums, brushed snare, walking bass, pedal steel bends, clear gritty lead vocal, barroom harmony, dry warm mix",
     lyrics_section_tags: { verse: "country lead vocal", chorus: "heartfelt country hook" },
     lyrics:
-      "[Verse - country lead vocal]\nDust on my boots and the sun sinking low\nOne more mile down a familiar road\n\n[Chorus - heartfelt country hook]\nTake me home where the porch light shines\nGood hearts gather at closing time",
+      "[Verse - country lead vocal]\nTruck won't start by the county line\nPaycheck gone, but the dog eats fine\nPreacher said hush, boss said grin\nDamn them boys, I won't fold in\n\n[Chorus - heartfelt country hook]\nPour it straight, let the truth sit down\nSmall town teeth in a courthouse crown",
     bpm: 96,
     keyscale: "G major",
     timesignature: "4",
@@ -500,8 +511,10 @@ export function TrainerWizard() {
   const [form, setForm] = React.useState<TrainerForm>({
     dataset_id: "",
     trigger_tag: "",
-    genre: "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, deep bass, hard drums",
+    genre: FALLBACK_AUDITION_GENRES[0].caption_tags,
     epoch_audition_genre: "rap",
+    epoch_audition_caption: FALLBACK_AUDITION_GENRES[0].caption_tags,
+    epoch_audition_lyrics: FALLBACK_AUDITION_GENRES[0].lyrics,
     genre_ratio: 0,
     genre_label_mode: "ai_auto",
     genre_label_provider: "ollama",
@@ -564,9 +577,23 @@ export function TrainerWizard() {
       ...f,
       epoch_audition_genre: value,
       genre: selected?.caption_tags || f.genre,
+      epoch_audition_caption: selected?.caption_tags || f.epoch_audition_caption,
+      epoch_audition_lyrics: selected?.lyrics || selected?.test_lyrics || f.epoch_audition_lyrics,
       default_bpm: typeof selected?.bpm === "number" && selected.bpm > 0 ? selected.bpm : f.default_bpm,
     }));
   };
+
+  React.useEffect(() => {
+    if (!selectedAuditionGenre) return;
+    setForm((f) => {
+      if (f.epoch_audition_caption || f.epoch_audition_lyrics) return f;
+      return {
+        ...f,
+        epoch_audition_caption: selectedAuditionGenre.caption_tags || f.genre,
+        epoch_audition_lyrics: selectedAuditionGenre.lyrics || selectedAuditionGenre.test_lyrics || "",
+      };
+    });
+  }, [selectedAuditionGenre]);
 
   // ---- File selection ----------------------------------------------------
 
@@ -796,6 +823,8 @@ export function TrainerWizard() {
         genre_label_model: effectiveGenreModel,
         overwrite_existing_labels: form.overwrite_existing_labels,
         epoch_audition_genre: form.epoch_audition_genre,
+        epoch_audition_caption: form.epoch_audition_caption,
+        epoch_audition_lyrics: form.epoch_audition_lyrics,
         epoch_audition_bpm: selectedAuditionGenre?.bpm ?? undefined,
         epoch_audition_keyscale: selectedAuditionGenre?.keyscale ?? undefined,
         epoch_audition_timesignature: selectedAuditionGenre?.timesignature ?? undefined,
@@ -834,6 +863,8 @@ export function TrainerWizard() {
           trigger_tag: form.trigger_tag,
           language: form.default_language,
           epoch_audition_genre: form.epoch_audition_genre,
+          epoch_audition_caption: form.epoch_audition_caption,
+          epoch_audition_lyrics: form.epoch_audition_lyrics,
           learning_rate: form.learning_rate,
           train_epochs: requestedTrainEpochs,
           stop_policy: form.stop_policy,
@@ -1311,7 +1342,7 @@ export function TrainerWizard() {
 
           <FieldGroup
             title="Test-WAV genre"
-            description="Kies welke veilige testtekst en tags de epoch-audition gebruikt. Rap krijgt rap-lyrics/tags, pop krijgt pop-lyrics/tags, soul krijgt soul/R&B-lyrics/tags."
+            description="Kies en bewerk exact welke caption en lyrics de epoch-audition gebruikt. Caption blijft sound/production intent; lyrics blijven het tijdscript."
           >
             <div className="grid gap-3 lg:grid-cols-[260px_1fr_180px]">
               <div className="space-y-1.5">
@@ -1358,23 +1389,38 @@ export function TrainerWizard() {
               </div>
             </div>
             {selectedAuditionGenre && (
-              <div className="grid gap-3 rounded-lg border bg-background/35 p-3 text-xs lg:grid-cols-[1fr_1.2fr]">
+              <div className="grid gap-3 rounded-lg border bg-background/35 p-3 text-xs lg:grid-cols-[0.9fr_1.1fr]">
                 <div className="space-y-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="muted">{selectedAuditionGenre.label}</Badge>
-                    {selectedAuditionGenre.bpm && (
-                      <Badge variant="outline">{selectedAuditionGenre.bpm} bpm</Badge>
-                    )}
-                    {selectedAuditionGenre.keyscale && (
-                      <Badge variant="outline">{selectedAuditionGenre.keyscale}</Badge>
-                    )}
-                    {selectedAuditionGenre.timesignature && (
-                      <Badge variant="outline">{selectedAuditionGenre.timesignature}/4</Badge>
-                    )}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge variant="muted">{selectedAuditionGenre.label}</Badge>
+                      {selectedAuditionGenre.bpm && (
+                        <Badge variant="outline">{selectedAuditionGenre.bpm} bpm</Badge>
+                      )}
+                      {selectedAuditionGenre.keyscale && (
+                        <Badge variant="outline">{selectedAuditionGenre.keyscale}</Badge>
+                      )}
+                      {selectedAuditionGenre.timesignature && (
+                        <Badge variant="outline">{selectedAuditionGenre.timesignature}/4</Badge>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1.5 text-[11px]"
+                      onClick={() =>
+                        setForm((f) => ({
+                          ...f,
+                          genre: selectedAuditionGenre.caption_tags || f.genre,
+                          epoch_audition_caption: selectedAuditionGenre.caption_tags || "",
+                          epoch_audition_lyrics: selectedAuditionGenre.lyrics || selectedAuditionGenre.test_lyrics || "",
+                        }))
+                      }
+                    >
+                      <RotateCcw className="size-3" /> Preset
+                    </Button>
                   </div>
-                  <p className="leading-relaxed text-muted-foreground">
-                    {selectedAuditionGenre.caption_tags || "Auto gebruikt de dataset-caption om een passende test te kiezen."}
-                  </p>
                   {selectedAuditionGenre.lyrics_section_tags && (
                     <div className="flex flex-wrap gap-1.5">
                       {Object.entries(selectedAuditionGenre.lyrics_section_tags).map(([section, tags]) => (
@@ -1384,10 +1430,42 @@ export function TrainerWizard() {
                       ))}
                     </div>
                   )}
+                  <div className="space-y-1.5">
+                    <Label>Test-WAV caption</Label>
+                    <Textarea
+                      rows={6}
+                      value={form.epoch_audition_caption}
+                      onChange={(event) =>
+                        setForm((f) => ({
+                          ...f,
+                          genre: event.target.value,
+                          epoch_audition_caption: event.target.value,
+                        }))
+                      }
+                      className="text-xs leading-relaxed"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Sound-only tags: genre, drums, bass, instrument/sample, mix texture en groove. BPM/key blijven metadata.
+                    </p>
+                  </div>
                 </div>
-                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-black/25 p-3 text-[11px] leading-relaxed text-foreground/85">
-                  {selectedAuditionGenre.lyrics || "Auto: MLX Media kiest rap/pop/soul/rock/EDM/cinematic/country op basis van je dataset."}
-                </pre>
+                <div className="space-y-1.5">
+                  <Label>Test-WAV lyrics</Label>
+                  <Textarea
+                    rows={12}
+                    value={form.epoch_audition_lyrics}
+                    onChange={(event) =>
+                      setForm((f) => ({
+                        ...f,
+                        epoch_audition_lyrics: event.target.value,
+                      }))
+                    }
+                    className="font-mono text-[11px] leading-relaxed"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Trigger tag wordt automatisch alleen aan de caption toegevoegd. Zet hem niet in de lyrics.
+                  </p>
+                </div>
               </div>
             )}
           </FieldGroup>
