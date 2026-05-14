@@ -1687,6 +1687,16 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("key_scale", validation["field_errors"])
         self.assertIn("Unsupported ACE-Step key scale", validation["field_errors"]["key_scale"])
 
+    def test_key_scale_normalization_accepts_ai_arrangement_notes(self):
+        self.assertEqual(
+            acejam_app.normalize_key_scale("C minor (with diminished 7th chord bridges for glitch transition)"),
+            "C minor",
+        )
+        self.assertEqual(
+            acejam_app.normalize_key_scale("F# minor with a halftime bridge"),
+            "F# minor",
+        )
+
     def test_generation_metadata_audit_flags_missing_legacy_request_metadata(self):
         params = {
             "bpm": 95,

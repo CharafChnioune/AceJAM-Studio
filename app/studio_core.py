@@ -2938,6 +2938,7 @@ def normalize_key_scale(value: Any, *, default: str | None = None) -> str:
     text = str(value).strip()
     if not text or text.lower() in {"auto", "none", "n/a", "na"}:
         return default or ""
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip() or text
     match = re.fullmatch(r"([A-Ga-g])\s*([#b♯♭]?)\s*(major|minor|maj|min|m)?", text)
     if match:
         note = match.group(1).upper()
@@ -2955,6 +2956,15 @@ def normalize_key_scale(value: Any, *, default: str | None = None) -> str:
             candidate = f"{note_part} {mode_part}"
             if candidate in VALID_KEY_SCALE_SET:
                 return candidate
+    prefix = re.match(r"^([A-Ga-g])\s*([#b♯♭]?)\s*(major|minor|maj|min|m)\b", text)
+    if prefix:
+        note = prefix.group(1).upper()
+        accidental = prefix.group(2) or ""
+        mode_text = prefix.group(3).lower()
+        mode = "minor" if mode_text in {"minor", "min", "m"} else "major"
+        candidate = f"{note}{accidental} {mode}"
+        if candidate in VALID_KEY_SCALE_SET:
+            return candidate
     raise ValueError(f"Unsupported ACE-Step key scale: {text}. Choose Auto or one of the official keyscales.")
 
 
