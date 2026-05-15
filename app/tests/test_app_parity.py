@@ -5312,22 +5312,34 @@ class AppParityTest(unittest.TestCase):
         jobs_store = (web_src / "store" / "jobs.ts").read_text(encoding="utf-8")
         tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
         batch = (web_src / "wizards" / "BatchSongsWizard.tsx").read_text(encoding="utf-8")
+        benchmark = (web_src / "wizards" / "LoraBenchmarkWizard.tsx").read_text(encoding="utf-8")
         audio_backend = (web_src / "lib" / "audioBackend.ts").read_text(encoding="utf-8")
         promptsong = (acejam_app.BASE_DIR / "prompts" / "promptsong.md").read_text(encoding="utf-8")
         promptalbum = (acejam_app.BASE_DIR / "prompts" / "promptalbum.md").read_text(encoding="utf-8")
 
         self.assertIn('path="/wizard/batch"', app_tsx)
+        self.assertIn('path="/wizard/lora-benchmark"', app_tsx)
         self.assertIn("BatchSongsWizard", app_tsx)
+        self.assertIn("LoraBenchmarkWizard", app_tsx)
         self.assertIn('to: "/wizard/batch"', home)
+        self.assertIn('to: "/wizard/lora-benchmark"', home)
         self.assertIn("startSongBatchJob", api_ts)
         self.assertIn("/api/song-batches/jobs", api_ts)
+        self.assertIn("startLoraBenchmarkJob", api_ts)
+        self.assertIn("/api/lora/benchmarks/jobs", api_ts)
         self.assertIn('"song-batch"', jobs_store)
+        self.assertIn('"lora-benchmark"', jobs_store)
         self.assertIn("SongBatchDetails", tracker)
+        self.assertIn("LoraBenchmarkDetails", tracker)
         self.assertIn("/api/song-batches/jobs", tracker)
+        self.assertIn("/api/lora/benchmarks/jobs", tracker)
         self.assertIn("AudioStyleSelector", batch)
         self.assertIn("AudioBackendSelector", batch)
         self.assertIn("LoraSelector", batch)
         self.assertIn("GenerationAudioList", batch)
+        self.assertIn("GenerationAudioList", benchmark)
+        self.assertIn("rateLoraBenchmarkResult", benchmark)
+        self.assertIn("Score grafiek", benchmark)
         self.assertIn("JSON toepassen", batch)
         self.assertIn("Pas huidige instellingen toe op alle songs", batch)
         self.assertIn('raw === "mlx"', audio_backend)
@@ -5434,6 +5446,136 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(job["failed_songs"], 1)
         self.assertEqual([song["state"] for song in job["songs"]], ["succeeded", "failed", "succeeded"])
         self.assertEqual(job["songs"][0]["audio_urls"], ["/media/results/child1/take.wav"])
+
+    def test_lora_benchmark_body_expands_all_adapters_scales_and_baseline(self):
+        with patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):
+            payload, attempts = acejam_app._normalise_lora_benchmark_body(
+                {
+                    "benchmark_title": "Unit LoRA Bench",
+                    "include_baseline": True,
+                    "trigger_mode": "auto",
+                    "lora_scales": [0.5, 1.0],
+                    "adapters": [
+                        {
+                            "path": "/tmp/unit-quarantined",
+                            "display_name": "unit quarantined",
+                            "adapter_type": "lora",
+                            "metadata": {
+                                "quality_status": "quarantined",
+                                "generation_trigger_tag": "hits",
+                                "model_variant": "xl_sft",
+                                "best_loss": 0.75,
+                            },
+                        }
+                    ],
+                    "render_payload": {
+                        "title": "Bench Song",
+                        "caption": "rap, drums",
+                        "lyrics": "[Verse]\nunit line",
+                        "audio_backend": "mlx",
+                        "use_mlx_dit": False,
+                    },
+                }
+            )
+
+        self.assertEqual(payload["benchmark_title"], "Unit LoRA Bench")
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(attempts[0]["attempt_role"], "baseline")
+        self.assertFalse(attempts[0]["payload"]["use_lora"])
+        self.assertEqual(attempts[1]["quality_status"], "quarantined")
+        self.assertTrue(attempts[1]["payload"]["allow_unsafe_lora_for_benchmark"])
+        self.assertEqual(attempts[1]["payload"]["lora_trigger_tag"], "hits")
+        self.assertEqual(attempts[2]["payload"]["lora_scale"], 1.0)
+        self.assertEqual(payload["base_payload"]["audio_backend"], "mlx")
+        self.assertTrue(payload["base_payload"]["use_mlx_dit"])
+
+    def test_lora_benchmark_worker_runs_attempts_sequentially_scores_and_rates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with acejam_app._lora_benchmark_jobs_lock:
+                acejam_app._lora_benchmark_jobs.clear()
+
+            with patch.object(acejam_app, "LORA_BENCHMARKS_DIR", root), \
+                patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}), \
+                patch.object(acejam_app, "_cleanup_accelerator_memory"):
+                payload, attempts = acejam_app._normalise_lora_benchmark_body(
+                    {
+                        "benchmark_title": "Sequential LoRAs",
+                        "include_baseline": False,
+                        "stop_on_error": False,
+                        "lora_scales": [1.0],
+                        "adapters": [
+                            {"path": "/tmp/a", "display_name": "Adapter A", "metadata": {"generation_trigger_tag": "a"}},
+                            {"path": "/tmp/b", "display_name": "Adapter B", "metadata": {"generation_trigger_tag": "b"}},
+                        ],
+                        "render_payload": {"title": "Bench", "caption": "rap", "lyrics": "[Verse]\nline"},
+                    }
+                )
+                acejam_app._set_lora_benchmark_job(
+                    "benchunit",
+                    payload=payload,
+                    benchmark_title="Sequential LoRAs",
+                    total_attempts=len(attempts),
+                    remaining_attempts=len(attempts),
+                    attempts=attempts,
+                )
+                submitted: list[str] = []
+
+                def fake_submit(body):
+                    child_id = f"benchchild{len(submitted) + 1}"
+                    submitted.append(body["lora_adapter_name"])
+                    return {"job_id": child_id, "task_id": child_id, "status": 0, "job": {"id": child_id}}
+
+                def fake_snapshot(child_id):
+                    if child_id == "benchchild2":
+                        return {
+                            "id": child_id,
+                            "state": "failed",
+                            "progress": 100,
+                            "error": "unit failure",
+                            "result": {"success": False, "error": "unit failure"},
+                        }
+                    return {
+                        "id": child_id,
+                        "state": "succeeded",
+                        "progress": 100,
+                        "result": {
+                            "success": True,
+                            "title": child_id,
+                            "audio_url": f"/media/results/{child_id}/take.wav",
+                            "audios": [{"audio_url": f"/media/results/{child_id}/take.wav", "pro_quality_score": 90}],
+                            "vocal_intelligibility_gate": {
+                                "status": "pass",
+                                "passed": True,
+                                "keyword_hits": ["unit", "line"],
+                                "repeat_ratio": 0.05,
+                                "filler_ratio": 0.01,
+                                "transcript_preview": "unit line",
+                            },
+                            "style_conditioning_audit": {"status": "pass"},
+                            "lora_trigger_applied": True,
+                        },
+                        "result_summary": {"title": child_id},
+                    }
+
+                with patch.object(acejam_app, "_submit_api_generation_task", side_effect=fake_submit), \
+                    patch.object(acejam_app, "_generation_job_snapshot", side_effect=fake_snapshot):
+                    acejam_app._lora_benchmark_worker("benchunit", payload)
+
+                job = acejam_app._lora_benchmark_snapshot("benchunit")
+                rated = acejam_app._rate_lora_benchmark_result(
+                    "benchunit",
+                    {"attempt_id": job["results"][0]["attempt_id"], "user_rating": 5, "user_notes": "best by ear"},
+                )
+
+        self.assertEqual(submitted, ["Adapter A", "Adapter B"])
+        self.assertEqual(job["state"], "succeeded")
+        self.assertEqual(job["completed_attempts"], 1)
+        self.assertEqual(job["failed_attempts"], 1)
+        self.assertEqual([item["state"] for item in job["results"]], ["succeeded", "failed"])
+        self.assertGreater(job["results"][0]["score"], job["results"][1]["score"])
+        self.assertEqual(rated["best_manual_result_id"], job["results"][0]["attempt_id"])
+        self.assertEqual(rated["results"][0]["user_notes"], "best by ear")
 
     def test_mlx_video_upload_endpoint_accepts_image_audio_and_rejects_text(self):
         client = TestClient(acejam_app.app)

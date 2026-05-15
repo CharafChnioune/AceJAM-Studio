@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import {
   Music2,
   ListMusic,
+  BarChart3,
   Image as ImageIcon,
   Video,
   Disc3,
@@ -16,6 +17,7 @@ import { Settings } from "@/pages/Settings";
 import { SimpleWizard } from "@/wizards/SimpleWizard";
 import { CustomWizard } from "@/wizards/CustomWizard";
 import { BatchSongsWizard } from "@/wizards/BatchSongsWizard";
+import { LoraBenchmarkWizard } from "@/wizards/LoraBenchmarkWizard";
 import { AlbumWizard } from "@/wizards/AlbumWizard";
 import { CoverWizard } from "@/wizards/CoverWizard";
 import { RepaintWizard } from "@/wizards/RepaintWizard";
@@ -38,6 +40,7 @@ function Sidebar() {
     { to: "/", label: "Home", icon: HomeIcon },
     { to: "/wizard/simple", label: "Music", icon: Music2 },
     { to: "/wizard/batch", label: "Batch", icon: ListMusic },
+    { to: "/wizard/lora-benchmark", label: "LoRA Benchmark", icon: BarChart3 },
     { to: "/wizard/image", label: "Images", icon: ImageIcon },
     { to: "/wizard/video", label: "Video", icon: Video },
     { to: "/wizard/album", label: "Albums", icon: Disc3 },
@@ -97,6 +100,7 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/wizard/simple" element={<SimpleWizard />} />
             <Route path="/wizard/batch" element={<BatchSongsWizard />} />
+            <Route path="/wizard/lora-benchmark" element={<LoraBenchmarkWizard />} />
             <Route path="/wizard/custom" element={<CustomWizard />} />
             <Route path="/wizard/album" element={<AlbumWizard />} />
             <Route path="/wizard/cover" element={<CoverWizard />} />

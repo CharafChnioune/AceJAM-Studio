@@ -4,6 +4,7 @@ import {
   Sparkles,
   Music2,
   ListMusic,
+  BarChart3,
   Image as ImageIcon,
   Video,
   Disc3,
@@ -73,6 +74,14 @@ const cards: ModeCard[] = [
     blurb: "Vul meerdere songs volledig in en render ze daarna één voor één.",
     icon: ListMusic,
     badge: "Queue",
+    enabled: true,
+  },
+  {
+    to: "/wizard/lora-benchmark",
+    title: "LoRA Benchmark",
+    blurb: "Test adapters één voor één met dezelfde lyrics, scores, grafieken en luisterrating.",
+    icon: BarChart3,
+    badge: "Compare",
     enabled: true,
   },
   {

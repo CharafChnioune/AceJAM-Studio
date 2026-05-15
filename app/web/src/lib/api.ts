@@ -348,6 +348,93 @@ export const getSongBatchJob = (jobId: string) =>
 export const listSongBatchJobs = () =>
   api.get<SongBatchJobResponse>("/api/song-batches/jobs");
 
+// ---- LoRA benchmarks -----------------------------------------------------
+
+export interface LoraBenchmarkResult {
+  attempt_id?: string;
+  attempt_number?: number;
+  attempt_role?: "baseline" | "lora" | string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  generation_job_id?: string;
+  adapter_name?: string;
+  adapter_path?: string;
+  adapter_epoch?: number | null;
+  adapter_loss?: number | null;
+  quality_status?: string;
+  lora_scale?: number;
+  trigger_mode?: string;
+  trigger_tag?: string;
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  result?: GenerateAdvancedResponse | Record<string, unknown> | null;
+  result_summary?: Record<string, unknown>;
+  score?: number;
+  score_breakdown?: Record<string, unknown>;
+  audio_urls?: string[];
+  gate_status?: string;
+  transcript_preview?: string | string[];
+  user_rating?: number;
+  user_notes?: string;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface LoraBenchmarkJob {
+  id: string;
+  kind?: "lora_benchmark";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  benchmark_title?: string;
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  attempts?: LoraBenchmarkResult[];
+  results?: LoraBenchmarkResult[];
+  logs?: string[];
+  errors?: string[];
+  current_attempt?: number;
+  total_attempts?: number;
+  completed_attempts?: number;
+  failed_attempts?: number;
+  remaining_attempts?: number;
+  child_generation_job_id?: string;
+  best_auto_result_id?: string;
+  best_manual_result_id?: string;
+  best_result_id?: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+}
+
+export interface LoraBenchmarkJobResponse {
+  success: boolean;
+  job_id?: string;
+  job?: LoraBenchmarkJob;
+  jobs?: LoraBenchmarkJob[];
+  error?: string;
+}
+
+export const startLoraBenchmarkJob = (body: Record<string, unknown>) =>
+  api.post<LoraBenchmarkJobResponse>("/api/lora/benchmarks/jobs", body);
+
+export const getLoraBenchmarkJob = (jobId: string) =>
+  api.get<LoraBenchmarkJobResponse>(`/api/lora/benchmarks/jobs/${encodeURIComponent(jobId)}`);
+
+export const listLoraBenchmarkJobs = () =>
+  api.get<LoraBenchmarkJobResponse>("/api/lora/benchmarks/jobs");
+
+export const rateLoraBenchmarkResult = (
+  jobId: string,
+  body: { attempt_id: string; user_rating: number; user_notes?: string },
+) =>
+  api.post<LoraBenchmarkJobResponse>(`/api/lora/benchmarks/jobs/${encodeURIComponent(jobId)}/rating`, body);
+
 // ---- LoRA adapters -------------------------------------------------------
 
 export interface LoraAdapter {

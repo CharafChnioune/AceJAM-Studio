@@ -10,6 +10,7 @@ import html as html_lib
 import importlib
 import ast
 import json
+import math
 import os
 import re
 import platform
@@ -78,6 +79,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
 ALBUMS_DIR = DATA_DIR / "albums"
 SONG_BATCHES_DIR = DATA_DIR / "song_batches"
+LORA_BENCHMARKS_DIR = DATA_DIR / "lora_benchmarks"
 ART_DIR = DATA_DIR / "art"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
@@ -100,6 +102,7 @@ ALBUM_EMBEDDING_FALLBACK_MODELS = [
 ALBUM_JOB_KEEP_LIMIT = 50
 GENERATION_JOB_KEEP_LIMIT = 50
 SONG_BATCH_JOB_KEEP_LIMIT = 50
+LORA_BENCHMARK_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
 ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=True)
@@ -247,6 +250,7 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
 SONG_BATCHES_DIR.mkdir(parents=True, exist_ok=True)
+LORA_BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
 ART_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -4469,6 +4473,7 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
         "lora_trigger_source": trigger_source if use_trigger else "",
         "lora_trigger_aliases": trigger_aliases,
         "lora_trigger_candidates": trigger_candidates,
+        "allow_unsafe_lora_for_benchmark": parse_bool(payload.get("allow_unsafe_lora_for_benchmark"), False),
     }
 
 
@@ -4611,7 +4616,9 @@ def _validate_lora_request_for_song_model(lora_request: dict[str, Any], song_mod
         )
     quality = adapter_quality_metadata(lora_request.get("adapter_metadata") or {}, adapter_type="lora")
     quality_status = str(quality.get("quality_status") or "").lower()
-    if quality_status in ACEJAM_LORA_UNSAFE_QUALITY_STATUSES:
+    if quality_status in ACEJAM_LORA_UNSAFE_QUALITY_STATUSES and not parse_bool(
+        lora_request.get("allow_unsafe_lora_for_benchmark"), False
+    ):
         reasons = "; ".join(str(item) for item in quality.get("quality_reasons") or [] if str(item))
         raise ValueError(
             "Selected LoRA is quarantined and cannot be used for generation"
@@ -5282,6 +5289,8 @@ _api_generation_tasks: dict[str, dict[str, Any]] = {}
 _api_generation_tasks_lock = threading.Lock()
 _song_batch_jobs: dict[str, dict[str, Any]] = {}
 _song_batch_jobs_lock = threading.Lock()
+_lora_benchmark_jobs: dict[str, dict[str, Any]] = {}
+_lora_benchmark_jobs_lock = threading.Lock()
 _lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
 _lora_autolabel_jobs_lock = threading.Lock()
 
@@ -10542,7 +10551,9 @@ def _lora_preflight_required(params: dict[str, Any]) -> bool:
         return False
     quality = _lora_quality_for_params(params)
     status = str(quality.get("quality_status") or "").lower()
-    if status in ACEJAM_LORA_UNSAFE_QUALITY_STATUSES:
+    if status in ACEJAM_LORA_UNSAFE_QUALITY_STATUSES and not parse_bool(
+        params.get("allow_unsafe_lora_for_benchmark"), False
+    ):
         raise RuntimeError(
             "Selected LoRA is quarantined and cannot be used for generation"
             + (
@@ -15713,6 +15724,810 @@ def _submit_song_batch_job(body: dict[str, Any]) -> dict[str, Any]:
     return {"job_id": job_id, "job": _song_batch_snapshot(job_id)}
 
 
+def _lora_benchmark_job_path(job_id: str) -> Path:
+    return LORA_BENCHMARKS_DIR / safe_id(job_id) / "job.json"
+
+
+def _persist_lora_benchmark_job(job: dict[str, Any]) -> None:
+    job_id = safe_id(str(job.get("id") or ""))
+    if not job_id:
+        return
+    path = _lora_benchmark_job_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(_jsonable(job), ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _lora_benchmark_adapter_label(adapter: dict[str, Any]) -> str:
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    return str(
+        adapter.get("display_name")
+        or adapter.get("label")
+        or adapter.get("name")
+        or metadata.get("display_name")
+        or metadata.get("generation_trigger_tag")
+        or metadata.get("trigger_tag_raw")
+        or metadata.get("trigger_tag")
+        or "LoRA"
+    ).strip() or "LoRA"
+
+
+def _lora_benchmark_adapter_trigger(adapter: dict[str, Any], *, mode: str, custom: str) -> tuple[str, bool, str]:
+    mode = str(mode or "auto").strip().lower()
+    if mode in {"off", "none", "disabled"}:
+        return "", False, "disabled"
+    if mode == "custom":
+        trigger = safe_generation_trigger_tag(custom)
+        return trigger, bool(trigger), "custom" if trigger else "missing"
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    candidates: list[Any] = [
+        adapter.get("generation_trigger_tag"),
+        metadata.get("generation_trigger_tag"),
+        adapter.get("trigger_tag"),
+        metadata.get("trigger_tag"),
+        adapter.get("trigger_tag_raw"),
+        metadata.get("trigger_tag_raw"),
+    ]
+    for list_key in ("trigger_aliases", "trigger_candidates"):
+        value = adapter.get(list_key) or metadata.get(list_key)
+        if isinstance(value, list):
+            candidates.extend(value)
+    for value in candidates:
+        trigger = safe_generation_trigger_tag(str(value or "").strip())
+        if trigger:
+            source = str(adapter.get("trigger_source") or metadata.get("trigger_source") or "metadata").strip() or "metadata"
+            return trigger, True, source
+    return "", False, "missing"
+
+
+def _lora_benchmark_adapter_epoch(adapter: dict[str, Any]) -> int | None:
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    for key in ("epoch", "best_loss_epoch", "completed_epochs"):
+        raw = adapter.get(key, metadata.get(key))
+        try:
+            value = int(raw)
+            if value >= 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    text_blob = " ".join(
+        str(adapter.get(key) or metadata.get(key) or "")
+        for key in ("name", "display_name", "label", "path")
+    )
+    match = re.search(r"epoch[_\-\s]*(\d+)", text_blob, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _lora_benchmark_adapter_loss(adapter: dict[str, Any]) -> float | None:
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    for key in ("loss", "last_loss", "best_loss"):
+        raw = adapter.get(key, metadata.get(key))
+        try:
+            value = float(raw)
+            if math.isfinite(value):
+                return value
+        except (TypeError, ValueError):
+            pass
+    text_blob = " ".join(
+        str(adapter.get(key) or metadata.get(key) or "")
+        for key in ("name", "display_name", "label", "path")
+    )
+    match = re.search(r"loss[_\-\s]*(\d+(?:\.\d+)?)", text_blob, flags=re.IGNORECASE)
+    return float(match.group(1)) if match else None
+
+
+def _lora_benchmark_quality_status(adapter: dict[str, Any]) -> str:
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    direct = str(adapter.get("quality_status") or metadata.get("quality_status") or "").strip()
+    if direct:
+        return direct
+    quality = adapter_quality_metadata(metadata, adapter_type=str(adapter.get("adapter_type") or metadata.get("adapter_type") or "lora"))
+    return str(quality.get("quality_status") or "unknown")
+
+
+def _lora_benchmark_scales(value: Any) -> list[float]:
+    raw_items = value if isinstance(value, list) else str(value or "").split(",")
+    scales: list[float] = []
+    for item in raw_items:
+        try:
+            scale = clamp_float(item, DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0)
+        except Exception:
+            continue
+        if not any(abs(scale - existing) < 0.0001 for existing in scales):
+            scales.append(round(scale, 4))
+    return scales[:8] or [1.0]
+
+
+def _lora_benchmark_base_payload(body: dict[str, Any]) -> dict[str, Any]:
+    source = body.get("render_payload") if isinstance(body.get("render_payload"), dict) else body
+    payload = dict(source or {})
+    payload["task_type"] = str(payload.get("task_type") or "text2music").strip() or "text2music"
+    payload["title"] = str(payload.get("title") or "LoRA Benchmark Test").strip() or "LoRA Benchmark Test"
+    payload["artist_name"] = str(payload.get("artist_name") or "").strip()
+    payload["caption"] = str(
+        payload.get("caption")
+        or "rap, hip hop, rhythmic spoken-word vocal, hard drums, deep bass, polished full mix"
+    ).strip()
+    payload["tags"] = str(payload.get("tags") or "rap, hip hop, hard drums, deep bass").strip()
+    payload["negative_tags"] = str(
+        payload.get("negative_tags") or "generic lyrics, muddy mix, mumbled vocals"
+    ).strip()
+    payload["lyrics"] = str(
+        payload.get("lyrics")
+        or "[Verse - rap, rhythmic spoken flow]\nEvery bar lands heavy while the drums keep pressure\nPocket full of thunder, every syllable measured\n\n[Chorus - rap hook]\nRun the benchmark loud, let the best take show\nSame words, same beat, hear the LoRA grow"
+    ).strip()
+    payload["instrumental"] = parse_bool(payload.get("instrumental"), payload["lyrics"].strip() == "[Instrumental]")
+    duration = clamp_int(payload.get("audio_duration") or payload.get("duration"), 30, 10, 600)
+    payload["duration"] = duration
+    payload["audio_duration"] = duration
+    payload["bpm"] = clamp_int(payload.get("bpm"), 92, 40, 220)
+    payload["key_scale"] = str(payload.get("key_scale") or payload.get("keyscale") or "D minor").strip() or "D minor"
+    payload["time_signature"] = str(payload.get("time_signature") or payload.get("timesignature") or "4/4").strip() or "4/4"
+    payload["vocal_language"] = str(payload.get("vocal_language") or payload.get("language") or "en").strip() or "en"
+    payload["song_model"] = str(payload.get("song_model") or "acestep-v15-xl-sft").strip() or "acestep-v15-xl-sft"
+    backend = _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit"))
+    payload["audio_backend"] = backend
+    payload["use_mlx_dit"] = backend == "mlx"
+    payload["quality_profile"] = str(payload.get("quality_profile") or "chart_master").strip() or "chart_master"
+    defaults = quality_profile_model_settings(payload["song_model"], payload["quality_profile"])
+    payload["inference_steps"] = clamp_int(payload.get("inference_steps"), int(defaults.get("inference_steps") or 50), 1, 200)
+    payload["guidance_scale"] = clamp_float(payload.get("guidance_scale"), float(defaults.get("guidance_scale") or 7), 1.0, 15.0)
+    payload["shift"] = clamp_float(payload.get("shift"), float(defaults.get("shift") or 1.0), 0.0, 10.0)
+    payload["audio_format"] = str(payload.get("audio_format") or "wav32").strip() or "wav32"
+    payload["batch_size"] = 1
+    payload["seed"] = clamp_int(payload.get("seed"), -1, -1, 2_147_483_647)
+    payload["vocal_intelligibility_gate"] = parse_bool(payload.get("vocal_intelligibility_gate"), True)
+    payload["vocal_intelligibility_model_rescue"] = False
+    payload["lora_preflight_required"] = False
+    payload["save_to_library"] = parse_bool(payload.get("save_to_library"), False)
+    payload["wizard_mode"] = "lora_benchmark"
+    payload["ui_mode"] = "lora_benchmark"
+    return payload
+
+
+def _lora_benchmark_adapter_from_item(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        adapter = dict(item)
+    else:
+        adapter = {"path": str(item or "").strip()}
+    path = str(adapter.get("path") or adapter.get("lora_adapter_path") or "").strip()
+    if not path:
+        raise ValueError("Adapter path is required.")
+    adapter["path"] = path
+    adapter.setdefault("name", Path(path).name)
+    if "metadata" not in adapter and Path(path).expanduser().exists():
+        try:
+            adapter["metadata"] = infer_adapter_model_metadata(Path(path).expanduser())
+        except Exception:
+            adapter["metadata"] = {}
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    adapter.setdefault("adapter_type", metadata.get("adapter_type") or "lora")
+    adapter.setdefault("model_variant", metadata.get("model_variant") or "")
+    adapter.setdefault("song_model", metadata.get("song_model") or "")
+    adapter["display_name"] = _lora_benchmark_adapter_label(adapter)
+    adapter["quality_status"] = _lora_benchmark_quality_status(adapter)
+    adapter["epoch"] = _lora_benchmark_adapter_epoch(adapter)
+    adapter["loss"] = _lora_benchmark_adapter_loss(adapter)
+    return _jsonable(adapter)
+
+
+def _lora_benchmark_attempt_entry(
+    index: int,
+    *,
+    role: str,
+    adapter: dict[str, Any] | None,
+    scale: float,
+    trigger_mode: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    adapter = adapter or {}
+    return {
+        "attempt_id": f"attempt_{index + 1:03d}",
+        "index": index,
+        "attempt_number": index + 1,
+        "attempt_role": role,
+        "state": "queued",
+        "status": "Queued",
+        "progress": 0,
+        "generation_job_id": "",
+        "adapter": _jsonable(adapter),
+        "adapter_name": _lora_benchmark_adapter_label(adapter) if adapter else "No LoRA",
+        "adapter_path": str(adapter.get("path") or ""),
+        "adapter_epoch": adapter.get("epoch"),
+        "adapter_loss": adapter.get("loss"),
+        "quality_status": str(adapter.get("quality_status") or ("baseline" if role == "baseline" else "unknown")),
+        "lora_scale": scale,
+        "trigger_mode": trigger_mode,
+        "trigger_tag": str(payload.get("lora_trigger_tag") or ""),
+        "payload": _jsonable(payload),
+        "payload_summary": _generation_payload_summary(payload),
+        "result": None,
+        "result_summary": {},
+        "score": 0,
+        "score_breakdown": {},
+        "audio_urls": [],
+        "gate_status": "",
+        "transcript_preview": "",
+        "user_rating": 0,
+        "user_notes": "",
+        "error": "",
+        "started_at": None,
+        "finished_at": None,
+    }
+
+
+def _normalise_lora_benchmark_body(body: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(body, dict):
+        raise ValueError("Benchmark payload must be an object.")
+    raw_adapters = body.get("adapters") if isinstance(body.get("adapters"), list) else []
+    if not raw_adapters and isinstance(body.get("adapter_paths"), list):
+        raw_adapters = [{"path": item} for item in body.get("adapter_paths") or []]
+    adapters: list[dict[str, Any]] = []
+    adapter_errors: list[str] = []
+    for index, item in enumerate(raw_adapters):
+        try:
+            adapters.append(_lora_benchmark_adapter_from_item(item))
+        except Exception as exc:
+            adapter_errors.append(f"Adapter {index + 1}: {exc}")
+    include_baseline = parse_bool(body.get("include_baseline"), True)
+    if not adapters and not include_baseline:
+        raise ValueError("Select at least one adapter or enable the no-LoRA baseline.")
+    if len(adapters) > 80:
+        raise ValueError("LoRA Benchmark supports maximaal 80 adapters per run.")
+    if adapter_errors:
+        raise ValueError("Benchmark adapter validation failed: " + " | ".join(adapter_errors))
+
+    scales = _lora_benchmark_scales(body.get("lora_scales", body.get("scales", [1.0])))
+    trigger_mode = str(body.get("trigger_mode") or "auto").strip().lower() or "auto"
+    if trigger_mode not in {"auto", "custom", "off"}:
+        trigger_mode = "auto"
+    custom_trigger = str(body.get("lora_trigger_tag") or body.get("custom_trigger_tag") or "").strip()
+    base_payload = _lora_benchmark_base_payload(body)
+    stop_on_error = parse_bool(body.get("stop_on_error"), False)
+
+    attempts: list[dict[str, Any]] = []
+    validation_errors: list[str] = []
+    if include_baseline:
+        baseline_payload = {
+            **base_payload,
+            "title": f"{base_payload['title']} — no LoRA",
+            "use_lora": False,
+            "lora_adapter_path": "",
+            "lora_adapter_name": "",
+            "use_lora_trigger": False,
+            "lora_trigger_tag": "",
+            "lora_scale": 0,
+        }
+        validation = _validate_generation_payload(baseline_payload)
+        if not validation.get("valid"):
+            errors = validation.get("field_errors") if isinstance(validation.get("field_errors"), dict) else {}
+            reason = "; ".join(f"{key}: {value}" for key, value in errors.items()) or "invalid baseline payload"
+            validation_errors.append(f"Baseline: {reason}")
+        attempts.append(
+            _lora_benchmark_attempt_entry(
+                len(attempts),
+                role="baseline",
+                adapter=None,
+                scale=0,
+                trigger_mode="off",
+                payload=baseline_payload,
+            )
+        )
+
+    for adapter in adapters:
+        for scale in scales:
+            trigger_tag, use_trigger, trigger_source = _lora_benchmark_adapter_trigger(adapter, mode=trigger_mode, custom=custom_trigger)
+            label = _lora_benchmark_adapter_label(adapter)
+            payload = {
+                **base_payload,
+                "title": f"{base_payload['title']} — {label} {int(round(scale * 100))}%",
+                "use_lora": True,
+                "lora_adapter_path": adapter["path"],
+                "lora_adapter_name": label,
+                "lora_scale": scale,
+                "use_lora_trigger": use_trigger,
+                "lora_trigger_tag": trigger_tag,
+                "lora_trigger_source": trigger_source if use_trigger else "",
+                "lora_trigger_aliases": adapter.get("trigger_aliases") or (adapter.get("metadata") or {}).get("trigger_aliases") or [],
+                "lora_trigger_candidates": adapter.get("trigger_candidates") or (adapter.get("metadata") or {}).get("trigger_candidates") or [],
+                "adapter_model_variant": adapter.get("model_variant") or "",
+                "adapter_song_model": adapter.get("song_model") or "",
+                "allow_unsafe_lora_for_benchmark": True,
+            }
+            validation = _validate_generation_payload(payload)
+            if not validation.get("valid"):
+                errors = validation.get("field_errors") if isinstance(validation.get("field_errors"), dict) else {}
+                reason = "; ".join(f"{key}: {value}" for key, value in errors.items()) or "invalid payload"
+                validation_errors.append(f"{label} {scale:g}: {reason}")
+            attempts.append(
+                _lora_benchmark_attempt_entry(
+                    len(attempts),
+                    role="lora",
+                    adapter=adapter,
+                    scale=scale,
+                    trigger_mode=trigger_mode,
+                    payload=payload,
+                )
+            )
+    if len(attempts) > 240:
+        raise ValueError("LoRA Benchmark supports maximaal 240 attempts per run.")
+    if validation_errors:
+        raise ValueError("Benchmark validation failed: " + " | ".join(validation_errors))
+
+    payload = {
+        "benchmark_title": str(body.get("benchmark_title") or body.get("title") or "LoRA Benchmark").strip() or "LoRA Benchmark",
+        "stop_on_error": stop_on_error,
+        "include_baseline": include_baseline,
+        "trigger_mode": trigger_mode,
+        "custom_trigger_tag": custom_trigger,
+        "lora_scales": scales,
+        "base_payload": _jsonable(base_payload),
+        "adapters": adapters,
+        "attempts": attempts,
+    }
+    return payload, attempts
+
+
+def _lora_benchmark_payload_summary(body: dict[str, Any]) -> dict[str, Any]:
+    attempts = body.get("attempts") if isinstance(body.get("attempts"), list) else []
+    adapters = body.get("adapters") if isinstance(body.get("adapters"), list) else []
+    return {
+        "benchmark_title": str(body.get("benchmark_title") or "LoRA Benchmark").strip(),
+        "adapter_count": len(adapters),
+        "attempt_count": len(attempts),
+        "lora_scales": list(body.get("lora_scales") or []),
+        "include_baseline": parse_bool(body.get("include_baseline"), True),
+        "trigger_mode": str(body.get("trigger_mode") or "auto"),
+        "stop_on_error": parse_bool(body.get("stop_on_error"), False),
+        "duration": (body.get("base_payload") or {}).get("duration") if isinstance(body.get("base_payload"), dict) else None,
+        "song_model": (body.get("base_payload") or {}).get("song_model") if isinstance(body.get("base_payload"), dict) else None,
+        "audio_backend": (body.get("base_payload") or {}).get("audio_backend") if isinstance(body.get("base_payload"), dict) else None,
+    }
+
+
+def _lora_benchmark_score(child_snapshot: dict[str, Any], result: dict[str, Any] | None, payload: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    result = result if isinstance(result, dict) else {}
+    audios = result.get("audios") if isinstance(result.get("audios"), list) else []
+    gate = result.get("vocal_intelligibility_gate") if isinstance(result.get("vocal_intelligibility_gate"), dict) else {}
+    style_audit = result.get("style_conditioning_audit") if isinstance(result.get("style_conditioning_audit"), dict) else {}
+    trigger_audit = result.get("lora_trigger_conditioning_audit") if isinstance(result.get("lora_trigger_conditioning_audit"), dict) else {}
+    pro_audit = result.get("pro_quality_audit") if isinstance(result.get("pro_quality_audit"), dict) else {}
+    recommended = pro_audit.get("recommended_take") if isinstance(pro_audit.get("recommended_take"), dict) else {}
+    pro_score = recommended.get("score")
+    if pro_score in (None, "") and audios and isinstance(audios[0], dict):
+        pro_score = audios[0].get("pro_quality_score")
+    try:
+        pro_value = max(0.0, min(100.0, float(pro_score)))
+    except (TypeError, ValueError):
+        pro_value = 0.0
+
+    score = 0.0
+    reasons: list[str] = []
+    child_state = str(child_snapshot.get("state") or "").lower()
+    success = child_state in {"succeeded", "complete", "completed", "success"} and result.get("success") is not False
+    audio_urls = _song_batch_audio_urls(result)
+    if success and audio_urls:
+        score += 20
+        reasons.append("audio_written")
+    else:
+        score -= 35
+        reasons.append("generation_failed")
+
+    if gate:
+        if parse_bool(gate.get("passed"), False) or str(gate.get("status") or "").lower() == "pass":
+            score += 35
+            reasons.append("vocal_gate_pass")
+        elif gate.get("blocking") is False and str(gate.get("status") or "").lower() == "needs_review":
+            score += 8
+            reasons.append("vocal_gate_needs_review")
+        else:
+            score -= 20
+            reasons.append(str(gate.get("issue") or gate.get("status") or "vocal_gate_fail"))
+        hits = gate.get("keyword_hits") if isinstance(gate.get("keyword_hits"), list) else []
+        score += min(15, len(hits) * 4)
+        repeat_ratio = gate.get("repeat_ratio")
+        filler_ratio = gate.get("filler_ratio")
+        try:
+            score -= max(0.0, float(repeat_ratio) - 0.18) * 40
+        except (TypeError, ValueError):
+            pass
+        try:
+            score -= max(0.0, float(filler_ratio) - 0.18) * 30
+        except (TypeError, ValueError):
+            pass
+    else:
+        reasons.append("vocal_gate_missing")
+
+    score += pro_value * 0.18
+    if str(style_audit.get("status") or "").lower() in {"pass", "ok"}:
+        score += 8
+        reasons.append("style_audit_pass")
+    elif style_audit:
+        score -= 4
+        reasons.append("style_audit_warn")
+
+    if parse_bool(payload.get("use_lora"), False):
+        if parse_bool(result.get("lora_trigger_applied") or trigger_audit.get("applied"), False):
+            score += 7
+            reasons.append("lora_trigger_applied")
+        elif parse_bool(payload.get("use_lora_trigger"), False):
+            score -= 5
+            reasons.append("lora_trigger_missing")
+        if result.get("with_lora") is False:
+            score -= 12
+            reasons.append("lora_not_active")
+
+    requested = str(result.get("requested_song_model") or payload.get("song_model") or "").strip()
+    actual = str(result.get("actual_song_model") or requested).strip()
+    if requested and actual and requested != actual:
+        score -= 10
+        reasons.append("model_mismatch")
+    else:
+        score += 5
+        reasons.append("model_match")
+
+    score = round(max(0.0, min(100.0, score)), 2)
+    breakdown = {
+        "score": score,
+        "success": success,
+        "audio_url_count": len(audio_urls),
+        "vocal_gate_status": gate.get("status") or result.get("vocal_gate_status") or "",
+        "vocal_gate_passed": gate.get("passed"),
+        "keyword_hits": gate.get("keyword_hits") or [],
+        "repeat_ratio": gate.get("repeat_ratio"),
+        "filler_ratio": gate.get("filler_ratio"),
+        "pro_quality_score": pro_value,
+        "style_audit_status": style_audit.get("status") or "",
+        "lora_trigger_applied": result.get("lora_trigger_applied") or trigger_audit.get("applied"),
+        "reasons": reasons,
+    }
+    return score, _jsonable(breakdown)
+
+
+def _lora_benchmark_rankings(results: list[dict[str, Any]]) -> dict[str, Any]:
+    auto_candidates = [item for item in results if str(item.get("state") or "").lower() in {"succeeded", "success", "complete", "completed"}]
+    best_auto = max(auto_candidates or results, key=lambda item: float(item.get("score") or 0), default={})
+    rated = [item for item in results if int(item.get("user_rating") or 0) > 0]
+    best_manual = max(
+        rated,
+        key=lambda item: (int(item.get("user_rating") or 0), float(item.get("score") or 0)),
+        default={},
+    )
+    return {
+        "best_auto_result_id": best_auto.get("attempt_id") or "",
+        "best_manual_result_id": best_manual.get("attempt_id") or "",
+        "best_result_id": (best_manual or best_auto).get("attempt_id") or "",
+    }
+
+
+def _set_lora_benchmark_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _lora_benchmark_jobs_lock:
+        job = _lora_benchmark_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "kind": "lora_benchmark",
+                "state": "queued",
+                "status": "Queued",
+                "stage": "queued",
+                "progress": 0,
+                "benchmark_title": "LoRA Benchmark",
+                "payload": {},
+                "payload_summary": {},
+                "attempts": [],
+                "results": [],
+                "logs": [],
+                "errors": [],
+                "current_attempt": 0,
+                "total_attempts": 0,
+                "completed_attempts": 0,
+                "failed_attempts": 0,
+                "remaining_attempts": 0,
+                "child_generation_job_id": "",
+                "best_auto_result_id": "",
+                "best_manual_result_id": "",
+                "best_result_id": "",
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "updated_at": now,
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-700:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-700:]
+        if "errors" in updates:
+            old_errors = list(job.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                job["errors"] = (old_errors + [str(item) for item in new_errors])[-150:]
+            elif new_errors:
+                job["errors"] = (old_errors + [str(new_errors)])[-150:]
+        updates.setdefault("updated_at", now)
+        job.update(_jsonable(updates))
+        if "results" in updates:
+            rankings = _lora_benchmark_rankings(list(job.get("results") or []))
+            job.update(rankings)
+        if len(_lora_benchmark_jobs) > LORA_BENCHMARK_JOB_KEEP_LIMIT:
+            removable = sorted(
+                _lora_benchmark_jobs.values(),
+                key=lambda item: str(item.get("finished_at") or item.get("created_at") or ""),
+            )
+            for old in removable[: max(0, len(_lora_benchmark_jobs) - LORA_BENCHMARK_JOB_KEEP_LIMIT)]:
+                if old.get("state") not in {"queued", "running"}:
+                    _lora_benchmark_jobs.pop(str(old.get("id")), None)
+        snapshot = dict(job)
+    try:
+        _persist_lora_benchmark_job(snapshot)
+    except Exception as exc:
+        print(f"[lora_benchmark] failed to persist {job_id}: {exc}")
+    return snapshot
+
+
+def _lora_benchmark_job_view(job: dict[str, Any]) -> dict[str, Any]:
+    return _jsonable(dict(job))
+
+
+def _lora_benchmark_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _lora_benchmark_jobs_lock:
+        if job_id:
+            job = dict(_lora_benchmark_jobs.get(job_id) or {})
+            if not job:
+                path = _lora_benchmark_job_path(job_id)
+                if path.is_file():
+                    try:
+                        job = json.loads(path.read_text(encoding="utf-8"))
+                        _lora_benchmark_jobs[job_id] = dict(job)
+                    except Exception:
+                        job = {}
+            return _lora_benchmark_job_view(job) if job else {}
+        jobs = [dict(job) for job in _lora_benchmark_jobs.values()]
+        known_ids = {str(job.get("id") or "") for job in jobs}
+    for path in LORA_BENCHMARKS_DIR.glob("*/job.json"):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        job_id_from_disk = str(job.get("id") or path.parent.name)
+        if job_id_from_disk in known_ids:
+            continue
+        with _lora_benchmark_jobs_lock:
+            _lora_benchmark_jobs[job_id_from_disk] = dict(job)
+        jobs.append(dict(job))
+    return [
+        _lora_benchmark_job_view(job)
+        for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
+    ]
+
+
+def _lora_benchmark_worker(job_id: str, payload: dict[str, Any]) -> None:
+    attempts = list(payload.get("attempts") or [])
+    existing = _lora_benchmark_snapshot(job_id)
+    entries = list(existing.get("attempts") or []) if isinstance(existing, dict) else []
+    results: list[dict[str, Any]] = []
+    total = len(attempts)
+    completed = 0
+    failed = 0
+    stop_on_error = parse_bool(payload.get("stop_on_error"), False)
+    _set_lora_benchmark_job(
+        job_id,
+        state="running",
+        status="Benchmark running",
+        stage="running",
+        progress=1,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        total_attempts=total,
+        remaining_attempts=total,
+        logs=[f"LoRA Benchmark {job_id} started with {total} attempt(s)."],
+    )
+    try:
+        for index, attempt in enumerate(attempts):
+            if not isinstance(attempt, dict):
+                continue
+            attempt_number = index + 1
+            attempt_id = str(attempt.get("attempt_id") or f"attempt_{attempt_number:03d}")
+            payload_for_generation = dict(attempt.get("payload") or {})
+            label = str(attempt.get("adapter_name") or payload_for_generation.get("title") or attempt_id)
+            if entries and index < len(entries):
+                entries[index] = {
+                    **entries[index],
+                    "state": "running",
+                    "status": "Rendering",
+                    "progress": 0,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "error": "",
+                }
+            base_progress = int((index / max(1, total)) * 100)
+            _set_lora_benchmark_job(
+                job_id,
+                attempts=entries,
+                current_attempt=attempt_number,
+                stage="rendering",
+                status=f"Rendering attempt {attempt_number}/{total}",
+                progress=max(1, base_progress),
+                remaining_attempts=max(0, total - index),
+                logs=[
+                    f"Attempt {attempt_number}/{total} queued: {label} · scale {attempt.get('lora_scale')} · trigger {attempt.get('trigger_tag') or 'off'}"
+                ],
+            )
+            child_payload = {
+                **payload_for_generation,
+                "wizard_mode": "lora_benchmark",
+                "lora_benchmark_id": job_id,
+                "lora_benchmark_attempt_id": attempt_id,
+            }
+            child = _submit_api_generation_task(child_payload)
+            child_id = str(child.get("job_id") or child.get("task_id") or "")
+            if entries and index < len(entries):
+                entries[index]["generation_job_id"] = child_id
+            _set_lora_benchmark_job(
+                job_id,
+                child_generation_job_id=child_id,
+                attempts=entries,
+                logs=[f"Attempt {attempt_number}/{total} render started: generation job {child_id}."],
+            )
+            last_progress = -1
+            child_snapshot: dict[str, Any] = {}
+            while True:
+                child_snapshot = _generation_job_snapshot(child_id)
+                if not isinstance(child_snapshot, dict) or not child_snapshot:
+                    raise RuntimeError(f"Child generation job missing: {child_id}")
+                child_progress = clamp_int(child_snapshot.get("progress"), 0, 0, 100)
+                combined_progress = int(((index + child_progress / 100.0) / max(1, total)) * 100)
+                if child_progress != last_progress:
+                    last_progress = child_progress
+                    if entries and index < len(entries):
+                        entries[index]["progress"] = child_progress
+                        entries[index]["status"] = str(child_snapshot.get("status") or child_snapshot.get("stage") or "Rendering")
+                    _set_lora_benchmark_job(
+                        job_id,
+                        attempts=entries,
+                        progress=max(base_progress, min(99, combined_progress)),
+                        status=f"Rendering attempt {attempt_number}/{total}",
+                        stage=str(child_snapshot.get("stage") or "rendering").lower() or "rendering",
+                        logs=[f"Attempt {attempt_number}/{total}: {child_progress}%"],
+                    )
+                state = str(child_snapshot.get("state") or "").lower()
+                if state in {"succeeded", "complete", "completed", "success", "failed", "error", "stopped"}:
+                    break
+                time.sleep(2.0)
+
+            result = child_snapshot.get("result") if isinstance(child_snapshot.get("result"), dict) else None
+            result_summary = child_snapshot.get("result_summary") if isinstance(child_snapshot.get("result_summary"), dict) else _generation_result_summary(result)
+            state = str(child_snapshot.get("state") or "").lower()
+            score, breakdown = _lora_benchmark_score(child_snapshot, result, payload_for_generation)
+            audio_urls = _song_batch_audio_urls(result)
+            gate = (result or {}).get("vocal_intelligibility_gate") if isinstance((result or {}).get("vocal_intelligibility_gate"), dict) else {}
+            success = state == "succeeded" and (not isinstance(result, dict) or result.get("success") is not False)
+            entry_update = {
+                "state": "succeeded" if success else "failed",
+                "status": "Complete" if success else "Failed",
+                "progress": 100,
+                "generation_job_id": child_id,
+                "result": result,
+                "result_summary": result_summary,
+                "score": score,
+                "score_breakdown": breakdown,
+                "audio_urls": audio_urls,
+                "gate_status": gate.get("status") or (result or {}).get("vocal_gate_status") or "",
+                "transcript_preview": gate.get("transcript_preview") or (result or {}).get("transcript_preview") or "",
+                "error": "" if success else str(child_snapshot.get("error") or (result or {}).get("error") or "Generation failed"),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if entries and index < len(entries):
+                entries[index].update(entry_update)
+                result_entry = dict(entries[index])
+            else:
+                result_entry = {**attempt, **entry_update}
+            results.append(_jsonable(result_entry))
+            if success:
+                completed += 1
+                log_line = f"Attempt {attempt_number}/{total} complete: {label} · score {score:.1f}"
+            else:
+                failed += 1
+                log_line = f"Attempt {attempt_number}/{total} failed: {entry_update['error']}"
+            _set_lora_benchmark_job(
+                job_id,
+                attempts=entries,
+                results=results,
+                completed_attempts=completed,
+                failed_attempts=failed,
+                remaining_attempts=max(0, total - completed - failed),
+                progress=int(((index + 1) / max(1, total)) * 100),
+                logs=[log_line],
+                errors=[] if success else [str(entry_update["error"])],
+            )
+            if (not success) and stop_on_error:
+                break
+
+        finished = datetime.now(timezone.utc).isoformat()
+        if failed and stop_on_error:
+            state = "failed"
+            status = "Benchmark stopped after failed attempt"
+        elif failed:
+            state = "succeeded"
+            status = "Benchmark completed with errors"
+        else:
+            state = "succeeded"
+            status = "Benchmark completed"
+        _set_lora_benchmark_job(
+            job_id,
+            state=state,
+            status=status,
+            stage="complete" if state == "succeeded" else "failed",
+            progress=100,
+            current_attempt=completed + failed,
+            completed_attempts=completed,
+            failed_attempts=failed,
+            remaining_attempts=max(0, total - completed - failed),
+            child_generation_job_id="",
+            finished_at=finished,
+            logs=[status],
+        )
+    except Exception as exc:
+        _set_lora_benchmark_job(
+            job_id,
+            state="failed",
+            status="Benchmark failed",
+            stage="failed",
+            progress=100,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            child_generation_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        _cleanup_accelerator_memory()
+
+
+def _submit_lora_benchmark_job(body: dict[str, Any]) -> dict[str, Any]:
+    payload, attempts = _normalise_lora_benchmark_body(body)
+    job_id = uuid.uuid4().hex[:12]
+    summary = _lora_benchmark_payload_summary(payload)
+    _set_lora_benchmark_job(
+        job_id,
+        payload=payload,
+        payload_summary=summary,
+        benchmark_title=summary["benchmark_title"],
+        total_attempts=len(attempts),
+        remaining_attempts=len(attempts),
+        attempts=attempts,
+        logs=[f"LoRA Benchmark {job_id} queued with {len(attempts)} attempt(s)."],
+    )
+    thread = threading.Thread(target=_lora_benchmark_worker, args=(job_id, payload), daemon=True)
+    thread.start()
+    return {"job_id": job_id, "job": _lora_benchmark_snapshot(job_id)}
+
+
+def _rate_lora_benchmark_result(job_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    job = _lora_benchmark_snapshot(job_id)
+    if not isinstance(job, dict) or not job:
+        raise KeyError("LoRA benchmark job not found")
+    attempt_id = str(body.get("attempt_id") or body.get("result_id") or "").strip()
+    if not attempt_id:
+        raise ValueError("attempt_id is required")
+    rating = clamp_int(body.get("user_rating"), 0, 0, 5)
+    notes = str(body.get("user_notes") or body.get("notes") or "").strip()
+    results = list(job.get("results") or [])
+    attempts = list(job.get("attempts") or [])
+    updated = False
+    for collection in (results, attempts):
+        for item in collection:
+            if isinstance(item, dict) and str(item.get("attempt_id") or "") == attempt_id:
+                item["user_rating"] = rating
+                item["user_notes"] = notes
+                updated = True
+    if not updated:
+        raise KeyError("Benchmark attempt not found")
+    return _set_lora_benchmark_job(job_id, results=results, attempts=attempts, logs=[f"Rating saved for {attempt_id}: {rating}/5"])
+
+
 def _official_query_item(task_id: str) -> dict[str, Any]:
     with _api_generation_tasks_lock:
         task = dict(_api_generation_tasks.get(task_id) or {})
@@ -15815,6 +16630,11 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "active_song_batch_jobs": [
             job
             for job in _song_batch_snapshot()
+            if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
+        ],
+        "active_lora_benchmark_jobs": [
+            job
+            for job in _lora_benchmark_snapshot()
             if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
         ],
         "ollama": json.loads(ollama_models()),
@@ -17833,6 +18653,55 @@ async def api_song_batch_job_log(job_id: str):
         raise HTTPException(status_code=404, detail="Song batch job not found")
     logs = [str(item) for item in (job.get("logs") or []) if str(item)]
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.get("/api/lora/benchmarks/jobs")
+async def api_lora_benchmark_jobs_list():
+    jobs = _lora_benchmark_snapshot()
+    return JSONResponse({"success": True, "jobs": jobs})
+
+
+@app.post("/api/lora/benchmarks/jobs")
+async def api_lora_benchmark_jobs_start(request: Request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Benchmark payload must be an object")
+        task = _submit_lora_benchmark_job(payload)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/lora/benchmarks/jobs/{job_id}")
+async def api_lora_benchmark_job_detail(job_id: str):
+    job = _lora_benchmark_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="LoRA benchmark job not found")
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/lora/benchmarks/jobs/{job_id}/log")
+async def api_lora_benchmark_job_log(job_id: str):
+    job = _lora_benchmark_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="LoRA benchmark job not found")
+    logs = [str(item) for item in (job.get("logs") or []) if str(item)]
+    return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.post("/api/lora/benchmarks/jobs/{job_id}/rating")
+async def api_lora_benchmark_job_rating(job_id: str, request: Request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Rating payload must be an object")
+        job = _rate_lora_benchmark_result(safe_id(job_id), payload)
+        return JSONResponse({"success": True, "job": job})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/generate_advanced")

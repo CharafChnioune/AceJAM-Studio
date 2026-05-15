@@ -7,6 +7,7 @@ export type JobKind =
   | "mflux"
   | "mlx-video"
   | "lora"
+  | "lora-benchmark"
   | "ollama-pull"
   | "model-download"
   | "lm-download";

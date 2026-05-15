@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Brain,
   CheckCircle2,
   Disc3,
@@ -47,6 +48,7 @@ const ICONS: Record<JobKind, React.ComponentType<{ className?: string }>> = {
   mflux: ImageIcon,
   "mlx-video": Video,
   lora: GraduationCap,
+  "lora-benchmark": BarChart3,
   "ollama-pull": Brain,
   "model-download": Download,
   "lm-download": Download,
@@ -182,6 +184,7 @@ function kindLabel(kind: JobKind): string {
   if (kind === "generation") return "Song render";
   if (kind === "song-batch") return "Song batch";
   if (kind === "lora") return "LoRA training";
+  if (kind === "lora-benchmark") return "LoRA benchmark";
   if (kind === "mflux") return "MFLUX image";
   if (kind === "mlx-video") return "MLX video";
   if (kind === "album") return "Album job";
@@ -337,6 +340,28 @@ function jobPatchFromSongBatch(job: JsonRecord): JobEntry {
     kindLabel: "Song batch",
     detailsPath: `/api/song-batches/jobs/${encodeURIComponent(id)}`,
     logPath: `/api/song-batches/jobs/${encodeURIComponent(id)}/log`,
+    metadata: job,
+    error: text(job.error || asArray(job.errors)[0], ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
+  };
+}
+
+function jobPatchFromLoraBenchmark(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const id = text(job.id, "lora-benchmark-job");
+  const label = text(job.benchmark_title || payload.benchmark_title || id, "LoRA Benchmark");
+  return {
+    id,
+    kind: "lora-benchmark",
+    label,
+    progress: progressOf({ id, kind: "lora-benchmark", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "lora-benchmark", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "lora-benchmark", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "LoRA benchmark",
+    detailsPath: `/api/lora/benchmarks/jobs/${encodeURIComponent(id)}`,
+    logPath: `/api/lora/benchmarks/jobs/${encodeURIComponent(id)}/log`,
     metadata: job,
     error: text(job.error || asArray(job.errors)[0], ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
@@ -1150,6 +1175,109 @@ function SongBatchDetails({
   );
 }
 
+function LoraBenchmarkDetails({
+  job,
+  log,
+}: {
+  job: JsonRecord;
+  log: string;
+}) {
+  const payload = asRecord(job.payload);
+  const results = asArray(job.results).map(asRecord);
+  const attempts = asArray(job.attempts).map(asRecord);
+  const rows = results.length ? results : attempts;
+  const logs = log ? log.split("\n") : asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
+  const bestId = text(job.best_manual_result_id || job.best_auto_result_id || job.best_result_id, "");
+  const best = rows.find((row) => text(row.attempt_id, "") === bestId);
+  return (
+    <div className="space-y-4">
+      <Section title="Benchmark setup" icon={BarChart3}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <InfoRow label="Benchmark" value={job.benchmark_title || payload.benchmark_title} />
+          <InfoRow label="Current attempt" value={job.current_attempt ? `${text(job.current_attempt)} / ${text(job.total_attempts)}` : ""} />
+          <InfoRow label="Completed" value={job.completed_attempts} />
+          <InfoRow label="Failed" value={job.failed_attempts} />
+          <InfoRow label="Remaining" value={job.remaining_attempts} />
+          <InfoRow label="Child job" value={job.child_generation_job_id} />
+          <InfoRow label="Auto best" value={job.best_auto_result_id} />
+          <InfoRow label="Manual best" value={job.best_manual_result_id} />
+        </div>
+      </Section>
+
+      {best && (
+        <Section title="Best candidate" icon={CheckCircle2}>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <InfoRow label="Adapter" value={best.adapter_name} />
+            <InfoRow label="Scale" value={best.lora_scale} />
+            <InfoRow label="Trigger" value={best.trigger_tag || "off"} />
+            <InfoRow label="Score" value={best.score} />
+          </div>
+        </Section>
+      )}
+
+      <Section title="Attempts">
+        <div className="space-y-3">
+          {rows.map((row, index) => {
+            const result = asRecord(row.result);
+            const summary = asRecord(row.payload_summary);
+            const score = Number(row.score);
+            const scoreBreakdown = asRecord(row.score_breakdown);
+            return (
+              <div key={`${row.attempt_id || index}-${row.generation_job_id || row.adapter_name}`} className="rounded-lg border bg-background/35 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {text(row.attempt_number || index + 1)}. {text(row.adapter_name, "LoRA")}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {text(summary.song_model, "auto")} · scale {text(row.lora_scale)} · trigger {text(row.trigger_tag || "off")} · job {text(row.generation_job_id)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {text(row.attempt_id, "") === bestId && <Badge>Best</Badge>}
+                    <Badge variant={String(row.state).toLowerCase() === "failed" ? "destructive" : String(row.state).toLowerCase() === "succeeded" ? "default" : "outline"}>
+                      {text(row.status || row.state)}
+                    </Badge>
+                  </div>
+                </div>
+                {Number.isFinite(score) && (
+                  <div className="mt-2 space-y-1">
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div className="h-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Score {score.toFixed(1)} · gate {text(row.gate_status || scoreBreakdown.vocal_gate_status)} · rating {text(row.user_rating || 0)}/5
+                    </p>
+                  </div>
+                )}
+                {Boolean(row.error) && (
+                  <p className="mt-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                    {text(row.error)}
+                  </p>
+                )}
+                {Object.keys(result).length > 0 && (
+                  <GenerationAudioList
+                    result={result}
+                    title={text(row.adapter_name, `Attempt ${index + 1}`)}
+                    artist="LoRA Benchmark"
+                    className="mt-3 space-y-2"
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -1238,6 +1366,23 @@ function JobDetailsDialog({
           job.detailsPath || `/api/song-batches/jobs/${encodeURIComponent(job.id)}`,
         );
         const nextLog = await getOptionalLog(job.logPath || `/api/song-batches/jobs/${encodeURIComponent(job.id)}/log`);
+        const next = asRecord(jobResp.job);
+        setRemoteJob(next);
+        if (nextLog !== null) setLog(nextLog);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
+          metadata: next,
+          error: text(next.error || asArray(next.errors)[0], ""),
+        });
+      } else if (job.kind === "lora-benchmark") {
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/lora/benchmarks/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/lora/benchmarks/jobs/${encodeURIComponent(job.id)}/log`);
         const next = asRecord(jobResp.job);
         setRemoteJob(next);
         if (nextLog !== null) setLog(nextLog);
@@ -1484,6 +1629,8 @@ function JobDetailsDialog({
             <GenerationDetails job={remote} log={log} />
           ) : job.kind === "song-batch" ? (
             <SongBatchDetails job={remote} log={log} />
+          ) : job.kind === "lora-benchmark" ? (
+            <LoraBenchmarkDetails job={remote} log={log} />
           ) : job.kind === "album" ? (
             <AlbumDetails job={remote} />
           ) : job.kind === "mflux" ? (
@@ -1513,10 +1660,11 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
     let cancelled = false;
     const hydrateRemoteJobs = async () => {
       try {
-        const [loraResult, generationResult, songBatchResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
+        const [loraResult, generationResult, songBatchResult, loraBenchmarkResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/song-batches/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/benchmarks/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mflux/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mlx-video/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/album/jobs"),
@@ -1527,6 +1675,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         const loraJobs = loraResult.status === "fulfilled" ? loraResult.value.jobs || [] : [];
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
         const songBatchJobs = songBatchResult.status === "fulfilled" ? songBatchResult.value.jobs || [] : [];
+        const loraBenchmarkJobs = loraBenchmarkResult.status === "fulfilled" ? loraBenchmarkResult.value.jobs || [] : [];
         const mfluxJobs = mfluxResult.status === "fulfilled" ? mfluxResult.value.jobs || [] : [];
         const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
         const albumJobs = albumResult.status === "fulfilled" ? albumResult.value.jobs || [] : [];
@@ -1548,6 +1697,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           if (!id) continue;
           if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
           addJob(jobPatchFromSongBatch(rawJob));
+        }
+        for (const [index, rawJob] of loraBenchmarkJobs.entries()) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromLoraBenchmark(rawJob));
         }
         for (const [index, rawJob] of mfluxJobs.entries()) {
           const id = text(rawJob.id, "");
