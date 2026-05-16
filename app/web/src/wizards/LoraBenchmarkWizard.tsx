@@ -63,32 +63,47 @@ const FALLBACK_GENRES: EpochAuditionGenre[] = [
   {
     key: "rap",
     label: "Rap / Hip-hop",
-    caption_tags: "rap, hip hop, rhythmic spoken-word vocal, clear rap flow, hard drums, deep bass, polished full mix",
+    caption_tags:
+      "rap, hip hop, hard-hitting boom-bap drums, knockout 808 sub bass, rattling low-end, rubbery g-funk lead, dry upfront male vocal, dirty street-banger mix, strip-club ready",
     lyrics_section_tags: { verse: "rap, rhythmic spoken flow", chorus: "rap hook" },
     lyrics:
-      "[Verse - rap, rhythmic spoken flow]\nI count the pressure by the kick when the room goes still\nEvery line got weight, every pocket got steel\nLow end breathing like a motor in the curbside heat\nOne take, same words, let the LoRA speak\n\n[Chorus - rap hook]\nRun the test loud, let the best one show\nSame drums, same bars, hear the trained voice grow",
-    bpm: 92,
-    keyscale: "D minor",
+      "[Verse - rap, rhythmic spoken flow]\nShe text me late, said come thru, she ready\nI'm posted up dripping, chain swinging heavy\nPull up to the spot, she on the bed in her panties\nHit it from the back till her legs go shaky\nMoney on the dresser, gun under the mattress\nWhole crew outside, this my whole damn business\n\n[Chorus - rap hook]\nShake that ass, girl, I want it all night\nKnockout 808 hitting til the sun get bright",
+    bpm: 95,
+    keyscale: "A minor",
+    timesignature: "4/4",
+  },
+  {
+    key: "gangster_rap",
+    label: "Gangster Rap",
+    caption_tags:
+      "gangster rap, hardcore hip hop, dirty south crunk, knockout 808 sub, rattling triplet hi-hats, menacing minor-key piano, gritty male rap vocal, raw unfiltered street-banger mix, strip-club ready",
+    lyrics_section_tags: { verse: "hardcore rap, aggressive flow", chorus: "gangster crunk hook" },
+    lyrics:
+      "[Verse - hardcore rap, aggressive flow]\nBands on the table, glock on my hip tonight\nBad bitch on my lap grinding slow till the lights bright\nI tell her drop it down low, throw it back on the dick right\nPop a bottle on her ass, watch it drip down her thighs tight\nChoppers in the trunk, money fold up like origami\nShe suck it like a pro, this my city, ain't nobody stopping me\n\n[Chorus - gangster crunk hook]\nShake that ass, throw it back, let me hit it all night\nKnockout bass in the trunk, strip-club ready, money tight",
+    bpm: 85,
+    keyscale: "A minor",
     timesignature: "4/4",
   },
   {
     key: "pop",
     label: "Pop",
-    caption_tags: "modern pop, bright hook, clean lead vocal, punchy drums, radio-ready mix",
+    caption_tags:
+      "club pop, hard-hitting modern drums, slapping analog synth bass, aggressive lead vocal, doubled stacked sex-anthem hook, strip-club ready arena mix",
     lyrics:
-      "[Verse - clean pop vocal]\nThe room lights up when the rhythm starts moving\nEvery little doubt gets lost in the groove\n\n[Chorus - bright pop hook]\nTurn it up now, let the best take shine\nOne melody, one moment, one clear line",
-    bpm: 116,
+      "[Verse - pop sex-anthem vocal]\nYou touch me low, hands on my hips so slow\nI'm dripping wet on the dance floor, watch how I go\nWhisper dirty in my ear what you wanna do\nDrag me home, take it off, I'ma freak for you\n\n[Chorus - hard pop hook]\nBend me over, baby, hit it all night\nBassline pumping, I'ma ride you till the daylight",
+    bpm: 118,
     keyscale: "C major",
     timesignature: "4/4",
   },
   {
     key: "rnb",
     label: "Soul / R&B",
-    caption_tags: "smooth rnb groove, warm keys, intimate lead vocal, soft harmonies, deep pocket",
+    caption_tags:
+      "explicit slow-jam rnb, sex-anthem groove, hard-hitting trap-soul drums, knockout sub bass, smoky rhodes keys, dry intimate lead vocal, breathy stacked harmonies, dirty unfiltered mix",
     lyrics:
-      "[Verse - smooth rnb vocal]\nLate night keys lean soft against the rain\nI hear your name in the space between the bass\n\n[Chorus - soulful rnb hook]\nHold close, move slow, let the feeling stay\nOne clear voice carries everything we say",
-    bpm: 86,
-    keyscale: "A minor",
+      "[Verse - intimate rnb vocal]\nLock the door, lay you down on the silk tonight\nSlide it slow till you grip me and pull me in tight\nTongue on your neck while you whisper my name in the dark\nBody to body, every kiss leaving a mark\n\n[Chorus - explicit slow-jam hook]\nRide me slow, baby, take it all night long\nWet between the sheets while the bassline pumps strong",
+    bpm: 82,
+    keyscale: "D minor",
     timesignature: "4/4",
   },
 ];

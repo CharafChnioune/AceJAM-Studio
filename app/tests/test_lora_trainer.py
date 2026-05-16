@@ -745,9 +745,9 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(audition["lyrics_source"], "genre_default")
             self.assertIn("Pac", audition["caption"])
             self.assertIn("west coast rap", audition["caption"])
-            self.assertIn("clear aggressive rap flow", audition["caption"])
-            self.assertIn("deep 808 bassline", audition["caption"])
-            self.assertIn("Bullshit crown", audition["lyrics"])
+            self.assertIn("hard aggressive rap flow", audition["caption"])
+            self.assertIn("knockout 808 sub bass", audition["caption"])
+            self.assertIn("Shake that ass", audition["lyrics"])
             self.assertEqual(audition["bpm"], 95)
             self.assertEqual(audition["keyscale"], "A minor")
             self.assertEqual(audition["timesignature"], "4")
@@ -779,19 +779,28 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertNotIn("Pac", lyrics)
         self.assertIn("[Verse - rap, rhythmic spoken flow]", lyrics)
         self.assertIn("[Chorus - rap hook]", lyrics)
-        self.assertIn("Bullshit crown", lyrics)
+        self.assertIn("Shake that ass", lyrics)
 
     def test_epoch_audition_genre_options_expose_ui_lyrics_and_tags(self):
         options = {item["key"]: item for item in epoch_audition_genre_options()}
 
         self.assertIn("rap", options)
+        self.assertIn("gangster_rap", options)
         self.assertIn("pop", options)
         self.assertIn("rnb", options)
-        self.assertIn("Bullshit crown", options["rap"]["lyrics"])
-        self.assertIn("deep 808 bassline", options["rap"]["caption_tags"])
+        # Rap fixture is explicit / strip-club register so LoRA test beats
+        # reflect real-world hip-hop demand instead of polished pop-radio output.
+        self.assertIn("Shake that ass", options["rap"]["lyrics"])
+        self.assertIn("knockout 808 sub bass", options["rap"]["caption_tags"])
         self.assertEqual(options["rap"]["lyrics_section_tags"]["verse"], "rap, rhythmic spoken flow")
-        self.assertIn("radio-ready mix", options["pop"]["caption_tags"])
-        self.assertIn("warm rhodes keys", options["rnb"]["caption_tags"])
+        # Hardcore gangster fixture exercises the heavier minor-key crunk register.
+        self.assertEqual(options["gangster_rap"]["bpm"], 85)
+        self.assertIn("Shake that ass", options["gangster_rap"]["lyrics"])
+        self.assertIn("gangster rap", options["gangster_rap"]["caption_tags"])
+        # Pop is club-pop sex anthem now, captions skew to strip-club arena energy.
+        self.assertIn("strip-club ready", options["pop"]["caption_tags"])
+        # R&B is explicit slow-jam, captions reference smoky bedroom keys.
+        self.assertIn("smoky rhodes keys", options["rnb"]["caption_tags"])
         self.assertEqual(default_epoch_audition_lyrics("", genre_key="soul")[1]["genre_profile"], "rnb")
 
     def test_epoch_audition_genre_defaults_avoid_ai_cliches_and_artist_names(self):
@@ -861,7 +870,7 @@ class LoraTrainerTest(unittest.TestCase):
             }
         )
 
-        self.assertTrue(payload["lyrics"].startswith("[Verse - smooth rnb vocal]\n"))
+        self.assertTrue(payload["lyrics"].startswith("[Verse - intimate rnb vocal]\n"))
         self.assertIn("Your voice is close", payload["lyrics"])
         self.assertIn("The candle glow remains", payload["lyrics"])
 

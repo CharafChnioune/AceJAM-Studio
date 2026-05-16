@@ -123,24 +123,24 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "rap",
         "label": "Rap / Hip-hop",
-        "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast", "gangster", "2pac", "tupac"),
+        "terms": ("rap", "hip hop", "hip-hop", "trap", "drill", "boom bap", "west coast"),
         "caption_tags": (
-            "rap, hip hop, west coast bounce, rhythmic spoken-word vocal, clear aggressive rap flow, "
-            "punchy boom-bap drums, deep 808 bassline, rubbery g-funk synth lead, chopped piano stab, "
-            "dry upfront male vocal, crisp modern mix, street-corner pocket"
+            "rap, hip hop, west coast bounce, rhythmic spoken-word vocal, hard aggressive rap flow, "
+            "hard-hitting boom-bap drums, knockout 808 sub bass, rattling low-end, rubbery g-funk lead, "
+            "chopped piano stab, dry upfront male vocal, dirty street-banger mix, strip-club ready"
         ),
         "lyrics_section_tags": {"verse": "rap, rhythmic spoken flow", "chorus": "rap hook"},
         "lyrics": (
             "[Verse - rap, rhythmic spoken flow]\n"
-            "Boots on the curb, court date in my jacket\n"
-            "Ledger got blood, I rhyme through the static\n"
-            "Rent man knocks, I knock back with a classic\n"
-            "Bullshit crown gets cracked into plastic\n"
-            "Sirens draw loops round the block like brackets\n"
-            "Cold cash talks, I talk back with matches\n\n"
+            "She text me late, said come thru, she ready\n"
+            "I'm posted up dripping, chain swinging heavy\n"
+            "Pull up to the spot, she on the bed in her panties\n"
+            "Hit it from the back till her legs go shaky\n"
+            "Money on the dresser, gun under the mattress\n"
+            "Whole crew outside, this my whole damn business\n\n"
             "[Chorus - rap hook]\n"
-            "Fuck that crown, make the bassline answer\n"
-            "Whole damn room move sharp like a dancer"
+            "Shake that ass, girl, I want it all night\n"
+            "Knockout 808 hitting til the sun get bright"
         ),
         "bpm": 95,
         "keyscale": "A minor",
@@ -148,23 +148,51 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
         "vocal_language": "en",
     },
     {
+        "key": "gangster_rap",
+        "label": "Gangster Rap",
+        "terms": ("gangster", "gangsta", "hardcore", "dirty south", "crunk", "miami bass", "memphis"),
+        "caption_tags": (
+            "gangster rap, hardcore hip hop, dirty south crunk, knockout 808 sub, rattling triplet hi-hats, "
+            "menacing minor-key piano, hard-hitting kick pattern, gritty male rap vocal, ad-lib stacks, "
+            "raw unfiltered street-banger mix, strip-club ready, sweat-drenched low-end"
+        ),
+        "lyrics_section_tags": {"verse": "hardcore rap, aggressive flow", "chorus": "gangster crunk hook"},
+        "lyrics": (
+            "[Verse - hardcore rap, aggressive flow]\n"
+            "Bands on the table, glock on my hip tonight\n"
+            "Bad bitch on my lap grinding slow till the lights bright\n"
+            "I tell her drop it down low, throw it back on the dick right\n"
+            "Pop a bottle on her ass, watch it drip down her thighs tight\n"
+            "Choppers in the trunk, money fold up like origami\n"
+            "She suck it like a pro, this my city, ain't nobody stopping me\n\n"
+            "[Chorus - gangster crunk hook]\n"
+            "Shake that ass, throw it back, let me hit it all night\n"
+            "Knockout bass in the trunk, strip-club ready, money tight"
+        ),
+        "bpm": 85,
+        "keyscale": "A minor",
+        "timesignature": "4",
+        "vocal_language": "en",
+    },
+    {
         "key": "pop",
         "label": "Pop",
-        "terms": ("pop", "radio", "dance pop", "synth pop", "electropop"),
+        "terms": ("pop", "dance pop", "synth pop", "electropop", "club pop"),
         "caption_tags": (
-            "modern pop, tight live drums, bright analog synth bass, glassy guitar mutes, "
-            "clean lead vocal, doubled hook, wide polished chorus, bittersweet drive, radio-ready mix"
+            "club pop, hard-hitting modern drums, slapping analog synth bass, sharp dirty guitar mutes, "
+            "aggressive lead vocal, doubled stacked sex-anthem hook, sweat-drenched dance drive, "
+            "strip-club ready arena mix"
         ),
-        "lyrics_section_tags": {"verse": "clean pop vocal", "chorus": "bright pop hook"},
+        "lyrics_section_tags": {"verse": "pop sex-anthem vocal", "chorus": "hard pop hook"},
         "lyrics": (
-            "[Verse - clean pop vocal]\n"
-            "Coffee gone cold on the dashboard tray\n"
-            "You said forever, then drove away\n"
-            "I changed the lock, kept the cheap motel key\n"
-            "Damn near smiled when your song found me\n\n"
-            "[Chorus - bright pop hook]\n"
-            "I don't miss you, I miss the noise\n"
-            "Two bad choices making one loud voice"
+            "[Verse - pop sex-anthem vocal]\n"
+            "You touch me low, hands on my hips so slow\n"
+            "I'm dripping wet on the dance floor, watch how I go\n"
+            "Whisper dirty in my ear what you wanna do\n"
+            "Drag me home, take it off, I'ma freak for you\n\n"
+            "[Chorus - hard pop hook]\n"
+            "Bend me over, baby, hit it all night\n"
+            "Bassline pumping, I'ma ride you till the daylight"
         ),
         "bpm": 118,
         "keyscale": "C major",
@@ -174,21 +202,22 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "rnb",
         "label": "Soul / R&B",
-        "terms": ("r&b", "rnb", "soul", "neo soul", "smooth", "slow jam"),
+        "terms": ("r&b", "rnb", "soul", "neo soul", "smooth", "slow jam", "bedroom rnb"),
         "caption_tags": (
-            "smooth rnb groove, warm rhodes keys, brushed trap-soul drums, round sub bass, "
-            "close dry lead vocal, soft stacked harmonies, late room tone, tape-warm mix"
+            "explicit slow-jam rnb, sex-anthem groove, hard-hitting trap-soul drums, knockout sub bass, "
+            "smoky rhodes keys, dry intimate lead vocal, breathy stacked harmonies, late-night bedroom tone, "
+            "dirty unfiltered mix"
         ),
-        "lyrics_section_tags": {"verse": "smooth rnb vocal", "chorus": "soulful rnb hook"},
+        "lyrics_section_tags": {"verse": "intimate rnb vocal", "chorus": "explicit slow-jam hook"},
         "lyrics": (
-            "[Verse - smooth rnb vocal]\n"
-            "Your robe on the chair still holds your shape\n"
-            "I pour two cups, let mine go late\n"
-            "You left no note, just a half-lit screen\n"
-            "Damn, that silence knows where I've been\n\n"
-            "[Chorus - soulful rnb hook]\n"
-            "Come back slow if you mean it this time\n"
-            "No more sweet talk stealing my spine"
+            "[Verse - intimate rnb vocal]\n"
+            "Lock the door, lay you down on the silk tonight\n"
+            "Slide it slow till you grip me and pull me in tight\n"
+            "Tongue on your neck while you whisper my name in the dark\n"
+            "Body to body, every kiss leaving a mark\n\n"
+            "[Chorus - explicit slow-jam hook]\n"
+            "Ride me slow, baby, take it all night long\n"
+            "Wet between the sheets while the bassline pumps strong"
         ),
         "bpm": 82,
         "keyscale": "D minor",
@@ -198,21 +227,22 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "rock",
         "label": "Rock",
-        "terms": ("rock", "guitar", "punk", "metal", "alt rock", "indie rock"),
+        "terms": ("rock", "guitar", "punk", "metal", "alt rock", "sleaze rock"),
         "caption_tags": (
-            "gritty rock, live kick and snare, overdriven rhythm guitars, pick-bass low end, "
-            "raw lead vocal, gang-hook chorus, garage room bleed, punchy analog mix"
+            "sleazy hard rock, hard-hitting kick and snare, overdriven dirty rhythm guitars, "
+            "pick-bass slam low-end, raw aggressive lead vocal, gang-shout sex-anthem chorus, "
+            "sweat-drenched garage room bleed, unfiltered street-banger mix"
         ),
-        "lyrics_section_tags": {"verse": "rock lead vocal", "chorus": "strong rock chorus"},
+        "lyrics_section_tags": {"verse": "sleazy rock lead vocal", "chorus": "gang-shout sex hook"},
         "lyrics": (
-            "[Verse - rock lead vocal]\n"
-            "Brake dust black on the motel sink\n"
-            "I spit out smoke, try not to think\n"
-            "Your fake halo hangs by a wire\n"
-            "Hell no, it snaps when I kick the tire\n\n"
-            "[Chorus - strong rock chorus]\n"
-            "Kick it down, let the amps talk back\n"
-            "We don't bend for a polished track"
+            "[Verse - sleazy rock lead vocal]\n"
+            "Leather skirt up, she pressed against my black Corvette\n"
+            "Bourbon on her tongue, kiss like a fucking threat\n"
+            "Took her back to the room with the cracked motel sign\n"
+            "Hands all over, every inch of her body mine\n\n"
+            "[Chorus - gang-shout sex hook]\n"
+            "Whoa, get it loud, get it dirty all night\n"
+            "Amps cranked up, baby ride me into the strobe light"
         ),
         "bpm": 128,
         "keyscale": "E minor",
@@ -222,21 +252,22 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "edm",
         "label": "EDM / Dance",
-        "terms": ("edm", "house", "techno", "trance", "club", "dance", "electronic"),
+        "terms": ("edm", "house", "techno", "trance", "club", "dance", "electronic", "strip club edm"),
         "caption_tags": (
-            "electronic dance, four-on-floor kick, pulsing sidechain bass, metallic synth plucks, "
-            "chopped vocal hook, dark club groove, clean festival drop, tight stereo mix"
+            "strip-club edm, hard-hitting four-on-floor kick, slamming sidechain bass, "
+            "metallic dirty synth plucks, chopped sex-anthem vocal hook, sweat-drenched club groove, "
+            "knockout festival drop, aggressive club-shaking mix"
         ),
-        "lyrics_section_tags": {"verse": "dance vocal", "chorus": "club vocal hook"},
+        "lyrics_section_tags": {"verse": "dirty club vocal", "chorus": "strip-club drop hook"},
         "lyrics": (
-            "[Verse - dance vocal]\n"
-            "Wristband torn, bass hits my chest\n"
-            "Sweat on the rail, no time to rest\n"
-            "You texted sorry, I killed the screen\n"
-            "Damn, this kick says what I mean\n\n"
-            "[Chorus - club vocal hook]\n"
-            "Move your body, cut that fake-ass talk\n"
-            "Bassline bites when the lights drop"
+            "[Verse - dirty club vocal]\n"
+            "Spotlight on her hips, she dropping low to the floor\n"
+            "Cash up in the air, she pop it again then more\n"
+            "Hands on the rail, body slick with the heat\n"
+            "I'ma take her home when the bass kicks beneath my feet\n\n"
+            "[Chorus - strip-club drop hook]\n"
+            "Shake that ass, drop it low when the bass go boom\n"
+            "Take you home, baby, sweat it out till the sun consume"
         ),
         "bpm": 124,
         "keyscale": "F# minor",
@@ -246,21 +277,22 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "cinematic",
         "label": "Cinematic",
-        "terms": ("cinematic", "orchestral", "score", "trailer", "choir", "epic"),
+        "terms": ("cinematic", "orchestral", "score", "trailer", "choir", "epic", "villain anthem"),
         "caption_tags": (
-            "cinematic hip-hop hybrid, heavy trailer drums, low brass stabs, tense strings, "
-            "sub bass hits, clear dramatic vocal, spacious dark mix, marching groove"
+            "cinematic gangster villain anthem, hard-hitting trailer drums, menacing low brass stabs, "
+            "tense detuned strings, knockout sub bass hits, gritty dramatic male vocal, "
+            "aggressive marching groove, dirty unfiltered widescreen mix"
         ),
-        "lyrics_section_tags": {"verse": "dramatic vocal", "chorus": "cinematic anthem"},
+        "lyrics_section_tags": {"verse": "menacing villain vocal", "chorus": "gangster anthem hook"},
         "lyrics": (
-            "[Verse - dramatic vocal]\n"
-            "Ash on the ledger, rain on the gate\n"
-            "Old men gamble with a child's plate\n"
-            "I name the bill, I name the knife\n"
-            "Damn the machine that prices life\n\n"
-            "[Chorus - cinematic anthem]\n"
-            "Count every crown, count every scar\n"
-            "Truth kicks back from under the floor"
+            "[Verse - menacing villain vocal]\n"
+            "Empire built on bodies and the bills they paid\n"
+            "Every queen on her knees for the kingdom I made\n"
+            "Crown on my head while she drip down the throne\n"
+            "Whole damn city scared to call the king by his name alone\n\n"
+            "[Chorus - gangster anthem hook]\n"
+            "Bow down, baby, run it back, take it all tonight\n"
+            "King move on her body, run the city by the morning light"
         ),
         "bpm": 88,
         "keyscale": "D minor",
@@ -270,21 +302,22 @@ EPOCH_AUDITION_GENRE_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "key": "country",
         "label": "Country / Folk",
-        "terms": ("country", "folk", "americana", "acoustic", "banjo"),
+        "terms": ("country", "folk", "americana", "acoustic", "outlaw country", "trailer park country"),
         "caption_tags": (
-            "outlaw country, acoustic guitar strums, brushed snare, walking bass, pedal steel bends, "
-            "clear gritty lead vocal, barroom harmony, dry warm mix"
+            "outlaw boudoir country, hard-strummed acoustic guitar, slapping brushed snare, "
+            "walking thumping bass, dirty pedal steel bends, gritty raw lead vocal, "
+            "barroom gang-shout harmony, sweat-drenched honky-tonk mix"
         ),
-        "lyrics_section_tags": {"verse": "country lead vocal", "chorus": "heartfelt country hook"},
+        "lyrics_section_tags": {"verse": "outlaw country lead vocal", "chorus": "honky-tonk sex hook"},
         "lyrics": (
-            "[Verse - country lead vocal]\n"
-            "Truck won't start by the county line\n"
-            "Paycheck gone, but the dog eats fine\n"
-            "Preacher said hush, boss said grin\n"
-            "Damn them boys, I won't fold in\n\n"
-            "[Chorus - heartfelt country hook]\n"
-            "Pour it straight, let the truth sit down\n"
-            "Small town teeth in a courthouse crown"
+            "[Verse - outlaw country lead vocal]\n"
+            "Backseat of the pickup, her boots up on the dash\n"
+            "Whiskey on her breath, she like the way I move fast\n"
+            "Hand up her sundress out on the dirt road tonight\n"
+            "Trailer park preacher couldn't save us if he tried\n\n"
+            "[Chorus - honky-tonk sex hook]\n"
+            "Shake that thing, country girl, ride me till the dawn\n"
+            "Pedal steel crying while we tear the cabin gone"
         ),
         "bpm": 96,
         "keyscale": "G major",
