@@ -240,7 +240,7 @@ ACEJAM_LORA_PREFLIGHT_SCALES = tuple(
         }
     )
 )
-ACEJAM_LORA_UNSAFE_QUALITY_STATUSES = {"quarantined", "failed_audition", "not_generation_loadable"}
+ACEJAM_LORA_UNSAFE_QUALITY_STATUSES = {"not_generation_loadable"}
 ACEJAM_LORA_REVIEW_QUALITY_STATUSES = {"needs_review"}
 
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -9753,6 +9753,16 @@ def _vocal_gate_required(params: dict[str, Any]) -> bool:
     return str(params.get("task_type") or "text2music") == "text2music"
 
 
+def _manual_lora_review_allowed(params: dict[str, Any]) -> bool:
+    mode = str(params.get("ui_mode") or params.get("wizard_mode") or "").strip().lower()
+    if mode == "lora_benchmark":
+        return True
+    return parse_bool(
+        params.get("manual_lora_review"),
+        parse_bool(params.get("allow_manual_lora_review"), False),
+    )
+
+
 def _vocal_gate_expected_keywords(params: dict[str, Any]) -> list[str]:
     text = "\n".join(
         [
@@ -10001,6 +10011,7 @@ def _apply_vocal_intelligibility_gate_to_result(
     paths = [RESULTS_DIR / safe_id(result_id) / str(audio.get("filename") or "") for audio in audios if audio.get("filename")]
     keywords = _vocal_gate_expected_keywords(params)
     transcripts = _transcribe_audio_paths(paths, language=str(params.get("vocal_language") or "en"), expected_keywords=keywords)
+    manual_lora_review = _manual_lora_review_allowed(params)
     by_path = {str(item.get("path")): item for item in transcripts}
     passed_ids: list[str] = []
     for audio in audios:
@@ -10023,12 +10034,12 @@ def _apply_vocal_intelligibility_gate_to_result(
         not transcripts
         or any(item.get("blocking") for item in transcripts)
     )
-    if verifier_error:
+    if verifier_error or (manual_lora_review and not passed_ids):
         blocking = False
     status = (
         "pass"
         if passed_ids
-        else ("needs_review" if verifier_error else "fail")
+        else ("needs_review" if verifier_error or manual_lora_review else "fail")
     )
     transcript_preview = [
         {
@@ -10044,7 +10055,8 @@ def _apply_vocal_intelligibility_gate_to_result(
         "status": status,
         "passed": bool(passed_ids),
         "blocking": blocking,
-        "needs_review": bool(verifier_error and not passed_ids),
+        "needs_review": bool((verifier_error or manual_lora_review) and not passed_ids),
+        "manual_review_allowed": bool(manual_lora_review),
         "attempt": attempt,
         "max_attempts": max_attempts,
         "expected_keywords": keywords,
@@ -10069,7 +10081,26 @@ def _apply_vocal_intelligibility_gate_to_result(
         for audio in audios:
             audio["is_recommended_take"] = False
         result.pop("recommended_take", None)
-    if verifier_error and not passed_ids:
+    if manual_lora_review and not passed_ids:
+        result["needs_review"] = True
+        suggestions = list(result.get("rerender_suggestions") or [])
+        suggestion = (
+            "LoRA benchmark kept this render for manual listening even though the vocal intelligibility gate did not pass."
+        )
+        if suggestion not in suggestions:
+            suggestions.append(suggestion)
+        result["rerender_suggestions"] = suggestions
+        warnings = list(result.get("payload_warnings") or [])
+        warning = (
+            "vocal_intelligibility_verifier_error_manual_review"
+            if verifier_error
+            else "vocal_intelligibility_gate_manual_review"
+        )
+        if warning not in warnings:
+            warnings.append(warning)
+        result["payload_warnings"] = warnings
+        result.pop("error", None)
+    elif verifier_error and not passed_ids:
         result["success"] = False
         result["needs_review"] = True
         result["error"] = "Vocal intelligibility verifier could not complete."
@@ -15879,6 +15910,7 @@ def _lora_benchmark_base_payload(body: dict[str, Any]) -> dict[str, Any]:
     payload["seed"] = clamp_int(payload.get("seed"), -1, -1, 2_147_483_647)
     payload["vocal_intelligibility_gate"] = parse_bool(payload.get("vocal_intelligibility_gate"), True)
     payload["vocal_intelligibility_model_rescue"] = False
+    payload["manual_lora_review"] = True
     payload["lora_preflight_required"] = False
     payload["save_to_library"] = parse_bool(payload.get("save_to_library"), False)
     payload["wizard_mode"] = "lora_benchmark"
@@ -15950,7 +15982,11 @@ def _lora_benchmark_attempt_entry(
         "gate_status": "",
         "transcript_preview": "",
         "user_rating": 0,
+        "user_scores": {},
+        "user_verdict": "",
         "user_notes": "",
+        "reviewed_at": "",
+        "played_at": "",
         "error": "",
         "started_at": None,
         "finished_at": None,
@@ -16188,16 +16224,33 @@ def _lora_benchmark_score(child_snapshot: dict[str, Any], result: dict[str, Any]
 def _lora_benchmark_rankings(results: list[dict[str, Any]]) -> dict[str, Any]:
     auto_candidates = [item for item in results if str(item.get("state") or "").lower() in {"succeeded", "success", "complete", "completed"}]
     best_auto = max(auto_candidates or results, key=lambda item: float(item.get("score") or 0), default={})
-    rated = [item for item in results if int(item.get("user_rating") or 0) > 0]
+    def manual_score(item: dict[str, Any]) -> float:
+        rating = float(item.get("user_rating") or 0)
+        raw_scores = item.get("user_scores") if isinstance(item.get("user_scores"), dict) else {}
+        score_values = [float(raw_scores.get(key) or 0) for key in ("vocal", "style", "mix", "fit")]
+        score_values = [value for value in score_values if value > 0]
+        category_average = sum(score_values) / len(score_values) if score_values else 0.0
+        verdict_bonus = {"keep": 0.75, "maybe": 0.25, "reject": -1.0}.get(str(item.get("user_verdict") or "").lower(), 0.0)
+        return max(rating, category_average) + verdict_bonus
+
+    rated = [item for item in results if manual_score(item) > 0]
     best_manual = max(
         rated,
-        key=lambda item: (int(item.get("user_rating") or 0), float(item.get("score") or 0)),
+        key=lambda item: (manual_score(item), float(item.get("score") or 0)),
         default={},
     )
+    review_summary = {
+        "reviewed": sum(1 for item in results if manual_score(item) > 0 or item.get("user_notes")),
+        "played": sum(1 for item in results if item.get("played_at")),
+        "keep": sum(1 for item in results if str(item.get("user_verdict") or "").lower() == "keep"),
+        "maybe": sum(1 for item in results if str(item.get("user_verdict") or "").lower() == "maybe"),
+        "reject": sum(1 for item in results if str(item.get("user_verdict") or "").lower() == "reject"),
+    }
     return {
         "best_auto_result_id": best_auto.get("attempt_id") or "",
         "best_manual_result_id": best_manual.get("attempt_id") or "",
         "best_result_id": (best_manual or best_auto).get("attempt_id") or "",
+        "review_summary": review_summary,
     }
 
 
@@ -16229,6 +16282,7 @@ def _set_lora_benchmark_job(job_id: str, **updates: Any) -> dict[str, Any]:
                 "best_auto_result_id": "",
                 "best_manual_result_id": "",
                 "best_result_id": "",
+                "review_summary": {"reviewed": 0, "played": 0, "keep": 0, "maybe": 0, "reject": 0},
                 "created_at": now,
                 "started_at": None,
                 "finished_at": None,
@@ -16328,6 +16382,19 @@ def _lora_benchmark_worker(job_id: str, payload: dict[str, Any]) -> None:
     )
     try:
         for index, attempt in enumerate(attempts):
+            snapshot = _lora_benchmark_snapshot(job_id)
+            if isinstance(snapshot, dict) and parse_bool(snapshot.get("stop_requested"), False):
+                _set_lora_benchmark_job(
+                    job_id,
+                    state="stopped",
+                    status="Benchmark stopped",
+                    stage="stopped",
+                    progress=int((completed + failed) / max(1, total) * 100),
+                    child_generation_job_id="",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    logs=["LoRA Benchmark stopped before the next attempt."],
+                )
+                return
             if not isinstance(attempt, dict):
                 continue
             attempt_number = index + 1
@@ -16396,6 +16463,16 @@ def _lora_benchmark_worker(job_id: str, payload: dict[str, Any]) -> None:
                 state = str(child_snapshot.get("state") or "").lower()
                 if state in {"succeeded", "complete", "completed", "success", "failed", "error", "stopped"}:
                     break
+                snapshot = _lora_benchmark_snapshot(job_id)
+                if isinstance(snapshot, dict) and parse_bool(snapshot.get("stop_requested"), False):
+                    _set_lora_benchmark_job(
+                        job_id,
+                        state="stopping",
+                        status="Stop requested; waiting for current render result",
+                        stage="stopping",
+                        attempts=entries,
+                        logs=[f"Stop requested during attempt {attempt_number}/{total}."],
+                    )
                 time.sleep(2.0)
 
             result = child_snapshot.get("result") if isinstance(child_snapshot.get("result"), dict) else None
@@ -16404,10 +16481,19 @@ def _lora_benchmark_worker(job_id: str, payload: dict[str, Any]) -> None:
             score, breakdown = _lora_benchmark_score(child_snapshot, result, payload_for_generation)
             audio_urls = _song_batch_audio_urls(result)
             gate = (result or {}).get("vocal_intelligibility_gate") if isinstance((result or {}).get("vocal_intelligibility_gate"), dict) else {}
-            success = state == "succeeded" and (not isinstance(result, dict) or result.get("success") is not False)
+            manual_review_success = bool(
+                audio_urls
+                and _manual_lora_review_allowed(payload_for_generation)
+                and isinstance(result, dict)
+                and str(gate.get("status") or "").lower() in {"needs_review", "fail"}
+            )
+            success = (
+                state == "succeeded"
+                and (not isinstance(result, dict) or result.get("success") is not False)
+            ) or manual_review_success
             entry_update = {
                 "state": "succeeded" if success else "failed",
-                "status": "Complete" if success else "Failed",
+                "status": "Complete" if success and not manual_review_success else ("Manual review" if manual_review_success else "Failed"),
                 "progress": 100,
                 "generation_job_id": child_id,
                 "result": result,
@@ -16505,6 +16591,25 @@ def _submit_lora_benchmark_job(body: dict[str, Any]) -> dict[str, Any]:
     return {"job_id": job_id, "job": _lora_benchmark_snapshot(job_id)}
 
 
+def _stop_lora_benchmark_job(job_id: str) -> dict[str, Any]:
+    job = _lora_benchmark_snapshot(job_id)
+    if not isinstance(job, dict) or not job:
+        raise KeyError("LoRA benchmark job not found")
+    state = str(job.get("state") or "").lower()
+    if state in {"succeeded", "success", "failed", "error", "stopped"}:
+        return job
+    return _set_lora_benchmark_job(
+        job_id,
+        state="stopped",
+        status="Benchmark stopped",
+        stage="stopped",
+        stop_requested=True,
+        child_generation_job_id="",
+        finished_at=datetime.now(timezone.utc).isoformat(),
+        logs=["LoRA Benchmark stopped."],
+    )
+
+
 def _rate_lora_benchmark_result(job_id: str, body: dict[str, Any]) -> dict[str, Any]:
     job = _lora_benchmark_snapshot(job_id)
     if not isinstance(job, dict) or not job:
@@ -16512,20 +16617,44 @@ def _rate_lora_benchmark_result(job_id: str, body: dict[str, Any]) -> dict[str, 
     attempt_id = str(body.get("attempt_id") or body.get("result_id") or "").strip()
     if not attempt_id:
         raise ValueError("attempt_id is required")
-    rating = clamp_int(body.get("user_rating"), 0, 0, 5)
-    notes = str(body.get("user_notes") or body.get("notes") or "").strip()
+    has_rating = "user_rating" in body
+    rating = clamp_int(body.get("user_rating"), 0, 0, 5) if has_rating else None
+    has_notes = "user_notes" in body or "notes" in body
+    notes = str(body.get("user_notes") or body.get("notes") or "").strip() if has_notes else None
+    raw_scores = body.get("user_scores") if isinstance(body.get("user_scores"), dict) else {}
+    scores: dict[str, int] = {}
+    for key in ("vocal", "style", "mix", "fit"):
+        if key in raw_scores:
+            scores[key] = clamp_int(raw_scores.get(key), 0, 0, 5)
+    verdict = str(body.get("user_verdict") or "").strip().lower()
+    if verdict not in {"", "keep", "maybe", "reject"}:
+        raise ValueError("user_verdict must be keep, maybe, reject, or empty")
+    now = datetime.now(timezone.utc).isoformat()
     results = list(job.get("results") or [])
     attempts = list(job.get("attempts") or [])
     updated = False
     for collection in (results, attempts):
         for item in collection:
             if isinstance(item, dict) and str(item.get("attempt_id") or "") == attempt_id:
-                item["user_rating"] = rating
-                item["user_notes"] = notes
+                if has_rating:
+                    item["user_rating"] = rating
+                if has_notes:
+                    item["user_notes"] = notes
+                if raw_scores:
+                    item["user_scores"] = scores
+                if "user_verdict" in body:
+                    item["user_verdict"] = verdict
+                if item.get("user_rating") or item.get("user_scores") or item.get("user_verdict") or item.get("user_notes"):
+                    item["reviewed_at"] = now
+                if parse_bool(body.get("played"), False):
+                    item["played_at"] = now
                 updated = True
     if not updated:
         raise KeyError("Benchmark attempt not found")
-    return _set_lora_benchmark_job(job_id, results=results, attempts=attempts, logs=[f"Rating saved for {attempt_id}: {rating}/5"])
+    suffix = f"{rating}/5" if has_rating else "updated"
+    if "user_verdict" in body and verdict:
+        suffix += f" · {verdict}"
+    return _set_lora_benchmark_job(job_id, results=results, attempts=attempts, logs=[f"Review saved for {attempt_id}: {suffix}"])
 
 
 def _official_query_item(task_id: str) -> dict[str, Any]:
@@ -18688,6 +18817,17 @@ async def api_lora_benchmark_job_log(job_id: str):
         raise HTTPException(status_code=404, detail="LoRA benchmark job not found")
     logs = [str(item) for item in (job.get("logs") or []) if str(item)]
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.post("/api/lora/benchmarks/jobs/{job_id}/stop")
+async def api_lora_benchmark_job_stop(job_id: str):
+    try:
+        job = _stop_lora_benchmark_job(safe_id(job_id))
+        return JSONResponse({"success": True, "job": job})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
 
 
 @app.post("/api/lora/benchmarks/jobs/{job_id}/rating")

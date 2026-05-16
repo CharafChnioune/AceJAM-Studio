@@ -5565,7 +5565,14 @@ class AppParityTest(unittest.TestCase):
                 job = acejam_app._lora_benchmark_snapshot("benchunit")
                 rated = acejam_app._rate_lora_benchmark_result(
                     "benchunit",
-                    {"attempt_id": job["results"][0]["attempt_id"], "user_rating": 5, "user_notes": "best by ear"},
+                    {
+                        "attempt_id": job["results"][0]["attempt_id"],
+                        "user_rating": 5,
+                        "user_scores": {"vocal": 5, "style": 4, "mix": 4, "fit": 5},
+                        "user_verdict": "keep",
+                        "user_notes": "best by ear",
+                        "played": True,
+                    },
                 )
 
         self.assertEqual(submitted, ["Adapter A", "Adapter B"])
@@ -5576,6 +5583,10 @@ class AppParityTest(unittest.TestCase):
         self.assertGreater(job["results"][0]["score"], job["results"][1]["score"])
         self.assertEqual(rated["best_manual_result_id"], job["results"][0]["attempt_id"])
         self.assertEqual(rated["results"][0]["user_notes"], "best by ear")
+        self.assertEqual(rated["results"][0]["user_scores"]["vocal"], 5)
+        self.assertEqual(rated["results"][0]["user_verdict"], "keep")
+        self.assertTrue(rated["results"][0]["played_at"])
+        self.assertEqual(rated["review_summary"]["keep"], 1)
 
     def test_mlx_video_upload_endpoint_accepts_image_audio_and_rejects_text(self):
         client = TestClient(acejam_app.app)

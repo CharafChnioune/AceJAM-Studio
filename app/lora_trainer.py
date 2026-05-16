@@ -2584,7 +2584,7 @@ class AceTrainingManager:
                 quality = adapter_quality_metadata(meta, adapter_type=adapter_type)
                 meta.setdefault("quality_status", quality["quality_status"])
                 meta.setdefault("quality_reasons", quality["quality_reasons"])
-                blocked_statuses = {"quarantined", "needs_review", "failed_audition", "not_generation_loadable"}
+                blocked_statuses = {"not_generation_loadable"}
                 quality_status = str(quality.get("quality_status") or "").lower()
                 loadable = bool(has_lora and adapter_type == "lora" and quality_status not in blocked_statuses)
                 should_backfill_metadata = bool(

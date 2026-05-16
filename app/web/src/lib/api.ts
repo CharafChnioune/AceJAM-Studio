@@ -374,9 +374,13 @@ export interface LoraBenchmarkResult {
   score_breakdown?: Record<string, unknown>;
   audio_urls?: string[];
   gate_status?: string;
-  transcript_preview?: string | string[];
+  transcript_preview?: string | Array<string | Record<string, unknown>>;
   user_rating?: number;
+  user_scores?: Record<string, number>;
+  user_verdict?: "keep" | "maybe" | "reject" | "";
   user_notes?: string;
+  reviewed_at?: string;
+  played_at?: string;
   error?: string;
   started_at?: string;
   finished_at?: string;
@@ -405,6 +409,7 @@ export interface LoraBenchmarkJob {
   best_auto_result_id?: string;
   best_manual_result_id?: string;
   best_result_id?: string;
+  review_summary?: Record<string, number>;
   created_at?: string;
   started_at?: string;
   finished_at?: string;
@@ -431,7 +436,14 @@ export const listLoraBenchmarkJobs = () =>
 
 export const rateLoraBenchmarkResult = (
   jobId: string,
-  body: { attempt_id: string; user_rating: number; user_notes?: string },
+  body: {
+    attempt_id: string;
+    user_rating?: number;
+    user_scores?: Record<string, number>;
+    user_verdict?: "keep" | "maybe" | "reject" | "";
+    user_notes?: string;
+    played?: boolean;
+  },
 ) =>
   api.post<LoraBenchmarkJobResponse>(`/api/lora/benchmarks/jobs/${encodeURIComponent(jobId)}/rating`, body);
 
