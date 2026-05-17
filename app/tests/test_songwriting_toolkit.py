@@ -685,6 +685,47 @@ Lyrics:
         self.assertNotIn("lyrics", parsed)
         album_crew_module._validate_agent_response_shape("lyrics_part_1_payload", parsed)
 
+    def test_lyric_craft_repair_structured_payload_extracts_sections_from_mixed_list(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "lyric_craft_repair_payload",
+            {
+                "sections": [
+                    "[Verse 1 - rap]",
+                    "Corner store glass keeps count of the rain,",
+                    "Receipts in my pocket keep naming the pain.",
+                    "[Hook]",
+                    "Rooftop lights keep calling my name.",
+                ],
+                "lyrics_lines": [
+                    "Corner store glass keeps count of the rain,",
+                    "Receipts in my pocket keep naming the pain.",
+                    "Rooftop lights keep calling my name.",
+                ],
+                "craft_fixes": ["Restored section tags and tightened line length."],
+            },
+        )
+
+        self.assertEqual(parsed["sections"], ["[Verse 1 - rap]", "[Hook]"])
+        self.assertEqual(parsed["lyrics_lines"][0], "[Verse 1 - rap]")
+        self.assertIn("[Hook]", parsed["lyrics_lines"])
+        self.assertNotIn("lyrics", parsed)
+        album_crew_module._validate_agent_response_shape("lyric_craft_repair_payload", parsed)
+
+    def test_lyric_craft_repair_structured_payload_ignores_extra_lyrics_key(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "lyric_craft_repair_payload",
+            {
+                "sections": ["[Verse 1]", "[Hook]"],
+                "lyrics_lines": ["[Verse 1]", "Line one", "[Hook]", "Line two"],
+                "lyrics": "[Verse 1]\nLine one\n[Hook]\nLine two",
+                "craft_fixes": ["Kept exact sections."],
+            },
+        )
+
+        self.assertEqual(set(parsed), {"sections", "lyrics_lines", "craft_fixes"})
+        self.assertEqual(parsed["sections"], ["[Verse 1]", "[Hook]"])
+        album_crew_module._validate_agent_response_shape("lyric_craft_repair_payload", parsed)
+
     def test_lyrics_part_structured_payload_cleans_generic_cliches_before_gate(self):
         parsed = album_crew_module._coerce_structured_agent_payload(
             "lyrics_part_1_payload",
@@ -705,6 +746,42 @@ Lyrics:
         self.assertNotIn("shattered dreams", lyrics_text)
         self.assertNotIn("endless night", lyrics_text)
         album_crew_module._validate_agent_response_shape("lyrics_part_1_payload", parsed)
+
+    def test_tag_payload_context_repair_adds_rap_anchors_without_softening_gate(self):
+        payload = album_crew_module._coerce_structured_agent_payload(
+            "tag_agent_payload",
+            {
+                "tag_list": [
+                    "modern pop",
+                    "tight drum groove",
+                    "deep low-end bass",
+                    "memorable synth motif",
+                    "clear lead vocal pocket",
+                    "dynamic hook arrangement",
+                    "controlled texture space",
+                    "crisp polished studio mix",
+                ],
+                "tags": "",
+                "caption_dimensions_covered": [],
+            },
+        )
+
+        album_crew_module._ensure_track_rap_tag_payload(
+            payload,
+            {"style": "West Coast hip-hop with a male rapper", "description": "minimal bounce"},
+            {"album_agent_genre_prompt": "West Coast hip-hop"},
+        )
+        issues = album_crew_module._director_genre_validation_issues(
+            payload,
+            {"style": "West Coast hip-hop"},
+            {"album_agent_genre_prompt": "West Coast hip-hop"},
+            include_lyrics=False,
+        )
+        combined = ", ".join([payload["tags"], *payload["tag_list"]]).lower()
+
+        self.assertNotIn("genre_intent_missing_rap_groove", issues)
+        self.assertIn("west coast hip-hop", combined)
+        self.assertIn("rap vocal", combined)
 
     def test_structured_prompt_strips_legacy_output_blocks(self):
         legacy_prompt = (

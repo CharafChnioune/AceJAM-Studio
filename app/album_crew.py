@@ -4311,6 +4311,91 @@ def _normalize_tag_agent_structured_payload(payload: dict[str, Any]) -> dict[str
     return result
 
 
+def _ensure_track_rap_tag_payload(
+    payload: dict[str, Any],
+    track: dict[str, Any] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Mutate a tag payload with the rap anchors demanded by accepted context.
+
+    The semantic validator can only say "missing rap groove"; local models often
+    retry the same generic pop-ish tag stack. This deterministic repair keeps the
+    gate strict while giving the Tag Agent's otherwise valid payload the exact
+    ACE-Step sonic anchors implied by the user's album genre.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    contract = build_genre_intent_contract({**(track or {}), **payload}, options)
+    if contract.get("family") != "rap":
+        return payload
+
+    result = _normalize_tag_agent_structured_payload(payload)
+    tag_list = [str(item or "").strip() for item in (result.get("tag_list") or []) if str(item or "").strip()]
+    context = " ".join(
+        str(value or "")
+        for value in [
+            (options or {}).get("album_agent_genre_prompt"),
+            (options or {}).get("genre_prompt"),
+            (options or {}).get("album_genre"),
+            (track or {}).get("style"),
+            (track or {}).get("description"),
+            (track or {}).get("vibe"),
+            (track or {}).get("vocal_type"),
+            (track or {}).get("vocal_lead"),
+            result.get("tags"),
+            " ".join(tag_list),
+        ]
+    )
+    combined = context.lower()
+
+    def _contains(pattern: str) -> bool:
+        return bool(re.search(pattern, combined, re.I))
+
+    def _tags_contain(pattern: str) -> bool:
+        return bool(re.search(pattern, " ".join([str(result.get("tags") or ""), *tag_list]), re.I))
+
+    def _prepend_once(value: str) -> None:
+        nonlocal combined
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = re.sub(r"\s+", " ", text).casefold()
+        tag_list[:] = [item for item in tag_list if re.sub(r"\s+", " ", item).casefold() != key]
+        tag_list.insert(0, text)
+        combined = " ".join([context, " ".join(tag_list)]).lower()
+
+    if not _contains(r"\b(?:rap|hip[-\s]?hop|g[-\s]?funk|boom[-\s]?bap|trap|drill)\b"):
+        if re.search(r"\b(?:west\s+coast|g[-\s]?funk)\b", context, re.I):
+            _prepend_once("West Coast hip-hop")
+        elif re.search(r"\bdrill\b", context, re.I):
+            _prepend_once("drill rap")
+        elif re.search(r"\btrap\b", context, re.I):
+            _prepend_once("trap rap")
+        else:
+            _prepend_once("hip-hop")
+    elif re.search(r"\bwest\s+coast\b", context, re.I) and not re.search(r"\bwest\s+coast\b", " ".join(tag_list), re.I):
+        _prepend_once("West Coast hip-hop")
+
+    if not _tags_contain(r"\b(?:rap vocal|rapper|mc vocal|male rap|female rap|rap delivery|clear rap vocal|flow)\b"):
+        vocal = "male rap vocal" if re.search(r"\bmale\b|\braper\b|\brapper\b", context, re.I) else "clear rap vocal delivery"
+        _prepend_once(vocal)
+
+    if not _tags_contain(r"\b(?:hip[-\s]?hop drums|rap groove|boom[-\s]?bap drum|trap drums|drill drums|g[-\s]?funk groove|drum pocket)\b"):
+        groove = "G-Funk rap groove" if re.search(r"\b(?:g[-\s]?funk|west\s+coast)\b", context, re.I) else "hip-hop drums"
+        _prepend_once(groove)
+
+    if not _tags_contain(r"\b(?:808|sub[-\s]?bass|low[-\s]?end|sine[-\s]?wave bass|bassline|deep bass)\b"):
+        bass = "rubber-band low-end bassline" if re.search(r"\b(?:g[-\s]?funk|west\s+coast)\b", context, re.I) else "808 sub-bass"
+        _prepend_once(bass)
+
+    result["tag_list"] = tag_list
+    result["tags"] = ", ".join(tag_list)
+    result["caption_dimensions_covered"] = list(ACE_STEP_CAPTION_DIMENSIONS)
+    payload.clear()
+    payload.update(result)
+    return payload
+
+
 def _normalize_caption_agent_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
     result = dict(payload or {})
     tags: list[str] = []
@@ -4454,6 +4539,91 @@ def _sanitize_structured_lyrics_lines(lines: list[Any]) -> list[str]:
     return sanitized
 
 
+def _normalize_lyric_craft_repair_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload or {})
+    nested = result.get("lyric_craft_repair_payload") or result.get("payload") or result.get("result")
+    if isinstance(nested, dict):
+        result = {**result, **nested}
+
+    def _as_lines(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            lines: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    section = item.get("section_tag") or item.get("section") or item.get("tag") or item.get("name")
+                    if section:
+                        lines.extend(_as_lines(section))
+                    nested_lines = item.get("lyrics_lines") or item.get("lines") or item.get("lyrics") or item.get("text") or item.get("line")
+                    lines.extend(_as_lines(nested_lines))
+                else:
+                    lines.extend(_as_lines(item))
+            return lines
+        return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+
+    def _section_tag(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if re.fullmatch(r"\[[^\]]+\]", text):
+            return _section_tag_line(text)
+        if re.fullmatch(
+            r"(?:intro|verse(?:\s+\d+)?(?:\s*-\s*rap)?|pre[-\s]?chorus|chorus|hook|refrain|bridge|break|beat\s*switch|final\s+(?:hook|chorus)|outro)",
+            text,
+            re.I,
+        ):
+            return _section_tag_line(text)
+        return ""
+
+    raw_sections = _as_lines(result.get("sections"))
+    raw_lyrics_lines = _as_lines(result.get("lyrics_lines"))
+    if not raw_lyrics_lines:
+        raw_lyrics_lines = _as_lines(result.get("lyrics"))
+
+    section_tags: list[str] = []
+    for line in [*raw_sections, *raw_lyrics_lines]:
+        tag = _section_tag(line)
+        if tag and tag not in section_tags:
+            section_tags.append(tag)
+
+    mixed_sections_have_lyrics = any(line and not _section_tag(line) for line in raw_sections)
+    lyrics_lines = list(raw_lyrics_lines)
+    if mixed_sections_have_lyrics and (
+        not lyrics_lines
+        or not any(_section_tag(line) for line in lyrics_lines)
+        or len(raw_sections) > len(lyrics_lines)
+    ):
+        lyrics_lines = list(raw_sections)
+    if section_tags and lyrics_lines and not any(_section_tag(line) for line in lyrics_lines):
+        lyric_only = [line for line in lyrics_lines if line and not _section_tag(line)]
+        distributed: list[str] = []
+        count = max(1, len(section_tags))
+        base = len(lyric_only) // count
+        remainder = len(lyric_only) % count
+        offset = 0
+        for index, tag in enumerate(section_tags):
+            take = base + (1 if index < remainder else 0)
+            distributed.append(tag)
+            distributed.extend(lyric_only[offset : offset + take])
+            offset += take
+        if offset < len(lyric_only):
+            distributed.extend(lyric_only[offset:])
+        lyrics_lines = distributed
+    if not section_tags:
+        for line in lyrics_lines:
+            tag = _section_tag(line)
+            if tag and tag not in section_tags:
+                section_tags.append(tag)
+
+    craft_fixes = _as_lines(result.get("craft_fixes"))
+    return {
+        "sections": section_tags,
+        "lyrics_lines": _sanitize_structured_lyrics_lines(lyrics_lines),
+        "craft_fixes": craft_fixes,
+    }
+
+
 def _fallback_album_title_from_text(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -4495,6 +4665,8 @@ def _coerce_structured_agent_payload(schema_name: str, payload: dict[str, Any]) 
             payload = {**payload, **nested}
         if "lyrics_lines" not in payload and "lyrics" in payload:
             payload = {**payload, "lyrics_lines": payload.get("lyrics")}
+    if key == "lyric_craft_repair_payload":
+        payload = _normalize_lyric_craft_repair_structured_payload(payload)
     if key == "visual_prompt_payload":
         payload = dict(payload)
         if not payload.get("single_art_prompt") and payload.get("album_art_prompt"):
@@ -4571,6 +4743,8 @@ def _coerce_structured_agent_payload(schema_name: str, payload: dict[str, Any]) 
         result = _normalize_tag_agent_structured_payload(result)
     if key.startswith("lyrics_part_") and key.endswith("_payload"):
         result["lyrics_lines"] = _sanitize_structured_lyrics_lines(result.get("lyrics_lines") or [])
+    if key == "lyric_craft_repair_payload":
+        result = _normalize_lyric_craft_repair_structured_payload(result)
     if schema_name in AGENT_EXACT_RESPONSE_SCHEMAS:
         _validate_agent_response_shape(schema_name, result)
     if key.startswith("lyrics_part_") and key.endswith("_payload"):
@@ -4578,6 +4752,8 @@ def _coerce_structured_agent_payload(schema_name: str, payload: dict[str, Any]) 
         # lyric normalizer adds a convenience `lyrics` string for final payloads,
         # but that derived key made exact CrewAI JSON guardrails reject otherwise
         # valid section drafts as `extra_keys=lyrics`.
+        return result
+    if key == "lyric_craft_repair_payload":
         return result
     return _coerce_agent_lyrics_payload(result)
 
@@ -9634,7 +9810,7 @@ class AceJamAlbumDirector:
                 f"caption_dimensions_covered must use only: {json.dumps(ACE_STEP_CAPTION_DIMENSIONS)}.\n"
                 + f"OUTPUT_BLOCKS:\n{_agent_block_template('tag_agent_payload')}\n",
                 "tag_agent_payload",
-                lambda payload: _validate_tag_payload(payload, current)
+                lambda payload: _validate_tag_payload(_ensure_track_rap_tag_payload(payload, current, self.opts), current)
                 + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
                 + _director_producer_grade_validation_issues(payload, current, self.opts),
                 repair_context=(
