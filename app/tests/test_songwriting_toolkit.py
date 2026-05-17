@@ -147,8 +147,12 @@ Lyrics:
             section_match = re.search(r"ONLY_ALLOWED_SECTION_TAGS:\n(\[[\s\S]*?\])\nFORBIDDEN_SECTION_TAGS", user_prompt)
         sections = compact_constraints.get("only_allowed_section_tags") or (json.loads(section_match.group(1)) if section_match else ["[Verse]"])
         min_lines_match = re.search(r"PART_MIN_VOCAL_LINES_APPROX:\s*(\d+)", user_prompt)
-        if compact_constraints.get("part_min_vocal_lines_approx"):
-            required_part_lines = int(compact_constraints.get("part_min_vocal_lines_approx") or 0)
+        if compact_constraints.get("hard_min_vocal_lines_for_allowed_sections") or compact_constraints.get("part_min_vocal_lines_approx"):
+            required_part_lines = max(
+                int(compact_constraints.get("hard_min_vocal_lines_for_allowed_sections") or 0),
+                int(compact_constraints.get("part_min_vocal_lines_approx") or 0),
+                sum(int(value or 0) for value in (compact_constraints.get("section_line_minimums") or {}).values()),
+            )
             lines_per_section = max(lines_per_section, int((required_part_lines + max(1, len(sections)) - 1) / max(1, len(sections))))
         elif min_lines_match:
             required_part_lines = int(min_lines_match.group(1))
@@ -810,6 +814,8 @@ Lyrics:
         # Full rap albums use a clear, stable 2x16 long-form rule.
         self.assertIn("TWO rap verses", lyric_goal)
         self.assertIn("16 bars", lyric_goal)
+        self.assertIn("section_line_minimums", lyric_goal)
+        self.assertIn("image field", lyric_goal)
         self.assertIn("multisyllabic", lyric_goal.lower())
         # Backstory references modern chart-toppers, not just classic
         self.assertIn("Sabrina Carpenter", lyric_backstory)
@@ -817,6 +823,7 @@ Lyrics:
         self.assertIn("Billie Eilish", lyric_backstory)
         # Classic floor still mentioned
         self.assertIn("Eminem", lyric_backstory)
+        self.assertIn("image field", lyric_backstory)
 
         hook_role, hook_goal, hook_backstory = album_crew_module._agent_persona(
             "Hook Agent", "hook_payload"
@@ -1411,7 +1418,10 @@ Lyrics:
         self.assertIn("CURRENT_SECTION_CONSTRAINTS_JSON", first_prompt)
         self.assertIn("only_allowed_section_tags", first_prompt)
         self.assertIn("forbidden_section_tags_already_written", first_prompt)
-        self.assertLess(len(first_prompt), 5000)
+        self.assertIn("LYRIC_IMAGE_FIELD_CONTRACT", first_prompt)
+        self.assertIn("hard_min_vocal_lines_for_allowed_sections", first_prompt)
+        self.assertIn("bracket tags do not count", first_prompt)
+        self.assertLess(len(first_prompt), 6500)
         self.assertNotIn("ALBUM_BIBLE_COMPACT", first_prompt)
         self.assertNotIn("LYRICAL_CRAFT_CONTRACT", first_prompt)
         self.assertNotIn("PREVIOUS_LYRIC_PARTS_CONTEXT", first_prompt)

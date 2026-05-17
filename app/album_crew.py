@@ -3558,10 +3558,11 @@ def create_album_crew(
         "For pop/R&B: prioritize memorable hooks, emotional clarity, singability, and repeatable chorus phrases. "
         "For EDM/techno/house/trance/DnB/dubstep: use fewer lyrics and stronger arrangement tags ([Build], [Drop], [Breakdown], [Final Drop]). "
         "For instrumental/cinematic/ambient: use [Instrumental] or structured instrumental timeline with NO sung lyrics. "
+        "When a section has a line minimum, that minimum is hard: bracket tags, metadata notes, and stage directions do not count as lyric lines. "
         "No placeholders allowed: never output '...', 'etc.', 'repeat chorus', 'same as before', '[continue]', or unfinished sections. "
         "Avoid AI-flavored lyrics: no vague adjective piles, forced rhymes, mixed metaphors, overlong lines, "
         "empty inspirational slogans, generic 'neon dreams' filler, empty 'we rise / fly / dream' lines unless grounded in concrete situation. "
-        "Use one emotional promise per song, one coherent metaphor world, concrete scene details (place, object, weather, body, action), "
+        "Use one emotional promise per song, one coherent metaphor world, one dominant image field per section, concrete scene details (place, object, weather, body, action), "
         "a repeatable title-connected hook short enough to remember after one listen, "
         "language/script discipline, genre-module routing, and a duration-realistic section_map. "
         "Default generation profile is chart_master: use ACE-Step docs-correct 50-step SFT/Base final-render settings with shift 1.0, wav32 output, "
@@ -5732,18 +5733,18 @@ _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
     ),
     "Track Lyrics Agent Part 1": (
         "Tier-1 Lyric Writer Part 1 (2024-2026 chart-craft)",
-        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Full rap songs require TWO rap verses with at least 16 bars each. Pop verses are 8-12 lines. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
-        "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops (Mountain Dew, Dior, jet-lag CVS), Kendrick 12-bar diss-track punch, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas Hemingway-line specificity + 2Pac empathetic clarity stay as the craft floor. You never ship 'I feel sad', 'my heart is broken', 'we all', 'shattered dreams', 'I am the saint I am the sinner'. You write proper nouns, contradictions in the same verse (confidence + jet-lag), conversational micro-overflow lines.",
+        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Full rap songs require TWO rap verses with at least 16 bars each; section_line_minimums are hard and bracket tags never count as bars. Pop verses are 8-12 lines. Pick ONE dominant image field per section and stay inside it. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
+        "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops (Mountain Dew, Dior, jet-lag CVS), Kendrick direct diss-track pressure, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas Hemingway-line specificity + 2Pac empathetic clarity stay as the craft floor. You never ship 'I feel sad', 'my heart is broken', 'we all', 'shattered dreams', 'I am the saint I am the sinner'. You choose one image field, write proper nouns, contradictions in the same verse (confidence + jet-lag), conversational micro-overflow lines.",
     ),
     "Track Lyrics Agent Part 2": (
         "Tier-1 Lyric Writer Part 2 (2024-2026 chart-craft)",
-        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Full rap songs require TWO rap verses with at least 16 bars each. Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse.",
-        "You ghost-write for 2024-2026 chart hits. V2 must add what V1 didn't: 'Espresso' V2 jumps from after-party to chapel-to-ICU-to-CVS at dawn. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. 'Birds of a Feather' V2 lands the songwriter's thesis. Same craft rules as Part 1: rhyme stacking, concrete proper nouns, contradictions, no cliches, every verse changes something, hook verbatim every chorus pass.",
+        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Full rap songs require TWO rap verses with at least 16 bars each; section_line_minimums are hard and bracket tags never count as bars. Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse. Keep one dominant image field per section.",
+        "You ghost-write for 2024-2026 chart hits. V2 must add what V1 didn't: 'Espresso' V2 jumps from after-party to chapel-to-ICU-to-CVS at dawn. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. 'Birds of a Feather' V2 lands the songwriter's thesis. Same craft rules as Part 1: rhyme stacking, concrete proper nouns, contradictions, no cliches, one image field, every verse changes something, hook verbatim every chorus pass.",
     ),
     "Track Lyrics Agent Part 3": (
         "Tier-1 Lyric Writer Part 3 (2024-2026 chart-craft)",
-        "Write the closing lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Bridge OPTIONAL but if present write the 'rant bridge' (Antonoff/Swift): stream-of-consciousness, conversational diction, intrusive thoughts blended with metaphor, end on a shouted single-line thesis. Final chorus repeats hook verbatim. Outro lands the thesis in 1-3 short lines.",
-        "You ghost-write for 2024-2026 chart hits. Closing sections need either a rant-bridge (Cruel Summer style: shout-line ending) OR straight to final hook + outro (Birds of a Feather has no bridge, Not Like Us has no bridge — modern norm). Outro is conversational, short, leaves the listener wanting one more spin.",
+        "Write the closing lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Bridge OPTIONAL but if present write the 'rant bridge' (Antonoff/Swift): stream-of-consciousness, conversational diction, intrusive thoughts blended with one coherent image field, end on a shouted single-line thesis. Final chorus repeats hook verbatim. Outro lands the thesis in 1-3 short lines. Section_line_minimums are hard and bracket tags never count as lyric lines.",
+        "You ghost-write for 2024-2026 chart hits. Closing sections need either a rant-bridge (Cruel Summer style: shout-line ending) OR straight to final hook + outro (Birds of a Feather has no bridge, Not Like Us has no bridge - modern norm). Outro is conversational, short, leaves the listener wanting one more spin.",
     ),
     "Caption Agent": (
         "Final Caption Polisher",
@@ -8057,7 +8058,8 @@ class AlbumAgentPromptLibrary:
             "One small decision per call. Answer the schema only.\n"
             "ACE-Step: caption<512 sound-only; lyrics<4096 temporal script; metadata separate; complete agent lyrics bypass ACE LM rewrite.\n"
             "Lyrics: section tags exact, complete lines, clear section separation, 6-10 syllables as a guide, breaks for long tracks.\n"
-            "Full rap songs: write TWO [Verse - rap] sections with at least 16 bars each. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
+            "Full rap songs: write TWO [Verse - rap] sections with at least 16 bars each. Section_line_minimums are hard; bracket tags and stage directions do not count as bars. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
+            "Lyric image discipline: choose one dominant image field per section and stay inside it; do not mix weather/fire/ocean/war/machine/religion/money families in the same section.\n"
             "Never put BPM/key/duration/model/seed/title/story/producer/person names in caption or lyrics unless user explicitly wrote a sung line.\n"
             "Producer references: never put producer names in caption. Use the Producer-Format Cookbook below to translate to genre+era+drum+timbre stacks.\n"
             "Anti-pattern guard: forbid AI-cliche image bank (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes, we rise, let it burn, chasing the night). Forbid telling-not-showing labels and generic POV.\n"
@@ -8155,6 +8157,60 @@ def _director_part_char_budget(
         ACE_STEP_LYRICS_CHAR_LIMIT - 180,
         max(620, equal_budget, proportional_budget, line_budget),
     )
+
+
+def _lyric_image_field_contract(
+    current: dict[str, Any],
+    sections: list[str] | None = None,
+    *,
+    section_minimums: dict[str, int] | None = None,
+    repair_text: str = "",
+) -> str:
+    """Compact first-draft craft contract for lyric agents.
+
+    The quality gate rewards coherent imagery, but local models were getting a
+    vague "coherent metaphor" instruction and then mixing weather, fire, war,
+    machine, religion and money in the same section. Give them one simple rule
+    before they write: choose one image field and delete the rest.
+    """
+    title = _clip_text(current.get("title") or current.get("locked_title") or "", 80)
+    narrative = _clip_text(current.get("narrative") or current.get("description") or "", 240)
+    vibe = _clip_text(current.get("vibe") or current.get("mood") or "", 140)
+    caption = _clip_text(current.get("caption") or current.get("tags") or current.get("caption_tags") or "", 220)
+    sections = [str(item).strip() for item in (sections or []) if str(item).strip()]
+    section_minimums = {
+        str(key): int(value)
+        for key, value in (section_minimums or {}).items()
+        if str(key).strip() and int(value or 0) > 0
+    }
+    hard_min = sum(section_minimums.values()) if section_minimums else 0
+    mixed_metaphor_repair = bool(re.search(r"lyric_craft_mixed_metaphor|mixed[_\s-]?metaphor", repair_text or "", re.I))
+    lines = [
+        "Choose ONE dominant image field for this section before writing the first line.",
+        "Stay inside that field through the whole section; use concrete nouns and actions, not image-hopping.",
+        (
+            "Do not combine multiple broad families in one section: weather/cloud/rain, fire/flame/burn, "
+            "ocean/wave/tide, war/blood/battle, machine/data/wire, religion/prayer/holy, money/debt/rent."
+        ),
+        "If the validator names mixed_metaphor, keep only the strongest listed family and remove the other families.",
+        "A proper noun or physical object is better than an abstract slogan.",
+    ]
+    if hard_min:
+        lines.append(
+            f"Hard line floor: write at least {hard_min} non-tag lyric lines across these sections; bracket tags do not count."
+        )
+    if section_minimums:
+        lines.append(f"Per-section hard floors: {json.dumps(section_minimums, ensure_ascii=False)}.")
+    if sections:
+        lines.append(f"Sections in this call only: {json.dumps(sections, ensure_ascii=False)}.")
+    if any((title, narrative, vibe, caption)):
+        lines.append(
+            "Anchor choices from accepted track context: "
+            f"title={title or 'n/a'}; vibe={vibe or 'n/a'}; narrative={narrative or 'n/a'}; sound={caption or 'n/a'}."
+        )
+    if mixed_metaphor_repair:
+        lines.append("Repair mode: rewrite fresh lines with fewer images, shorter bars, and one chosen image field only.")
+    return "\n".join(lines)
 
 
 def _compact_json(value: Any, limit: int | None = None) -> str:
@@ -9722,6 +9778,10 @@ class AceJamAlbumDirector:
         required_phrases = list(dict.fromkeys(required_phrases))[:8]
         previous_tail = "\n".join(str(line) for line in (current.get("lyrics_lines") or [])[-14:])
         caption = current.get("caption") or current.get("tags") or current.get("caption_tags") or ""
+        hard_min_lines = max(
+            int(part_min_lines or 0),
+            sum(max(0, int(value or 0)) for value in (part_section_minimums or {}).values()),
+        )
         track_context = {
             "track_number": index + 1,
             "track_count": self.num_tracks,
@@ -9741,11 +9801,18 @@ class AceJamAlbumDirector:
             "section_line_minimums": part_section_minimums,
             "part_index_required": part_index + 1,
             "part_target_words_approx": part_target_words,
-            "part_min_vocal_lines_approx": part_min_lines,
+            "part_min_vocal_lines_approx": hard_min_lines,
+            "hard_min_vocal_lines_for_allowed_sections": hard_min_lines,
             "part_target_chars_max": part_budget,
             "part_hard_chars_max": part_hard_budget,
             "whole_song_safe_lyrics_chars_max": safe_lyrics_budget,
         }
+        image_field_contract = _lyric_image_field_contract(
+            current,
+            group,
+            section_minimums=part_section_minimums,
+            repair_text=repair_note,
+        )
         return (
             f"ALBUM_CONCEPT_SUMMARY:\n{album_summary}\n\n"
             f"TRACK_CONTEXT_JSON:\n{json.dumps(track_context, ensure_ascii=False)}\n"
@@ -9753,11 +9820,15 @@ class AceJamAlbumDirector:
             f"ACCEPTED_PREVIOUS_LYRICS_TAIL:\n{_clip_text(previous_tail, 900)}\n"
             f"REQUIRED_OR_LOCKED_PHRASES_TO_USE_WHEN_NATURAL:\n{json.dumps(required_phrases, ensure_ascii=False)}\n"
             f"CURRENT_SECTION_CONSTRAINTS_JSON:\n{json.dumps(constraints, ensure_ascii=False)}\n"
+            f"LYRIC_IMAGE_FIELD_CONTRACT:\n{image_field_contract}\n"
             f"{repair_note}"
             "TASK:\n"
             "Write only this one section group's lyrics_lines. Keep sections exactly equal to only_allowed_section_tags, in order. "
             "Put each section tag once in lyrics_lines, then fresh performable lyric lines for that tag. "
             "Do not include earlier sections, caption, BPM, key, metadata, explanations, markdown, escaped newlines, or producer notes. "
+            "For every section in section_line_minimums, write at least that many non-tag lyric lines; bracket tags do not count. "
+            "If any approximate target conflicts with section_line_minimums, section_line_minimums wins. "
+            "Pick one image field for the section and do not mix weather/fire/ocean/war/machine/religion/money families. "
             "Use concrete scene/action, clean breath length, and title-connected hook lines when the allowed section is a hook/chorus/refrain. "
             "For rap sections, write short bars with internal rhyme and forward motion; for sung sections, keep vowel-friendly lines. "
             "Respect the target char budget."
@@ -10027,7 +10098,9 @@ class AceJamAlbumDirector:
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Regenerate clean lyrics_lines from the section map. Do not include previous invalid sections/lines. "
                 "Do not copy duplicated, extra, or rejected tags from earlier attempts. "
-                "If the issue says lyrics_under_length or lyrics_too_few_lines, expand with fresh clear bars and one breath per line.\n"
+                "If the issue says lyrics_under_length, lyrics_too_few_lines, rap_verses_underfilled, or section_under_min_lines, "
+                "write the missing fresh bars before polishing. If the issue says mixed_metaphor, choose one image family and delete the others. "
+                "Keep one breath per line.\n"
             )
         for part_index, group in enumerate(groups):
             self.task_graph.start(
@@ -10036,6 +10109,16 @@ class AceJamAlbumDirector:
                 payload={"part_index": part_index + 1, "sections": group, "previous_sections": forbidden_sections},
             )
             part_section_minimums = {tag: whole_section_minimums[tag] for tag in group if tag in whole_section_minimums}
+            hard_part_min_lines = max(
+                int(part_min_lines or 0),
+                sum(max(0, int(value or 0)) for value in (part_section_minimums or {}).values()),
+            )
+            image_field_contract = _lyric_image_field_contract(
+                current,
+                group,
+                section_minimums=part_section_minimums,
+                repair_text=repair_note,
+            )
             part_budget = _director_part_char_budget(
                 safe_lyrics_budget,
                 groups,
@@ -10071,6 +10154,7 @@ class AceJamAlbumDirector:
                     + repair_note
                     + f"\nWHOLE_SONG_LYRIC_LENGTH_PLAN:\n{json.dumps({'duration': requested_duration, 'density': lyric_plan.get('density'), 'target_words': target_words, 'min_words': min_words, 'target_lines': target_lines, 'min_lines': min_lines, 'max_lyrics_chars': lyric_plan.get('max_lyrics_chars') or ACE_STEP_LYRICS_CHAR_LIMIT}, ensure_ascii=False)}\n"
                     + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
+                    + f"LYRIC_IMAGE_FIELD_CONTRACT:\n{image_field_contract}\n"
                     + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
                     + f"BARS_PER_SECTION_FLOOR:\n{json.dumps(lyric_plan.get('bars_per_section') or {}, ensure_ascii=False)}\n"
                     + f"RAP_FULL_SONG_RULE:\n{json.dumps({'rule': lyric_plan.get('rap_full_song_rule') or '', 'min_rap_verses_full_song': lyric_plan.get('min_rap_verses_full_song'), 'alternate_min_bars_if_two_rap_verses': lyric_plan.get('alternate_min_bars_if_two_rap_verses')}, ensure_ascii=False)}\n"
@@ -10079,14 +10163,18 @@ class AceJamAlbumDirector:
                     + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
                     + f"PART_INDEX_REQUIRED: {part_index + 1}\n"
                     + f"PART_TARGET_WORDS_APPROX: {part_target_words}\n"
-                    + f"PART_MIN_VOCAL_LINES_APPROX: {part_min_lines}\n"
+                    + f"PART_MIN_VOCAL_LINES_APPROX: {hard_part_min_lines}\n"
+                    + f"HARD_MIN_VOCAL_LINES_FOR_ALLOWED_SECTIONS: {hard_part_min_lines}\n"
                     + f"PART_TARGET_CHARS_MAX: {part_budget}\n"
                     + f"PART_HARD_CHARS_MAX: {part_hard_budget}\n"
                     + f"WHOLE_SONG_SAFE_LYRICS_TARGET_CHARS_MAX: {safe_lyrics_budget}\n"
                     + "Write lyrics_lines only. sections must equal ONLY_ALLOWED_SECTION_TAGS exactly; do not add any other section tag. "
                     "Each allowed section tag must appear once in lyrics_lines, in the same order. "
                     "Never write a forbidden previous section. Never copy earlier sections. "
-                    "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
+                    "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; bracket tags do not count as lyric lines. "
+                    "If PART_MIN_VOCAL_LINES_APPROX conflicts with SECTION_LINE_MINIMUMS_FOR_THIS_PART, the section minimum wins. "
+                    "Choose one image field per section and do not mix weather/fire/ocean/war/machine/religion/money families. "
+                    "Verses must be long enough to carry a full vocal track. "
                     "RAP VERSE FLOOR: full rap songs need 2 rap verses of at least 16 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
                     "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
                     "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
@@ -10181,10 +10269,13 @@ class AceJamAlbumDirector:
                         f"ONLY_ALLOWED_SECTION_TAGS={json.dumps(group, ensure_ascii=False)}. "
                         f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN={json.dumps(forbidden_sections, ensure_ascii=False)}. "
                         f"SECTION_LINE_MINIMUMS_FOR_THIS_PART={json.dumps(part_section_minimums, ensure_ascii=False)}. "
+                        f"HARD_MIN_VOCAL_LINES_FOR_ALLOWED_SECTIONS={hard_part_min_lines}. "
                         "sections must equal ONLY_ALLOWED_SECTION_TAGS exactly. Each allowed tag appears once. "
+                        "Write at least the section minimum count as non-tag lyric lines; bracket tags do not count. "
                         "Do not include previous invalid sections/lines. If rap is requested, write short rap bars only: "
                         "no Instrumental break text, no orchestral/stage-direction lines, no pop-ballad prose. "
-                        "Fix craft issues with concrete nouns, coherent imagery, breathable lines, and no generic AI phrases."
+                        "Fix craft issues with concrete nouns, breathable lines, and no generic AI phrases. "
+                        f"{image_field_contract}"
                     ),
                 )
             except AceJamAgentError as exc:
@@ -10943,12 +11034,26 @@ class AceJamAlbumDirector:
         genre_hint = _director_track_genre_hint(current, self.opts)
         density_plan = ((gate.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(gate.get("lyric_density_gate"), dict) else {}
         craft_contract = build_lyrical_craft_contract(current, self.opts)
+        section_minimums = current.get("lyric_section_minimums") if isinstance(current.get("lyric_section_minimums"), dict) else {}
+        target_section_minimums = {
+            tag: int(section_minimums.get(tag) or section_minimums.get(_section_tag_line(tag)) or 0)
+            for tag in target_sections
+            if int(section_minimums.get(tag) or section_minimums.get(_section_tag_line(tag)) or 0) > 0
+        }
+        image_field_contract = _lyric_image_field_contract(
+            current,
+            target_sections,
+            section_minimums=target_section_minimums,
+            repair_text=" ".join(craft_issue_ids),
+        )
         repair_prompt = (
             self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
             + "\nLYRIC_CRAFT_REPAIR_ISSUES:\n"
             + f"{json.dumps(craft_issue_ids, ensure_ascii=False)}\n"
             + "LYRICAL_CRAFT_CONTRACT:\n"
             + f"{json.dumps(craft_contract, ensure_ascii=False)}\n"
+            + "LYRIC_IMAGE_FIELD_CONTRACT:\n"
+            + f"{image_field_contract}\n"
             + "TARGET_SECTIONS_TO_REWRITE:\n"
             + f"{json.dumps(target_sections, ensure_ascii=False)}\n"
             + "CURRENT_TARGET_SECTION_LINES:\n"
@@ -11005,7 +11110,8 @@ class AceJamAlbumDirector:
                 repair_context=(
                     f"Rewrite only TARGET_SECTIONS_TO_REWRITE={json.dumps(target_sections, ensure_ascii=False)}. "
                     "sections must match exactly. Use delimiter blocks only. Remove generic AI phrases, mixed metaphors, "
-                    "overlong lines, weak hook wording, and filler while preserving the bracket tags."
+                    "overlong lines, weak hook wording, and filler while preserving the bracket tags. "
+                    f"{image_field_contract}"
                 ),
             )
         except AceJamAgentError as exc:
