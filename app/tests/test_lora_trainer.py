@@ -1648,7 +1648,8 @@ class LoraTrainerTest(unittest.TestCase):
             exported = [item for item in adapters if item["source"] == "exports"]
             self.assertEqual([item["display_name"] for item in exported], ["charaf hook", "charaf hook"])
             self.assertTrue(all(item["quality_status"] == "needs_review" for item in exported))
-            self.assertFalse(any(item["is_loadable"] for item in exported))
+            self.assertTrue(all(item["is_loadable"] for item in exported))
+            self.assertTrue(all(item["generation_loadable"] for item in exported))
             self.assertTrue(all(item["trigger_tag"] == "charaf hook" for item in exported))
             self.assertTrue(all(item["generation_trigger_tag"] == "charaf hook" for item in exported))
 
@@ -1712,7 +1713,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(adapters[0]["trigger_source"], "folder")
             self.assertTrue((adapter_dir / "acejam_adapter.json").is_file())
 
-    def test_lora_registry_quarantines_xl_sft_shift3_adapter(self):
+    def test_lora_registry_flags_xl_sft_shift3_adapter_but_keeps_manual_testing_open(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
@@ -1734,11 +1735,11 @@ class LoraTrainerTest(unittest.TestCase):
             adapters = manager.list_adapters()
 
             self.assertEqual(adapters[0]["quality_status"], "quarantined")
-            self.assertFalse(adapters[0]["is_loadable"])
-            self.assertFalse(adapters[0]["generation_loadable"])
+            self.assertTrue(adapters[0]["is_loadable"])
+            self.assertTrue(adapters[0]["generation_loadable"])
             self.assertIn("expected shift=1.0", " ".join(adapters[0]["quality_reasons"]))
 
-    def test_lora_registry_hides_needs_review_adapters_from_generation(self):
+    def test_lora_registry_flags_needs_review_adapters_but_keeps_manual_testing_open(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
@@ -1759,8 +1760,8 @@ class LoraTrainerTest(unittest.TestCase):
             adapters = manager.list_adapters()
 
             self.assertEqual(adapters[0]["quality_status"], "needs_review")
-            self.assertFalse(adapters[0]["is_loadable"])
-            self.assertFalse(adapters[0]["generation_loadable"])
+            self.assertTrue(adapters[0]["is_loadable"])
+            self.assertTrue(adapters[0]["generation_loadable"])
 
     def test_job_result_registers_manual_training_output(self):
         with tempfile.TemporaryDirectory() as tmp:

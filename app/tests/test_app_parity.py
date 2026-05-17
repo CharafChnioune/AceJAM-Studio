@@ -100,7 +100,6 @@ class AppParityTest(unittest.TestCase):
             "retrieval_rounds": 0,
             "input_contract_applied": False,
             "contract_repair_count": 0,
-            "blocked_unsafe_count": 0,
             "toolkit_report": {},
         }
 
@@ -2083,7 +2082,6 @@ class AppParityTest(unittest.TestCase):
             web_src / "wizards" / "SimpleWizard.tsx",
             web_src / "wizards" / "CustomWizard.tsx",
             web_src / "wizards" / "SourceAudioWizard.tsx",
-            web_src / "wizards" / "AlbumWizard.tsx",
             web_src / "wizards" / "NewsWizard.tsx",
         ]
 
@@ -2099,6 +2097,17 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("adapter_model_variant", text, path.name)
             self.assertIn("adapter_song_model", text, path.name)
             self.assertIn('form.setValue("song_model", selection.adapter_song_model', text, path.name)
+
+        album = (web_src / "wizards" / "AlbumWizard.tsx").read_text(encoding="utf-8")
+        self.assertIn("LoraSelector", album)
+        self.assertIn("setTrackLoraSelection", album)
+        self.assertIn("tracks: tracksForGenerate", album)
+        self.assertIn("Track LoRA", album)
+        self.assertIn("stripAlbumLevelLoraFields", album)
+        self.assertIn("migrateLegacyLoraToTracks", album)
+        self.assertNotIn("deze PEFT LoRA wordt op elke albumtrack toegepast", album)
+        self.assertNotIn("...normalizeLoraSelection(values)", album)
+        self.assertNotIn('form.setValue("song_model", selection.adapter_song_model', album)
 
         schemas = (web_src / "lib" / "schemas.ts").read_text(encoding="utf-8")
         for field in [
@@ -3327,6 +3336,101 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(data["tracks"][0]["lora_trigger_tag"], "pac")
         self.assertTrue(data["tracks"][0]["lora_trigger_applied"])
 
+    def test_album_uses_independent_track_lora_choices(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            result_id = f"album-track-lora-{len(calls):02d}"
+            return {
+                "success": True,
+                "result_id": result_id,
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": {
+                    **payload,
+                    "lora_trigger_applied": bool(payload.get("use_lora_trigger")),
+                    "lora_trigger_conditioning_audit": {"status": "applied", "caption_only": True},
+                },
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": "take-1",
+                        "result_id": result_id,
+                        "filename": "take.wav",
+                        "audio_url": f"/media/results/{result_id}/take.wav",
+                        "download_url": f"/media/results/{result_id}/take.wav",
+                        "title": payload["title"],
+                        "seed": payload["seed"],
+                    }
+                ],
+            }
+
+        base_track = {
+            "artist_name": "Unit Signal",
+            "tags": "rap, hip hop, hard drums, clear vocal, polished mix",
+            "lyrics": _LONG_TEST_LYRICS,
+            "duration": 45,
+            "bpm": 92,
+            "key_scale": "D minor",
+            "time_signature": "4",
+            "use_lora": True,
+            "use_lora_trigger": True,
+            "lora_scale": 0.72,
+            "adapter_song_model": "acestep-v15-xl-sft",
+        }
+        request_payload = {
+            "agent_engine": "editable_plan",
+            "toolbelt_only": True,
+            "song_model_strategy": "single_model_album",
+            "song_model": "acestep-v15-xl-sft",
+            "ace_lm_model": "none",
+            "track_variants": 1,
+            "save_to_library": False,
+            "tracks": [
+                {
+                    **base_track,
+                    "track_number": 1,
+                    "title": "Track One LoRA",
+                    "lora_adapter_path": "/tmp/album-track-one",
+                    "lora_adapter_name": "track one adapter",
+                    "lora_trigger_tag": "onevoice",
+                },
+                {
+                    **base_track,
+                    "track_number": 2,
+                    "title": "Track Two LoRA",
+                    "lora_adapter_path": "/tmp/album-track-two",
+                    "lora_adapter_name": "track two adapter",
+                    "lora_trigger_tag": "twovoice",
+                    "lora_scale": 0.36,
+                },
+            ],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(album_crew_module, "plan_album", return_value=self._mock_direct_album_plan(request_payload["tracks"])), \
+            patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+            patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+            patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
+            raw = acejam_app.generate_album(
+                concept="unit test per track loras",
+                num_tracks=2,
+                track_duration=45,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertTrue(data["success"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call["lora_adapter_name"] for call in calls], ["track one adapter", "track two adapter"])
+        self.assertEqual([call["lora_trigger_tag"] for call in calls], ["onevoice", "twovoice"])
+        self.assertEqual(calls[0]["lora_scale"], 0.72)
+        self.assertEqual(calls[1]["lora_scale"], 0.36)
+        self.assertTrue(all(call["use_lora"] for call in calls))
+        self.assertEqual(data["tracks"][0]["lora_adapter_name"], "track one adapter")
+        self.assertEqual(data["tracks"][1]["lora_adapter_name"], "track two adapter")
+
     def test_album_generate_renders_existing_ui_tracks_without_second_agent_loop(self):
         calls = []
 
@@ -3381,6 +3485,14 @@ class AppParityTest(unittest.TestCase):
                     "bpm": 92,
                     "key_scale": "D minor",
                     "time_signature": "4",
+                    "planning_status": "failed",
+                    "skip_render": True,
+                    "planning_error": "stale Section Map Agent failure",
+                    "payload_gate_status": "planning_failed",
+                    "payload_gate_passed": False,
+                    "model_results": [{"generated": False}],
+                    "audios": [{"filename": "stale.wav"}],
+                    "error": "old UI error",
                 }
             ],
         }
@@ -3407,10 +3519,12 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["title"], "Already Written Track")
         self.assertIn("finished UI caption", calls[0]["caption"])
+        self.assertEqual(data["tracks"][0]["planning_status"], "ui_approved")
+        self.assertFalse(data["tracks"][0]["skip_render"])
         self.assertTrue(data["tracks"][0]["model_results"][0]["payload_gate_non_blocking"])
         self.assertIn("no album agents will run", " ".join(data["logs"]).lower())
 
-    def test_album_lora_model_mismatch_locks_album_to_adapter_model(self):
+    def test_album_lora_model_mismatch_is_ignored_per_track(self):
         calls = []
 
         def fake_generation(payload):
@@ -3491,12 +3605,15 @@ class AppParityTest(unittest.TestCase):
         data = json.loads(raw)
         self.assertTrue(data["success"])
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0]["song_model"], "acestep-v15-xl-sft")
-        self.assertTrue(calls[0]["use_lora"])
-        self.assertEqual(calls[0]["adapter_song_model"], "acestep-v15-xl-sft")
-        self.assertIn("LoRA model lock", "\n".join(data.get("logs") or []))
+        self.assertEqual(calls[0]["song_model"], "acestep-v15-turbo")
+        self.assertFalse(calls[0]["use_lora"])
+        self.assertEqual(calls[0]["lora_ignored_reason"].split(":")[0], "track_lora_ignored_model_mismatch")
+        self.assertEqual(calls[0]["ignored_lora_adapter_name"], "xl sft lora")
+        self.assertIn("album model is acestep-v15-turbo", calls[0]["lora_ignored_reason"])
+        self.assertEqual(data["tracks"][0]["model_results"][0]["lora_ignored_reason"].split(":")[0], "track_lora_ignored_model_mismatch")
+        self.assertIn("Track 01 LoRA ignored", "\n".join(data.get("logs") or []))
 
-    def test_album_skips_planning_failed_track_and_renders_remaining_tracks(self):
+    def test_album_stops_before_render_when_any_track_planning_failed(self):
         calls = []
 
         def fake_generation(payload):
@@ -3580,14 +3697,10 @@ class AppParityTest(unittest.TestCase):
 
         data = json.loads(raw)
         self.assertFalse(data["success"])
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0]["title"], "Second Still Renders")
-        self.assertEqual(data["generated_count"], 1)
-        self.assertEqual(data["expected_renders"], 2)
-        self.assertEqual(data["failed_count"], 1)
-        self.assertIn("Failed tracks", data["error"])
-        self.assertEqual(data["model_albums"][0]["tracks"][0]["planning_status"], "failed")
-        self.assertTrue(data["model_albums"][0]["tracks"][1]["generated"])
+        self.assertEqual(len(calls), 0)
+        self.assertIn("render was not started", data["error"])
+        self.assertEqual(data["failed_tracks"][0]["track_number"], 1)
+        self.assertEqual(data["failed_tracks"][0]["title"], "Failed First")
 
     def test_album_job_publishes_full_tracks_as_they_finish(self):
         calls = []
@@ -5058,8 +5171,58 @@ class AppParityTest(unittest.TestCase):
             self.assertFalse(result["vocal_intelligibility_gate"]["blocking"])
             self.assertNotIn("recommended_take", result)
             self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
-            saved = json.loads((results / "asrerr" / "result.json").read_text(encoding="utf-8"))
-            self.assertFalse(saved["success"])
+
+    def test_album_manual_review_keeps_asr_unavailable_render_successful(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            params = {
+                "task_type": "text2music",
+                "ui_mode": "album",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Album ASR Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "vocal_intelligibility_gate": True,
+                "vocal_intelligibility_attempts": 3,
+                "save_to_library": False,
+            }
+
+            def fake_once(_attempt_params):
+                result_id = "albumasr"
+                result_dir = results / result_id
+                result_dir.mkdir()
+                (result_dir / "take.wav").write_text("audio", encoding="utf-8")
+                result = {"success": True, "result_id": result_id, "audios": [{"id": "take-1", "filename": "take.wav"}]}
+                (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                return result
+
+            def fake_asr(paths, **_kwargs):
+                return [{
+                    "path": str(paths[0]),
+                    "status": "error",
+                    "passed": False,
+                    "blocking": True,
+                    "text": "",
+                    "word_count": 0,
+                    "keyword_hits": [],
+                    "missing_keywords": ["albus"],
+                    "issue": "asr_model_unavailable",
+                }]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_parse_generation_payload", return_value=params), \
+                patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_once), \
+                patch.object(acejam_app, "_transcribe_audio_paths", side_effect=fake_asr):
+                result = acejam_app._run_advanced_generation({"title": "ignored"})
+
+            self.assertTrue(result["success"])
+            self.assertTrue(result["needs_review"])
+            self.assertEqual(result["vocal_intelligibility_gate"]["status"], "needs_review")
+            self.assertFalse(result["vocal_intelligibility_gate"]["blocking"])
+            self.assertIn("vocal_intelligibility_verifier_error_manual_review", result["payload_warnings"])
+            saved = json.loads((results / "albumasr" / "result.json").read_text(encoding="utf-8"))
+            self.assertTrue(saved["success"])
             self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "needs_review")
 
     def test_vocal_intelligibility_asr_timeout_returns_advisory_error(self):

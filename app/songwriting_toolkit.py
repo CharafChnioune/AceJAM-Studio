@@ -310,7 +310,7 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "InspirationRadarTool", "summary": "Fetches current inspiration snippets when enabled."},
     {"name": "CaptionPolisherTool", "summary": "Builds compact ACE-Step captions from style dimensions."},
     {"name": "ConflictCheckerTool", "summary": "Flags caption, tag, BPM, key, and lyric contradictions."},
-    {"name": "MixMasterTool", "summary": "Recommends output, score/LRC/audio-code flags, and mix/master safety checks."},
+    {"name": "MixMasterTool", "summary": "Recommends output, score/LRC/audio-code flags, and mix/master checks."},
     {"name": "HitScoreTool", "summary": "Scores hook, lyric sufficiency, uniqueness, and production readiness."},
     {"name": "TrackRepairTool", "summary": "Repairs missing lyrics, weak hooks, tag conflicts, and under-specified generation fields."},
     {"name": "LanguagePresetTool", "summary": "Returns the selected language/script policy and romanization guidance."},
@@ -318,7 +318,7 @@ CRAFT_TOOLS: list[dict[str, str]] = [
     {"name": "SectionMapTool", "summary": "Builds duration-realistic section maps for vocal or instrumental workflows."},
     {"name": "IterationPlanTool", "summary": "Plans listen-adjust-regenerate passes for human-centered ACE-Step iteration."},
     {"name": "TroubleshootingTool", "summary": "Maps common ACE-Step failures to compact repair instructions."},
-    {"name": "ValidationChecklistTool", "summary": "Returns prompt-kit quality gates for captions, lyrics, metadata, safety, and runtime support."},
+    {"name": "ValidationChecklistTool", "summary": "Returns prompt-kit quality gates for captions, lyrics, metadata, and runtime support."},
     {"name": "NegativeControlTool", "summary": "Builds genre-aware negative control phrases for generation payloads."},
     {"name": "AceStepSettingsPolicyTool", "summary": "Returns official/default/docs-recommended/AceJAM settings policy for ACE-Step payloads."},
     {"name": "ChartMasterProfileTool", "summary": "Returns final-render Chart Master defaults and take-count policy."},
@@ -721,7 +721,7 @@ def lyric_length_plan(duration: float, density: str = "balanced", structure_pres
             (60, 30, 42),
             (120, 48, 66),
             (180, 58, 76),
-            (240, 66, 86),
+            (240, 76, 86),
             (300, 78, 98),
             (600, 96, 120),
         ]
@@ -1586,7 +1586,6 @@ def normalize_track(track: dict[str, Any], index: int, options: dict[str, Any]) 
         "vibe",
         "narrative",
         "required_phrases",
-        "content_policy_status",
         "input_contract_applied",
         "input_contract_version",
         "contract_repaired_fields",
@@ -1755,7 +1754,6 @@ def build_album_plan(concept: str, num_tracks: int, track_duration: float, optio
         "user_album_contract": contract,
         "input_contract_applied": bool(contract.get("applied")) if isinstance(contract, dict) else False,
         "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
-        "blocked_unsafe_count": int(contract.get("blocked_unsafe_count") or 0) if isinstance(contract, dict) else 0,
     }
     return {"tracks": normalized, "toolkit_report": toolkit_report}
 

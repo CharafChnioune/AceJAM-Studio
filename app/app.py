@@ -135,6 +135,49 @@ ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS = max(
     ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS,
     _env_int("ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS", 21600),
 )
+ALBUM_UI_RENDER_STALE_FIELDS = {
+    "planning_status",
+    "planning_error",
+    "skip_render",
+    "payload_gate_status",
+    "payload_gate_passed",
+    "payload_gate_blocking_issues",
+    "payload_gate_non_blocking",
+    "payload_quality_gate",
+    "payload_validation",
+    "model_results",
+    "audios",
+    "generated",
+    "result_id",
+    "active_song_model",
+    "audio_url",
+    "download_url",
+    "song_id",
+    "error",
+    "debug_paths",
+    "agent_debug_dir",
+    "agent_rounds",
+    "agent_repair_count",
+    "repair_actions",
+    "lora_ignored_reason",
+    "ignored_lora_adapter_name",
+    "ignored_lora_adapter_path",
+    "ignored_lora_adapter_song_model",
+}
+
+ALBUM_LORA_PAYLOAD_KEYS = (
+    "use_lora",
+    "lora_adapter_path",
+    "lora_adapter_name",
+    "use_lora_trigger",
+    "lora_trigger_tag",
+    "lora_trigger_source",
+    "lora_trigger_aliases",
+    "lora_trigger_candidates",
+    "lora_scale",
+    "adapter_model_variant",
+    "adapter_song_model",
+)
 
 _ALBUM_QUALITY_REQUIRED_EXPORTS = (
     "build_lyrical_craft_contract",
@@ -362,6 +405,7 @@ from songwriting_toolkit import (
     album_models_for_strategy,
     choose_song_model,
     derive_artist_name,
+    expand_lyrics_for_duration,
     lyric_length_plan,
     lyric_stats,
     normalize_album_tracks,
@@ -2136,7 +2180,6 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             normalized["input_contract"] = contract_prompt_context(user_album_contract)
             normalized["input_contract_applied"] = True
             normalized["input_contract_version"] = USER_ALBUM_CONTRACT_VERSION
-            normalized["blocked_unsafe_count"] = int(user_album_contract.get("blocked_unsafe_count") or 0)
             if user_album_contract.get("album_title"):
                 normalized["album_title"] = user_album_contract.get("album_title")
             contract_count = int(user_album_contract.get("track_count") or 0)
@@ -4475,6 +4518,53 @@ def _lora_adapter_request(payload: dict[str, Any]) -> dict[str, Any]:
         "lora_trigger_candidates": trigger_candidates,
         "allow_unsafe_lora_for_benchmark": parse_bool(payload.get("allow_unsafe_lora_for_benchmark"), False),
     }
+
+
+def _empty_lora_adapter_request() -> dict[str, Any]:
+    return _lora_adapter_request(
+        {
+            "use_lora": False,
+            "lora_adapter_path": "",
+            "lora_adapter_name": "",
+            "use_lora_trigger": False,
+            "lora_trigger_tag": "",
+            "lora_scale": DEFAULT_LORA_GENERATION_SCALE,
+            "adapter_model_variant": "",
+            "adapter_song_model": "",
+        }
+    )
+
+
+def _has_explicit_album_track_lora_choice(track: dict[str, Any]) -> bool:
+    if not isinstance(track, dict):
+        return False
+    if "use_lora" in track:
+        return True
+    return any(
+        key in track and track.get(key) not in (None, "", [], {})
+        for key in ALBUM_LORA_PAYLOAD_KEYS
+        if key != "use_lora"
+    )
+
+
+def _album_track_lora_source(track: dict[str, Any], legacy_album_payload: dict[str, Any]) -> dict[str, Any]:
+    if _has_explicit_album_track_lora_choice(track):
+        return {key: track.get(key) for key in ALBUM_LORA_PAYLOAD_KEYS if key in track}
+    return {
+        key: legacy_album_payload.get(key)
+        for key in ALBUM_LORA_PAYLOAD_KEYS
+        if key in legacy_album_payload
+    }
+
+
+def _strip_ignored_lora_trigger_from_track(track: dict[str, Any], trigger_tag: str) -> bool:
+    removed_any = False
+    for field in ("caption", "tags"):
+        cleaned, removed = _remove_lora_trigger_from_caption(str(track.get(field) or ""), trigger_tag)
+        if removed:
+            track[field] = cleaned
+            removed_any = True
+    return removed_any
 
 
 def _caption_contains_lora_trigger(caption: str, trigger_tag: str) -> bool:
@@ -7171,7 +7261,6 @@ def _album_prepare_contract_request_body(body: dict[str, Any], *, fallback_track
         payload["input_contract"] = contract_prompt_context(contract)
         payload["input_contract_applied"] = True
         payload["input_contract_version"] = USER_ALBUM_CONTRACT_VERSION
-        payload["blocked_unsafe_count"] = int(contract.get("blocked_unsafe_count") or 0)
         if str(contract.get("album_title") or "").strip():
             payload["album_title"] = str(contract.get("album_title") or "").strip()
         # When a fresh textarea prompt supplied explicit tracks, those locked
@@ -7413,7 +7502,6 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "user_album_contract": user_album_contract,
         "input_contract_applied": bool(user_album_contract.get("applied")),
         "input_contract_version": USER_ALBUM_CONTRACT_VERSION,
-        "blocked_unsafe_count": int(user_album_contract.get("blocked_unsafe_count") or 0),
     }
 
 
@@ -9755,12 +9843,11 @@ def _vocal_gate_required(params: dict[str, Any]) -> bool:
 
 def _manual_lora_review_allowed(params: dict[str, Any]) -> bool:
     mode = str(params.get("ui_mode") or params.get("wizard_mode") or "").strip().lower()
-    if mode == "lora_benchmark":
+    if mode in {"lora_benchmark", "album"}:
         return True
-    return parse_bool(
-        params.get("manual_lora_review"),
-        parse_bool(params.get("allow_manual_lora_review"), False),
-    )
+    default = parse_bool(params.get("allow_manual_lora_review"), False)
+    default = parse_bool(params.get("manual_lora_review"), default)
+    return parse_bool(params.get("manual_vocal_review"), default)
 
 
 def _vocal_gate_expected_keywords(params: dict[str, Any]) -> list[str]:
@@ -10190,7 +10277,12 @@ def _save_vocal_gate_passed_result_to_library(result: dict[str, Any], params: di
     if not parse_bool(params.get("_deferred_save_to_library"), False):
         return
     gate = result.get("vocal_intelligibility_gate") if isinstance(result.get("vocal_intelligibility_gate"), dict) else {}
-    if not gate.get("passed"):
+    manual_review_ok = (
+        str(gate.get("status") or "").lower() == "needs_review"
+        and not gate.get("blocking")
+        and _manual_lora_review_allowed(params)
+    )
+    if not gate.get("passed") and not manual_review_ok:
         return
     if result.get("_library_saved_after_vocal_gate"):
         return
@@ -10207,6 +10299,8 @@ def _save_vocal_gate_passed_result_to_library(result: dict[str, Any], params: di
         ),
         None,
     )
+    if not isinstance(chosen, dict) and manual_review_ok:
+        chosen = next((audio for audio in audios if isinstance(audio, dict) and audio.get("filename")), None)
     if not isinstance(chosen, dict):
         return
     filename = str(chosen.get("filename") or "").strip()
@@ -12425,6 +12519,7 @@ def _run_advanced_generation(raw_payload: dict[str, Any]) -> dict[str, Any]:
                 result["lora_preflight"] = params.get("lora_preflight")
             if params.get("vocal_preflight"):
                 result["vocal_preflight"] = params.get("vocal_preflight")
+            _save_vocal_gate_passed_result_to_library(result, attempt_params)
             _persist_result_update(result)
             return result
         if gate.get("status") == "error":
@@ -13043,6 +13138,92 @@ def ollama_models() -> str:
     return json.dumps(_ollama_model_catalog())
 
 
+def sanitize_album_ui_track_for_render(
+    raw_track: dict[str, Any],
+    *,
+    index: int,
+    concept: str,
+    track_duration: float,
+    language: str,
+    request_payload: dict[str, Any],
+    album_options: dict[str, Any],
+) -> dict[str, Any]:
+    """Prepare Album Wizard UI tracks for direct render.
+
+    The review UI can hold old planning/gate/debug fields from a failed run.
+    Direct rendering should treat the human-approved track body as source of
+    truth and rebuild runtime status from scratch.
+    """
+    raw = raw_track if isinstance(raw_track, dict) else {}
+    track = {key: value for key, value in raw.items() if key not in ALBUM_UI_RENDER_STALE_FIELDS}
+    track["track_number"] = clamp_int(track.get("track_number"), index, 1, 999)
+    track["title"] = str(track.get("title") or f"Track {index}").strip()
+    track["duration"] = parse_duration_seconds(track.get("duration") or track_duration, track_duration)
+    track["language"] = str(track.get("language") or track.get("vocal_language") or language or "en")
+    track["vocal_language"] = str(track.get("vocal_language") or track.get("language") or language or "en")
+    track["bpm"] = clamp_int(track.get("bpm") or request_payload.get("bpm"), DEFAULT_BPM, 40, 220)
+    track["key_scale"] = normalize_key_scale(track.get("key_scale") or track.get("key") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE)
+    track["time_signature"] = str(track.get("time_signature") or request_payload.get("time_signature") or "4")
+    if track.get("caption") and not track.get("tags"):
+        track["tags"] = str(track.get("caption") or "")
+    if track.get("tags") and not track.get("caption"):
+        track["caption"] = str(track.get("tags") or "")
+    caption = str(track.get("caption") or track.get("tags") or "").strip()
+    if not caption:
+        fallback_terms = split_terms(
+            ", ".join(
+                str(item or "")
+                for item in [
+                    raw.get("style"),
+                    raw.get("genre_prompt"),
+                    request_payload.get("custom_tags"),
+                    request_payload.get("genre_prompt"),
+                    concept,
+                ]
+            )
+        )
+        fallback_terms.extend(["polished modern mix", "clear lead vocal", "album-ready arrangement"])
+        caption = ", ".join(list(dict.fromkeys([term for term in fallback_terms if term]))[:14])
+        track["caption"] = caption
+        track["tags"] = caption
+    lyrics = strip_ace_step_lyrics_leakage(str(track.get("lyrics") or ""))
+    stats = lyric_stats(lyrics)
+    agent_complete = parse_bool(track.get("agent_complete_payload"), False)
+    needs_repair = (not agent_complete) and (
+        not lyrics.strip()
+        or stats.get("section_count", 0) < 2
+        or stats.get("word_count", 0) < 40
+    )
+    if needs_repair:
+        track["pre_render_repair_required"] = True
+        density = str(track.get("lyric_density") or album_options.get("lyric_density") or "balanced")
+        structure = str(track.get("structure_preset") or album_options.get("structure_preset") or "auto")
+        repaired_lyrics = expand_lyrics_for_duration(
+            track["title"],
+            " ".join(item for item in [concept, caption] if item),
+            lyrics,
+            float(track["duration"]),
+            str(track["vocal_language"]),
+            density,
+            structure,
+        )
+        if repaired_lyrics.strip():
+            track["lyrics"] = repaired_lyrics
+            track["pre_render_repair_status"] = "auto_repaired"
+            track["pre_render_repair_actions"] = ["lyrics_expanded_for_direct_album_render"]
+        else:
+            track["lyrics"] = lyrics
+            track["pre_render_repair_status"] = "failed"
+    else:
+        track["lyrics"] = lyrics
+        track["pre_render_repair_required"] = False
+        track["pre_render_repair_status"] = "not_needed" if not agent_complete else "agent_complete_payload"
+    track["planning_status"] = "ui_approved"
+    track["skip_render"] = False
+    track["agent_complete_payload"] = agent_complete
+    return track
+
+
 @app.api(name="generate_album", concurrency_limit=1, time_limit=ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS)
 def generate_album(
     concept: str,
@@ -13118,7 +13299,6 @@ def generate_album(
             {
                 "user_album_contract": album_options.get("user_album_contract"),
                 "input_contract_applied": album_options.get("input_contract_applied"),
-                "blocked_unsafe_count": album_options.get("blocked_unsafe_count"),
                 "album_options_preview": {
                     key: value
                     for key, value in album_options.items()
@@ -13134,19 +13314,12 @@ def generate_album(
             in {"render_existing_tracks", "direct_render", "ui_tracks"}
         )
         album_lora_request = _lora_adapter_request(request_payload)
-        if album_lora_request.get("use_lora") and album_lora_request.get("adapter_song_model"):
-            adapter_song_model = str(album_lora_request.get("adapter_song_model") or "").strip()
-            if adapter_song_model:
-                request_payload["song_model"] = adapter_song_model
-                request_payload["requested_song_model"] = adapter_song_model
-                request_payload["song_model_strategy"] = "single_model_album"
-                album_options["requested_song_model"] = adapter_song_model
-                album_options["song_model_strategy"] = "single_model_album"
-                song_model = adapter_song_model
-                logs.append(
-                    "Album LoRA model lock: using "
-                    f"{adapter_song_model} because the selected adapter was trained for that model."
-                )
+        legacy_album_lora_fallback = bool(album_lora_request.get("use_lora"))
+        if legacy_album_lora_fallback:
+            logs.append(
+                "Legacy album LoRA fallback detected. New AlbumWizard payloads use per-track LoRA; "
+                "this adapter will only apply to tracks without their own explicit LoRA choice."
+            )
         strategy = str(album_options.get("song_model_strategy") or "all_models_album")
         album_models = album_models_for_strategy(
             strategy,
@@ -13172,26 +13345,9 @@ def generate_album(
                     album_model_portfolio=album_models,
                 )
             )
-        if album_lora_request.get("use_lora"):
-            for item in album_models:
-                _validate_lora_request_for_song_model(album_lora_request, str(item["model"]))
-            request_payload.update(
-                {
-                    "use_lora": album_lora_request["use_lora"],
-                    "lora_adapter_path": album_lora_request["lora_adapter_path"],
-                    "lora_adapter_name": album_lora_request["lora_adapter_name"],
-                    "use_lora_trigger": album_lora_request["use_lora_trigger"],
-                    "lora_trigger_tag": album_lora_request["lora_trigger_tag"],
-                    "lora_trigger_source": album_lora_request.get("lora_trigger_source", ""),
-                    "lora_trigger_aliases": album_lora_request.get("lora_trigger_aliases", []),
-                    "lora_trigger_candidates": album_lora_request.get("lora_trigger_candidates", []),
-                    "lora_scale": album_lora_request["lora_scale"],
-                    "adapter_model_variant": album_lora_request["adapter_model_variant"],
-                    "adapter_song_model": album_lora_request["adapter_song_model"],
-                }
-            )
+        if legacy_album_lora_fallback:
             logs.append(
-                "Album LoRA: "
+                "Legacy album LoRA fallback: "
                 f"{album_lora_request.get('lora_adapter_name') or Path(str(album_lora_request.get('lora_adapter_path') or '')).name}; "
                 f"scale={album_lora_request.get('lora_scale')}; "
                 f"trigger={album_lora_request.get('lora_trigger_tag') or 'off'}."
@@ -13217,21 +13373,25 @@ def generate_album(
             )
             tracks = []
             for index, raw_track in enumerate(planned_tracks, start=1):
-                track = dict(raw_track) if isinstance(raw_track, dict) else {}
-                track["track_number"] = clamp_int(track.get("track_number"), index, 1, 999)
-                track["title"] = str(track.get("title") or f"Track {index}").strip()
-                track["duration"] = parse_duration_seconds(track.get("duration") or track_duration, track_duration)
-                track["language"] = str(track.get("language") or track.get("vocal_language") or language or "en")
-                track["vocal_language"] = str(track.get("vocal_language") or track.get("language") or language or "en")
-                track["bpm"] = clamp_int(track.get("bpm") or request_payload.get("bpm"), DEFAULT_BPM, 40, 220)
-                track["key_scale"] = normalize_key_scale(track.get("key_scale") or track.get("key") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE)
-                track["time_signature"] = str(track.get("time_signature") or request_payload.get("time_signature") or "4")
-                if track.get("caption") and not track.get("tags"):
-                    track["tags"] = str(track.get("caption") or "")
-                if track.get("tags") and not track.get("caption"):
-                    track["caption"] = str(track.get("tags") or "")
-                track["planning_status"] = str(track.get("planning_status") or "ui_approved")
-                track["agent_complete_payload"] = False
+                track = sanitize_album_ui_track_for_render(
+                    raw_track if isinstance(raw_track, dict) else {},
+                    index=index,
+                    concept=concept,
+                    track_duration=track_duration,
+                    language=language,
+                    request_payload=request_payload,
+                    album_options=album_options,
+                )
+                if track.get("pre_render_repair_required"):
+                    status = str(track.get("pre_render_repair_status") or "unknown")
+                    logs.append(f"Pre-render repair {index}/{len(planned_tracks)}: {track['title']} -> {status}.")
+                    _album_job_log(
+                        album_job_id,
+                        f"Pre-render repair {index}/{len(planned_tracks)}: {track['title']} -> {status}.",
+                        stage="render_existing_tracks",
+                        current_task="Repair existing Album Wizard track before render",
+                        progress=8,
+                    )
                 tracks.append(track)
             result = {
                 "success": True,
@@ -13252,7 +13412,6 @@ def generate_album(
                 "retrieval_rounds": 0,
                 "input_contract_applied": False,
                 "contract_repair_count": 0,
-                "blocked_unsafe_count": 0,
                 "toolkit_report": {},
             }
         else:
@@ -13317,7 +13476,6 @@ def generate_album(
                 input_contract=result.get("input_contract") or contract_prompt_context(album_options.get("user_album_contract")),
                 input_contract_applied=bool(result.get("input_contract_applied") or album_options.get("input_contract_applied")),
                 input_contract_version=str(result.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION),
-                blocked_unsafe_count=int(result.get("blocked_unsafe_count") or album_options.get("blocked_unsafe_count") or 0),
                 contract_repair_count=int(result.get("contract_repair_count") or 0),
                 album_debug_dir=str(album_debug.root),
                 album_payload_gate_version=ALBUM_PAYLOAD_GATE_VERSION,
@@ -13343,10 +13501,31 @@ def generate_album(
             })
         if planning_failed_tracks:
             logs.append(
-                "Phase 1 partial: "
+                "ERROR: Album planning stopped before render: "
                 f"{len(renderable_tracks)}/{len(tracks)} tracks planned; "
                 f"failed tracks: {', '.join(str(item.get('track_number') or '?') for item in planning_failed_tracks)}."
             )
+            return json.dumps({
+                "tracks": tracks,
+                "logs": logs,
+                "success": False,
+                "error": (
+                    "Album planning failed for "
+                    f"{len(planning_failed_tracks)} track(s); render was not started. "
+                    "Open the track errors/debug logs, fix or rerun planning, then generate again."
+                ),
+                "failed_tracks": [
+                    {
+                        "track_number": item.get("track_number"),
+                        "title": item.get("title"),
+                        "error": item.get("planning_error") or item.get("error") or item.get("payload_gate_status") or "planning_failed",
+                        "debug_paths": item.get("debug_paths") or {},
+                    }
+                    for item in planning_failed_tracks
+                ],
+                "album_debug_dir": str(album_debug.root),
+                "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
+            })
 
         logs.append(
             f"Phase 1 complete: {len(tracks)} UI track(s) ready"
@@ -13595,24 +13774,39 @@ def generate_album(
                             return default
                         return parse_bool(track.get(field, request_payload.get(field)), default)
 
-                    lora_source = dict(request_payload)
-                    for lora_key in (
-                        "use_lora",
-                        "lora_adapter_path",
-                        "lora_adapter_name",
-                        "use_lora_trigger",
-                        "lora_trigger_tag",
-                        "lora_trigger_source",
-                        "lora_trigger_aliases",
-                        "lora_trigger_candidates",
-                        "lora_scale",
-                        "adapter_model_variant",
-                        "adapter_song_model",
-                    ):
-                        if lora_key in track and track.get(lora_key) not in (None, ""):
-                            lora_source[lora_key] = track.get(lora_key)
+                    lora_source = _album_track_lora_source(track, request_payload)
                     track_lora_request = _lora_adapter_request(lora_source)
-                    _validate_lora_request_for_song_model(track_lora_request, track_model)
+                    track_lora_ignored_reason = ""
+                    ignored_lora_request: dict[str, Any] = {}
+                    if track_lora_request.get("use_lora"):
+                        try:
+                            _validate_lora_request_for_song_model(track_lora_request, track_model)
+                        except ValueError as lora_exc:
+                            trained_model = str(track_lora_request.get("adapter_song_model") or "").strip()
+                            if "trained for" not in str(lora_exc):
+                                raise
+                            ignored_lora_request = dict(track_lora_request)
+                            track_lora_ignored_reason = (
+                                "track_lora_ignored_model_mismatch: "
+                                f"adapter trained for {trained_model or 'unknown'}, album model is {track_model}"
+                            )
+                            _strip_ignored_lora_trigger_from_track(
+                                track,
+                                str(
+                                    track_lora_request.get("lora_trigger_tag")
+                                    or track_lora_request.get("lora_trigger_tag_candidate")
+                                    or ""
+                                ),
+                            )
+                            track_lora_request = _empty_lora_adapter_request()
+                            logs.append(f"    Track {i + 1:02d} LoRA ignored: {track_lora_ignored_reason}.")
+                            _album_job_log(
+                                album_job_id,
+                                f"Track {i + 1:02d} LoRA ignored: adapter trained for {trained_model or 'unknown'}, album model is {track_model}",
+                                current_track=f"{i + 1}/{len(tracks)} {track_title}",
+                                current_model_album=track_model,
+                                warnings=[track_lora_ignored_reason],
+                            )
                     track_lora_trigger_applied = bool(
                         track_lora_request.get("use_lora")
                         and track_lora_request.get("use_lora_trigger")
@@ -13632,6 +13826,10 @@ def generate_album(
                             "adapter_model_variant": track_lora_request["adapter_model_variant"],
                             "adapter_song_model": track_lora_request["adapter_song_model"],
                             "lora_trigger_applied": track_lora_trigger_applied,
+                            "lora_ignored_reason": track_lora_ignored_reason,
+                            "ignored_lora_adapter_name": ignored_lora_request.get("lora_adapter_name", ""),
+                            "ignored_lora_adapter_path": ignored_lora_request.get("lora_adapter_path", ""),
+                            "ignored_lora_adapter_song_model": ignored_lora_request.get("adapter_song_model", ""),
                         }
                     )
                     quality_profile = _default_quality_profile_for_payload({**request_payload, **track}, "text2music")
@@ -13659,6 +13857,15 @@ def generate_album(
                         "style": track.get("style", ""),
                         "vibe": track.get("vibe", ""),
                         "narrative": track.get("narrative", ""),
+                        "album_art_prompt": track.get("album_art_prompt") or result.get("album_art_prompt") or album_options.get("album_art_prompt") or "",
+                        "album_art_negative_prompt": track.get("album_art_negative_prompt") or result.get("album_art_negative_prompt") or album_options.get("album_art_negative_prompt") or "",
+                        "single_art_prompt": track.get("single_art_prompt") or track.get("track_art_prompt") or "",
+                        "single_art_negative_prompt": track.get("single_art_negative_prompt") or "",
+                        "video_prompt": track.get("video_prompt") or "",
+                        "video_negative_prompt": track.get("video_negative_prompt") or "",
+                        "visual_palette": track.get("visual_palette") or result.get("visual_palette") or "",
+                        "camera_motion": track.get("camera_motion") or result.get("camera_motion") or "",
+                        "no_text_policy": track.get("no_text_policy") or result.get("no_text_policy") or "",
                         "lyric_density": track.get("lyric_density") or album_options.get("lyric_density") or "dense",
                         "structure_preset": track.get("structure_preset") or album_options.get("structure_preset") or "auto",
                         "duration": track.get("duration") or track_duration,
@@ -13703,6 +13910,8 @@ def generate_album(
                         "auto_lrc": parse_bool(request_payload.get("auto_lrc"), False),
                         "return_audio_codes": parse_bool(request_payload.get("return_audio_codes"), False),
                         "save_to_library": parse_bool(track.get("save_to_library", request_payload.get("save_to_library")), True),
+                        "allow_manual_lora_review": True,
+                        "manual_vocal_review": True,
                         "allow_supplied_lyrics_lm": bool(track_has_vocal_lyrics and track_lm_enabled),
                         "lm_backend": _normalize_lm_backend(track.get("lm_backend") or request_payload.get("lm_backend") or ACE_LM_BACKEND_DEFAULT),
                         "audio_backend": _normalize_audio_backend(track.get("audio_backend") or request_payload.get("audio_backend"), track.get("use_mlx_dit", request_payload.get("use_mlx_dit"))),
@@ -13758,15 +13967,41 @@ def generate_album(
                             "model_render_settings": _jsonable(model_render_settings),
                             "final_model_policy": _jsonable(track.get("final_model_policy", {})),
                             "tag_list": track.get("tag_list", []),
+                            "album_art_prompt": track.get("album_art_prompt") or result.get("album_art_prompt") or album_options.get("album_art_prompt") or "",
+                            "album_art_negative_prompt": track.get("album_art_negative_prompt") or result.get("album_art_negative_prompt") or album_options.get("album_art_negative_prompt") or "",
+                            "single_art_prompt": track.get("single_art_prompt") or track.get("track_art_prompt") or "",
+                            "single_art_negative_prompt": track.get("single_art_negative_prompt") or "",
+                            "video_prompt": track.get("video_prompt") or "",
+                            "video_negative_prompt": track.get("video_negative_prompt") or "",
+                            "visual_palette": track.get("visual_palette") or result.get("visual_palette") or "",
+                            "camera_motion": track.get("camera_motion") or result.get("camera_motion") or "",
+                            "no_text_policy": track.get("no_text_policy") or result.get("no_text_policy") or "",
                             "lora_adapter_name": track_lora_request["lora_adapter_name"],
                             "lora_scale": track_lora_request["lora_scale"],
                             "lora_trigger_tag": track_lora_request["lora_trigger_tag"],
                             "lora_trigger_applied": track_lora_trigger_applied,
+                            "lora_ignored_reason": track_lora_ignored_reason,
+                            "ignored_lora_adapter_name": ignored_lora_request.get("lora_adapter_name", ""),
+                            "ignored_lora_adapter_path": ignored_lora_request.get("lora_adapter_path", ""),
+                            "ignored_lora_adapter_song_model": ignored_lora_request.get("adapter_song_model", ""),
                             "audio_backend": _normalize_audio_backend(track.get("audio_backend") or request_payload.get("audio_backend"), track.get("use_mlx_dit", request_payload.get("use_mlx_dit"))),
                             "album_debug_dir": str(album_debug.root),
                             "payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
                         },
                     }
+                    if track_lora_ignored_reason:
+                        warnings = list(generation_payload.get("payload_warnings") or [])
+                        if track_lora_ignored_reason not in warnings:
+                            warnings.append(track_lora_ignored_reason)
+                        generation_payload.update(
+                            {
+                                "payload_warnings": warnings,
+                                "lora_ignored_reason": track_lora_ignored_reason,
+                                "ignored_lora_adapter_name": ignored_lora_request.get("lora_adapter_name", ""),
+                                "ignored_lora_adapter_path": ignored_lora_request.get("lora_adapter_path", ""),
+                                "ignored_lora_adapter_song_model": ignored_lora_request.get("adapter_song_model", ""),
+                            }
+                        )
                     album_debug.append_jsonl(
                         "05_generation_payloads.jsonl",
                         {
@@ -13801,6 +14036,15 @@ def generate_album(
                         "style",
                         "vibe",
                         "narrative",
+                        "album_art_prompt",
+                        "album_art_negative_prompt",
+                        "single_art_prompt",
+                        "single_art_negative_prompt",
+                        "video_prompt",
+                        "video_negative_prompt",
+                        "visual_palette",
+                        "camera_motion",
+                        "no_text_policy",
                         "duration",
                         "bpm",
                         "key_scale",
@@ -13808,11 +14052,16 @@ def generate_album(
                         "vocal_language",
                         "lyrics_quality",
                         "use_lora",
+                        "lora_adapter_path",
                         "lora_adapter_name",
                         "lora_scale",
                         "lora_trigger_tag",
                         "lora_trigger_applied",
                         "adapter_song_model",
+                        "lora_ignored_reason",
+                        "ignored_lora_adapter_name",
+                        "ignored_lora_adapter_path",
+                        "ignored_lora_adapter_song_model",
                     ]:
                         if public_field in generation_payload:
                             track[public_field] = generation_payload[public_field]
@@ -13841,12 +14090,26 @@ def generate_album(
                             "lyric_duration_fit",
                             "lyrics_quality",
                             "repair_actions",
+                            "album_art_prompt",
+                            "album_art_negative_prompt",
+                            "single_art_prompt",
+                            "single_art_negative_prompt",
+                            "video_prompt",
+                            "video_negative_prompt",
+                            "visual_palette",
+                            "camera_motion",
+                            "no_text_policy",
                             "use_lora",
+                            "lora_adapter_path",
                             "lora_adapter_name",
                             "lora_scale",
                             "lora_trigger_tag",
                             "lora_trigger_applied",
                             "adapter_song_model",
+                            "lora_ignored_reason",
+                            "ignored_lora_adapter_name",
+                            "ignored_lora_adapter_path",
+                            "ignored_lora_adapter_song_model",
                         ]:
                             base_track[public_field] = _jsonable(track.get(public_field))
                     album_debug.append_jsonl(
@@ -13968,7 +14231,14 @@ def generate_album(
                         track["album_model_rescued"] = True
                     if rescue_model:
                         track["vocal_intelligibility_rescue_model"] = rescue_model
-                    track["payload_warnings"] = generation_result.get("payload_warnings", [])
+                    track["payload_warnings"] = list(
+                        dict.fromkeys(
+                            [
+                                *list(generation_payload.get("payload_warnings") or []),
+                                *list(generation_result.get("payload_warnings") or []),
+                            ]
+                        )
+                    )
                     track["runner"] = generation_result.get("runner")
                     track["generation_params"] = generation_result.get("params", {})
                     rendered_params = track["generation_params"] if isinstance(track.get("generation_params"), dict) else {}
@@ -13992,9 +14262,18 @@ def generate_album(
                         audio["payload_gate_status"] = track.get("payload_gate_status")
                         audio["payload_gate_passed"] = track.get("payload_gate_passed")
                         audio["lora_adapter_name"] = track.get("lora_adapter_name")
+                        audio["lora_adapter_path"] = track.get("lora_adapter_path")
                         audio["lora_scale"] = track.get("lora_scale")
                         audio["lora_trigger_tag"] = track.get("lora_trigger_tag")
                         audio["lora_trigger_applied"] = track.get("lora_trigger_applied")
+                        audio["lora_ignored_reason"] = track.get("lora_ignored_reason")
+                        audio["ignored_lora_adapter_name"] = track.get("ignored_lora_adapter_name")
+                        audio["ignored_lora_adapter_path"] = track.get("ignored_lora_adapter_path")
+                        audio["ignored_lora_adapter_song_model"] = track.get("ignored_lora_adapter_song_model")
+                        audio["single_art_prompt"] = track.get("single_art_prompt")
+                        audio["single_art_negative_prompt"] = track.get("single_art_negative_prompt")
+                        audio["video_prompt"] = track.get("video_prompt")
+                        audio["video_negative_prompt"] = track.get("video_negative_prompt")
                         if audio.get("song_id"):
                             _merge_song_album_metadata(
                                 audio["song_id"],
@@ -14015,10 +14294,24 @@ def generate_album(
                                     "final_model_policy": track.get("final_model_policy", {}),
                                     "tag_list": track.get("tag_list", []),
                                     "lyrics_quality": track.get("lyrics_quality", {}),
+                                    "album_art_prompt": track.get("album_art_prompt"),
+                                    "album_art_negative_prompt": track.get("album_art_negative_prompt"),
+                                    "single_art_prompt": track.get("single_art_prompt"),
+                                    "single_art_negative_prompt": track.get("single_art_negative_prompt"),
+                                    "video_prompt": track.get("video_prompt"),
+                                    "video_negative_prompt": track.get("video_negative_prompt"),
+                                    "visual_palette": track.get("visual_palette"),
+                                    "camera_motion": track.get("camera_motion"),
+                                    "no_text_policy": track.get("no_text_policy"),
                                     "lora_adapter_name": track.get("lora_adapter_name"),
+                                    "lora_adapter_path": track.get("lora_adapter_path"),
                                     "lora_scale": track.get("lora_scale"),
                                     "lora_trigger_tag": track.get("lora_trigger_tag"),
                                     "lora_trigger_applied": track.get("lora_trigger_applied"),
+                                    "lora_ignored_reason": track.get("lora_ignored_reason"),
+                                    "ignored_lora_adapter_name": track.get("ignored_lora_adapter_name"),
+                                    "ignored_lora_adapter_path": track.get("ignored_lora_adapter_path"),
+                                    "ignored_lora_adapter_song_model": track.get("ignored_lora_adapter_song_model"),
                                 },
                             )
                     generated_audios.extend(track["audios"])
@@ -14105,6 +14398,13 @@ def generate_album(
                     "album_writer_mode": album_options.get("album_writer_mode"),
                     "album_debug_dir": str(album_debug.root),
                     "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
+                    "album_art_prompt": result.get("album_art_prompt") or album_options.get("album_art_prompt") or album_options.get("art_prompt") or "",
+                    "album_art_negative_prompt": result.get("album_art_negative_prompt") or album_options.get("album_art_negative_prompt") or "",
+                    "video_prompt": result.get("video_prompt") or album_options.get("video_prompt") or "",
+                    "video_negative_prompt": result.get("video_negative_prompt") or album_options.get("video_negative_prompt") or "",
+                    "visual_palette": result.get("visual_palette") or "",
+                    "camera_motion": result.get("camera_motion") or "",
+                    "no_text_policy": result.get("no_text_policy") or "",
                     "download_url": f"/api/albums/{album_id}/download",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 },
@@ -14164,6 +14464,13 @@ def generate_album(
                 "album_writer_mode": album_options.get("album_writer_mode"),
                 "album_debug_dir": str(album_debug.root),
                 "album_payload_gate_version": ALBUM_PAYLOAD_GATE_VERSION,
+                "album_art_prompt": result.get("album_art_prompt") or album_options.get("album_art_prompt") or album_options.get("art_prompt") or "",
+                "album_art_negative_prompt": result.get("album_art_negative_prompt") or album_options.get("album_art_negative_prompt") or "",
+                "video_prompt": result.get("video_prompt") or album_options.get("video_prompt") or "",
+                "video_negative_prompt": result.get("video_negative_prompt") or album_options.get("video_negative_prompt") or "",
+                "visual_palette": result.get("visual_palette") or "",
+                "camera_motion": result.get("camera_motion") or "",
+                "no_text_policy": result.get("no_text_policy") or "",
                 "download_url": f"/api/album-families/{album_family_id}/download",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -14210,6 +14517,13 @@ def generate_album(
             "family_download_url": f"/api/album-families/{album_family_id}/download",
             "manifest": family_manifest,
             "album_art": _jsonable(album_art),
+            "album_art_prompt": result.get("album_art_prompt") or family_manifest.get("album_art_prompt") or "",
+            "album_art_negative_prompt": result.get("album_art_negative_prompt") or family_manifest.get("album_art_negative_prompt") or "",
+            "video_prompt": result.get("video_prompt") or family_manifest.get("video_prompt") or "",
+            "video_negative_prompt": result.get("video_negative_prompt") or family_manifest.get("video_negative_prompt") or "",
+            "visual_palette": result.get("visual_palette") or family_manifest.get("visual_palette") or "",
+            "camera_motion": result.get("camera_motion") or family_manifest.get("camera_motion") or "",
+            "no_text_policy": result.get("no_text_policy") or family_manifest.get("no_text_policy") or "",
             "toolkit": result.get("toolkit", _songwriting_toolkit_payload()),
             "toolkit_report": result.get("toolkit_report", {}),
             "planner_model": ollama_model,
@@ -15122,7 +15436,21 @@ def _wait_for_background_job(getter: Callable[[str], dict[str, Any] | None], job
 
 
 def _automation_art_prompt(payload: dict[str, Any], result: dict[str, Any], *, album: bool = False) -> str:
-    override = str(payload.get("art_prompt") or "").strip()
+    prompt_keys = (
+        ("album_art_prompt", "art_prompt")
+        if album
+        else ("single_art_prompt", "track_art_prompt", "art_prompt")
+    )
+    override = ""
+    for source in (payload, result, result.get("manifest") if isinstance(result.get("manifest"), dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        for key in prompt_keys:
+            override = str(source.get(key) or "").strip()
+            if override:
+                break
+        if override:
+            break
     if override:
         return override
     title = str(result.get("title") or payload.get("title") or ("album" if album else "song")).strip()
@@ -15132,14 +15460,39 @@ def _automation_art_prompt(payload: dict[str, Any], result: dict[str, Any], *, a
     return f"Premium square {kind} artwork for '{title}' by {artist}. {context}. Cinematic, high detail, no text, no logo, no watermark."
 
 
+def _automation_art_negative_prompt(payload: dict[str, Any], result: dict[str, Any], *, album: bool = False) -> str:
+    keys = ("album_art_negative_prompt", "art_negative_prompt") if album else ("single_art_negative_prompt", "art_negative_prompt")
+    for source in (payload, result, result.get("manifest") if isinstance(result.get("manifest"), dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return "readable text, logo, watermark, typography, subtitles, captions, artist name, album title"
+
+
 def _automation_video_prompt(payload: dict[str, Any], result: dict[str, Any]) -> str:
-    override = str(payload.get("video_prompt") or "").strip()
-    if override:
-        return override
+    for source in (payload, result, result.get("manifest") if isinstance(result.get("manifest"), dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        override = str(source.get("video_prompt") or "").strip()
+        if override:
+            return override
     title = str(result.get("title") or payload.get("title") or "song").strip()
     artist = str(result.get("artist_name") or payload.get("artist_name") or "").strip()
     context = str(result.get("caption") or payload.get("caption") or payload.get("tags") or payload.get("simple_description") or "").strip()
     return f"Short real-life music video clip for '{title}' by {artist}. {context}. Natural camera motion, cinematic lighting, no text, no watermark."
+
+
+def _automation_video_negative_prompt(payload: dict[str, Any], result: dict[str, Any]) -> str:
+    for source in (payload, result, result.get("manifest") if isinstance(result.get("manifest"), dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        value = str(source.get("video_negative_prompt") or "").strip()
+        if value:
+            return value
+    return "subtitles, captions, readable text, logo, watermark, jitter, low-detail faces"
 
 
 def _audio_url_from_generation_result(result: dict[str, Any]) -> str:
@@ -15191,6 +15544,7 @@ def _run_generation_automation(task_id: str, payload: dict[str, Any], result: di
                 {
                     "action": "generate",
                     "prompt": _automation_art_prompt(payload, result, album=False),
+                    "negative_prompt": _automation_art_negative_prompt(payload, result, album=False),
                     "model_id": str(payload.get("art_model_id") or "qwen-image"),
                     "width": 1024,
                     "height": 1024,
@@ -15215,6 +15569,7 @@ def _run_generation_automation(task_id: str, payload: dict[str, Any], result: di
                     {
                         "action": "generate",
                         "prompt": _automation_art_prompt(payload, result, album=True),
+                        "negative_prompt": _automation_art_negative_prompt(payload, result, album=True),
                         "model_id": str(payload.get("art_model_id") or "qwen-image"),
                         "width": 1024,
                         "height": 1024,
@@ -15242,6 +15597,7 @@ def _run_generation_automation(task_id: str, payload: dict[str, Any], result: di
                 {
                     "action": "song_video",
                     "prompt": _automation_video_prompt(payload, result),
+                    "negative_prompt": _automation_video_negative_prompt(payload, result),
                     "model_id": str(payload.get("video_model_id") or "ltx2-fast-draft"),
                     "width": 512,
                     "height": 320,
@@ -17267,8 +17623,7 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
     if user_album_contract.get("applied"):
         start_logs.append(
             "Input Contract: applied; "
-            f"locked_tracks={len(user_album_contract.get('tracks') or [])}; "
-            f"blocked_unsafe={int(user_album_contract.get('blocked_unsafe_count') or 0)}"
+            f"locked_tracks={len(user_album_contract.get('tracks') or [])}"
         )
     if crewai_output_log_file:
         start_logs.append(f"Legacy CrewAI output log file requested; selected planner writes standard MLX Media debug JSONL: {crewai_output_log_file}")
@@ -17291,7 +17646,6 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
         input_contract=contract_prompt_context(user_album_contract),
         input_contract_applied=bool(user_album_contract.get("applied")),
         input_contract_version=USER_ALBUM_CONTRACT_VERSION,
-        blocked_unsafe_count=int(user_album_contract.get("blocked_unsafe_count") or 0),
         memory_enabled=False,
         stage="queued",
         current_task="Queued album planning job",
@@ -17443,7 +17797,6 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             input_contract=result.get("input_contract") or contract_prompt_context(user_album_contract),
             input_contract_applied=bool(result.get("input_contract_applied") or user_album_contract.get("applied")),
             input_contract_version=str(result.get("input_contract_version") or USER_ALBUM_CONTRACT_VERSION),
-            blocked_unsafe_count=int(result.get("blocked_unsafe_count") or user_album_contract.get("blocked_unsafe_count") or 0),
             contract_repair_count=int(result.get("contract_repair_count") or 0),
             expected_count=len(tracks),
             planned_count=len(tracks),

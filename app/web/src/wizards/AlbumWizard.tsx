@@ -40,7 +40,7 @@ import {
   PROVIDER_LABEL,
 } from "@/lib/api";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
-import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
+import { DEFAULT_LORA_SCALE, emptyLoraSelection, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
@@ -82,13 +82,36 @@ interface AlbumTrack {
   key_scale?: string;
   time_signature?: string;
   role?: string;
+  planning_status?: string;
+  pre_render_repair_status?: string;
   payload_gate_status?: string;
+  album_art_prompt?: string;
+  album_art_negative_prompt?: string;
+  single_art_prompt?: string;
+  single_art_negative_prompt?: string;
+  video_prompt?: string;
+  video_negative_prompt?: string;
+  visual_palette?: string;
+  camera_motion?: string;
+  no_text_policy?: string;
   lyrics_quality?: Record<string, unknown>;
   debug_paths?: Record<string, unknown>;
+  use_lora?: boolean;
+  lora_adapter_path?: string;
   lora_adapter_name?: string;
+  use_lora_trigger?: boolean;
   lora_scale?: number;
   lora_trigger_tag?: string;
+  lora_trigger_source?: string;
+  lora_trigger_aliases?: string[];
+  lora_trigger_candidates?: string[];
   lora_trigger_applied?: boolean;
+  adapter_model_variant?: string;
+  adapter_song_model?: string;
+  lora_ignored_reason?: string;
+  ignored_lora_adapter_name?: string;
+  ignored_lora_adapter_path?: string;
+  ignored_lora_adapter_song_model?: string;
   result_id?: string;
   audio_url?: string;
   art?: { url?: string };
@@ -130,6 +153,99 @@ function normalizeAlbumTracks(input: unknown, fallbackDuration = 180): AlbumTrac
     });
 }
 
+const ALBUM_GENERATE_STRIP_KEYS = new Set([
+  "planning_status",
+  "planning_error",
+  "skip_render",
+  "payload_gate_status",
+  "payload_gate_passed",
+  "payload_gate_blocking_issues",
+  "payload_gate_non_blocking",
+  "payload_quality_gate",
+  "payload_validation",
+  "model_results",
+  "audios",
+  "generated",
+  "result_id",
+  "active_song_model",
+  "audio_url",
+  "download_url",
+  "song_id",
+  "error",
+  "debug_paths",
+  "agent_debug_dir",
+  "agent_rounds",
+  "agent_repair_count",
+  "repair_actions",
+  "lora_ignored_reason",
+  "ignored_lora_adapter_name",
+  "ignored_lora_adapter_path",
+  "ignored_lora_adapter_song_model",
+]);
+
+const ALBUM_LEVEL_LORA_KEYS = [
+  "use_lora",
+  "lora_adapter_path",
+  "lora_adapter_name",
+  "use_lora_trigger",
+  "lora_trigger_tag",
+  "lora_scale",
+  "adapter_model_variant",
+  "adapter_song_model",
+] as const;
+
+function trackHasExplicitLoraChoice(track: AlbumTrack): boolean {
+  if ("use_lora" in track) return true;
+  return Boolean(
+    track.lora_adapter_path ||
+      track.lora_adapter_name ||
+      track.lora_trigger_tag ||
+      track.adapter_model_variant ||
+      track.adapter_song_model ||
+      typeof track.lora_scale === "number",
+  );
+}
+
+function migrateLegacyLoraToTracks(tracks: AlbumTrack[], selection: LoraSelection): AlbumTrack[] {
+  if (!selection.use_lora || !selection.lora_adapter_path || tracks.length === 0) return tracks;
+  if (tracks.some(trackHasExplicitLoraChoice)) return tracks;
+  return tracks.map((track) => ({
+    ...track,
+    ...selection,
+  }));
+}
+
+function stripAlbumLevelLoraFields<T extends Record<string, unknown>>(payload: T): T {
+  const clean = { ...payload };
+  for (const key of ALBUM_LEVEL_LORA_KEYS) {
+    delete clean[key];
+  }
+  return clean;
+}
+
+function albumTrackLoraLabel(track: AlbumTrack): string {
+  if (track.lora_ignored_reason) {
+    return `LoRA genegeerd · ${track.ignored_lora_adapter_name || track.lora_adapter_name || "adapter"}`;
+  }
+  if (!track.use_lora || !track.lora_adapter_path) return "";
+  return [
+    track.lora_adapter_name || "LoRA",
+    track.lora_trigger_tag,
+    typeof track.lora_scale === "number" ? `${Math.round(track.lora_scale * 100)}%` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function sanitizeAlbumTrackForGenerate(track: AlbumTrack): AlbumTrack {
+  const clean = Object.fromEntries(
+    Object.entries(track).filter(([key]) => !ALBUM_GENERATE_STRIP_KEYS.has(key)),
+  ) as AlbumTrack;
+  return {
+    ...clean,
+    planning_status: "ui_approved",
+    skip_render: false,
+  };
+}
+
 export function AlbumWizard() {
   const navigate = useNavigate();
   const setResult = useWizardStore((s) => s.setResult);
@@ -168,7 +284,15 @@ export function AlbumWizard() {
       auto_album_art: false,
       auto_video_clip: false,
       art_prompt: "",
+      album_art_prompt: "",
+      album_art_negative_prompt: "",
+      single_art_prompt: "",
+      single_art_negative_prompt: "",
       video_prompt: "",
+      video_negative_prompt: "",
+      visual_palette: "",
+      camera_motion: "",
+      no_text_policy: "",
       tracks: [],
     }),
     [],
@@ -225,17 +349,35 @@ export function AlbumWizard() {
       "auto_album_art",
       "auto_video_clip",
       "art_prompt",
+      "album_art_prompt",
+      "album_art_negative_prompt",
+      "single_art_prompt",
+      "single_art_negative_prompt",
       "video_prompt",
+      "video_negative_prompt",
+      "visual_palette",
+      "camera_motion",
+      "no_text_policy",
     ] as const) {
       if (k in payload) {
         // @ts-expect-error dynamic
         next[k] = payload[k];
       }
     }
+    if (!next.art_prompt && typeof payload.album_art_prompt === "string" && payload.album_art_prompt.trim()) {
+      next.art_prompt = payload.album_art_prompt;
+    }
+    if (!next.video_prompt && typeof payload.video_prompt === "string" && payload.video_prompt.trim()) {
+      next.video_prompt = payload.video_prompt;
+    }
     if (Array.isArray(payload.tracks)) {
+      const legacyLora = normalizeLoraSelection({ ...form.getValues(), ...next });
       const hydratedTracks = normalizeAlbumTracks(payload.tracks, Number(next.track_duration ?? values.track_duration ?? 180));
-      next.tracks = hydratedTracks;
+      next.tracks = migrateLegacyLoraToTracks(hydratedTracks, legacyLora);
       next.num_tracks = next.num_tracks ?? hydratedTracks.length;
+      if (legacyLora.use_lora) {
+        Object.assign(next, emptyLoraSelection());
+      }
     }
     const merged = { ...form.getValues(), ...next };
     form.reset(merged);
@@ -254,26 +396,19 @@ export function AlbumWizard() {
     return merged;
   };
 
-  const setLoraSelection = (selection: LoraSelection) => {
-    form.setValue("use_lora", selection.use_lora, { shouldValidate: true });
-    form.setValue("lora_adapter_path", selection.lora_adapter_path, { shouldValidate: true });
-    form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
-    form.setValue("use_lora_trigger", selection.use_lora_trigger, { shouldValidate: true });
-    form.setValue("lora_trigger_tag", selection.lora_trigger_tag, { shouldValidate: true });
-    form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
-    form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
-    form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
-    if (selection.use_lora && selection.adapter_song_model) {
-      form.setValue("song_model", selection.adapter_song_model, { shouldValidate: true });
-      form.setValue("song_model_strategy", "single_model_album", { shouldValidate: true });
-    }
-    draftState.saveNow({
-      ...form.getValues(),
+  const setTrackLoraSelection = (trackIndex: number, selection: LoraSelection) => {
+    const currentTracks = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+    const next = [...currentTracks];
+    if (!next[trackIndex]) return;
+    next[trackIndex] = {
+      ...next[trackIndex],
       ...selection,
-      ...(selection.use_lora && selection.adapter_song_model
-        ? { song_model: selection.adapter_song_model, song_model_strategy: "single_model_album" as const }
-        : {}),
-    });
+      lora_ignored_reason: "",
+      ignored_lora_adapter_name: "",
+      ignored_lora_adapter_path: "",
+      ignored_lora_adapter_song_model: "",
+    };
+    updatePlanTracks(next);
   };
 
   const updatePlanTracks = React.useCallback(
@@ -296,6 +431,28 @@ export function AlbumWizard() {
     [draftState, form],
   );
 
+  const legacyLoraMigratedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (legacyLoraMigratedRef.current) return;
+    const legacyLora = normalizeLoraSelection(values);
+    if (!legacyLora.use_lora) return;
+    const currentTracks = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, Number(values.track_duration || 180));
+    if (!currentTracks.length) return;
+    legacyLoraMigratedRef.current = true;
+    const migratedTracks = migrateLegacyLoraToTracks(currentTracks, legacyLora);
+    const empty = emptyLoraSelection();
+    for (const key of ALBUM_LEVEL_LORA_KEYS) {
+      form.setValue(key, empty[key], { shouldDirty: true, shouldValidate: true });
+    }
+    updatePlanTracks(migratedTracks);
+    draftState.saveNow({
+      ...stripAlbumLevelLoraFields(form.getValues()),
+      ...empty,
+      tracks: migratedTracks,
+    });
+  }, [draftState, form, plan?.tracks, updatePlanTracks, values, values.track_duration, values.tracks]);
+
   React.useEffect(() => {
     const draftTracks = normalizeAlbumTracks(values.tracks, Number(values.track_duration || 180));
     if (!draftTracks.length || (plan?.tracks?.length ?? 0) > 0) return;
@@ -317,9 +474,8 @@ export function AlbumWizard() {
 
   const albumCurrentPayload = React.useMemo(
     () => ({
-      ...form.getValues(),
+      ...stripAlbumLevelLoraFields(form.getValues()),
       use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
-      ...normalizeLoraSelection(values),
       planner_lm_provider: plannerProvider,
       ollama_model: plannerModel || undefined,
       planner_model: plannerModel || undefined,
@@ -327,6 +483,7 @@ export function AlbumWizard() {
       embedding_lm_provider: embeddingProvider,
       embedding_model: embeddingModel || undefined,
       ace_step_text_encoder: "Qwen3-Embedding-0.6B",
+      track_lora_count: reviewTracks.filter((track) => Boolean(track.use_lora && track.lora_adapter_path)).length,
       tracks: reviewTracks,
     }),
     [embeddingModel, embeddingProvider, form, plannerModel, plannerProvider, reviewTracks, values],
@@ -335,6 +492,7 @@ export function AlbumWizard() {
   // ---- Async generate ----
   const startJob = useMutation({
     mutationFn: () => {
+      const tracksForGenerate = reviewTracks.map(sanitizeAlbumTrackForGenerate);
       const body = {
         concept: values.concept,
         album_title: values.album_title,
@@ -359,8 +517,15 @@ export function AlbumWizard() {
         auto_album_art: values.auto_album_art,
         auto_video_clip: values.auto_video_clip,
         art_prompt: values.art_prompt,
+        album_art_prompt: values.album_art_prompt,
+        album_art_negative_prompt: values.album_art_negative_prompt,
+        single_art_prompt: values.single_art_prompt,
+        single_art_negative_prompt: values.single_art_negative_prompt,
         video_prompt: values.video_prompt,
-        ...normalizeLoraSelection(values),
+        video_negative_prompt: values.video_negative_prompt,
+        visual_palette: values.visual_palette,
+        camera_motion: values.camera_motion,
+        no_text_policy: values.no_text_policy,
         planner_lm_provider: plannerProvider,
         ollama_model: plannerModel || undefined,
         planner_model: plannerModel || undefined,
@@ -368,7 +533,7 @@ export function AlbumWizard() {
         embedding_lm_provider: embeddingProvider,
         embedding_model: embeddingModel || undefined,
         ace_step_text_encoder: "Qwen3-Embedding-0.6B",
-        tracks: reviewTracks,
+        tracks: tracksForGenerate,
         album_generation_mode: "render_existing_tracks",
         render_from_existing_tracks: true,
         skip_album_planning: true,
@@ -824,6 +989,117 @@ export function AlbumWizard() {
                     </details>
                     <details className="rounded-lg border bg-background/40 p-2">
                       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        Track LoRA
+                        {albumTrackLoraLabel(t) ? <Badge variant="outline" className="ml-2">{albumTrackLoraLabel(t)}</Badge> : null}
+                      </summary>
+                      <div className="mt-3">
+                        <LoraSelector value={t} onChange={(selection) => setTrackLoraSelection(idx, selection)} />
+                        {t.lora_ignored_reason ? (
+                          <p className="mt-2 rounded-md border border-amber-400/30 bg-amber-400/10 p-2 text-xs text-amber-100">
+                            {t.lora_ignored_reason}
+                          </p>
+                        ) : null}
+                      </div>
+                    </details>
+                    <details className="rounded-lg border bg-background/40 p-2">
+                      <summary className="flex cursor-pointer items-center gap-2 text-xs font-medium text-muted-foreground">
+                        <Sparkles className="size-3.5" />
+                        Art & video prompts
+                        {t.single_art_prompt ? <Badge variant="outline" className="ml-1">single art</Badge> : null}
+                        {t.video_prompt ? <Badge variant="outline" className="ml-1">video</Badge> : null}
+                      </summary>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Single art prompt</Label>
+                          <Textarea
+                            rows={3}
+                            value={String(t.single_art_prompt ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], single_art_prompt: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Single negative prompt</Label>
+                          <Textarea
+                            rows={3}
+                            value={String(t.single_art_negative_prompt ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], single_art_negative_prompt: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label className="flex items-center gap-1 text-xs">
+                            <Video className="size-3" /> Video prompt
+                          </Label>
+                          <Textarea
+                            rows={3}
+                            value={String(t.video_prompt ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], video_prompt: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Video negative prompt</Label>
+                          <Textarea
+                            rows={3}
+                            value={String(t.video_negative_prompt ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], video_negative_prompt: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Palette</Label>
+                          <Input
+                            value={String(t.visual_palette ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], visual_palette: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Camera motion</Label>
+                          <Input
+                            value={String(t.camera_motion ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], camera_motion: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">No-text policy</Label>
+                          <Input
+                            value={String(t.no_text_policy ?? "")}
+                            onChange={(e) => {
+                              const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
+                              next[idx] = { ...next[idx], no_text_policy: e.target.value };
+                              updatePlanTracks(next);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </details>
+                    <details className="rounded-lg border bg-background/40 p-2">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                         Lyrics-preview / bewerken
                       </summary>
                       <Textarea
@@ -860,21 +1136,24 @@ export function AlbumWizard() {
                       <Badge variant={trackQuality(t).hookCount > 0 ? "muted" : "destructive"} className="text-[10px]">
                         hooks {trackQuality(t).hookCount}
                       </Badge>
+                      {(String(t.planning_status || "").toLowerCase() === "failed" || String(t.payload_gate_status || "").toLowerCase() === "planning_failed") && (
+                        <Badge variant="outline" className="text-[10px]">
+                          needs repair
+                        </Badge>
+                      )}
                       {Object.keys(trackQuality(t).rapBarCounts).length > 0 && (
                         <Badge variant="outline" className="text-[10px]">
                           rap bars {Object.values(trackQuality(t).rapBarCounts).map((count) => String(count)).join("/")}
                         </Badge>
                       )}
-                      {(t.payload_gate_status || trackQuality(t).gateStatus) && (
-                        <Badge variant={(t.payload_gate_status || trackQuality(t).gateStatus) === "pass" ? "default" : "destructive"} className="text-[10px]">
-                          gate {t.payload_gate_status || trackQuality(t).gateStatus}
+                      {trackQuality(t).gateStatus && (
+                        <Badge variant={trackQuality(t).gateStatus === "pass" ? "default" : "destructive"} className="text-[10px]">
+                          gate {trackQuality(t).gateStatus}
                         </Badge>
                       )}
-                      {values.use_lora && (
-                        <Badge variant="outline" className="text-[10px]">
-                          LoRA {values.lora_adapter_name || t.lora_adapter_name || "actief"}
-                          {values.lora_trigger_tag ? ` · ${values.lora_trigger_tag}` : ""}
-                          {typeof values.lora_scale === "number" ? ` · ${Math.round(values.lora_scale * 100)}%` : ""}
+                      {albumTrackLoraLabel(t) && (
+                        <Badge variant={t.lora_ignored_reason ? "destructive" : "outline"} className="text-[10px]">
+                          {albumTrackLoraLabel(t)}
                         </Badge>
                       )}
                     </div>
@@ -1021,12 +1300,6 @@ export function AlbumWizard() {
               Pas deze keuze aan in de AI Fill-kaart of in Settings; albumjobs sturen dezelfde provider en model mee naar CrewAI.
             </p>
           </FieldGroup>
-          <FieldGroup
-            title="LoRA"
-            description="Optioneel: deze PEFT LoRA wordt op elke albumtrack toegepast."
-          >
-            <LoraSelector value={values} onChange={setLoraSelection} />
-          </FieldGroup>
           <AutomationFields control={form.control} register={form.register} values={values} albumContext />
         </div>
       ),
@@ -1054,8 +1327,7 @@ export function AlbumWizard() {
               { key: "planner_model", label: "AI planner", format: (v) => `${PROVIDER_LABEL[plannerProvider]} · ${String(v || "—")}` },
               { key: "embedding_model", label: "AI Memory", format: (v) => `${PROVIDER_LABEL[embeddingProvider]} · ${String(v || "—")}` },
               { key: "ace_step_text_encoder", label: "ACE-Step encoder" },
-              { key: "lora_adapter_name", label: "LoRA" },
-              { key: "lora_trigger_tag", label: "LoRA trigger" },
+              { key: "track_lora_count", label: "Track-LoRAs", format: (v) => `${Number(v) || 0} track(s)` },
               { key: "song_model_strategy", label: "Strategie" },
               { key: "language", label: "Taal" },
               { key: "quality_profile", label: "Kwaliteit" },
@@ -1290,13 +1562,15 @@ function trackQuality(track: AlbumTrack) {
       ? quality.rap_bar_counts
       : {}
   ) as Record<string, unknown>;
+  const rawGateStatus = String(track.payload_gate_status || quality.gate_status || "");
+  const gateStatus = rawGateStatus === "planning_failed" ? "needs_repair" : rawGateStatus;
   return {
     wordCount,
     lineCount,
     sectionCount: Number(quality.section_count ?? (sectionCount || 0)),
     hookCount,
     rapBarCounts,
-    gateStatus: String(track.payload_gate_status || quality.gate_status || ""),
+    gateStatus,
     targetWords: Number(quality.target_words || 0),
     minWords: Number(quality.min_words || 0),
   };

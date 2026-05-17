@@ -261,6 +261,35 @@ class AlbumQualityGateTest(unittest.TestCase):
         self.assertIn("lyric_craft_generic_ai_phrase", issue_ids)
         self.assertIn("lyric_craft_gate_failed", issue_ids)
 
+    def test_agent_delimiter_artifact_in_lyrics_fails_before_render(self):
+        lyrics = (
+            "[Intro]\n"
+            "Market lights wake the street again\n"
+            "******/lyrics_lines**\n"
+            "lyrics_lines: [this is an agent schema leak]\n"
+            "[Chorus]\n"
+            "We keep the shutters open when the morning comes\n"
+        )
+        payload = {
+            "caption": (
+                "pop, steady drums, deep bass, piano motif, clear lead vocal, "
+                "emotional hook lift, warm analog texture, polished studio mix"
+            ),
+            "tag_list": ["pop", "steady drums", "deep bass", "piano motif", "clear lead vocal", "emotional hook lift", "warm analog texture", "polished studio mix"],
+            "lyrics": lyrics,
+            "duration": 60,
+            "language": "en",
+        }
+
+        gate = lyric_craft_gate(lyrics, {"title": "Market Lights", "style": "pop vocal"}, duration=60)
+        report = evaluate_album_payload_quality(payload, repair=False)
+        issue_ids = {issue["id"] for issue in report["issues"]}
+
+        self.assertFalse(gate["gate_passed"])
+        self.assertIn("lyric_craft_agent_artifact", gate["issue_ids"])
+        self.assertFalse(report["gate_passed"])
+        self.assertIn("agent_artifact_leakage", issue_ids)
+
     def test_mixed_metaphor_drift_fails_unless_surreal_requested(self):
         lyrics = (
             "[Verse]\n"

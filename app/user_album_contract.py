@@ -21,9 +21,6 @@ LABEL_PATTERNS = [
     "produced by", "producer", "prod", "prod.", "engineered by", "engineer", "mixed by", "artist", "performer",
 ]
 
-UNSAFE_CONTENT_RE = None  # content filtering removed
-
-
 def _clip(value: Any, limit: int = 700) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(text) <= limit:
@@ -133,10 +130,6 @@ def _lyric_lines(value: str) -> list[str]:
         if cleaned not in lines:
             lines.append(cleaned)
     return lines[:12]
-
-
-def _content_policy_status(value: str) -> str:
-    return "safe"
 
 
 def _phrase_norm(value: Any) -> str:
@@ -331,7 +324,6 @@ def extract_user_album_contract(
                 "required_phrases": required_phrases,
                 "blocked_required_excerpt": "",
                 "forbidden_changes": ["title", "track_number", "producer_credit", "duration", "bpm", "key_scale", "style", "vibe", "narrative"],
-                "content_policy_status": "safe",
                 "source_excerpt": _clip(block, 650),
             }
         )
@@ -354,7 +346,6 @@ def extract_user_album_contract(
         ],
         "tracks": tracks,
         "applied": bool(album_title or tracks),
-        "blocked_unsafe_count": 0,
         "repair_policy": "auto_repair",
     }
 
@@ -381,7 +372,6 @@ def contract_prompt_context(contract: dict[str, Any] | None) -> dict[str, Any]:
         "album_title": contract.get("album_title"),
         "track_count": contract.get("track_count"),
         "repair_policy": contract.get("repair_policy"),
-        "blocked_unsafe_count": contract.get("blocked_unsafe_count", 0),
         "tracks": [
             {
                 "track_number": item.get("track_number"),
@@ -395,7 +385,6 @@ def contract_prompt_context(contract: dict[str, Any] | None) -> dict[str, Any]:
                 "vibe": item.get("vibe"),
                 "narrative": item.get("narrative"),
                 "required_phrases": item.get("required_phrases"),
-                "content_policy_status": item.get("content_policy_status"),
             }
             for item in contract.get("tracks") or []
         ],
@@ -427,7 +416,6 @@ def tracks_from_user_album_contract(contract: dict[str, Any] | None) -> list[dic
                 "description": item.get("narrative") or item.get("vibe") or item.get("style") or "",
                 "lyrics": item.get("required_lyrics") or "",
                 "required_phrases": item.get("required_phrases") or [],
-                "content_policy_status": item.get("content_policy_status") or "safe",
                 "input_contract_applied": True,
             }
         )
@@ -549,7 +537,6 @@ def apply_user_album_contract_to_track(
     if missing:
         repaired.append("required_phrase")
         compliance["required_phrase"] = "repaired"
-    result["content_policy_status"] = "safe"
     result["input_contract_applied"] = True
     result["input_contract_version"] = USER_ALBUM_CONTRACT_VERSION
     result["contract_repaired_fields"] = sorted(set(repaired))

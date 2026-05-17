@@ -8,7 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import album_crew as album_crew_module
+from album_quality_gate import evaluate_album_payload_quality
 from album_crew import (
+    ALBUM_TASK_GRAPH_REGISTRY,
+    ACEJAM_QUALITY_FIRST_TASK_GRAPH,
     CREWAI_AGENT_MAX_ITER,
     CREWAI_AGENT_MAX_RETRY_LIMIT,
     CREWAI_LLM_CONTEXT_WINDOW,
@@ -331,6 +334,18 @@ Lyrics:
                 "narrative": locked.get("narrative") or ("friends read old letters as the lights return" if title == "Rooftop Letters" else "neighbors reopen stalls and trade stories instead of rumors"),
                 "required_phrases": locked.get("required_phrases") or ["Open the shutters", "Coffee on the corner", "market bell"],
             }
+        if agent_name in {"Album Visual Director Agent", "Track Visual Prompt Agent"}:
+            return {
+                "album_art_prompt": "Premium square album cover showing a safe city market relighting after a blackout, brass reflections, warm windows, no text",
+                "album_art_negative_prompt": "readable text, logo, watermark, typography, subtitles",
+                "single_art_prompt": "Premium square single cover with neighbors opening market shutters under warm street lights, cinematic realism, no text",
+                "single_art_negative_prompt": "readable text, logo, watermark, typography, artist name",
+                "video_prompt": "Short music video shot moving through reopened market stalls at dawn with warm practical lights and calm crowd energy, no subtitles",
+                "video_negative_prompt": "subtitles, captions, readable text, logos, watermark",
+                "visual_palette": "warm amber, brass gold, deep blue shadows",
+                "camera_motion": "slow dolly-in with handheld micro-movement",
+                "no_text_policy": "No readable text, logos, typography, labels, captions, subtitles, or watermarks.",
+            }
         if agent_name == "Section Map Agent":
             return {
                 "section_map": ["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Bridge]", "[Final Chorus]", "[Outro]"],
@@ -527,6 +542,38 @@ Lyrics:
         self.assertEqual(album_crew_module._agent_max_iter("Time Signature Agent"), 1)
         self.assertEqual(album_crew_module._agent_max_iter("Duration Agent"), 1)
 
+    def test_quality_first_task_graph_registry_is_focused_and_complete(self):
+        self.assertTrue(ACEJAM_QUALITY_FIRST_TASK_GRAPH)
+        expected = {
+            "album_intake",
+            "album_sonic_bible",
+            "lyric_quality_bible",
+            "album_visual_bible",
+            "track_concept",
+            "sonic_dna_tags",
+            "metadata",
+            "section_map",
+            "hook_promise",
+            "hook_lines",
+            "section_briefs",
+            "lyrics_section_draft",
+            "section_craft_critic",
+            "section_repair",
+            "whole_song_continuity_critic",
+            "caption_finalizer",
+            "performance_brief",
+            "single_art_prompt",
+            "video_prompt",
+            "visual_consistency_critic",
+        }
+        self.assertTrue(expected.issubset(set(ALBUM_TASK_GRAPH_REGISTRY)))
+        for task_id in expected:
+            spec = ALBUM_TASK_GRAPH_REGISTRY[task_id]
+            self.assertTrue(spec.responsibility)
+            self.assertLessEqual(len(spec.responsibility.split(" and ")), 2)
+            self.assertTrue(spec.accepted_inputs)
+            self.assertTrue(spec.schema_name)
+
     def test_cliche_scan_flags_ai_slop_in_lyrics_and_hooks(self):
         # Cliche image bank phrases must be detected so validators force a
         # rewrite instead of shipping AI-slop verses to the user.
@@ -551,15 +598,14 @@ Lyrics:
         self.assertEqual(clean, [])
 
     def test_hook_validator_rejects_short_lines_and_cliches(self):
-        # Hook with cliche image bank phrase is an advisory warning, not a
-        # hard blocker: repair or continue, but do not fail the album plan.
+        # Hook with cliche image-bank phrasing is a hard blocker in the
+        # quality-first task graph; the agent must repair before lyrics start.
         payload = {
             "hook_lines": ["We rise from neon dreams tonight", "Endless night, endless flight"],
             "hook_promise": "About light",
         }
         issues = album_crew_module._validate_hook_payload(payload)
-        self.assertTrue(any("hook_contains_cliche_phrases" in issue for issue in payload["quality_warnings"]))
-        self.assertFalse(any("hook_contains_cliche_phrases" in issue for issue in issues))
+        self.assertTrue(any("hook_contains_cliche_phrases" in issue for issue in issues))
         # Short hook promise fails
         self.assertTrue(any("hook_promise_too_short" in issue for issue in issues))
         # Clean concrete hook passes
@@ -667,14 +713,13 @@ Lyrics:
         self.assertEqual(lmstudio["additional_params"]["top_k"], 44)
         self.assertEqual(lmstudio["additional_params"]["repeat_penalty"], 1.08)
 
-    def test_crewai_micro_guardrail_parses_delimiter_blocks_and_rejects_json(self):
+    def test_crewai_micro_guardrail_accepts_structured_json_and_delimiter_fallback(self):
         guardrail = album_crew_module._crewai_micro_block_guardrail("caption_agent_payload")
         ok, _ = guardrail(SimpleNamespace(raw="******caption******\nclear rap vocal, hard drums\n******/caption******"))
         self.assertTrue(ok)
 
-        ok, message = guardrail(SimpleNamespace(raw='{"caption":"clear rap vocal"}'))
-        self.assertFalse(ok)
-        self.assertIn("json_response_not_allowed", str(message))
+        ok, _ = guardrail(SimpleNamespace(raw='{"caption":"clear rap vocal"}'))
+        self.assertTrue(ok)
 
     def test_crewai_micro_engine_routes_through_micro_call(self):
         direct_calls = []
@@ -714,6 +759,10 @@ Lyrics:
         self.assertTrue(result["crewai_used"])
         self.assertFalse(direct_calls)
         self.assertIn("Album Intake Agent", micro_calls)
+        self.assertIn("Album Visual Director Agent", micro_calls)
+        self.assertIn("Track Visual Prompt Agent", micro_calls)
+        self.assertTrue(result["tracks"][0]["single_art_prompt"])
+        self.assertTrue(result["tracks"][0]["video_prompt"])
 
     def test_agent_block_instruction_demands_exact_shape(self):
         instruction = album_crew_module._agent_json_instruction("caption_agent_payload")
@@ -1025,7 +1074,7 @@ Lyrics:
         self.assertEqual(part_one_calls, 3)
         self.assertTrue(any("Agent block validation retry: Track Lyrics Agent Part 1" in line for line in result["logs"]))
 
-    def test_director_lyrics_part_falls_back_when_planner_refuses_json(self):
+    def test_director_lyrics_part_refusal_fails_loudly_without_deterministic_fallback(self):
         def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
             if isinstance(logs, list):
                 logs.append(f"AceJAM Agent call: {agent_name} attempt 1 via patched test.")
@@ -1046,12 +1095,9 @@ Lyrics:
                 use_crewai=True,
             )
 
-        self.assertTrue(result["success"])
-        lyrics = result["tracks"][0]["lyrics"]
-        self.assertIn("[Intro]", lyrics)
-        self.assertIn("[Verse 1]", lyrics)
-        self.assertIn("[Chorus]", lyrics)
-        self.assertTrue(any("Agent deterministic fallback: Track Lyrics Agent Part 1" in line for line in result["logs"]))
+        self.assertFalse(result["success"])
+        self.assertIn("deterministic lyric fallback is disabled", result["error"])
+        self.assertTrue(any("Track planning failed but album continues" in line for line in result["logs"]))
 
     def test_director_retries_hook_when_hook_lines_include_section_tags(self):
         hook_calls = 0
@@ -1282,7 +1328,8 @@ Lyrics:
                 use_crewai=True,
             )
 
-        expected_initial_parts = len(album_crew_module._director_section_groups(["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Bridge]", "[Final Chorus]", "[Outro]"]))
+        section_tags = ["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Bridge]", "[Final Chorus]", "[Outro]"]
+        expected_initial_parts = len(section_tags) if album_crew_module.ACEJAM_QUALITY_FIRST_TASK_GRAPH else len(album_crew_module._director_section_groups(section_tags))
         self.assertTrue(result["success"])
         self.assertEqual(lyrics_calls, expected_initial_parts)
         self.assertNotIn(blocked_line, result["tracks"][0]["lyrics"])
@@ -1395,7 +1442,6 @@ Lyrics:
         self.assertEqual(contract["tracks"][0]["key_scale"], "A minor")
         self.assertEqual(contract["tracks"][0]["style"], "warm boom-bap")
         self.assertIn("Open the shutters", contract["tracks"][0]["required_phrases"])
-        self.assertEqual(contract["tracks"][0]["content_policy_status"], "safe")
 
     def test_user_album_contract_extracts_required_hook_phrase(self):
         contract = extract_user_album_contract(
@@ -1583,8 +1629,6 @@ kill all the rivals
             "en",
         )
 
-        self.assertEqual(contract["blocked_unsafe_count"], 0)
-        self.assertEqual(contract["tracks"][0]["content_policy_status"], "safe")
         self.assertIn("kill all the rivals", contract["tracks"][0]["required_lyrics"])
         self.assertTrue(len(contract["tracks"][0]["required_phrases"]) > 0)
 
@@ -2617,6 +2661,58 @@ The Narrative: friends read old letters on a roof as the lights come back.
         self.assertIn("duplicate_section_tags:[Verse 1]", report["issues"])
         self.assertNotIn("metadata_or_credit_in_caption", report["issues"])
 
+    def test_director_allows_repeated_hook_passes_for_album_rendering(self):
+        section_map_issues = album_crew_module._validate_section_map_payload({
+            "section_map": ["[Intro]", "[Verse 1 - rap]", "[Hook]", "[Verse 2 - rap]", "[Hook]", "[Final Hook]", "[Outro]"]
+        })
+        self.assertFalse([issue for issue in section_map_issues if issue.startswith("duplicate_section_tags")])
+
+        report = album_crew_module._director_minimal_validate(
+            {
+                "title": "Signal Returns",
+                "duration": 90,
+                "caption": "rap, hip-hop drums, deep bass, clear male vocal, polished modern mix",
+                "lyrics": (
+                    "[Intro]\nSignal warms the room\n"
+                    "[Verse 1 - rap]\nWe count the sparks and keep the pressure moving\n"
+                    "[Hook]\nSignal returns, signal returns\n"
+                    "[Verse 2 - rap]\nSecond verse locks every drum to the motion\n"
+                    "[Hook]\nSignal returns, signal returns\n"
+                    "[Final Hook]\nSignal returns with the whole room open\n"
+                    "[Outro]\nLights down clean"
+                ),
+            },
+            ["[Intro]", "[Verse 1 - rap]", "[Hook]", "[Verse 2 - rap]", "[Hook]", "[Final Hook]", "[Outro]"],
+        )
+
+        self.assertNotIn("duplicate_section_tags:[Hook]", report["issues"])
+
+    def test_album_payload_quality_treats_chorus_and_hook_as_section_family(self):
+        lyrics = (
+            "[Intro]\nPressure in the room, lights cut low\n"
+            "[Verse 1 - rap]\n"
+            + "\n".join(f"First verse bar {idx} keeps the cadence locked and clear" for idx in range(16))
+            + "\n[Chorus]\nSignal returns, signal returns, we keep the line alive\n"
+            "[Verse 2 - rap]\n"
+            + "\n".join(f"Second verse bar {idx} keeps the cadence locked and clear" for idx in range(16))
+            + "\n[Final Chorus]\nSignal returns with every voice aligned\n"
+            "[Outro]\nLights down clean"
+        )
+        report = evaluate_album_payload_quality(
+            {
+                "title": "Signal Returns",
+                "duration": 120,
+                "caption": "rap, hip-hop drums, deep bass, clear male vocal, polished modern mix",
+                "lyrics": lyrics,
+            },
+            options={"track_duration": 120, "lyric_density": "rap_dense"},
+            repair=False,
+        )
+        issue_ids = {str(issue.get("id")) for issue in report.get("blocking_issues") or []}
+        self.assertNotIn("section_coverage_low", issue_ids)
+        self.assertIn("hook", report["lyric_duration_fit"]["actual_sections"])
+        self.assertIn("final_hook", report["lyric_duration_fit"]["actual_sections"])
+
     def test_director_minimal_gate_rejects_underfilled_long_rap_lyrics(self):
         sections = ["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Break]", "[Bridge]", "[Final Chorus]", "[Outro]"]
         lyrics = "\n".join(
@@ -3029,7 +3125,8 @@ Lyrics:
                 return SimpleNamespace(raw="ok")
 
         logs = []
-        result = _kickoff_crewai_compact(FakeCrew(), logs, "unit crew", "/tmp/crewai.json")
+        with patch.object(album_crew_module, "CREWAI_CAPTURE_STDIO", True), patch.object(album_crew_module, "CREWAI_LIVE_TERMINAL", False):
+            result = _kickoff_crewai_compact(FakeCrew(), logs, "unit crew", "/tmp/crewai.json")
 
         self.assertEqual(result.raw, "ok")
         self.assertTrue(any("CrewAI verbose captured for unit crew" in line for line in logs))

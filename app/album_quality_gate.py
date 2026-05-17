@@ -174,6 +174,17 @@ FALLBACK_ARTIFACT_RE = re.compile(
     r"the you|the was|the are|the is|the but|the end from the floor)\b",
     re.I,
 )
+AGENT_ARTIFACT_RE = re.compile(
+    r"(?:"
+    r"^\s*`{3,}|`{3}\s*$|"
+    r"\*{4,}/?(?:lyrics_lines|sections|hook_lines|quality_checks|required_phrases_used|part_index|word_count|line_count|char_count)\*{2,}|"
+    r"\b(?:lyrics_lines|hook_lines|quality_checks|required_phrases_used|caption_dimensions_covered|deterministic_block_payload)\b\s*[:=]|"
+    r"['\"](?:lyrics_lines|sections|part_index|quality_checks|hook_lines)['\"]\s*:|"
+    r"\b(?:return strict json|json object|output_schema|delimiter_response_contract|expected_block_shape|crewai micro|agent_runtime|raw_response)\b|"
+    r"<(?:analysis|final|thinking|tool|json)[^>]*>|</(?:analysis|final|thinking|tool|json)>"
+    r")",
+    re.I | re.M,
+)
 PLACEHOLDER_RE = re.compile(r"\b(?:placeholder|repeat chorus|same as before|continue|tbd|todo|\.\.\.)\b", re.I)
 SECTION_RE = re.compile(r"\[([^\]]+)\]")
 WORD_RE = re.compile(r"[A-Za-z0-9À-ÿ\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff']+")
@@ -371,6 +382,29 @@ def _section_key(section: str) -> str:
     text = re.sub(r"\s*-\s*.*$", "", text)
     text = re.sub(r"\s+\d+$", "", text)
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def _section_family_key(section: str) -> str:
+    key = _section_key(section)
+    compact = key.replace("_", "")
+    is_final = "final" in compact or "last" in compact
+    if any(token in compact for token in ("hook", "chorus", "refrain")):
+        return "final_hook" if is_final else "hook"
+    if "prechorus" in compact or "prehook" in compact:
+        return "pre_chorus"
+    if "verse" in compact:
+        return "verse"
+    if "intro" in compact:
+        return "intro"
+    if "outro" in compact:
+        return "outro"
+    if "bridge" in compact:
+        return "bridge"
+    if "break" in compact:
+        return "break"
+    if "drop" in compact:
+        return "drop"
+    return key
 
 
 def _normalize_lyric_section_line(line: str) -> str:
@@ -580,6 +614,31 @@ def _regex_hits(pattern: re.Pattern[str], text: str) -> list[str]:
     return hits
 
 
+def _locked_text_sources(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    chunks: list[str] = []
+    for key in (
+        "required_phrases",
+        "required_lyrics",
+        "locked_lyrics",
+        "locked_lyric_lines",
+        "lyrics_locked_phrases",
+        "user_locked_phrases",
+    ):
+        value = payload.get(key)
+        if isinstance(value, (list, tuple, set)):
+            chunks.extend(str(item) for item in value if str(item).strip())
+        elif value not in (None, "", []):
+            chunks.append(str(value))
+    return "\n".join(chunks).lower()
+
+
+def _unlocked_generic_hits(hits: list[str], payload: dict[str, Any] | None) -> list[str]:
+    locked_text = _locked_text_sources(payload)
+    return [hit for hit in hits if hit and hit.lower() not in locked_text]
+
+
 def _non_section_lines(lyrics: str) -> list[str]:
     return [
         _normalize_lyric_section_line(line).strip()
@@ -728,6 +787,8 @@ def _lyric_stats(lyrics: str) -> dict[str, Any]:
         "repeated_lines": repeated,
         "unique_line_ratio": unique_ratio,
         "meta_leak_lines": [line for line in raw_lines if META_LEAK_LINE_RE.search(_metadata_probe(line))],
+        "agent_artifact_lines": [line for line in raw_lines if AGENT_ARTIFACT_RE.search(line)],
+        "agent_artifact_count": len(AGENT_ARTIFACT_RE.findall(str(lyrics or ""))),
         "fallback_artifact_count": len(FALLBACK_ARTIFACT_RE.findall(str(lyrics or ""))),
         "placeholder_count": len(PLACEHOLDER_RE.findall(str(lyrics or ""))),
     }
@@ -964,6 +1025,8 @@ def lyric_craft_gate(
         add_issue("lyric_craft_placeholder", "fail", f"{stats['placeholder_count']} placeholder marker(s)", penalty=40)
     if stats["fallback_artifact_count"]:
         add_issue("lyric_craft_fallback_artifact", "fail", f"{stats['fallback_artifact_count']} fallback artifact(s)", penalty=40)
+    if stats["agent_artifact_count"] or stats["agent_artifact_lines"]:
+        add_issue("lyric_craft_agent_artifact", "fail", f"{stats['agent_artifact_count']} agent artifact marker(s)", penalty=45)
     if stats["meta_leak_lines"]:
         add_issue("lyric_craft_metadata_leakage", "fail", f"{len(stats['meta_leak_lines'])} metadata line(s)", penalty=40)
     if not partial and family != "sparse_or_instrumental" and stats["hook_count"] < 1:
@@ -972,14 +1035,15 @@ def lyric_craft_gate(
         add_issue("lyric_craft_extreme_repetition", "fail", f"{stats['unique_line_ratio']} unique line ratio", penalty=35)
 
     generic_hits = _regex_hits(GENERIC_AI_LYRIC_RE, lyric_text)
+    unlocked_generic_hits = _unlocked_generic_hits(generic_hits, payload)
     generic_total = len(GENERIC_AI_LYRIC_RE.findall(lyric_text))
-    if generic_hits and (generic_total >= 2 or len(generic_hits) >= 2):
+    if unlocked_generic_hits:
         add_issue(
             "lyric_craft_generic_ai_phrase",
-            "repairable",
-            ", ".join(generic_hits[:6]),
+            "fail",
+            ", ".join(unlocked_generic_hits[:6]),
             sections=[item["section"] for item in _weak_craft_sections(blocks, family) if "generic_ai_phrase" in item["reasons"]],
-            penalty=20,
+            penalty=35,
         )
     adjective_hits = _regex_hits(ADJECTIVE_STACK_RE, lyric_text)
     if adjective_hits:
@@ -1825,8 +1889,8 @@ def evaluate_album_payload_quality(
     has_vocal_script = bool(lyrics.strip() and lyrics.strip().lower() != "[instrumental]")
     instrumental = str(lyrics).strip().lower() == "[instrumental]" or (bool(repaired.get("instrumental")) and not has_vocal_script)
     stats = _lyric_stats(lyrics)
-    expected_keys = {_section_key(section) for section in plan.get("sections") or [] if section}
-    actual_keys = {_section_key(section) for section in stats["sections"] if section}
+    expected_keys = {_section_family_key(section) for section in plan.get("sections") or [] if section}
+    actual_keys = {_section_family_key(section) for section in stats["sections"] if section}
     section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
 
     if not instrumental:
@@ -1842,6 +1906,7 @@ def evaluate_album_payload_quality(
         can_extend_near_miss = (
             stats["word_count"] >= max(80, int(min_words * 0.65))
             and stats["fallback_artifact_count"] == 0
+            and stats["agent_artifact_count"] == 0
             and not stats["meta_leak_lines"]
             and stats["placeholder_count"] == 0
         )
@@ -1851,7 +1916,7 @@ def evaluate_album_payload_quality(
                 repaired["lyrics"] = (lyrics.rstrip() + append_block).strip()
                 lyrics = str(repaired["lyrics"])
                 stats = _lyric_stats(lyrics)
-                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                actual_keys = {_section_family_key(section) for section in stats["sections"] if section}
                 section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
                 repair_actions.append("missing_required_phrases_appended")
         if repair and can_extend_near_miss and stats["word_count"] < min_words and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
@@ -1861,7 +1926,7 @@ def evaluate_album_payload_quality(
                 repaired["lyrics"] = extended
                 lyrics = extended
                 stats = _lyric_stats(lyrics)
-                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                actual_keys = {_section_family_key(section) for section in stats["sections"] if section}
                 section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
                 repair_actions.append(f"lyrics_extended_to_min_words:{old_words}->{stats['word_count']}")
         if repair and stats["line_count"] < min_lines and stats["char_count"] <= ACE_STEP_LYRICS_CHAR_LIMIT:
@@ -1871,7 +1936,7 @@ def evaluate_album_payload_quality(
                 repaired["lyrics"] = reflowed
                 lyrics = reflowed
                 stats = _lyric_stats(lyrics)
-                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                actual_keys = {_section_family_key(section) for section in stats["sections"] if section}
                 section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
                 repair_actions.append(f"lyrics_reflowed_to_min_lines:{old_lines}->{stats['line_count']}")
         can_extend_near_miss = (
@@ -1887,7 +1952,7 @@ def evaluate_album_payload_quality(
                 repaired["lyrics"] = extended
                 lyrics = extended
                 stats = _lyric_stats(lyrics)
-                actual_keys = {_section_key(section) for section in stats["sections"] if section}
+                actual_keys = {_section_family_key(section) for section in stats["sections"] if section}
                 section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
                 repair_actions.append(f"lyrics_extended_to_min_words_after_reflow:{old_words}->{stats['word_count']}")
         if not has_vocal_lyrics(lyrics):
@@ -1922,6 +1987,12 @@ def evaluate_album_payload_quality(
             issues.append({"id": "missing_hook", "severity": "fail", "detail": "no chorus/hook/refrain section"})
         if stats["fallback_artifact_count"]:
             issues.append({"id": "fallback_lyric_artifacts", "severity": "fail", "detail": f"{stats['fallback_artifact_count']} artifact(s)"})
+        if stats["agent_artifact_count"] or stats["agent_artifact_lines"]:
+            issues.append({
+                "id": "agent_artifact_leakage",
+                "severity": "fail",
+                "detail": f"{stats['agent_artifact_count']} marker(s); {len(stats['agent_artifact_lines'])} line(s)",
+            })
         if stats["meta_leak_lines"]:
             issues.append({"id": "lyric_meta_leakage", "severity": "fail", "detail": f"{len(stats['meta_leak_lines'])} line(s)"})
         if stats["placeholder_count"]:
@@ -1951,7 +2022,7 @@ def evaluate_album_payload_quality(
             repaired["lyrics"] = density_repaired
             lyrics = density_repaired
             stats = _lyric_stats(lyrics)
-            actual_keys = {_section_key(section) for section in stats["sections"] if section}
+            actual_keys = {_section_family_key(section) for section in stats["sections"] if section}
             section_coverage = round((len(expected_keys & actual_keys) / max(1, len(expected_keys))), 2) if expected_keys else 1.0
             resolved = {
                 "lyrics_under_hit_density",
