@@ -1005,10 +1005,18 @@ def test_model(provider: Any, model_name: str, kind: str = "chat", options: dict
         }
     chat_options = planner_llm_options_for_provider(provider_name, options or {}, default_max_tokens=16)
     chat_options["temperature"] = (options or {}).get("temperature", chat_options.get("temperature", 0.0))
+    # Preflight should prove the model is reachable, not inherit a full album
+    # planning budget. Large num_predict/max_tokens values can make local
+    # Ollama/LM Studio models spend minutes on a one-word "OK" probe.
+    chat_options["timeout"] = min(float(chat_options.get("timeout") or 30), 30.0)
+    if provider_name == "ollama":
+        chat_options["num_predict"] = min(int(chat_options.get("num_predict") or 16), 16)
+    else:
+        chat_options["max_tokens"] = min(int(chat_options.get("max_tokens") or 16), 16)
     text = chat_completion(
         provider_name,
         model,
-        [{"role": "user", "content": "Reply with just: OK"}],
+        [{"role": "user", "content": "/no_think\nReply with just: OK"}],
         options=chat_options,
     )
     return {

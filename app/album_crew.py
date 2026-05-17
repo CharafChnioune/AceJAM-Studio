@@ -63,6 +63,7 @@ from album_quality_gate import (
 from local_llm import (
     PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
     chat_completion as local_llm_chat_completion,
+    chat_completion_response as local_llm_chat_completion_response,
     embed as local_llm_embed,
     lmstudio_api_base_url,
     lmstudio_load_model,
@@ -250,10 +251,10 @@ AGENT_EXACT_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
     "album_intake_payload": {
         "keys": ["album_title", "one_sentence_concept", "style_guardrails", "track_roles"],
         "example": {
-            "album_title": "",
-            "one_sentence_concept": "",
-            "style_guardrails": [],
-            "track_roles": [],
+            "album_title": "One Last Cassette",
+            "one_sentence_concept": "A compact one-track release with a concrete story, clear genre identity, and a complete arc.",
+            "style_guardrails": ["specific sound traits only", "no generic filler"],
+            "track_roles": ["complete single with intro, hook, and outro movement"],
         },
     },
     "track_concept_payload": {
@@ -270,8 +271,17 @@ AGENT_EXACT_RESPONSE_SCHEMAS: dict[str, dict[str, Any]] = {
     "tag_agent_payload": {
         "keys": ["tag_list", "tags", "caption_dimensions_covered"],
         "example": {
-            "tag_list": [],
-            "tags": "",
+            "tag_list": [
+                "modern synth-pop",
+                "tight punchy drums",
+                "deep low-end bass",
+                "Juno synth hook motif",
+                "clear lead vocal pocket",
+                "dynamic hook arrangement",
+                "warm analog texture",
+                "crisp polished studio mix",
+            ],
+            "tags": "modern synth-pop, tight punchy drums, deep low-end bass, Juno synth hook motif, clear lead vocal pocket, dynamic hook arrangement, warm analog texture, crisp polished studio mix",
             "caption_dimensions_covered": ACE_STEP_CAPTION_DIMENSIONS,
         },
     },
@@ -561,10 +571,10 @@ class TrackProductionPayloadModel(_AceJamStructuredModel):
 
 
 class AlbumIntakePayloadModel(_AceJamStructuredModel):
-    album_title: str = ""
-    one_sentence_concept: str = ""
-    style_guardrails: list[Any] = Field(default_factory=list)
-    track_roles: list[Any] = Field(default_factory=list)
+    album_title: str = "AceJAM Album"
+    one_sentence_concept: str = "A compact release with a clear concrete concept."
+    style_guardrails: list[Any] = Field(default_factory=lambda: ["specific sound traits only"])
+    track_roles: list[Any] = Field(default_factory=lambda: ["complete single"])
 
 
 class TrackConceptPayloadModel(_AceJamStructuredModel):
@@ -577,9 +587,21 @@ class TrackConceptPayloadModel(_AceJamStructuredModel):
 
 
 class TagAgentPayloadModel(_AceJamStructuredModel):
-    tag_list: list[Any] = Field(default_factory=list)
-    tags: str = ""
-    caption_dimensions_covered: list[Any] = Field(default_factory=list)
+    tag_list: list[Any] = Field(default_factory=lambda: [
+        "modern pop",
+        "tight punchy drums",
+        "deep low-end bass",
+        "memorable synth motif",
+        "clear lead vocal pocket",
+        "dynamic hook arrangement",
+        "warm analog texture",
+        "crisp polished studio mix",
+    ])
+    tags: str = (
+        "modern pop, tight punchy drums, deep low-end bass, memorable synth motif, "
+        "clear lead vocal pocket, dynamic hook arrangement, warm analog texture, crisp polished studio mix"
+    )
+    caption_dimensions_covered: list[Any] = Field(default_factory=lambda: list(ACE_STEP_CAPTION_DIMENSIONS))
 
 
 class BpmAgentPayloadModel(_AceJamStructuredModel):
@@ -1177,6 +1199,8 @@ def _prompt_within_budget(*parts: Any) -> bool:
 
 
 def _task_output_json_dict(output: Any) -> dict[str, Any]:
+    if isinstance(output, dict):
+        return output
     tasks_output = getattr(output, "tasks_output", None)
     if isinstance(tasks_output, list) and tasks_output:
         try:
@@ -1196,8 +1220,70 @@ def _task_output_json_dict(output: Any) -> dict[str, Any]:
             dumped = pydantic_obj.dict()
             if isinstance(dumped, dict):
                 return dumped
+    if isinstance(output, BaseModel):
+        dumped = output.model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+    if hasattr(output, "model_dump"):
+        try:
+            dumped = output.model_dump()
+            if isinstance(dumped, dict) and not {"raw", "json_dict", "pydantic"}.intersection(dumped.keys()):
+                return dumped
+        except Exception:
+            pass
+    if hasattr(output, "to_dict"):
+        try:
+            dumped = output.to_dict()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    raise ValueError("Crew result did not contain a valid JSON object")
+
+
+def _task_output_raw_json_dict(output: Any) -> dict[str, Any]:
+    if isinstance(output, str):
+        text = _strip_thinking_blocks(output).strip()
+        try:
+            decoded = _json_object_from_text(text)
+        except Exception as exc:
+            raise ValueError(f"raw string JSON parse failed: {type(exc).__name__}: {exc}") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("raw string JSON root was not an object")
+        return decoded
+    tasks_output = getattr(output, "tasks_output", None)
+    if isinstance(tasks_output, list) and tasks_output:
+        try:
+            return _task_output_raw_json_dict(tasks_output[-1])
+        except Exception:
+            pass
     raw = getattr(output, "raw", None)
-    return _json_object_from_text(str(raw if raw is not None else output))
+    if raw is None:
+        raise ValueError("Crew result did not expose TaskOutput.raw JSON")
+    text = _strip_thinking_blocks(str(raw)).strip()
+    try:
+        decoded = _json_object_from_text(text)
+    except Exception as exc:
+        raise ValueError(f"TaskOutput.raw JSON parse failed: {type(exc).__name__}: {exc}") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("TaskOutput.raw JSON root was not an object")
+    return decoded
+
+
+def _parse_structured_task_output(schema_name: str, output: Any) -> tuple[dict[str, Any], str]:
+    errors: list[str] = []
+    for source, getter in (
+        ("json_dict", _task_output_json_dict),
+        ("raw_json", _task_output_raw_json_dict),
+    ):
+        try:
+            structured = getter(output)
+            parsed = _coerce_structured_agent_payload(schema_name, structured)
+            _validate_agent_response_shape(schema_name, parsed)
+            return parsed, source
+        except Exception as exc:
+            errors.append(f"{source}:{type(exc).__name__}: {exc}")
+    raise ValueError("; ".join(errors))
 
 
 def _task_output_raw_text(output: Any) -> str:
@@ -1211,9 +1297,17 @@ def _task_output_raw_text(output: Any) -> str:
     raw = getattr(output, "raw", None)
     if raw is not None:
         parts.append(str(raw))
-    if not parts and output is not None:
+    if not any(str(part or "").strip() for part in parts) and output is not None:
         parts.append(str(output))
-    return "\n\n".join(part for part in parts if part)
+    seen: set[str] = set()
+    unique_parts: list[str] = []
+    for part in parts:
+        text = str(part or "")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique_parts.append(text)
+    return "\n\n".join(unique_parts)
 
 
 def _lyric_like_text(raw: str) -> str:
@@ -2429,9 +2523,30 @@ def _is_lmstudio_model_crash(value: Any) -> bool:
 
 
 def _make_llm(model_name: str, provider: str = "ollama", debug_log_file: str | None = None):
+    provider_name = normalize_provider(provider)
+    if provider_name in {"ollama", "lmstudio"}:
+        options = planner_llm_options_for_provider(
+            provider_name,
+            {
+                "planner_temperature": 0.72,
+                "planner_top_p": 0.92,
+                "planner_max_tokens": CREWAI_LMSTUDIO_MAX_TOKENS if provider_name == "lmstudio" else CREWAI_LLM_MAX_TOKENS,
+                "planner_context_length": CREWAI_LLM_CONTEXT_WINDOW,
+                "planner_timeout": CREWAI_LLM_TIMEOUT_SECONDS,
+            },
+            default_max_tokens=CREWAI_LMSTUDIO_MAX_TOKENS if provider_name == "lmstudio" else CREWAI_LLM_MAX_TOKENS,
+            default_timeout=CREWAI_LLM_TIMEOUT_SECONDS,
+        )
+        local_native_cls = _build_local_native_llm_class()
+        return local_native_cls(
+            model_name=model_name,
+            provider_name=provider_name,
+            options=options,
+            timeout=CREWAI_LLM_TIMEOUT_SECONDS,
+        )
+
     from crewai import LLM
 
-    provider_name = normalize_provider(provider)
     llm = LLM(**_crewai_llm_kwargs(model_name, provider_name))
     # Qwen/Ollama models often emit raw <think> content. If CrewAI sends native
     # OpenAI-style tool schemas to Ollama, that content can crash Ollama's tool
@@ -2985,10 +3100,11 @@ def songwriting_toolkit(installed_models: set[str] | list[str] | None = None) ->
 
 
 def _output_json_for_provider(model: type[BaseModel], planner_provider: str) -> type[BaseModel] | None:
-    # Always return None — thinking models (Qwen3, etc.) emit <think> blocks that
-    # break CrewAI's Pydantic output_json validator before our _strip_thinking_blocks
-    # can clean them. We parse the raw text ourselves after kickoff.
-    return None
+    # CrewAI's documented structured-output path is Task(output_json=...)
+    # producing TaskOutput.json_dict. Local providers now run through
+    # _AceJamLocalNativeLLM, so Ollama/LM Studio schema mode is handled by
+    # app/local_llm.py instead of an OpenAI-compatible facade.
+    return model
 
 
 def _tool_key(value: Any) -> str:
@@ -3965,11 +4081,11 @@ def _agent_block_template(schema_name: str) -> str:
         "performance_brief": "Clear lead vocal, tight cadence, confident pocket, drums and bass forward",
         "negative_control": "no muddy vocals, no gibberish, no prompt text",
         "genre_profile": "Rap-first performance with hip-hop drums, low-end focus, melodic motif, and punchy mix",
-        "album_art_prompt": "Premium square album cover: rain-slick market street at dawn, brass reflections, warm window light, cinematic editorial realism, no text",
+        "album_art_prompt": "Premium square album cover: rain-slick market street at dawn, brass reflections, warm window light, cinematic editorial realism",
         "album_art_negative_prompt": "readable text, typography, logo, watermark, blurry faces, malformed hands",
-        "single_art_prompt": "Premium square single cover for this track: concrete scene from the lyrics, matching palette, cinematic high detail, no text",
+        "single_art_prompt": "Premium square single cover for this track: concrete scene from the lyrics, matching palette, cinematic high detail",
         "single_art_negative_prompt": "readable text, logo, watermark, poster type, album title, artist name",
-        "video_prompt": "Short music-video shot: handheld push through the track's main scene, natural motion, cinematic lighting, no subtitles",
+        "video_prompt": "Short music-video shot: handheld push through the track's main scene, natural motion, cinematic lighting",
         "video_negative_prompt": "subtitles, captions, readable text, logos, watermark, jitter, low-detail faces",
         "visual_palette": "warm amber light, deep charcoal shadows, brass highlights",
         "camera_motion": "slow dolly-in with handheld micro-movement",
@@ -4074,6 +4190,10 @@ def _structured_model_for_schema(schema_name: str) -> type[BaseModel] | None:
     }.get(key)
 
 
+def _uses_structured_json_schema(schema_name: str) -> bool:
+    return _structured_model_for_schema(schema_name) is not None
+
+
 def _structured_prompt_instruction(schema_name: str) -> str:
     contract = _agent_schema_contract(schema_name) or _agent_block_contract(schema_name) or {}
     fields = list(contract.get("keys") or contract.get("fields") or [])
@@ -4086,14 +4206,317 @@ def _structured_prompt_instruction(schema_name: str) -> str:
     )
 
 
+def _structured_json_template(schema_name: str) -> str:
+    contract = _agent_schema_contract(schema_name) or _agent_block_contract(schema_name) or {}
+    fields = list(contract.get("keys") or contract.get("fields") or [])
+    example = dict(contract.get("example") or {})
+    if str(schema_name or "").startswith("lyrics_part_") and str(schema_name or "").endswith("_payload"):
+        example = {
+            "part_index": 1,
+            "sections": ["[Intro]"],
+            "lyrics_lines": ["[Intro]", "First lyric line", "Second lyric line"],
+        }
+    for field in fields:
+        if field not in example:
+            if field in set(contract.get("list_fields") or set()):
+                example[field] = []
+            elif field in set(contract.get("number_fields") or set()):
+                example[field] = 1
+            else:
+                example[field] = ""
+    return json.dumps({field: example.get(field) for field in fields}, ensure_ascii=False, indent=2)
+
+
+def _strip_legacy_output_blocks_for_structured(schema_name: str, prompt: str) -> str:
+    if not _uses_structured_json_schema(schema_name):
+        return str(prompt or "")
+    text = str(prompt or "")
+    template = _agent_block_template(schema_name)
+    text = text.replace(f"OUTPUT_BLOCKS:\n{template}\n", "")
+    text = text.replace(f"OUTPUT_BLOCKS:\n{template}", "")
+    text = text.replace("Return delimiter blocks only.", "")
+    text = text.rstrip()
+    return (
+        f"{text}\n\n"
+        "OUTPUT_JSON_EXAMPLE:\n"
+        f"{_structured_json_template(schema_name)}\n"
+        "Return strict JSON with this shape only."
+    ).strip()
+
+
+def _normalize_tag_agent_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload or {})
+    raw_tags = result.get("tag_list") if isinstance(result.get("tag_list"), list) else []
+    tag_list: list[str] = []
+    seen: set[str] = set()
+
+    def _add_tag(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        # ACE-Step captions like compact comma tags; strip bullets/numbering
+        # without touching hyphenated style terms such as boom-bap or alt-R&B.
+        text = re.sub(r"^(?:[-*•]\s+|\d+[.)]\s+)", "", text).strip()
+        if not text:
+            return
+        key = re.sub(r"\s+", " ", text).casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        tag_list.append(text)
+
+    for item in raw_tags:
+        _add_tag(item)
+    if not tag_list and str(result.get("tags") or "").strip():
+        for item in re.split(r"[,;\n]+", str(result.get("tags") or "")):
+            _add_tag(item)
+
+    combined = ", ".join([str(result.get("tags") or ""), *tag_list]).lower()
+    rap_context = bool(re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", combined, re.I))
+    if rap_context:
+        if not re.search(r"\b(?:rap vocal|rapper|mc vocal|vocal pocket|male rap|female rap|flow)\b", combined, re.I):
+            _add_tag("clear rap vocal pocket")
+        if not re.search(r"\b(?:hip[-\s]?hop drums|rap groove|boom[-\s]?bap drum|trap drums|drill drums|drum pocket)\b", combined, re.I):
+            _add_tag("hip-hop drums")
+        if not re.search(r"\b(?:808|sub[-\s]?bass|low[-\s]?end|sine[-\s]?wave bass|deep bass)\b", combined, re.I):
+            _add_tag("808 bass")
+
+    combined = ", ".join([str(result.get("tags") or ""), *tag_list]).lower()
+    required_anchors = [
+        (r"\b(?:rap|hip[-\s]?hop|pop|rock|r&b|soul|garage|drill|trap|synth[-\s]?pop|indie|cinematic)\b", "modern pop"),
+        (r"\b(?:drum|kick|snare|hat|percussion|groove|beat|shuffle|swing)\b", "tight drum groove"),
+        (r"\b(?:bass|808|sub|low[-\s]?end)\b", "deep low-end bass"),
+        (r"\b(?:melody|motif|lead|synth|guitar|piano|keys|sample|strings|arp|riff|hook identity)\b", "memorable synth motif"),
+        (r"\b(?:vocal|voice|rap|sung|lead|harmony|cadence|flow)\b", "clear lead vocal pocket"),
+        (r"\b(?:arrangement|hook|chorus|bridge|beat switch|breakdown|build|drop|call and response|dynamic|final hook|intro|outro|switch-up|section movement)\b", "dynamic hook arrangement"),
+        (r"\b(?:texture|space|reverb|delay|grit|warmth|air|atmosphere|room|distortion|glitch|wet[-\s]?asphalt)\b", "controlled texture space"),
+        (r"\b(?:mix|master|polished|crisp|clean mix|punchy mix|studio mix|high[-\s]?fidelity|radio[-\s]?ready|wide stereo|club mix|balanced mix|glossy mix)\b", "crisp polished studio mix"),
+    ]
+    for pattern, fallback in required_anchors:
+        combined = ", ".join([str(result.get("tags") or ""), *tag_list]).lower()
+        if not re.search(pattern, combined, re.I):
+            _add_tag(fallback)
+
+    result["tag_list"] = tag_list
+    result["tags"] = ", ".join(tag_list)
+    dimensions = [str(item).strip() for item in (result.get("caption_dimensions_covered") or []) if str(item).strip()]
+    if not dimensions:
+        dimensions = list(ACE_STEP_CAPTION_DIMENSIONS)
+    else:
+        existing = {item for item in dimensions}
+        for dimension in ACE_STEP_CAPTION_DIMENSIONS:
+            if dimension not in existing:
+                dimensions.append(dimension)
+    result["caption_dimensions_covered"] = dimensions
+    return result
+
+
+def _normalize_caption_agent_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload or {})
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def _add_tag(value: Any) -> None:
+        text = str(value or "").strip(" ,.;:\n\t")
+        if not text:
+            return
+        key = re.sub(r"\s+", " ", text).casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        tags.append(text)
+
+    for item in _agent_tag_items(result.get("caption")):
+        _add_tag(item)
+
+    anchors = [
+        (r"\b(?:rap|hip[-\s]?hop|pop|rock|r&b|soul|garage|drill|trap|synth[-\s]?pop|indie|cinematic|folk|country)\b", "modern song production"),
+        (r"\b(?:drum|kick|snare|hat|percussion|groove|beat|shuffle|swing)\b", "tight drum groove"),
+        (r"\b(?:bass|808|sub|low[-\s]?end)\b", "deep low-end bass"),
+        (r"\b(?:melody|motif|lead|synth|guitar|piano|keys|sample|strings|arp|riff|hook identity)\b", "memorable melodic motif"),
+        (r"\b(?:vocal|voice|rap|sung|lead|harmony|cadence|flow)\b", "clear lead vocal pocket"),
+        (r"\b(?:arrangement|hook|chorus|bridge|beat switch|breakdown|build|drop|call and response|dynamic|final hook|section movement)\b", "dynamic hook arrangement"),
+        (r"\b(?:texture|space|reverb|delay|grit|warmth|air|atmosphere|room|distortion|glitch|dust|rain|desert)\b", "controlled texture space"),
+        (r"\b(?:mix|master|polished|crisp|clean mix|punchy mix|studio mix|high[-\s]?fidelity|radio[-\s]?ready|wide stereo|balanced mix|glossy mix)\b", "crisp polished studio mix"),
+    ]
+    for pattern, fallback in anchors:
+        combined = ", ".join(tags).lower()
+        if not re.search(pattern, combined, re.I):
+            _add_tag(fallback)
+
+    caption = ", ".join(tags).strip()
+    while len(caption) > 508 and len(tags) > 1:
+        tags.pop()
+        caption = ", ".join(tags).strip()
+    result["caption"] = caption or str(result.get("caption") or "").strip()
+    return result
+
+
+_VISUAL_POSITIVE_EXCLUSION_RE = re.compile(
+    r"\b(?:"
+    r"no\s+(?:readable\s+)?text|without\s+(?:readable\s+)?text|readable\s+text|"
+    r"text|logo|watermark|typography|title\s+typography|artist\s+name|"
+    r"album\s+title|subtitles?|captions?"
+    r")\b",
+    re.I,
+)
+
+
+def _sanitize_visual_positive_prompt(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return ""
+    parts = [part.strip(" ,.;:") for part in re.split(r"(?<=[.!?])\s+|[,;]\s*", text) if part.strip(" ,.;:")]
+    kept = [part for part in parts if not _VISUAL_POSITIVE_EXCLUSION_RE.search(part)]
+    cleaned = ", ".join(kept).strip(" ,.;:")
+    if not cleaned:
+        cleaned = _VISUAL_POSITIVE_EXCLUSION_RE.sub("", text).strip(" ,.;:")
+    if not cleaned:
+        cleaned = "cinematic real-world scene, cohesive color palette, editorial music-cover composition, natural lens detail"
+    return _clip_text(re.sub(r"\s{2,}", " ", cleaned).strip(" ,.;:"), 900)
+
+
+def _append_visual_negative_terms(value: Any) -> str:
+    base = str(value or "").strip(" ,.;:")
+    terms = [
+        "readable text",
+        "typography",
+        "logo",
+        "watermark",
+        "letters",
+        "numbers",
+        "artist name",
+        "album title",
+        "captions",
+        "subtitles",
+    ]
+    existing = base.lower()
+    additions = [term for term in terms if term not in existing]
+    return ", ".join(part for part in [base, ", ".join(additions)] if part).strip(" ,.;:")
+
+
+def _sanitize_visual_prompt_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload or {})
+    for field in ("album_art_prompt", "single_art_prompt", "video_prompt"):
+        if field in result:
+            result[field] = _sanitize_visual_positive_prompt(result.get(field))
+    for field in ("album_art_negative_prompt", "single_art_negative_prompt", "video_negative_prompt"):
+        if field in result:
+            result[field] = _append_visual_negative_terms(result.get(field))
+    if not str(result.get("no_text_policy") or "").strip():
+        result["no_text_policy"] = "No readable text, logos, typography, labels, captions, subtitles, artist names, album titles, or watermarks."
+    return result
+
+
+def _sanitize_structured_lyrics_lines(lines: list[Any]) -> list[str]:
+    replacements = {
+        "neon dreams": "wet shop signs",
+        "fire inside": "heat under the ribs",
+        "shattered dreams": "cracked motel glass",
+        "endless night": "two a.m. road",
+        "empty streets": "shuttered storefronts",
+        "embers": "ash flecks",
+        "whispers in the dark": "low voices by the door",
+        "silhouettes": "figures",
+        "echoes of": "traces of",
+        "we rise": "boots hit pavement",
+        "let it burn": "let the match smoke",
+        "chasing the night": "following tail lights",
+        "broken heart": "split receipt",
+        "rising from the ashes": "walking through ash",
+        "stars aligned": "streetlamps lined up",
+        "fade away": "slip past the curb",
+        "into the void": "past the underpass",
+        "burning bright": "lamp-lit",
+        "stolen kisses": "borrowed lipstick",
+        "tears like rain": "rain on my sleeve",
+        "frozen in time": "stuck on the timestamp",
+        "dancing in the dark": "moving under low light",
+        "running through my mind": "looping behind my eyes",
+    }
+    sanitized: list[str] = []
+    fallback_bars = _director_lyric_extension_lines({})
+    fallback_offset = 0
+    for raw in lines or []:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        if re.fullmatch(r"\[[^\]]+\]", line):
+            sanitized.append(line)
+            continue
+        fixed = line
+        for phrase, replacement in replacements.items():
+            fixed = re.sub(re.escape(phrase), replacement, fixed, flags=re.I)
+        if _scan_for_cliche_phrases(fixed):
+            fixed = _director_safe_fallback_bar(fallback_bars, fallback_offset)
+            fallback_offset += 1
+        sanitized.append(_clip_text(fixed, 90))
+    return sanitized
+
+
+def _fallback_album_title_from_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "AceJAM Album"
+    quoted = re.search(r"[\"'“”‘’]([^\"'“”‘’]{3,60})[\"'“”‘’]", text)
+    if quoted:
+        candidate = quoted.group(1)
+    else:
+        lower = text.lower()
+        phrase_match = re.search(
+            r"\b(?:one last cassette|last cassette|midnight courier|desert map|rooftop after rain|summer rain|paper map)\b",
+            lower,
+            re.I,
+        )
+        if phrase_match:
+            candidate = phrase_match.group(0)
+        else:
+            words = [
+                word
+                for word in re.findall(r"[A-Za-z0-9][A-Za-z0-9'&-]*", text)
+                if word.lower() not in {"a", "an", "the", "single", "track", "mini", "album", "where", "about"}
+            ]
+            candidate = " ".join(words[:4])
+    words = [word.strip("-_ ") for word in re.split(r"\s+", str(candidate or "")) if word.strip("-_ ")]
+    title = " ".join(word[:1].upper() + word[1:] for word in words[:6]).strip()
+    return title or "AceJAM Album"
+
+
 def _coerce_structured_agent_payload(schema_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("structured_response_not_object")
+    key = str(schema_name or "").strip()
+    if key == "album_intake_payload" and not str(payload.get("album_title") or "").strip():
+        payload = dict(payload)
+        payload["album_title"] = _fallback_album_title_from_text(payload.get("one_sentence_concept") or payload.get("concept"))
+    if key.startswith("lyrics_part_") and key.endswith("_payload"):
+        nested = payload.get(key) or payload.get("payload") or payload.get("result")
+        if isinstance(nested, dict):
+            payload = {**payload, **nested}
+        if "lyrics_lines" not in payload and "lyrics" in payload:
+            payload = {**payload, "lyrics_lines": payload.get("lyrics")}
+    if key == "visual_prompt_payload":
+        payload = dict(payload)
+        if not payload.get("single_art_prompt") and payload.get("album_art_prompt"):
+            payload["single_art_prompt"] = payload.get("album_art_prompt")
+        if not payload.get("single_art_negative_prompt") and payload.get("album_art_negative_prompt"):
+            payload["single_art_negative_prompt"] = payload.get("album_art_negative_prompt")
+        if not payload.get("album_art_prompt") and payload.get("single_art_prompt"):
+            payload["album_art_prompt"] = payload.get("single_art_prompt")
+        if not payload.get("album_art_negative_prompt") and payload.get("single_art_negative_prompt"):
+            payload["album_art_negative_prompt"] = payload.get("single_art_negative_prompt")
+        if not payload.get("camera_motion"):
+            payload["camera_motion"] = "slow cinematic tracking with gentle handheld micro-movement"
+        if not payload.get("no_text_policy"):
+            payload["no_text_policy"] = "No readable text, logos, typography, labels, captions, subtitles, or watermarks."
+        payload = _sanitize_visual_prompt_payload(payload)
     contract = _agent_block_contract(schema_name) or _agent_schema_contract(schema_name) or {}
     fields = list(contract.get("fields") or contract.get("keys") or payload.keys())
     list_fields = set(contract.get("list_fields") or set())
     number_fields = set(contract.get("number_fields") or set())
     required_nonempty = set(contract.get("required_nonempty") or set())
+    if key in {"tag_agent_payload", "track_micro_tag_list_payload"}:
+        required_nonempty.discard("tag_list")
     result: dict[str, Any] = {}
 
     def _as_list(value: Any) -> list[Any]:
@@ -4110,7 +4533,14 @@ def _coerce_structured_agent_payload(schema_name: str, payload: dict[str, Any]) 
     for field in fields:
         value = payload.get(field)
         if field in list_fields:
-            items = [str(item).strip() for item in _as_list(value) if str(item).strip()]
+            items: list[str] = []
+            for item in _as_list(value):
+                if isinstance(item, dict):
+                    text = str(item.get("description") or item.get("role") or item.get("title") or "").strip()
+                else:
+                    text = str(item or "").strip()
+                if text:
+                    items.append(text)
             if field in required_nonempty and not items:
                 raise ValueError(f"empty_required_structured_field:{field}")
             result[field] = items
@@ -4135,8 +4565,20 @@ def _coerce_structured_agent_payload(schema_name: str, payload: dict[str, Any]) 
             result[field] = ", ".join(str(item).strip() for item in (result.get("tag_list") or []) if str(item).strip())
         elif strategy == "deterministic_block_payload":
             result[field] = {"deterministic_block_payload": True}
+    if key == "caption_agent_payload":
+        result = _normalize_caption_agent_structured_payload(result)
+    if key in {"tag_agent_payload", "track_micro_tag_list_payload"}:
+        result = _normalize_tag_agent_structured_payload(result)
+    if key.startswith("lyrics_part_") and key.endswith("_payload"):
+        result["lyrics_lines"] = _sanitize_structured_lyrics_lines(result.get("lyrics_lines") or [])
     if schema_name in AGENT_EXACT_RESPONSE_SCHEMAS:
         _validate_agent_response_shape(schema_name, result)
+    if key.startswith("lyrics_part_") and key.endswith("_payload"):
+        # Lyrics-part agents are intentionally tiny strict schemas. The shared
+        # lyric normalizer adds a convenience `lyrics` string for final payloads,
+        # but that derived key made exact CrewAI JSON guardrails reject otherwise
+        # valid section drafts as `extra_keys=lyrics`.
+        return result
     return _coerce_agent_lyrics_payload(result)
 
 
@@ -4428,13 +4870,19 @@ def _validate_agent_response_shape(schema_name: str, payload: dict[str, Any]) ->
             raise ValueError("hook_payload did not match exact response contract: hook_lines_must_not_contain_section_tags")
 
 
-def _agent_system_prompt(agent_name: str) -> str:
+def _agent_system_prompt(agent_name: str, *, structured_output: bool = False) -> str:
     name = str(agent_name or "AceJAM Agent")
+    response_rule = (
+        "Return only one strict JSON object matching the requested schema. No delimiter blocks, prose, markdown, thoughts, or extra keys."
+        if structured_output
+        else "Return only the requested delimiter blocks. No JSON, prose, markdown, thoughts, or extra blocks."
+    )
     common = (
         f"You are {name}, a single-purpose ACE-Step album planning agent.\n"
-        "Return only the requested delimiter blocks. No JSON, prose, markdown, thoughts, or extra blocks.\n"
+        f"{response_rule}\n"
         "Keep locked fields unchanged. Producer credit is metadata, never a lyric.\n"
         "ACE-Step fields are separate: caption=sound, lyrics=temporal script, BPM/key/time/duration=metadata.\n"
+        "Never ask the user for missing fields during an album run; infer conservatively from CURRENT_TRACK_STATE, album concept, and locked fields.\n"
     )
     if name == "Album Bible Agent":
         return common + (
@@ -4447,6 +4895,7 @@ def _agent_system_prompt(agent_name: str) -> str:
     if name in {"Tag Agent", "Track Tag List Agent", "Sonic DNA Agent"}:
         return common + (
             "Task: sonic DNA tags only. Cover genre/style, rhythm/groove, instruments, vocal style, mood, arrangement energy, mix. "
+            "If top-level genre/mood/vocal fields are blank, infer them from CURRENT_TRACK_STATE.style, vibe, description and narrative. "
             "No BPM, key, duration, names, title, story, or lyrics.\n"
         )
     if name in {"Caption Agent", "Track Caption Agent"}:
@@ -4471,6 +4920,86 @@ def _agent_system_prompt(agent_name: str) -> str:
     return common + "Task scope: follow the provided schema for this one agent call only.\n"
 
 
+def _agent_uses_compact_reference(agent_name: str, schema_name: str) -> bool:
+    return _uses_structured_json_schema(schema_name)
+
+
+def _compact_agent_reference(agent_name: str, schema_name: str) -> str:
+    key = str(schema_name or "").strip()
+    name = str(agent_name or "")
+    if key.startswith("lyrics_part_") and key.endswith("_payload") or name.startswith("Track Lyrics Agent"):
+        return (
+            "COMPACT ACE-STEP LYRIC CONTRACT:\n"
+            "- Caption, lyrics, and metadata are separate. This task writes lyrics_lines only.\n"
+            "- Use only the requested bracket section tags, once each, then performable lines.\n"
+            "- Keep BPM, key, duration, model, captions, producer notes, and explanations out of lyrics.\n"
+            "- Rap lines should be short bars with internal rhyme, concrete nouns, and forward motion.\n"
+            "- Hooks/choruses should be short, repeatable, title-connected, and easy to chant or sing.\n"
+            "- Avoid generic filler, placeholder text, markdown, code fences, escaped literal newlines, and schema labels.\n"
+        )
+    if key in {"album_intake_payload", "track_concept_payload"}:
+        return (
+            "COMPACT ALBUM STATE CONTRACT:\n"
+            "- Normalize only the fields requested by this schema.\n"
+            "- Use concrete album/track details from the prompt and accepted state.\n"
+            "- Do not write lyrics, captions, metadata tables, explanations, or extra keys.\n"
+            "- If a field is missing, infer a useful concise value instead of asking the user.\n"
+        )
+    if key in {"tag_agent_payload", "track_micro_tag_list_payload"}:
+        return (
+            "COMPACT ACE-STEP CAPTION TAG CONTRACT:\n"
+            "- Return compact sonic tags only: genre, groove, bass, melodic identity, vocal, arrangement, texture, mix.\n"
+            "- Keep caption/tag terms under ACE-Step's sound-DNA role; no title, story, BPM, key, duration, or lyrics.\n"
+            "- Cover all eight caption dimensions with 6-10 concise tags.\n"
+        )
+    if key in {"bpm_agent_payload", "key_agent_payload", "time_signature_agent_payload", "duration_agent_payload"}:
+        return (
+            "COMPACT METADATA CONTRACT:\n"
+            "- Return exactly the one metadata field in the schema.\n"
+            "- Respect locked/scaffold values. Do not write lyrics, captions, reasoning, or extra keys.\n"
+        )
+    if key == "section_map_payload":
+        return (
+            "COMPACT SECTION MAP CONTRACT:\n"
+            "- Return only section_map and rationale.\n"
+            "- section_map is an ordered list of ACE-Step bracket section tags.\n"
+            "- Match duration, genre, and hook placement; no lyrics or captions.\n"
+        )
+    if key == "hook_payload":
+        return (
+            "COMPACT HOOK CONTRACT:\n"
+            "- Return only hook_title, hook_lines, and hook_promise.\n"
+            "- hook_lines are short singable or chantable lines, with no section tags and no metadata.\n"
+        )
+    if key == "caption_agent_payload":
+        return (
+            "COMPACT FINAL CAPTION CONTRACT:\n"
+            "- caption is ACE-Step sound only, under 512 chars, comma-separated.\n"
+            "- Include genre, groove, bass, instruments, vocal delivery, mood/texture, arrangement, and mix.\n"
+            "- Exclude title, BPM, key, duration, seed, story, producer names, and lyrics.\n"
+        )
+    if key == "performance_agent_payload":
+        return (
+            "COMPACT PERFORMANCE CONTRACT:\n"
+            "- Return delivery/mix guidance only: performance_brief, negative_control, genre_profile.\n"
+            "- Keep it short and practical for ACE-Step rendering; no lyrics or metadata.\n"
+        )
+    if key == "visual_prompt_payload":
+        return (
+            "COMPACT VISUAL CONTRACT:\n"
+            "- Positive art/video prompts describe scene, subject, lens, motion, palette, and mood.\n"
+            "- Put typography/logo/watermark exclusions only in negative prompts and no_text_policy.\n"
+            "- Keep album-level and track-level visuals consistent with the accepted song concept.\n"
+        )
+    if key == "lyric_craft_repair_payload":
+        return (
+            "COMPACT LYRIC REPAIR CONTRACT:\n"
+            "- Rewrite only the requested faulty section lines.\n"
+            "- Preserve accepted section tags and useful existing lines; return sections, lyrics_lines, craft_fixes only.\n"
+        )
+    return ""
+
+
 def _agent_full_system_prompt(
     *,
     agent_name: str,
@@ -4490,14 +5019,21 @@ def _agent_full_system_prompt(
     Album Intake Agent tried to fire — keeping the album wizard empty even
     after a successful preflight. The fix mirrors the working composition
     in `_agent_json_call`."""
-    system_prompt = _agent_system_prompt(agent_name)
-    if extra_system:
+    structured_output = _uses_structured_json_schema(schema_name)
+    system_prompt = _agent_system_prompt(agent_name, structured_output=structured_output)
+    compact_reference = _compact_agent_reference(agent_name, schema_name)
+    if compact_reference:
+        system_prompt += "\n" + compact_reference.strip()
+    elif extra_system:
         system_prompt += "\n" + str(extra_system).strip()
     if _truthy((debug_options or {}).get("planner_thinking"), False):
-        system_prompt += "\nPlanner thinking is enabled: you may reason internally, but final visible content must be delimiter blocks only."
+        final_shape = "strict JSON only" if structured_output else "delimiter blocks only"
+        system_prompt += f"\nPlanner thinking is enabled: you may reason internally, but final visible content must be {final_shape}."
     else:
         system_prompt += "\nPlanner thinking is disabled: do not emit <think>, hidden reasoning, chain-of-thought, markdown, or prose."
-    system_prompt += "\n" + _agent_json_instruction(schema_name)
+    system_prompt += "\n" + (
+        _structured_prompt_instruction(schema_name) if structured_output else _agent_json_instruction(schema_name)
+    )
     return system_prompt
 
 
@@ -4737,8 +5273,7 @@ def _crewai_micro_llm_kwargs(
     # `think: False` is the correct setting for ALL Ollama models including
     # Qwen3 :thinking variants. Direct probes confirmed: `think: True`
     # routes the answer to `message.thinking` and leaves `message.content`
-    # empty — litellm only reads content, so CrewAI raises "Invalid response
-    # from LLM call - None or empty." We pair `think: False` with the
+    # empty in OpenAI-compatible wrappers. We pair `think: False` with the
     # `/no_think` directive injected into the user message inside
     # `_crewai_micro_block_call` so the model writes its answer directly to
     # `content` even when its tag advertises a reasoning mode.
@@ -4756,8 +5291,8 @@ def _crewai_micro_llm_kwargs(
     }
 
 
-def _build_ollama_native_llm_class():
-    """Build the CrewAI-compatible Ollama-native LLM class. We construct it
+def _build_local_native_llm_class():
+    """Build the CrewAI-compatible local LLM class. We construct it
     inside a factory because it must subclass `crewai.llms.base_llm.BaseLLM`
     for pydantic validation in `crewai.Agent` to pass, and crewai is
     imported lazily.
@@ -4771,28 +5306,24 @@ def _build_ollama_native_llm_class():
     """
     from crewai.llms.base_llm import BaseLLM as _BaseLLM
 
-    class _OllamaNativeLLM(_BaseLLM):
-        """BaseLLM subclass that hits Ollama's native /api/chat endpoint
-        directly via httpx. Bypasses CrewAI's OpenAI-compat layer which
-        drops the `reasoning` field for Qwen :thinking / DeepSeek-R1 /
-        QwQ models — that bug left message.content empty and crashed every
-        album agent with 'Invalid response from LLM call - None or empty.'
-        Hitting /api/chat with `think: False` + `/no_think` directive
-        produces a populated content field directly (verified by probe)."""
+    class _AceJamLocalNativeLLM(_BaseLLM):
+        """BaseLLM subclass that lets CrewAI orchestrate agents/tasks while
+        AceJAM talks to Ollama/LM Studio directly through `local_llm.py`.
+        This keeps LiteLLM out of the local album-writing path and still uses
+        CrewAI's documented Task(output_json=...) / TaskOutput.json_dict flow."""
 
-        llm_type: str = "ollama_native"
+        llm_type: str = "acejam_local_native"
 
-        # Pydantic-friendly attribute fields. Internal Ollama config kept
-        # in private attributes so they bypass model validation.
-        _ollama_base_url: str = ""
-        _ollama_options_raw: dict[str, Any] = {}
-        _ollama_timeout: float = 600.0
+        _provider_name: str = "ollama"
+        _local_options_raw: dict[str, Any] = {}
+        _local_timeout: float = 600.0
 
-        def __init__(self, model_name: str, base_url: str, options: dict[str, Any], timeout: float = 600.0, **extra: Any):
-            super().__init__(model=str(model_name or "").strip(), provider="ollama_native", **extra)
-            object.__setattr__(self, "_ollama_base_url", str(base_url or "").rstrip("/"))
-            object.__setattr__(self, "_ollama_options_raw", dict(options or {}))
-            object.__setattr__(self, "_ollama_timeout", float(timeout))
+        def __init__(self, model_name: str, provider_name: str, options: dict[str, Any], timeout: float = 600.0, **extra: Any):
+            normalized_provider = normalize_provider(provider_name)
+            super().__init__(model=str(model_name or "").strip(), provider=normalized_provider, **extra)
+            object.__setattr__(self, "_provider_name", normalized_provider)
+            object.__setattr__(self, "_local_options_raw", dict(options or {}))
+            object.__setattr__(self, "_local_timeout", float(timeout))
 
         def supports_function_calling(self) -> bool:
             return False
@@ -4802,7 +5333,7 @@ def _build_ollama_native_llm_class():
 
         def get_context_window_size(self) -> int:
             try:
-                return int(self._ollama_options_raw.get("num_ctx") or CREWAI_LLM_CONTEXT_WINDOW)
+                return int(self._local_options_raw.get("num_ctx") or self._local_options_raw.get("context_length") or CREWAI_LLM_CONTEXT_WINDOW)
             except Exception:
                 return CREWAI_LLM_CONTEXT_WINDOW
 
@@ -4832,7 +5363,30 @@ def _build_ollama_native_llm_class():
                     return None
             except Exception:
                 return None
-            return schema if isinstance(schema, dict) and schema else None
+            if not isinstance(schema, dict) or not schema:
+                return None
+
+            def _stricten(node: Any) -> None:
+                if not isinstance(node, dict):
+                    return
+                props = node.get("properties")
+                if isinstance(props, dict) and props:
+                    node["required"] = list(props.keys())
+                    node["additionalProperties"] = False
+                    for child in props.values():
+                        _stricten(child)
+                items = node.get("items")
+                if isinstance(items, dict):
+                    _stricten(items)
+                for key in ("$defs", "definitions"):
+                    defs = node.get(key)
+                    if isinstance(defs, dict):
+                        for child in defs.values():
+                            _stricten(child)
+
+            schema = dict(schema)
+            _stricten(schema)
+            return schema
 
         def call(
             self,
@@ -4844,8 +5398,6 @@ def _build_ollama_native_llm_class():
             from_agent=None,
             response_model=None,
         ):
-            import httpx
-
             if isinstance(messages, str):
                 payload_messages = [{"role": "user", "content": messages}]
             else:
@@ -4856,40 +5408,35 @@ def _build_ollama_native_llm_class():
                     else:
                         payload_messages.append({"role": str(getattr(m, "role", "user")), "content": str(getattr(m, "content", ""))})
 
-            payload_messages = self._ensure_no_think_directive(payload_messages)
+            if self._provider_name == "lmstudio":
+                payload_messages = _lmstudio_no_think_messages(payload_messages)
+            else:
+                payload_messages = self._ensure_no_think_directive(payload_messages)
 
-            body = {
-                "model": self.model,
-                "messages": payload_messages,
-                "think": False,
-                "stream": False,
-                "options": dict(self._ollama_options_raw),
-            }
             schema = self._json_schema_for_response_model(response_model)
-            if schema:
-                body["format"] = schema
-
-            url = f"{self._ollama_base_url}/api/chat"
+            options = dict(self._local_options_raw)
+            options["timeout"] = self._local_timeout
             try:
-                with httpx.Client(timeout=self._ollama_timeout) as client:
-                    response = client.post(url, json=body)
-                    response.raise_for_status()
-                    data = response.json()
+                data = local_llm_chat_completion_response(
+                    self._provider_name,
+                    self.model,
+                    payload_messages,
+                    options=options,
+                    json_schema=schema,
+                    json_format=bool(schema),
+                )
             except Exception as exc:
-                raise RuntimeError(f"OllamaNativeLLM HTTP call failed: {type(exc).__name__}: {exc}") from exc
+                raise RuntimeError(f"AceJAMLocalNativeLLM call failed: {type(exc).__name__}: {exc}") from exc
 
-            message = data.get("message") if isinstance(data, dict) else None
-            if not isinstance(message, dict):
-                return ""
-            content = (message.get("content") or "").strip()
-            if not content:
-                content = (message.get("thinking") or "").strip()
+            if isinstance(data, dict) and data.get("truncated"):
+                raise RuntimeError(f"{provider_label(self._provider_name)} response truncated: done_reason={data.get('done_reason')}")
+            content = str((data or {}).get("content") if isinstance(data, dict) else data or "").strip()
             if not content:
                 return ""
             stripped = _strip_thinking_blocks(content)
             return stripped if stripped.strip() else content
 
-    return _OllamaNativeLLM
+    return _AceJamLocalNativeLLM
 
 
 def _make_crewai_micro_llm(
@@ -4899,148 +5446,32 @@ def _make_crewai_micro_llm(
     planner_settings: dict[str, Any] | None = None,
 ):
     provider_name = normalize_provider(provider)
-    # Ollama: use our native-endpoint LLM that handles :thinking variants
-    # correctly. CrewAI's OpenAI-compat layer drops the `reasoning` field
-    # for those models, leaving content empty and crashing the agent.
-    if provider_name == "ollama":
-        kwargs = _crewai_micro_llm_kwargs(model_name, provider, agent_name, planner_settings)
-        ollama_options = (kwargs.get("additional_params") or {}).get("extra_body", {}).get("options") or {}
-        ollama_options.setdefault("temperature", kwargs.get("temperature", 0.45))
-        ollama_options.setdefault("top_p", kwargs.get("top_p", 0.92))
-        ollama_options.setdefault("num_predict", kwargs.get("max_tokens", 8192))
-        ollama_native_cls = _build_ollama_native_llm_class()
-        return ollama_native_cls(
+    # Local album agents should not go through CrewAI's LiteLLM/OpenAI-compat
+    # facade. CrewAI still owns Agent/Task/Crew orchestration, while this
+    # BaseLLM talks directly to Ollama or LM Studio through app/local_llm.py.
+    if provider_name in {"ollama", "lmstudio"}:
+        options = _agent_llm_options(provider_name, agent_name, planner_settings)
+        local_native_cls = _build_local_native_llm_class()
+        return local_native_cls(
             model_name=model_name,
-            base_url=OLLAMA_BASE_URL,
-            options=ollama_options,
-            timeout=float(kwargs.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
+            provider_name=provider_name,
+            options=options,
+            timeout=float(options.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
         )
 
-    from crewai import LLM
-
-    llm = LLM(**_crewai_micro_llm_kwargs(model_name, provider, agent_name, planner_settings))
-    llm.supports_function_calling = lambda: False
-
-    # Patch `LLM.call` so Qwen :thinking / DeepSeek-R1 / QwQ variants stop
-    # crashing CrewAI with "Invalid response from LLM call - None or empty."
-    # Ollama's OpenAI-compat (/v1/chat/completions) endpoint routes the
-    # answer for those tagged reasoning models into a non-standard
-    # `reasoning` field and leaves `message.content` empty. Litellm preserves
-    # the field verbatim. Our wrapper invokes the original call once, then
-    # if the returned string is empty issues a single follow-up via
-    # litellm.completion to read the full message dict and pull the answer
-    # out of `reasoning` (or legacy `thinking`).
-    original_call = llm.call
-
-    def _diag(msg: str) -> None:
-        """Write reasoning-fallback diagnostics to both stdout (Pinokio
-        terminal) and a file the dev can tail from outside the app process."""
-        try:
-            print(msg, flush=True)
-        except Exception:
-            pass
-        try:
-            with open("/tmp/album_crew_diag.log", "a", encoding="utf-8") as fh:
-                fh.write(msg + "\n")
-        except Exception:
-            pass
-
-    def _call_with_reasoning_fallback(messages=None, *args, **kwargs):
-        response = original_call(messages, *args, **kwargs) if messages is not None else original_call(*args, **kwargs)
-        non_empty = bool(response) and isinstance(response, str) and bool(response.strip())
-        _diag(
-            f"[REASONING_FALLBACK] agent={agent_name} response_type={type(response).__name__} "
-            f"len={len(response) if isinstance(response, str) else -1} non_empty={non_empty}"
-        )
-        if non_empty:
-            return response
-        # Empty/None — try to extract from reasoning or thinking field via
-        # a follow-up litellm.completion that captures the full message dict.
-        try:
-            import litellm
-
-            pending = messages if messages is not None else (args[0] if args else None) or kwargs.get("messages")
-            if pending is None:
-                _diag(f"[REASONING_FALLBACK] agent={agent_name} skipped: no messages to retry")
-                return response
-            completion_kwargs = {
-                "model": llm.model,
-                "messages": pending,
-                "temperature": getattr(llm, "temperature", None),
-                "max_tokens": getattr(llm, "max_tokens", None),
-                "api_base": getattr(llm, "api_base", None),
-                "timeout": getattr(llm, "timeout", None),
-            }
-            completion_kwargs = {k: v for k, v in completion_kwargs.items() if v is not None}
-            _diag(
-                f"[REASONING_FALLBACK] agent={agent_name} retrying via litellm.completion model={completion_kwargs.get('model')}"
-            )
-            raw = litellm.completion(**completion_kwargs)
-            choice = raw.choices[0] if hasattr(raw, "choices") and raw.choices else None
-            if choice is None:
-                _diag(f"[REASONING_FALLBACK] agent={agent_name} retry got no choices")
-                return response
-            msg = getattr(choice, "message", None)
-            if msg is None and isinstance(choice, dict):
-                msg = choice.get("message")
-            if msg is None:
-                _diag(f"[REASONING_FALLBACK] agent={agent_name} retry message is None")
-                return response
-            keys_seen: list[str] = []
-            content = ""
-            source_used = "content"
-            if isinstance(msg, dict):
-                keys_seen = list(msg.keys())
-                content = (msg.get("content") or "").strip()
-                if not content:
-                    content = (msg.get("reasoning") or "").strip()
-                    source_used = "reasoning"
-                if not content:
-                    content = (msg.get("thinking") or "").strip()
-                    source_used = "thinking"
-            else:
-                keys_seen = [k for k in dir(msg) if not k.startswith("_")][:15]
-                content = (getattr(msg, "content", "") or "").strip()
-                if not content:
-                    content = (getattr(msg, "reasoning", "") or "").strip()
-                    source_used = "reasoning"
-                if not content:
-                    content = (getattr(msg, "thinking", "") or "").strip()
-                    source_used = "thinking"
-                if not content:
-                    # Last resort: dump message repr to see all available fields
-                    _diag(f"[REASONING_FALLBACK] agent={agent_name} message_repr={repr(msg)[:500]}")
-            _diag(
-                f"[REASONING_FALLBACK] agent={agent_name} message_keys={keys_seen} "
-                f"source={source_used} extracted_len={len(content)} preview={content[:120]!r}"
-            )
-            if content:
-                # Strip <think>...</think> wrapper if model emitted both
-                # reasoning channel and inline tags.
-                stripped = _strip_thinking_blocks(content)
-                if stripped.strip():
-                    return stripped
-                return content
-        except Exception as exc:
-            _diag(f"[REASONING_FALLBACK] agent={agent_name} fallback exception: {type(exc).__name__}: {exc}")
-        return response
-
-    llm.call = _call_with_reasoning_fallback  # type: ignore[method-assign]
-    return llm
+    raise ValueError(f"Unsupported CrewAI local planner provider for album agents: {provider_name}")
 
 
 def _crewai_micro_block_guardrail(schema_name: str):
     def _guardrail(output: Any) -> Tuple[bool, Any]:
+        response_model = _structured_model_for_schema(schema_name)
         try:
-            response_model = _structured_model_for_schema(schema_name)
             if response_model is not None:
                 try:
-                    structured = _task_output_json_dict(output)
-                    parsed = _coerce_structured_agent_payload(schema_name, structured)
-                    _validate_agent_response_shape(schema_name, parsed)
+                    _parse_structured_task_output(schema_name, output)
                     return True, output
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return False, f"structured_parse_failed:{type(exc).__name__}: {exc}"
             raw = _task_output_raw_text(output)
             payload = _parse_agent_block_payload(_strip_thinking_blocks(raw), schema_name)
             _validate_agent_response_shape(schema_name, payload)
@@ -5150,13 +5581,13 @@ _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
     ),
     "Album Visual Director Agent": (
         "Album Visual Director",
-        "Create one coherent visual identity for album cover, track covers, and short music-video clips. Keep the imagery tied to the album concept, sonic palette, and lyrical motifs. No readable text, no logos, no watermarks.",
-        "You art-direct premium music releases. You translate sound into cover/video prompts with concrete places, lighting, palette, lens language, and motion. You never ask image/video models to render typography, artist names, labels, or logos.",
+        "Create one coherent visual identity for album cover, track covers, and short music-video clips. Keep positive prompts image-only; put typography/logo/watermark exclusions only in negative fields and no_text_policy.",
+        "You art-direct premium music releases. You translate sound into cover/video prompts with concrete places, lighting, palette, lens language, and motion. The positive prompt describes what to see; the negative prompt and no_text_policy carry all typography, artist-name, label, and logo exclusions.",
     ),
     "Track Visual Prompt Agent": (
         "Track Visual Prompt Director",
-        "Create track-specific single-cover and video prompts that remain consistent with the album visual bible while reflecting this track's title, lyrics, genre, mood, and sonic texture. No readable text, no logos, no watermarks.",
-        "You make song covers and visualizers feel like part of the same campaign without becoming repetitive. Every prompt names a tangible scene, color palette, camera movement, and text-avoidance policy.",
+        "Create track-specific single-cover and video prompts that remain consistent with the album visual bible while reflecting this track's title, lyrics, genre, mood, and sonic texture. Keep exclusions out of positive prompt fields.",
+        "You make song covers and visualizers feel like part of the same campaign without becoming repetitive. Every positive prompt names a tangible scene, color palette, and camera movement. Every exclusion belongs in the negative prompt fields and no_text_policy.",
     ),
 }
 
@@ -5229,7 +5660,7 @@ def _crewai_micro_block_call(
     task_name = re.sub(r"[^a-z0-9]+", "_", str(agent_name or "agent").lower()).strip("_") or "agent"
     response_model = _structured_model_for_schema(schema_name)
     for attempt in range(1, attempts + 1):
-        user_content = prompt
+        user_content = _strip_legacy_output_blocks_for_structured(schema_name, prompt) if response_model is not None else prompt
         if response_model is not None:
             user_content = f"{_structured_prompt_instruction(schema_name)}\n\n{user_content}"
         planner_thinking = _truthy((debug_options or {}).get("planner_thinking"), False)
@@ -5320,7 +5751,15 @@ def _crewai_micro_block_call(
                     )
                 ),
                 agent=micro_agent,
-                output_json=response_model,
+                # CrewAI's `output_json` path appends a generic formatter that
+                # tells models to preserve the original content exactly. That is
+                # useful for extraction tasks, but actively contradicts AceJAM's
+                # creative microtasks such as visual prompt generation. The
+                # documented/installed Task model also exposes `response_model`;
+                # CrewAI passes it to BaseLLM.call(..., response_model=...) for
+                # native provider structured outputs without mutating the task
+                # prompt, and our guardrail parses the strict JSON raw result.
+                response_model=response_model,
                 guardrail=_crewai_micro_block_guardrail(schema_name),
                 # CrewAI sends guardrail failures back to the agent until
                 # `guardrail_max_retries` is exhausted. Keep this enabled even
@@ -5339,7 +5778,8 @@ def _crewai_micro_block_call(
                 cache=False,
             )
             result = _kickoff_crewai_compact(micro_crew, logs, f"CrewAI Micro {agent_name}")
-            raw_crewai_output = _task_output_raw_text(result)
+            task_output = getattr(micro_task, "output", None) or result
+            raw_crewai_output = _task_output_raw_text(task_output) or _task_output_raw_text(result)
             raw = _strip_thinking_blocks(raw_crewai_output)
             elapsed = round(time.perf_counter() - started, 3)
         except Exception as exc:
@@ -5390,9 +5830,7 @@ def _crewai_micro_block_call(
         logs.append(f"CrewAI Micro Agent response: {agent_name} {len(raw)} chars in {elapsed}s (parse pending).")
         if response_model is not None:
             try:
-                structured = _task_output_json_dict(result)
-                parsed = _coerce_structured_agent_payload(schema_name, structured)
-                _validate_agent_response_shape(schema_name, parsed)
+                parsed, structured_source = _parse_structured_task_output(schema_name, task_output)
                 _print_agent_io(
                     debug_options,
                     f"{agent_name.replace(' ', '_')}_crewai_micro_structured_json_attempt_{attempt}",
@@ -5407,10 +5845,14 @@ def _crewai_micro_block_call(
                         "crewai_task_name": task_name,
                         "attempt": attempt,
                         "structured_json": True,
+                        "structured_source": structured_source,
                         "parsed_payload": parsed,
                     },
                 )
-                logs.append(f"CrewAI Micro Agent parsed structured JSON: {agent_name} attempt {attempt} ok.")
+                logs.append(
+                    f"CrewAI Micro Agent parsed structured JSON: {agent_name} attempt {attempt} "
+                    f"ok ({structured_source})."
+                )
                 return parsed
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -5430,8 +5872,10 @@ def _crewai_micro_block_call(
                     break
                 logs.append(f"CrewAI Micro Agent structured repair: {agent_name}; {last_error}.")
                 prompt = (
-                    f"{user_prompt}\n\nSTRUCTURED JSON REPAIR: The previous CrewAI Micro response failed schema parsing: {last_error}. "
-                    f"{_structured_prompt_instruction(schema_name)}"
+                    f"{user_prompt}\n\nSTRUCTURED JSON REPAIR: The previous CrewAI Micro response failed schema parsing: {last_error}.\n"
+                    f"{_structured_prompt_instruction(schema_name)}\n"
+                    "EXPECTED_JSON_SHAPE:\n"
+                    f"{_structured_json_template(schema_name)}"
                 )
                 continue
         if not raw.strip():
@@ -5485,12 +5929,20 @@ def _crewai_micro_block_call(
             if attempt >= attempts:
                 break
             logs.append(f"CrewAI Micro Agent block repair: {agent_name}; {last_error}.")
-            prompt = (
-                f"{user_prompt}\n\nBLOCK REPAIR: The previous CrewAI Micro response failed delimiter-block parsing: {last_error}. "
-                "Return exactly the required delimiter blocks, in order, with no JSON, markdown, commentary, or extra text.\n"
-                "EXPECTED_BLOCK_SHAPE:\n"
-                f"{_agent_block_template(schema_name)}"
-            )
+            if response_model is not None:
+                prompt = (
+                    f"{user_prompt}\n\nSTRUCTURED JSON REPAIR: The previous CrewAI Micro response failed parsing: {last_error}.\n"
+                    f"{_structured_prompt_instruction(schema_name)}\n"
+                    "EXPECTED_JSON_SHAPE:\n"
+                    f"{_structured_json_template(schema_name)}"
+                )
+            else:
+                prompt = (
+                    f"{user_prompt}\n\nBLOCK REPAIR: The previous CrewAI Micro response failed delimiter-block parsing: {last_error}. "
+                    "Return exactly the required delimiter blocks, in order, with no JSON, markdown, commentary, or extra text.\n"
+                    "EXPECTED_BLOCK_SHAPE:\n"
+                    f"{_agent_block_template(schema_name)}"
+                )
     output_kind = "structured JSON" if response_model is not None else "delimiter blocks"
     raise AceJamAgentError(f"{agent_name} failed to produce valid CrewAI Micro {output_kind} after {attempts} attempt(s): {last_error}")
 
@@ -7661,7 +8113,7 @@ def _caption_forbidden_markers(caption: str, track: dict[str, Any] | None = None
         value = str(track_data.get(field) or "").strip()
         if value and value.lower() in text.lower():
             issues.append(f"{field}_in_caption")
-    if re.search(r"\b(?:verse|chorus|hook|lyrics?|narrative|story)\s*[:=-]", text, re.I):
+    if re.search(r"\b(?:verse|chorus|hook|lyrics?|narrative|story)\s*[:=]", text, re.I):
         issues.append("lyric_or_story_marker_in_caption")
     return sorted(set(issues))
 
@@ -8072,15 +8524,15 @@ def _visual_prompt_fallback_payload(
     no_text = "No readable text, typography, logos, labels, subtitles, captions, artist names, album titles, or watermarks."
     album_prompt = (
         f"Premium square album cover for '{str(bible.get('album_title') or title)}': {concept or scene}. "
-        f"Visual palette: {palette}. Sonic mood: {sonic}. Editorial cinematic realism, high detail, no text."
+        f"Visual palette: {palette}. Sonic mood: {sonic}. Editorial cinematic realism, high detail."
     )
     single_prompt = (
         f"Premium square single cover for '{title}': {scene}. "
-        f"Palette {palette}; sonic texture {sonic}. Concrete music-editorial composition, high detail, no text."
+        f"Palette {palette}; sonic texture {sonic}. Concrete music-editorial composition, high detail."
     )
     video_prompt = (
         f"Short music-video shot for '{title}': camera moves through {scene}. "
-        f"Palette {palette}; natural lens motion, cinematic lighting, performance-ready atmosphere, no subtitles."
+        f"Palette {palette}; natural lens motion, cinematic lighting, performance-ready atmosphere."
     )
     negative = "readable text, typography, logo, watermark, poster title, artist name, album title, captions, subtitles, blurry faces"
     return {
@@ -8702,11 +9154,19 @@ class AceJamAlbumDirector:
         prompt = user_prompt
         last_issues: list[str] = []
         rejected_payload: dict[str, Any] = {}
+        structured_output = _uses_structured_json_schema(schema_name)
         for repair_attempt in range(0, max_repairs + 1):
             try:
                 payload = self._call(agent_name, prompt, schema_name, max_retries=json_max_retries)
             except AceJamAgentError as exc:
-                last_issues = [f"block_parse_failed:{_monitor_preview(exc, 260)}"]
+                last_issues = [
+                    (
+                        "structured_json_failed:"
+                        if structured_output
+                        else "block_parse_failed:"
+                    )
+                    + _monitor_preview(exc, 260)
+                ]
                 if repair_attempt >= max_repairs:
                     break
                 next_attempt = repair_attempt + 1
@@ -8728,18 +9188,32 @@ class AceJamAlbumDirector:
                         "rejected_payload_preview": "",
                     },
                 )
-                prompt = (
-                    "BLOCK REPAIR REQUIRED.\n"
-                    "Your previous response was not valid delimiter-block output.\n"
-                    f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(last_issues, ensure_ascii=False)}\n\n"
-                    "EXPECTED_BLOCK_SHAPE:\n"
-                    f"{_agent_block_template(schema_name)}\n\n"
-                    f"{repair_context.strip()}\n\n"
-                    "Do not include thoughts, refusal text, markdown, analysis, JSON, or any text outside the blocks. "
-                    "Return one corrected delimiter-block response only.\n\n"
-                    "ORIGINAL_TASK:\n"
-                    f"{user_prompt}"
-                )
+                if structured_output:
+                    prompt = (
+                        "STRUCTURED JSON REPAIR REQUIRED.\n"
+                        "Your previous response was not valid structured JSON for this one task.\n"
+                        f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(last_issues, ensure_ascii=False)}\n\n"
+                        "EXPECTED_JSON_SHAPE:\n"
+                        f"{_structured_json_template(schema_name)}\n\n"
+                        f"{repair_context.strip()}\n\n"
+                        "Do not include thoughts, refusal text, markdown, analysis, delimiter blocks, or any text outside the JSON object. "
+                        "Return one corrected strict JSON object only.\n\n"
+                        "ORIGINAL_TASK:\n"
+                        f"{user_prompt}"
+                    )
+                else:
+                    prompt = (
+                        "BLOCK REPAIR REQUIRED.\n"
+                        "Your previous response was not valid delimiter-block output.\n"
+                        f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(last_issues, ensure_ascii=False)}\n\n"
+                        "EXPECTED_BLOCK_SHAPE:\n"
+                        f"{_agent_block_template(schema_name)}\n\n"
+                        f"{repair_context.strip()}\n\n"
+                        "Do not include thoughts, refusal text, markdown, analysis, JSON, or any text outside the blocks. "
+                        "Return one corrected delimiter-block response only.\n\n"
+                        "ORIGINAL_TASK:\n"
+                        f"{user_prompt}"
+                    )
                 continue
             issues = sorted(set(str(issue) for issue in (validator(payload) or []) if str(issue)))
             if not issues:
@@ -8767,18 +9241,32 @@ class AceJamAlbumDirector:
                     "rejected_payload_preview": _monitor_preview(_compact_json(payload), 700),
                 },
             )
-            prompt = (
-                "SEMANTIC REPAIR REQUIRED.\n"
-                "Your previous delimiter-block response parsed correctly but failed AceJAM's content validator.\n"
-                f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(issues, ensure_ascii=False)}\n\n"
-                "EXPECTED_BLOCK_SHAPE:\n"
-                f"{_agent_block_template(schema_name)}\n\n"
-                f"{repair_context.strip()}\n\n"
-                "Do not include previous invalid sections/lines. Do not copy rejected content. "
-                "Return corrected delimiter blocks only, no JSON, no prose, no markdown, no extra blocks.\n\n"
-                "ORIGINAL_TASK:\n"
-                f"{user_prompt}"
-            )
+            if structured_output:
+                prompt = (
+                    "SEMANTIC JSON REPAIR REQUIRED.\n"
+                    "Your previous JSON response parsed correctly but failed AceJAM's content validator.\n"
+                    f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(issues, ensure_ascii=False)}\n\n"
+                    "EXPECTED_JSON_SHAPE:\n"
+                    f"{_structured_json_template(schema_name)}\n\n"
+                    f"{repair_context.strip()}\n\n"
+                    "Do not include previous invalid sections/lines. Do not copy rejected content. "
+                    "Return corrected strict JSON only, no delimiter blocks, no prose, no markdown, no extra keys.\n\n"
+                    "ORIGINAL_TASK:\n"
+                    f"{user_prompt}"
+                )
+            else:
+                prompt = (
+                    "SEMANTIC REPAIR REQUIRED.\n"
+                    "Your previous delimiter-block response parsed correctly but failed AceJAM's content validator.\n"
+                    f"VALIDATOR_ISSUES_EXACT:\n{json.dumps(issues, ensure_ascii=False)}\n\n"
+                    "EXPECTED_BLOCK_SHAPE:\n"
+                    f"{_agent_block_template(schema_name)}\n\n"
+                    f"{repair_context.strip()}\n\n"
+                    "Do not include previous invalid sections/lines. Do not copy rejected content. "
+                    "Return corrected delimiter blocks only, no JSON, no prose, no markdown, no extra blocks.\n\n"
+                    "ORIGINAL_TASK:\n"
+                    f"{user_prompt}"
+                )
         _append_album_debug_jsonl(
             self.opts,
             "04_agent_responses.jsonl",
@@ -9006,6 +9494,99 @@ class AceJamAlbumDirector:
             f"CURRENT_TRACK_STATE:\n{_compact_json(current_payload)}\n"
         )
 
+    def _compact_lyrics_part_prompt(
+        self,
+        *,
+        index: int,
+        album_bible: dict[str, Any],
+        current: dict[str, Any],
+        group: list[str],
+        forbidden_sections: list[str],
+        hook_payload: dict[str, Any],
+        part_index: int,
+        requested_duration: float,
+        lyric_plan: dict[str, Any],
+        part_section_minimums: dict[str, int],
+        part_target_words: int,
+        part_min_lines: int,
+        part_budget: int,
+        part_hard_budget: int,
+        safe_lyrics_budget: int,
+        repair_note: str = "",
+    ) -> str:
+        """Small, section-focused lyric prompt for quality-first albums.
+
+        The old prompt repeated the full album bible, full track state, full
+        craft contract and delimiter example for every single section. Local
+        models would hit context clutter and then fail on schema shape. This
+        prompt gives the lyric agent only the accepted decisions it needs for
+        the current section draft.
+        """
+        intake = album_bible.get("intake") if isinstance(album_bible, dict) else {}
+        album_summary = _clip_text(
+            (intake or {}).get("one_sentence_concept")
+            or (album_bible or {}).get("concept")
+            or self.concept,
+            320,
+        )
+        locked = self._locked_track_slot(index)
+        required_phrases = []
+        has_hook_section = any(re.search(r"\b(?:hook|chorus|refrain)\b", tag, re.I) for tag in group)
+        include_locked_phrases = part_index == 0 or has_hook_section
+        phrase_sources: list[Any] = []
+        if include_locked_phrases:
+            phrase_sources.extend([locked.get("required_phrases"), current.get("required_phrases")])
+        if has_hook_section:
+            phrase_sources.append(hook_payload.get("hook_lines"))
+        for source in phrase_sources:
+            if isinstance(source, list):
+                required_phrases.extend(str(item).strip() for item in source if str(item).strip())
+            elif isinstance(source, str) and source.strip():
+                required_phrases.extend(line.strip().strip('"') for line in source.splitlines() if line.strip())
+        required_phrases = list(dict.fromkeys(required_phrases))[:8]
+        previous_tail = "\n".join(str(line) for line in (current.get("lyrics_lines") or [])[-14:])
+        caption = current.get("caption") or current.get("tags") or current.get("caption_tags") or ""
+        track_context = {
+            "track_number": index + 1,
+            "track_count": self.num_tracks,
+            "title": current.get("title") or locked.get("title") or locked.get("locked_title") or f"Track {index + 1}",
+            "language": self.language,
+            "genre": self.opts.get("album_agent_genre_prompt") or self.opts.get("genre_prompt") or current.get("genre") or "",
+            "style": _clip_text(current.get("style") or current.get("genre_profile") or "", 180),
+            "vibe": _clip_text(current.get("vibe") or current.get("mood") or "", 160),
+            "narrative": _clip_text(current.get("narrative") or current.get("description") or "", 260),
+            "caption_sound_dna": _clip_text(caption, 420),
+            "duration": requested_duration,
+            "density": lyric_plan.get("density"),
+        }
+        constraints = {
+            "only_allowed_section_tags": group,
+            "forbidden_section_tags_already_written": forbidden_sections,
+            "section_line_minimums": part_section_minimums,
+            "part_index_required": part_index + 1,
+            "part_target_words_approx": part_target_words,
+            "part_min_vocal_lines_approx": part_min_lines,
+            "part_target_chars_max": part_budget,
+            "part_hard_chars_max": part_hard_budget,
+            "whole_song_safe_lyrics_chars_max": safe_lyrics_budget,
+        }
+        return (
+            f"ALBUM_CONCEPT_SUMMARY:\n{album_summary}\n\n"
+            f"TRACK_CONTEXT_JSON:\n{json.dumps(track_context, ensure_ascii=False)}\n"
+            f"ACCEPTED_PREVIOUS_SECTIONS:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
+            f"ACCEPTED_PREVIOUS_LYRICS_TAIL:\n{_clip_text(previous_tail, 900)}\n"
+            f"REQUIRED_OR_LOCKED_PHRASES_TO_USE_WHEN_NATURAL:\n{json.dumps(required_phrases, ensure_ascii=False)}\n"
+            f"CURRENT_SECTION_CONSTRAINTS_JSON:\n{json.dumps(constraints, ensure_ascii=False)}\n"
+            f"{repair_note}"
+            "TASK:\n"
+            "Write only this one section group's lyrics_lines. Keep sections exactly equal to only_allowed_section_tags, in order. "
+            "Put each section tag once in lyrics_lines, then fresh performable lyric lines for that tag. "
+            "Do not include earlier sections, caption, BPM, key, metadata, explanations, markdown, escaped newlines, or producer notes. "
+            "Use concrete scene/action, clean breath length, and title-connected hook lines when the allowed section is a hook/chorus/refrain. "
+            "For rap sections, write short bars with internal rhyme and forward motion; for sung sections, keep vowel-friendly lines. "
+            "Respect the target char budget."
+        )
+
     def _generate_tags(
         self,
         index: int,
@@ -9030,6 +9611,7 @@ class AceJamAlbumDirector:
             "\nPRODUCER_GRADE_SONIC_CONTRACT:\n"
             f"{json.dumps(producer_contract, ensure_ascii=False)}\n"
             "tag_list must cover every required dimension with concrete sound traits; avoid generic-only tags like polished modern mix by itself.\n"
+            "If USER_GENRE_PROMPT, MOOD_VIBE, VOCAL_TYPE, or AUDIENCE_PLATFORM are blank, infer the missing values from CURRENT_TRACK_STATE.style, vibe, description, and narrative. Do not ask for clarification.\n"
         )
         rap_note = ""
         if genre_contract.get("family") == "rap":
@@ -9220,7 +9802,8 @@ class AceJamAlbumDirector:
         lyric_lines: list[str] = []
         current["lyrics_lines"] = []
         current["lyrics"] = ""
-        if _truthy(self.opts.get("quality_first_task_graph"), ACEJAM_QUALITY_FIRST_TASK_GRAPH):
+        quality_first = _truthy(self.opts.get("quality_first_task_graph"), ACEJAM_QUALITY_FIRST_TASK_GRAPH)
+        if quality_first:
             groups = [[tag] for tag in section_tags if str(tag).strip()]
         else:
             groups = _director_section_groups(section_tags)
@@ -9287,41 +9870,61 @@ class AceJamAlbumDirector:
                 ACE_STEP_LYRICS_CHAR_LIMIT - 120,
                 max(part_budget + 900, int(part_budget * 1.65)),
             )
-            lyric_prompt = (
-                self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
-                + repair_note
-                + f"\nWHOLE_SONG_LYRIC_LENGTH_PLAN:\n{json.dumps({'duration': requested_duration, 'density': lyric_plan.get('density'), 'target_words': target_words, 'min_words': min_words, 'target_lines': target_lines, 'min_lines': min_lines, 'max_lyrics_chars': lyric_plan.get('max_lyrics_chars') or ACE_STEP_LYRICS_CHAR_LIMIT}, ensure_ascii=False)}\n"
-                + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
-                + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
-                + f"BARS_PER_SECTION_FLOOR:\n{json.dumps(lyric_plan.get('bars_per_section') or {}, ensure_ascii=False)}\n"
-                + f"RAP_FULL_SONG_RULE:\n{json.dumps({'rule': lyric_plan.get('rap_full_song_rule') or '', 'min_rap_verses_full_song': lyric_plan.get('min_rap_verses_full_song'), 'alternate_min_bars_if_two_rap_verses': lyric_plan.get('alternate_min_bars_if_two_rap_verses')}, ensure_ascii=False)}\n"
-                + f"\nONLY_ALLOWED_SECTION_TAGS:\n{json.dumps(group, ensure_ascii=False)}\n"
-                + f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
-                + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
-                + f"PART_INDEX_REQUIRED: {part_index + 1}\n"
-                + f"PART_TARGET_WORDS_APPROX: {part_target_words}\n"
-                + f"PART_MIN_VOCAL_LINES_APPROX: {part_min_lines}\n"
-                + f"PART_TARGET_CHARS_MAX: {part_budget}\n"
-                + f"PART_HARD_CHARS_MAX: {part_hard_budget}\n"
-                + f"WHOLE_SONG_SAFE_LYRICS_TARGET_CHARS_MAX: {safe_lyrics_budget}\n"
-                + "Write lyrics_lines only. sections must equal ONLY_ALLOWED_SECTION_TAGS exactly; do not add any other section tag. "
-                "Each allowed section tag must appear once in lyrics_lines, in the same order. "
-                "Never write a forbidden previous section. Never copy earlier sections. "
-                "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
-                "RAP VERSE FLOOR: full rap songs need 2 rap verses of at least 16 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
-                "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
-                "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
-                "Every verse moves the story forward — new scene, new POV, time jump, escalation, or revelation. A verse that just restates the chorus is dead weight. "
-                "Every hook simplifies into a memorable emotional promise that passes the hum-test (a stranger should grasp the song's thesis from chorus alone). "
-                "For rap or hip-hop, pack 8-15 syllables per bar (push to ~20 only on emotional spikes); pocket beats acrobatics; triplets only at high-tension moments. "
-                "Ad-libs in (parens) on the same line are punctuation, not decoration — use them to mark payoff lines, not every 4 bars. "
-                "For pop, R&B, rock, country, soul, latin, afro, dancehall, or sung tracks, keep vowel-friendly singable line lengths and title-connected hooks. "
-                "For rap or hip-hop, never write stage directions like Instrumental break, orchestra swells, strings fade, taiko drums hit, or production notes as lyrics. "
-                "For [Break] or [Instrumental Break], write the allowed section tag and one short rap ad-lib or crowd-response line only. "
-                "ANTI-PATTERN GUARD: reject your own draft and rewrite if it contains any of these cliché phrases: neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes of, we rise, let it burn, chasing the night, broken heart, rising from the ashes, stars aligned, fade away, into the void, burning bright, frozen in time. Reject telling-not-showing labels ('I feel sad', 'my heart is broken'), generic POV ('we all', 'the world', 'everyone'), and explanation lines ('in other words', 'what I mean is'). "
-                "Do not include BPM, key, caption, explanation, producer names, metadata, markdown, or escaped newlines.\n"
-                + f"OUTPUT_BLOCKS:\n{_agent_block_template(f'lyrics_part_{part_index + 1}_payload')}\n"
-            )
+            if quality_first:
+                lyric_prompt = self._compact_lyrics_part_prompt(
+                    index=index,
+                    album_bible=album_bible,
+                    current=current,
+                    group=group,
+                    forbidden_sections=forbidden_sections,
+                    hook_payload=hook_payload,
+                    part_index=part_index,
+                    requested_duration=requested_duration,
+                    lyric_plan=lyric_plan,
+                    part_section_minimums=part_section_minimums,
+                    part_target_words=part_target_words,
+                    part_min_lines=part_min_lines,
+                    part_budget=part_budget,
+                    part_hard_budget=part_hard_budget,
+                    safe_lyrics_budget=safe_lyrics_budget,
+                    repair_note=repair_note,
+                )
+            else:
+                lyric_prompt = (
+                    self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
+                    + repair_note
+                    + f"\nWHOLE_SONG_LYRIC_LENGTH_PLAN:\n{json.dumps({'duration': requested_duration, 'density': lyric_plan.get('density'), 'target_words': target_words, 'min_words': min_words, 'target_lines': target_lines, 'min_lines': min_lines, 'max_lyrics_chars': lyric_plan.get('max_lyrics_chars') or ACE_STEP_LYRICS_CHAR_LIMIT}, ensure_ascii=False)}\n"
+                    + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
+                    + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
+                    + f"BARS_PER_SECTION_FLOOR:\n{json.dumps(lyric_plan.get('bars_per_section') or {}, ensure_ascii=False)}\n"
+                    + f"RAP_FULL_SONG_RULE:\n{json.dumps({'rule': lyric_plan.get('rap_full_song_rule') or '', 'min_rap_verses_full_song': lyric_plan.get('min_rap_verses_full_song'), 'alternate_min_bars_if_two_rap_verses': lyric_plan.get('alternate_min_bars_if_two_rap_verses')}, ensure_ascii=False)}\n"
+                    + f"\nONLY_ALLOWED_SECTION_TAGS:\n{json.dumps(group, ensure_ascii=False)}\n"
+                    + f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
+                    + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
+                    + f"PART_INDEX_REQUIRED: {part_index + 1}\n"
+                    + f"PART_TARGET_WORDS_APPROX: {part_target_words}\n"
+                    + f"PART_MIN_VOCAL_LINES_APPROX: {part_min_lines}\n"
+                    + f"PART_TARGET_CHARS_MAX: {part_budget}\n"
+                    + f"PART_HARD_CHARS_MAX: {part_hard_budget}\n"
+                    + f"WHOLE_SONG_SAFE_LYRICS_TARGET_CHARS_MAX: {safe_lyrics_budget}\n"
+                    + "Write lyrics_lines only. sections must equal ONLY_ALLOWED_SECTION_TAGS exactly; do not add any other section tag. "
+                    "Each allowed section tag must appear once in lyrics_lines, in the same order. "
+                    "Never write a forbidden previous section. Never copy earlier sections. "
+                    "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; verses must be long enough to carry a full vocal track. "
+                    "RAP VERSE FLOOR: full rap songs need 2 rap verses of at least 16 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
+                    "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
+                    "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
+                    "Every verse moves the story forward — new scene, new POV, time jump, escalation, or revelation. A verse that just restates the chorus is dead weight. "
+                    "Every hook simplifies into a memorable emotional promise that passes the hum-test (a stranger should grasp the song's thesis from chorus alone). "
+                    "For rap or hip-hop, pack 8-15 syllables per bar (push to ~20 only on emotional spikes); pocket beats acrobatics; triplets only at high-tension moments. "
+                    "Ad-libs in (parens) on the same line are punctuation, not decoration — use them to mark payoff lines, not every 4 bars. "
+                    "For pop, R&B, rock, country, soul, latin, afro, dancehall, or sung tracks, keep vowel-friendly singable line lengths and title-connected hooks. "
+                    "For rap or hip-hop, never write stage directions like Instrumental break, orchestra swells, strings fade, taiko drums hit, or production notes as lyrics. "
+                    "For [Break] or [Instrumental Break], write the allowed section tag and one short rap ad-lib or crowd-response line only. "
+                    "ANTI-PATTERN GUARD: reject your own draft and rewrite if it contains any of these cliché phrases: neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes of, we rise, let it burn, chasing the night, broken heart, rising from the ashes, stars aligned, fade away, into the void, burning bright, frozen in time. Reject telling-not-showing labels ('I feel sad', 'my heart is broken'), generic POV ('we all', 'the world', 'everyone'), and explanation lines ('in other words', 'what I mean is'). "
+                    "Do not include BPM, key, caption, explanation, producer names, metadata, markdown, or escaped newlines.\n"
+                    + f"OUTPUT_BLOCKS:\n{_agent_block_template(f'lyrics_part_{part_index + 1}_payload')}\n"
+                )
 
             def _part_validator(part_payload: dict[str, Any], *, expected_group: list[str] = group, previous_sections: list[str] = list(forbidden_sections), expected_part: int = part_index + 1) -> list[str]:
                 issues = _validate_lyrics_part_payload(
@@ -9742,7 +10345,8 @@ class AceJamAlbumDirector:
             "Create the family-level visual direction for cover art and video package. "
             "The album_art_prompt must be a square album-cover image prompt. "
             "The video_prompt must be a short campaign/visualizer prompt. "
-            "Avoid readable text, logos, labels, album title typography, artist names and watermarks.\n"
+            "Positive prompt fields must describe only the visible scene, lighting, palette, composition, lens, texture, and motion. "
+            "Put every typography/logo/watermark exclusion only in *_negative_prompt and no_text_policy.\n"
             f"OUTPUT_BLOCKS:\n{_agent_block_template('visual_prompt_payload')}\n"
         )
         self.task_graph.start("album_visual_bible", payload=album_bible)
@@ -9754,7 +10358,7 @@ class AceJamAlbumDirector:
                 lambda item: _validate_visual_prompt_payload(item, album_level=True),
                 repair_context=(
                     "Fill album_art_prompt, album_art_negative_prompt, video_prompt, video_negative_prompt, "
-                    "visual_palette, camera_motion, and no_text_policy. Do not request readable text, logos, or watermarks."
+                    "visual_palette, camera_motion, and no_text_policy. Positive prompts must not mention typography/logo/watermark exclusions; put those only in negative fields and no_text_policy."
                 ),
                 json_max_retries=1,
             )
@@ -9823,7 +10427,8 @@ class AceJamAlbumDirector:
             f"{json.dumps(prompt_context, ensure_ascii=False, indent=2)}\n\n"
             "Create track-specific single cover and video prompts that match the album visual bible. "
             "Use concrete scene details from the track, the sonic palette, and the lyrics. "
-            "No readable text, logos, subtitles, artist names, album title typography, or watermarks.\n"
+            "Positive prompt fields must describe only what the camera sees and how it moves. "
+            "Put typography/logo/watermark/subtitle exclusions only in *_negative_prompt and no_text_policy.\n"
             f"OUTPUT_BLOCKS:\n{_agent_block_template('visual_prompt_payload')}\n"
         )
         self.task_graph.start("single_art_prompt", track_number=index + 1, payload=prompt_context)
@@ -9836,7 +10441,7 @@ class AceJamAlbumDirector:
                 lambda item: _validate_visual_prompt_payload(item, album_level=False),
                 repair_context=(
                     "Fill single_art_prompt, single_art_negative_prompt, video_prompt, video_negative_prompt, "
-                    "visual_palette, camera_motion, and no_text_policy. Do not request readable text, logos, or watermarks."
+                    "visual_palette, camera_motion, and no_text_policy. Positive prompts must not mention typography/logo/watermark/subtitle exclusions; put those only in negative fields and no_text_policy."
                 ),
                 json_max_retries=1,
             )
@@ -10641,6 +11246,24 @@ class AceJamAlbumDirector:
         ]:
             schema_name = agent_name.lower().replace(" ", "_") + "_payload"
             self.task_graph.start("metadata", track_number=index + 1, payload={"agent": agent_name, "current": current})
+            if agent_name == "Duration Agent":
+                payload = {
+                    "duration": parse_duration_seconds(
+                        slot.get("duration") or current.get("duration") or self.track_duration,
+                        self.track_duration,
+                    )
+                }
+                current.update(payload)
+                self.task_graph.pass_task("metadata", track_number=index + 1, payload={"agent": agent_name, "payload": payload})
+                self.logs.append(
+                    f"Metadata direct: track {index + 1} Duration Agent used scaffold/user duration {payload['duration']}s."
+                )
+                _append_album_debug_jsonl(
+                    self.opts,
+                    "05_track_state.jsonl",
+                    {"track_number": index + 1, "stage": agent_name, "state": current, "direct_metadata": True},
+                )
+                continue
             try:
                 payload = self._call_until_valid(
                     agent_name,

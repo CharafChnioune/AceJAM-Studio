@@ -130,20 +130,36 @@ Lyrics:
         return "\n".join(lines)
 
     def _valid_lyrics_part_payload(self, user_prompt: str, lines_per_section: int = 8):
+        compact_constraints = {}
+        compact_marker = "CURRENT_SECTION_CONSTRAINTS_JSON:\n"
+        compact_start = user_prompt.find(compact_marker)
+        if compact_start >= 0:
+            try:
+                compact_constraints, _end = json.JSONDecoder().raw_decode(
+                    user_prompt[compact_start + len(compact_marker):].lstrip()
+                )
+            except Exception:
+                compact_constraints = {}
         section_match = re.search(r"WRITE_THESE_SECTIONS_ONLY:\n(\[[\s\S]*?\])\n\nPART_TARGETS", user_prompt)
         if not section_match:
             section_match = re.search(r"WRITE_ONLY_THESE_SECTION_TAGS_EXACTLY:\n(\[[\s\S]*?\])\nHOOK_LINES", user_prompt)
         if not section_match:
             section_match = re.search(r"ONLY_ALLOWED_SECTION_TAGS:\n(\[[\s\S]*?\])\nFORBIDDEN_SECTION_TAGS", user_prompt)
-        sections = json.loads(section_match.group(1)) if section_match else ["[Verse]"]
+        sections = compact_constraints.get("only_allowed_section_tags") or (json.loads(section_match.group(1)) if section_match else ["[Verse]"])
         min_lines_match = re.search(r"PART_MIN_VOCAL_LINES_APPROX:\s*(\d+)", user_prompt)
-        if min_lines_match:
+        if compact_constraints.get("part_min_vocal_lines_approx"):
+            required_part_lines = int(compact_constraints.get("part_min_vocal_lines_approx") or 0)
+            lines_per_section = max(lines_per_section, int((required_part_lines + max(1, len(sections)) - 1) / max(1, len(sections))))
+        elif min_lines_match:
             required_part_lines = int(min_lines_match.group(1))
             lines_per_section = max(lines_per_section, int((required_part_lines + max(1, len(sections)) - 1) / max(1, len(sections))))
         part_match = re.search(r"PART_INDEX_REQUIRED:\s*(\d+)", user_prompt)
-        part_index = int(part_match.group(1)) if part_match else 1
+        part_index = int(compact_constraints.get("part_index_required") or (int(part_match.group(1)) if part_match else 1))
         phrase_match = re.search(r"REQUIRED_PHRASES_FOR_THIS_PART:\n(\[[\s\S]*?\])\n\nPREVIOUS_LYRIC_PARTS_CONTEXT", user_prompt)
         phrases = json.loads(phrase_match.group(1)) if phrase_match else []
+        if not phrases and "REQUIRED_OR_LOCKED_PHRASES_TO_USE_WHEN_NATURAL" in user_prompt:
+            phrase_compact_match = re.search(r"REQUIRED_OR_LOCKED_PHRASES_TO_USE_WHEN_NATURAL:\n(\[[\s\S]*?\])\nCURRENT_SECTION_CONSTRAINTS_JSON", user_prompt)
+            phrases = json.loads(phrase_compact_match.group(1)) if phrase_compact_match else []
         hook_match = re.search(r"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n(\[[\s\S]*?\])\n", user_prompt)
         hook_lines = json.loads(hook_match.group(1)) if hook_match else []
         lines = []
@@ -336,11 +352,11 @@ Lyrics:
             }
         if agent_name in {"Album Visual Director Agent", "Track Visual Prompt Agent"}:
             return {
-                "album_art_prompt": "Premium square album cover showing a safe city market relighting after a blackout, brass reflections, warm windows, no text",
+                "album_art_prompt": "Premium square album cover showing a safe city market relighting after a blackout, brass reflections, warm windows",
                 "album_art_negative_prompt": "readable text, logo, watermark, typography, subtitles",
-                "single_art_prompt": "Premium square single cover with neighbors opening market shutters under warm street lights, cinematic realism, no text",
+                "single_art_prompt": "Premium square single cover with neighbors opening market shutters under warm street lights, cinematic realism",
                 "single_art_negative_prompt": "readable text, logo, watermark, typography, artist name",
-                "video_prompt": "Short music video shot moving through reopened market stalls at dawn with warm practical lights and calm crowd energy, no subtitles",
+                "video_prompt": "Short music video shot moving through reopened market stalls at dawn with warm practical lights and calm crowd energy",
                 "video_negative_prompt": "subtitles, captions, readable text, logos, watermark",
                 "visual_palette": "warm amber, brass gold, deep blue shadows",
                 "camera_motion": "slow dolly-in with handheld micro-movement",
@@ -467,12 +483,242 @@ Lyrics:
         self.assertIsInstance(prompt, str)
         # Per-agent task scope present
         self.assertIn("ACE-Step album planning agent", prompt)
-        # Extra system (album knowledge block) appended
-        self.assertIn("EXTRA_KNOWLEDGE_BLOCK_PLACEHOLDER", prompt)
+        # Structured micro-tasks use compact task-specific knowledge instead
+        # of the full album reference block so each CrewAI call stays focused.
+        self.assertIn("COMPACT HOOK CONTRACT", prompt)
+        self.assertNotIn("EXTRA_KNOWLEDGE_BLOCK_PLACEHOLDER", prompt)
         # Thinking directive surfaces (planner_thinking=False -> disabled)
         self.assertIn("Planner thinking is disabled", prompt)
         # Schema-specific JSON instruction tail
         self.assertIn("hook_payload", prompt)
+
+    def test_crewai_structured_system_prompt_does_not_mix_delimiter_contract(self):
+        prompt = album_crew_module._agent_full_system_prompt(
+            agent_name="Track Lyrics Agent Part 1",
+            schema_name="lyrics_part_1_payload",
+            extra_system="",
+            debug_options={"planner_thinking": False},
+        )
+
+        self.assertIn("strict JSON object", prompt)
+        self.assertIn("lyrics_part_1_payload", prompt)
+        self.assertNotIn("DELIMITER_RESPONSE_CONTRACT", prompt)
+        self.assertNotIn("Return only delimiter blocks", prompt)
+        self.assertNotIn("OUTPUT_BLOCKS", prompt)
+
+    def test_crewai_lyrics_part_system_prompt_uses_compact_reference(self):
+        prompt = album_crew_module._agent_full_system_prompt(
+            agent_name="Track Lyrics Agent Part 1",
+            schema_name="lyrics_part_1_payload",
+            extra_system="ACE-Step Multilingual Hit Prompt Kit\n" + ("huge reference\n" * 100),
+            debug_options={"planner_thinking": False},
+        )
+
+        self.assertIn("COMPACT ACE-STEP LYRIC CONTRACT", prompt)
+        self.assertNotIn("ACE-Step Multilingual Hit Prompt Kit", prompt)
+        self.assertLess(len(prompt), 3500)
+
+    def test_task_output_json_dict_uses_crewai_structured_fields_only(self):
+        output = SimpleNamespace(json_dict='{"part_index": 1, "sections": ["[Intro]"], "lyrics_lines": ["[Intro]", "Line"]}')
+
+        with self.assertRaises(ValueError):
+            album_crew_module._task_output_json_dict(output)
+
+    def test_structured_task_output_falls_back_to_crewai_raw_json(self):
+        output = SimpleNamespace(
+            json_dict={"part_index": 0, "sections": [], "lyrics_lines": []},
+            raw='{"part_index": 1, "sections": ["[Intro]"], "lyrics_lines": ["[Intro]", "Line one", "Line two"]}',
+        )
+
+        parsed, source = album_crew_module._parse_structured_task_output("lyrics_part_1_payload", output)
+
+        self.assertEqual(source, "raw_json")
+        self.assertEqual(parsed["part_index"], 1)
+        self.assertEqual(parsed["sections"], ["[Intro]"])
+
+    def test_structured_task_output_accepts_plain_raw_json_string(self):
+        parsed, source = album_crew_module._parse_structured_task_output(
+            "lyrics_part_1_payload",
+            '{"part_index": 1, "sections": ["[Intro]"], "lyrics_lines": ["[Intro]", "Line one", "Line two"]}',
+        )
+
+        self.assertEqual(source, "raw_json")
+        self.assertEqual(parsed["sections"], ["[Intro]"])
+
+    def test_structured_task_output_accepts_direct_pydantic_object(self):
+        output = album_crew_module.LyricsPartPayloadModel(
+            part_index=1,
+            sections=["[Intro]"],
+            lyrics_lines=["[Intro]", "Line one", "Line two"],
+        )
+
+        parsed, source = album_crew_module._parse_structured_task_output("lyrics_part_1_payload", output)
+
+        self.assertEqual(source, "json_dict")
+        self.assertEqual(parsed["lyrics_lines"], ["[Intro]", "Line one", "Line two"])
+
+    def test_structured_task_output_extracts_crewai_final_answer_json(self):
+        parsed, source = album_crew_module._parse_structured_task_output(
+            "lyrics_part_1_payload",
+            'Final Answer:\n{"part_index": 1, "sections": ["[Intro]"], "lyrics_lines": ["[Intro]", "Line one", "Line two"]}',
+        )
+
+        self.assertEqual(source, "raw_json")
+        self.assertEqual(parsed["part_index"], 1)
+
+    def test_structured_guardrail_accepts_crewai_raw_json_when_json_dict_defaults_empty(self):
+        guardrail = album_crew_module._crewai_micro_block_guardrail("tag_agent_payload")
+        output = SimpleNamespace(
+            json_dict={"tag_list": [], "tags": "", "caption_dimensions_covered": []},
+            raw=json.dumps(
+                {
+                    "tag_list": ["synth-pop", "tight drums", "deep low-end bass"],
+                    "tags": "synth-pop, tight drums, deep low-end bass",
+                    "caption_dimensions_covered": ["primary_genre", "drum_groove", "low_end_bass"],
+                }
+            ),
+        )
+
+        ok, _message = guardrail(output)
+
+        self.assertTrue(ok)
+
+    def test_tag_structured_payload_derives_tags_and_sonic_anchors(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "tag_agent_payload",
+            {
+                "tag_list": ["West Coast hip-hop", "deep sine-wave bass"],
+                "tags": "",
+                "caption_dimensions_covered": [],
+            },
+        )
+
+        combined = ", ".join([parsed["tags"], *parsed["tag_list"]]).lower()
+        self.assertIn("west coast hip-hop", combined)
+        self.assertIn("clear rap vocal pocket", combined)
+        self.assertIn("hip-hop drums", combined)
+        self.assertIn("dynamic hook arrangement", combined)
+        self.assertIn("crisp polished studio mix", combined)
+        self.assertTrue(parsed["tags"])
+        self.assertEqual(parsed["caption_dimensions_covered"], album_crew_module.ACE_STEP_CAPTION_DIMENSIONS)
+
+    def test_tag_structured_payload_recovers_empty_model_defaults(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "tag_agent_payload",
+            {"tag_list": [], "tags": "", "caption_dimensions_covered": []},
+        )
+
+        self.assertIn("modern pop", parsed["tag_list"])
+        self.assertIn("crisp polished studio mix", parsed["tags"])
+        self.assertEqual(parsed["caption_dimensions_covered"], album_crew_module.ACE_STEP_CAPTION_DIMENSIONS)
+
+    def test_caption_structured_payload_adds_missing_sonic_anchors(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "caption_agent_payload",
+            {"caption": "indie rock, dry drums, warm vocal, dusty desert texture"},
+        )
+
+        caption = parsed["caption"].lower()
+        self.assertIn("memorable melodic motif", caption)
+        self.assertIn("deep low-end bass", caption)
+        self.assertIn("dynamic hook arrangement", caption)
+        self.assertLessEqual(len(parsed["caption"]), 512)
+
+    def test_visual_structured_payload_defaults_album_level_optional_fields(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "visual_prompt_payload",
+            {
+                "album_art_prompt": "Square cover showing a courier crossing wet midnight streets under sodium lamps",
+                "album_art_negative_prompt": "readable text, logo, watermark, typography",
+                "video_prompt": "Short visualizer tracking beside the courier through wet city reflections",
+                "video_negative_prompt": "subtitles, captions, readable text, logos, watermarks",
+                "visual_palette": "midnight blue, sodium amber, cyan reflections",
+            },
+        )
+
+        self.assertEqual(parsed["single_art_prompt"], parsed["album_art_prompt"])
+        self.assertTrue(parsed["camera_motion"])
+        self.assertIn("No readable text", parsed["no_text_policy"])
+
+    def test_structured_list_fields_accept_dict_items_by_description(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "album_intake_payload",
+            {
+                "album_title": "Market Lights",
+                "one_sentence_concept": "A compact release about a city waking up.",
+                "style_guardrails": ["warm synths"],
+                "track_roles": [{"role": "opener", "description": "A short opener with a complete arc"}],
+            },
+        )
+
+        self.assertEqual(parsed["track_roles"], ["A short opener with a complete arc"])
+
+    def test_album_intake_structured_payload_fills_missing_title(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "album_intake_payload",
+            {
+                "album_title": "",
+                "one_sentence_concept": "A midnight synth-pop single about one last cassette crossing the rain.",
+                "style_guardrails": ["specific rain textures"],
+                "track_roles": ["complete single"],
+            },
+        )
+
+        self.assertEqual(parsed["album_title"], "One Last Cassette")
+
+    def test_lyrics_part_structured_payload_does_not_add_extra_lyrics_key(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "lyrics_part_1_payload",
+            {"part_index": 1, "sections": ["[Intro]"], "lyrics_lines": ["[Intro]", "Line"]},
+        )
+
+        self.assertEqual(set(parsed), {"part_index", "sections", "lyrics_lines"})
+        album_crew_module._validate_agent_response_shape("lyrics_part_1_payload", parsed)
+
+    def test_lyrics_part_structured_payload_accepts_lyrics_alias(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "lyrics_part_1_payload",
+            {"part_index": 1, "sections": ["[Intro]"], "lyrics": "[Intro]\nLine"},
+        )
+
+        self.assertEqual(parsed["lyrics_lines"], ["[Intro]", "Line"])
+        self.assertNotIn("lyrics", parsed)
+        album_crew_module._validate_agent_response_shape("lyrics_part_1_payload", parsed)
+
+    def test_lyrics_part_structured_payload_cleans_generic_cliches_before_gate(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "lyrics_part_1_payload",
+            {
+                "part_index": 1,
+                "sections": ["[Intro]"],
+                "lyrics_lines": [
+                    "[Intro]",
+                    "Silhouettes move through neon dreams",
+                    "We rise with shattered dreams in the endless night",
+                ],
+            },
+        )
+
+        lyrics_text = "\n".join(parsed["lyrics_lines"]).lower()
+        self.assertNotIn("silhouettes", lyrics_text)
+        self.assertNotIn("neon dreams", lyrics_text)
+        self.assertNotIn("shattered dreams", lyrics_text)
+        self.assertNotIn("endless night", lyrics_text)
+        album_crew_module._validate_agent_response_shape("lyrics_part_1_payload", parsed)
+
+    def test_structured_prompt_strips_legacy_output_blocks(self):
+        legacy_prompt = (
+            "Write the section.\n"
+            "OUTPUT_BLOCKS:\n"
+            f"{album_crew_module._agent_block_template('lyrics_part_1_payload')}\n"
+        )
+
+        prompt = album_crew_module._strip_legacy_output_blocks_for_structured("lyrics_part_1_payload", legacy_prompt)
+
+        self.assertIn("OUTPUT_JSON_EXAMPLE", prompt)
+        self.assertIn('"lyrics_lines"', prompt)
+        self.assertNotIn("OUTPUT_BLOCKS", prompt)
+        self.assertNotIn("******lyrics_lines******", prompt)
 
     def test_per_agent_personas_specialise_role_goal_backstory(self):
         """CrewAI agents must get specialist personas with 2024-2026 chart-craft
@@ -632,6 +878,23 @@ Lyrics:
         )
         self.assertNotIn("caption_bare_sample_token_missing_source_genre", clean)
 
+    def test_tag_validator_allows_sound_texture_hook_identity_terms(self):
+        clean = album_crew_module._validate_tag_payload(
+            {
+                "tag_list": [
+                    "midnight synth-pop",
+                    "wet-asphalt reverb spatial texture",
+                    "juno arpeggio melody hook identity",
+                    "dynamic hook progression movement",
+                ],
+                "tags": "midnight synth-pop, wet-asphalt reverb spatial texture, juno arpeggio melody hook identity",
+                "caption_dimensions_covered": ["primary_genre", "texture_space", "melodic_identity"],
+            },
+            {"title": "Slate Street Dispatch"},
+        )
+
+        self.assertNotIn("lyric_or_story_marker_in_tags", clean)
+
     def test_performance_validator_enforces_minimum_brief_length(self):
         short = album_crew_module._validate_performance_payload({"performance_brief": "soulful"})
         self.assertTrue(any("performance_brief_too_short" in issue for issue in short))
@@ -652,6 +915,72 @@ Lyrics:
         )
         self.assertNotIn("missing_negative_control", rich)
         self.assertNotIn("missing_genre_profile", rich)
+
+    def test_visual_prompt_validator_keeps_exclusions_out_of_positive_prompts(self):
+        clean = album_crew_module._validate_visual_prompt_payload(
+            {
+                "single_art_prompt": "Premium square cover showing a rain-soaked courier under sodium streetlights with a cassette bag",
+                "single_art_negative_prompt": "readable text, logo, watermark, typography, artist name",
+                "video_prompt": "Short music-video shot tracking behind the courier through wet crosswalk reflections and bus-stop glass",
+                "video_negative_prompt": "subtitles, captions, readable text, logos, watermarks",
+                "visual_palette": "black asphalt, sodium amber, cyan reflections",
+                "camera_motion": "low handheld tracking shot with slow dolly-in",
+                "no_text_policy": "No readable text, logos, typography, labels, captions, subtitles, or watermarks.",
+            }
+        )
+        self.assertNotIn("visual_prompt_requests_text_or_logo", clean)
+
+        dirty = album_crew_module._validate_visual_prompt_payload(
+            {
+                "single_art_prompt": "Premium square cover with no text and no logo over a rain-soaked courier",
+                "single_art_negative_prompt": "readable text, logo, watermark, typography, artist name",
+                "video_prompt": "Short music-video shot with no subtitles over wet crosswalk reflections",
+                "video_negative_prompt": "subtitles, captions, readable text, logos, watermarks",
+                "visual_palette": "black asphalt, sodium amber, cyan reflections",
+                "camera_motion": "low handheld tracking shot with slow dolly-in",
+                "no_text_policy": "No readable text, logos, typography, labels, captions, subtitles, or watermarks.",
+            }
+        )
+        self.assertIn("visual_prompt_requests_text_or_logo", dirty)
+
+    def test_visual_structured_payload_moves_exclusions_out_of_positive_prompts(self):
+        parsed = album_crew_module._coerce_structured_agent_payload(
+            "visual_prompt_payload",
+            {
+                "album_art_prompt": "Square cover, rainy cassette courier, no text, no logo, cinematic sodium light",
+                "album_art_negative_prompt": "watermark",
+                "single_art_prompt": "Premium cover with no typography over wet rooftop figures",
+                "single_art_negative_prompt": "logo",
+                "video_prompt": "Slow visualizer with no subtitles, puddle ripples and warm city glow",
+                "video_negative_prompt": "jitter",
+                "visual_palette": "black asphalt, sodium amber, cyan reflections",
+                "camera_motion": "low handheld tracking shot with slow dolly-in",
+                "no_text_policy": "No readable text, logos, typography, labels, captions, subtitles, or watermarks.",
+            },
+        )
+
+        positives = "\n".join(
+            str(parsed.get(field) or "")
+            for field in ("album_art_prompt", "single_art_prompt", "video_prompt")
+        ).lower()
+        self.assertNotRegex(positives, r"\b(?:text|logo|watermark|typography|subtitles?)\b")
+        self.assertNotIn("visual_prompt_requests_text_or_logo", album_crew_module._validate_visual_prompt_payload(parsed))
+        self.assertIn("readable text", parsed["single_art_negative_prompt"])
+        self.assertIn("subtitles", parsed["video_negative_prompt"])
+
+    def test_visual_fallback_positive_prompts_do_not_contain_text_exclusions(self):
+        payload = album_crew_module._visual_prompt_fallback_payload(
+            album_bible={"album_title": "One Last Cassette", "concept": "a rainy courier run"},
+            track={"title": "Neon Rain Run", "narrative": "a courier crosses wet streets with a cassette"},
+            album_level=False,
+        )
+
+        positives = "\n".join(
+            str(payload.get(field) or "")
+            for field in ("album_art_prompt", "single_art_prompt", "video_prompt")
+        ).lower()
+        self.assertNotRegex(positives, r"\b(?:no text|no subtitles|logo|watermark|typography)\b")
+        self.assertIn("readable text", payload["single_art_negative_prompt"])
 
     def test_album_agent_engine_defaults_to_crewai_micro(self):
         # CrewAI Micro Tasks is the album-wizard default — empty/None values
@@ -713,12 +1042,13 @@ Lyrics:
         self.assertEqual(lmstudio["additional_params"]["top_k"], 44)
         self.assertEqual(lmstudio["additional_params"]["repeat_penalty"], 1.08)
 
-    def test_crewai_micro_guardrail_accepts_structured_json_and_delimiter_fallback(self):
+    def test_crewai_micro_guardrail_accepts_structured_json_not_legacy_delimiter_for_structured(self):
         guardrail = album_crew_module._crewai_micro_block_guardrail("caption_agent_payload")
-        ok, _ = guardrail(SimpleNamespace(raw="******caption******\nclear rap vocal, hard drums\n******/caption******"))
-        self.assertTrue(ok)
+        ok, message = guardrail(SimpleNamespace(raw="******caption******\nclear rap vocal, hard drums\n******/caption******"))
+        self.assertFalse(ok)
+        self.assertIn("structured_parse_failed", message)
 
-        ok, _ = guardrail(SimpleNamespace(raw='{"caption":"clear rap vocal"}'))
+        ok, _ = guardrail(SimpleNamespace(json_dict={"caption": "clear rap vocal"}))
         self.assertTrue(ok)
 
     def test_crewai_micro_engine_routes_through_micro_call(self):
@@ -848,10 +1178,10 @@ Lyrics:
         self.assertEqual(payload["style_guardrails"][0], "West Coast rap drums with cinematic low end")
         self.assertEqual(payload["track_roles"][1], "Rubble State — minimal bounce about crisis as policy")
 
-    def test_crewai_micro_guardrail_accepts_keyed_album_intake_output(self):
+    def test_crewai_micro_guardrail_rejects_keyed_album_intake_for_structured_tasks(self):
         guardrail = album_crew_module._crewai_micro_block_guardrail("album_intake_payload")
 
-        ok, _ = guardrail(SimpleNamespace(raw=(
+        ok, message = guardrail(SimpleNamespace(raw=(
             "Album Title: Concrete Ledger\n"
             "One Sentence Concept: A political rap record with system-level stakes.\n"
             "Style Guardrails:\n"
@@ -861,7 +1191,8 @@ Lyrics:
             "- Track 1 opener\n"
         )))
 
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertIn("structured_parse_failed", message)
 
     def test_agent_block_parser_reports_missing_and_extra_blocks(self):
         with self.assertRaisesRegex(ValueError, "missing_block:one_sentence_concept,style_guardrails,track_roles"):
@@ -936,13 +1267,13 @@ Lyrics:
             "BPM Agent",
             "Key Agent",
             "Time Signature Agent",
-            "Duration Agent",
             "Section Map Agent",
             "Hook Agent",
             "Track Lyrics Agent Part 1",
         ]
         positions = [calls.index(agent) for agent in expected]
         self.assertEqual(positions, sorted(positions))
+        self.assertIn("Duration Agent used scaffold/user duration", "\n".join(result.get("logs") or []))
 
     def test_director_lyrics_prompts_do_not_leak_producer_or_source_excerpt(self):
         lyric_prompts = []
@@ -1000,9 +1331,12 @@ Lyrics:
         self.assertTrue(result["success"])
         self.assertGreaterEqual(len(lyric_prompts), 1)
         first_prompt = lyric_prompts[0]
-        self.assertIn("ONLY_ALLOWED_SECTION_TAGS", first_prompt)
-        self.assertIn("FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN", first_prompt)
-        self.assertIn("sections must equal ONLY_ALLOWED_SECTION_TAGS exactly", first_prompt)
+        self.assertIn("CURRENT_SECTION_CONSTRAINTS_JSON", first_prompt)
+        self.assertIn("only_allowed_section_tags", first_prompt)
+        self.assertIn("forbidden_section_tags_already_written", first_prompt)
+        self.assertLess(len(first_prompt), 5000)
+        self.assertNotIn("ALBUM_BIBLE_COMPACT", first_prompt)
+        self.assertNotIn("LYRICAL_CRAFT_CONTRACT", first_prompt)
         self.assertNotIn("PREVIOUS_LYRIC_PARTS_CONTEXT", first_prompt)
         self.assertNotIn('"section_map"', first_prompt)
 
@@ -1046,6 +1380,7 @@ Lyrics:
 
     def test_director_retries_lyrics_part_after_json_parse_failure(self):
         part_one_calls = 0
+        part_one_prompts = []
 
         def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
             nonlocal part_one_calls
@@ -1053,6 +1388,7 @@ Lyrics:
                 logs.append(f"AceJAM Agent call: {agent_name} attempt 1 via patched test.")
             if agent_name == "Track Lyrics Agent Part 1":
                 part_one_calls += 1
+                part_one_prompts.append(user_prompt)
                 if part_one_calls <= 2:
                     raise album_crew_module.AceJamAgentError(
                         "Track Lyrics Agent Part 1 failed to produce valid delimiter blocks after 2 attempt(s)"
@@ -1073,6 +1409,11 @@ Lyrics:
         self.assertTrue(result["success"])
         self.assertEqual(part_one_calls, 3)
         self.assertTrue(any("Agent block validation retry: Track Lyrics Agent Part 1" in line for line in result["logs"]))
+        self.assertGreaterEqual(len(part_one_prompts), 2)
+        self.assertIn("STRUCTURED JSON REPAIR REQUIRED", part_one_prompts[1])
+        self.assertIn("EXPECTED_JSON_SHAPE", part_one_prompts[1])
+        self.assertNotIn("EXPECTED_BLOCK_SHAPE", part_one_prompts[1])
+        self.assertNotIn("Return one corrected delimiter-block response only", part_one_prompts[1])
 
     def test_director_lyrics_part_refusal_fails_loudly_without_deterministic_fallback(self):
         def fake_agent_json_call(*, agent_name, user_prompt="", logs=None, **_kwargs):
@@ -3320,19 +3661,11 @@ Lyrics:
         self.assertNotIn("context_window_size", kwargs)
         self.assertEqual(llm.provider, "ollama")
         self.assertEqual(llm.model, "qwen3.6:27b-instruct-general")
-        self.assertEqual(llm.timeout, CREWAI_LLM_TIMEOUT_SECONDS)
-        self.assertEqual(llm.max_tokens, CREWAI_LLM_MAX_TOKENS)
-        options = llm.additional_params["extra_body"]["options"]
-        self.assertEqual(options["num_ctx"], CREWAI_LLM_CONTEXT_WINDOW)
-        self.assertEqual(options["num_predict"], CREWAI_LLM_NUM_PREDICT)
-        params = llm._prepare_completion_params([{"role": "user", "content": "Reply OK."}], tools=None)
-        self.assertNotIn("num_ctx", params)
-        self.assertNotIn("num_predict", params)
-        self.assertNotIn("context_window_size", params)
-        self.assertEqual(params["extra_body"]["options"]["num_ctx"], CREWAI_LLM_CONTEXT_WINDOW)
+        self.assertFalse(getattr(llm, "is_litellm", True))
+        self.assertEqual(llm.get_context_window_size(), CREWAI_LLM_CONTEXT_WINDOW)
         self.assertFalse(llm.supports_function_calling())
 
-    def test_album_crew_uses_openai_compatible_lmstudio_payload(self):
+    def test_album_crew_uses_native_lmstudio_payload(self):
         kwargs = _crewai_llm_kwargs("qwen-local", "lmstudio")
         llm = _make_llm("qwen-local", "lmstudio")
 
@@ -3340,19 +3673,11 @@ Lyrics:
         self.assertNotIn("num_predict", kwargs)
         self.assertNotIn("context_window_size", kwargs)
         self.assertNotIn("additional_params", kwargs)
-        self.assertEqual(llm.provider, "openai")
+        self.assertEqual(llm.provider, "lmstudio")
         self.assertEqual(llm.model, "qwen-local")
-        self.assertTrue(str(llm.base_url).rstrip("/").endswith("/v1"))
-        self.assertEqual(llm.timeout, CREWAI_LLM_TIMEOUT_SECONDS)
-        self.assertEqual(llm.max_tokens, CREWAI_LMSTUDIO_MAX_TOKENS)
-        self.assertEqual(llm.additional_params, {})
-        params = llm._prepare_completion_params([{"role": "user", "content": "Reply OK."}], tools=None)
-        self.assertNotIn("num_ctx", params)
-        self.assertNotIn("num_predict", params)
-        self.assertNotIn("context_window_size", params)
-        self.assertNotIn("extra_body", params)
-        self.assertEqual(params["model"], "qwen-local")
-        self.assertEqual(params["max_tokens"], CREWAI_LMSTUDIO_MAX_TOKENS)
+        self.assertFalse(getattr(llm, "is_litellm", True))
+        self.assertEqual(llm.get_context_window_size(), CREWAI_LLM_CONTEXT_WINDOW)
+        self.assertFalse(llm.supports_function_calling())
 
     def test_lmstudio_crewai_kwargs_do_not_prefix_model(self):
         kwargs = _crewai_llm_kwargs("huihui-qwen-local", "lmstudio")
@@ -3363,7 +3688,7 @@ Lyrics:
         self.assertNotIn("additional_params", kwargs)
         self.assertNotIn("context_window_size", kwargs)
 
-    def test_lmstudio_crews_disable_native_json_schema(self):
+    def test_lmstudio_crews_use_crewai_output_json_schema(self):
         opts = {"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "lyric_density": "balanced"}
         bible_crew = create_album_bible_crew(
             "safe city rebuild album",
@@ -3389,8 +3714,8 @@ Lyrics:
             "lmstudio",
         )
 
-        self.assertIsNone(bible_crew.tasks[-1].output_json)
-        self.assertIsNone(track_crew.tasks[-1].output_json)
+        self.assertIs(bible_crew.tasks[-1].output_json, AlbumBiblePayloadModel)
+        self.assertIs(track_crew.tasks[-1].output_json, TrackProductionPayloadModel)
 
     def test_compact_crews_wire_verbose_callbacks_and_output_log_file(self):
         opts = {"installed_models": ["acestep-v15-turbo"], "song_model_strategy": "best_installed", "lyric_density": "balanced"}
@@ -3511,25 +3836,21 @@ Lyrics:
         else:
             self.assertNotIn(("qwen-local", "chat", CREWAI_LLM_CONTEXT_WINDOW), load_calls)
 
-    def test_lmstudio_model_crash_retry_reloads_and_retries(self):
+    def test_lmstudio_native_llm_calls_local_client_directly(self):
         calls = []
 
-        def fake_call(*args, **kwargs):
-            calls.append((args, kwargs))
-            if len(calls) == 1:
-                raise RuntimeError("Error code: 400 - model has crashed without additional information. (Exit code: null)")
-            return "OK"
+        def fake_chat(provider, model, messages, **kwargs):
+            calls.append((provider, model, messages, kwargs))
+            return {"content": "OK", "truncated": False, "done_reason": "stop"}
 
-        with patch.object(album_crew_module, "lmstudio_load_model", return_value={"success": True}) as load_model, \
-            patch.object(album_crew_module.time, "sleep"):
+        with patch.object(album_crew_module, "local_llm_chat_completion_response", side_effect=fake_chat):
             llm = _make_llm("qwen-local", "lmstudio")
-            object.__setattr__(llm, "_acejam_original_call", fake_call)
             result = llm.call([{"role": "user", "content": "Reply OK."}])
 
         self.assertTrue(_is_lmstudio_model_crash("model has crashed without additional information"))
         self.assertIn("OK", result)
-        self.assertEqual(len(calls), 2)
-        load_model.assert_called_once()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "lmstudio")
 
     def test_album_crew_uses_long_running_agent_limits(self):
         step_callback = lambda *_args, **_kwargs: None
@@ -3658,24 +3979,49 @@ Lyrics:
         self.assertIn("acejam_empty_response_fallback", fallback)
         self.assertIn("tracks", fallback)
 
-    def test_empty_llm_response_tries_no_tool_recovery_before_fallback(self):
+    def test_local_native_micro_llm_bypasses_crewai_litellm_for_ollama(self):
         calls = []
 
-        def fake_call(*args, **kwargs):
-            calls.append((args, kwargs))
-            if len(calls) <= 2:
-                return ""
-            return '{"ok": true}'
+        def fake_chat(provider, model, messages, **kwargs):
+            calls.append((provider, model, messages, kwargs))
+            return {"content": '{"ok": true}', "truncated": False, "done_reason": "stop"}
 
-        with patch.object(album_crew_module.time, "sleep"):
-            llm = _make_llm("qwen3.6:27b-instruct-general")
-            object.__setattr__(llm, "_acejam_original_call", fake_call)
-            result = llm.call([{"role": "user", "content": "Return JSON."}])
+        with patch.object(album_crew_module, "local_llm_chat_completion_response", side_effect=fake_chat):
+            llm = album_crew_module._make_crewai_micro_llm(
+                "qwen3.6:27b-instruct-general",
+                "ollama",
+                "Track Lyrics Agent Part 1",
+                {"planner_timeout": 30},
+            )
+            result = llm.call([{"role": "user", "content": "Return JSON."}], response_model=AlbumBiblePayloadModel)
 
         self.assertEqual(result, '{"ok": true}')
-        self.assertEqual(len(calls), 3)
-        recovery_messages = calls[-1][0][0]
-        self.assertIn("Do not call tools", recovery_messages[-1]["content"])
+        self.assertEqual(calls[0][0], "ollama")
+        self.assertIn("/no_think", calls[0][2][-1]["content"])
+        self.assertIsInstance(calls[0][3].get("json_schema"), dict)
+        self.assertIn("album_bible", calls[0][3]["json_schema"].get("required", []))
+        self.assertIn("tracks", calls[0][3]["json_schema"].get("required", []))
+        self.assertFalse(calls[0][3]["json_schema"].get("additionalProperties", True))
+
+    def test_local_native_micro_llm_bypasses_crewai_litellm_for_lmstudio(self):
+        calls = []
+
+        def fake_chat(provider, model, messages, **kwargs):
+            calls.append((provider, model, messages, kwargs))
+            return {"content": '{"ok": true}', "truncated": False, "done_reason": "stop"}
+
+        with patch.object(album_crew_module, "local_llm_chat_completion_response", side_effect=fake_chat):
+            llm = album_crew_module._make_crewai_micro_llm(
+                "local-model",
+                "lmstudio",
+                "Track Caption Agent",
+                {"planner_timeout": 30},
+            )
+            result = llm.call([{"role": "user", "content": "Return JSON."}], response_model=AlbumBiblePayloadModel)
+
+        self.assertEqual(result, '{"ok": true}')
+        self.assertEqual(calls[0][0], "lmstudio")
+        self.assertIsInstance(calls[0][3].get("json_schema"), dict)
 
     def test_track_production_crew_has_compact_single_track_context(self):
         album_bible = {"concept": "cinematic rap", "arc": "rise and resolve", "motifs": ["signal"]}
@@ -3781,14 +4127,14 @@ Lyrics:
             options={"track_duration": 240, "lyric_density": "dense", "structure_preset": "auto", "language": "en"},
             lyric_plan=lyric_plan,
         )
-        output = SimpleNamespace(raw=json.dumps({
+        output = SimpleNamespace(json_dict={
             "track_number": 1,
             "title": "Signal Room",
             "tags": "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook arrangement, gritty street texture, punchy polished rap mix",
             "lyrics": "[Verse]\nWe start\n[Chorus]\nSignal room",
             "duration": 240,
             "language": "en",
-        }))
+        })
 
         ok, message = guardrail(output)
 
@@ -3819,14 +4165,14 @@ Lyrics:
             options={"track_duration": 240, "lyric_density": "dense", "structure_preset": "auto", "language": "en"},
             lyric_plan=lyric_plan,
         )
-        output = SimpleNamespace(raw=json.dumps({
+        output = SimpleNamespace(json_dict={
             "track_number": 1,
             "title": "Concrete Signal",
             "tags": "hip-hop, boom-bap drums, 808 bass, piano sample motif, male rap vocal, dynamic hook arrangement, gritty street texture, punchy polished rap mix",
             "lyrics": "\n".join(lines),
             "duration": 240,
             "language": "en",
-        }))
+        })
 
         ok, repaired_json = guardrail(output)
         repaired = json.loads(repaired_json)
