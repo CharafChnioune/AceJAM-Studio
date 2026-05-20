@@ -1,5 +1,7 @@
 """AceJAM training bootstrap: patches torchaudio and variant map before ACE-Step training."""
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,25 +24,116 @@ for key in list(sys.modules.keys()):
 # Also set PYTHONPATH for any child processes
 os.environ["PYTHONPATH"] = str(_VENDOR) + os.pathsep + str(_NANO_VLLM) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
-# Replace torchaudio.load with soundfile.read
-# torchaudio 2.9+ ignores backend= parameter and demands torchcodec/FFmpeg
+# Replace torchaudio.load with a resilient loader. torchaudio 2.9+ can demand
+# TorchCodec, while some user MP3s only decode through ffmpeg. Keep the patch
+# local to this training subprocess and try every practical backend before
+# Side-Step marks a sample failed.
 import soundfile
 import torch
 import torchaudio
 
 
-def _soundfile_load(filepath, *args, **kwargs):
-    kwargs.pop("backend", None)
-    kwargs.pop("frame_offset", None)
-    kwargs.pop("num_frames", None)
-    data, sr = soundfile.read(str(filepath), dtype="float32")
-    t = torch.from_numpy(data if len(data.shape) == 1 else data.T).float()
-    if t.dim() == 1:
-        t = t.unsqueeze(0)
-    return t, sr
+_ORIGINAL_TORCHAUDIO_LOAD = torchaudio.load
 
 
-torchaudio.load = _soundfile_load
+def _frame_int(value, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(default if default >= 0 else parsed, parsed)
+
+
+def _slice_frames(audio, frame_offset=0, num_frames=-1):
+    offset = _frame_int(frame_offset, 0)
+    count = _frame_int(num_frames, -1)
+    if offset:
+        audio = audio[:, offset:]
+    if count is not None and count >= 0:
+        audio = audio[:, :count]
+    return audio
+
+
+def _soundfile_load(filepath, *, frame_offset=0, num_frames=-1):
+    data, sr = soundfile.read(str(filepath), dtype="float32", always_2d=True)
+    audio = torch.from_numpy(data.T.copy()).float()
+    return _slice_frames(audio, frame_offset, num_frames), sr
+
+
+def _ffmpeg_load(filepath, *, frame_offset=0, num_frames=-1):
+    import numpy as np
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is not available for audio decode fallback")
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(filepath),
+        "-vn",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if proc.returncode != 0 and not proc.stdout:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg failed to decode audio: {detail}")
+    array = np.frombuffer(proc.stdout, dtype="<f4")
+    if array.size < 2:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg produced no audio samples: {detail}")
+    if array.size % 2:
+        array = array[:-1]
+    audio = torch.from_numpy(array.reshape(-1, 2).T.copy()).float()
+    return _slice_frames(audio, frame_offset, num_frames), 48000
+
+
+def _robust_torchaudio_load(filepath, *args, **kwargs):
+    frame_offset = kwargs.get("frame_offset", 0)
+    num_frames = kwargs.get("num_frames", -1)
+    attempts = [dict(kwargs)]
+    if "backend" in kwargs:
+        without_backend = dict(kwargs)
+        without_backend.pop("backend", None)
+        attempts.append(without_backend)
+    errors = []
+    for attempt in attempts:
+        try:
+            return _ORIGINAL_TORCHAUDIO_LOAD(filepath, *args, **attempt)
+        except Exception as exc:
+            errors.append(f"torchaudio: {exc}")
+    try:
+        return _soundfile_load(filepath, frame_offset=frame_offset, num_frames=num_frames)
+    except Exception as exc:
+        errors.append(f"soundfile: {exc}")
+    try:
+        audio, sr = _ffmpeg_load(filepath, frame_offset=frame_offset, num_frames=num_frames)
+        print(
+            f"[acejam] audio decode fallback used ffmpeg for {Path(str(filepath)).name}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return audio, sr
+    except Exception as exc:
+        errors.append(f"ffmpeg: {exc}")
+        print(
+            f"[acejam] audio decode failed for {Path(str(filepath)).name}: {' | '.join(errors)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+
+
+torchaudio.load = _robust_torchaudio_load
 
 # Patch VARIANT_DIR_MAP to include XL models
 try:

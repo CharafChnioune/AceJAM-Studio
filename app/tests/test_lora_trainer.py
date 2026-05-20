@@ -614,10 +614,41 @@ class LoraTrainerTest(unittest.TestCase):
             )
 
             self.assertTrue(manager._preprocess_partial_allowed(913, 915))
+            self.assertTrue(manager._preprocess_partial_allowed(124, 127))
             failures = manager._extract_preprocess_failures(log_path)
             self.assertEqual(len(failures), 2)
             self.assertIn("Xzibit", failures[0]["filename"])
             self.assertIn("Eminem", failures[1]["filename"])
+
+    def test_preprocess_partial_metadata_keeps_failed_samples_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self.make_manager(Path(tmp))
+            failures = [
+                {"filename": "05 In da Club.mp3", "error": "Unspecified internal error."},
+                {"filename": "eminem__my-name-is-feat-dr-dre.mp3", "error": "Unspecified internal error."},
+                {"filename": "xzibit__x-feat-dr-dre-snoop-dogg.mp3", "error": "Unspecified internal error."},
+            ]
+
+            metadata = manager._preprocess_partial_metadata(124, 127, failures)
+
+            self.assertTrue(metadata["preprocess_partial"])
+            self.assertFalse(metadata["preprocess_failed"])
+            self.assertEqual(metadata["effective_sample_count"], 124)
+            self.assertEqual(metadata["preprocess_excluded_count"], 3)
+            self.assertEqual(metadata["preprocess_excluded_samples"], failures)
+            self.assertAlmostEqual(metadata["preprocess_clean_ratio"], 124 / 127)
+
+    def test_preprocess_failure_metadata_marks_dirty_dataset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self.make_manager(Path(tmp))
+            failures = [{"filename": "bad.wav", "error": "decode failed"}]
+
+            metadata = manager._preprocess_partial_metadata(80, 100, failures)
+
+            self.assertFalse(metadata["preprocess_partial"])
+            self.assertTrue(metadata["preprocess_failed"])
+            self.assertEqual(metadata["preprocess_excluded_count"], 20)
+            self.assertEqual(metadata["preprocess_excluded_samples"], failures)
 
     def test_small_or_dirty_preprocess_failure_rate_still_blocks_training(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -85,6 +85,8 @@ CHECKPOINT_LOSS_RE = re.compile(r"(?:^|_)loss_([-+]?\d+(?:[._]\d+)?(?:e[-+]?\d+)
 PREPROCESS_FAIL_LINE_RE = re.compile(r"\[Side-Step\]\s+Pass\s+\d+\s+FAIL\s+(.+?):\s*(.+)$")
 PREPROCESS_MIN_CLEAN_RATIO = 0.99
 PREPROCESS_MIN_CLEAN_SAMPLES_FOR_PARTIAL = 50
+PREPROCESS_TINY_FAILURE_RATIO = 0.03
+PREPROCESS_TINY_FAILURE_MAX = 3
 DEFAULT_TRAINING_STOP_POLICY = "max_epochs_or_loss_plateau"
 DEFAULT_LOSS_PATIENCE_EPOCHS = 15
 DEFAULT_MIN_RELATIVE_LOSS_IMPROVEMENT = 0.005
@@ -655,6 +657,103 @@ def parse_float(value: Any, default: float, minimum: float | None = None, maximu
     if maximum is not None:
         parsed = min(maximum, parsed)
     return parsed
+
+
+def _slice_audio_frames(audio: Any, frame_offset: Any = 0, num_frames: Any = -1) -> Any:
+    offset = parse_int(frame_offset, 0, 0, None)
+    count = parse_int(num_frames, -1, -1, None)
+    if offset:
+        audio = audio[:, offset:]
+    if count >= 0:
+        audio = audio[:, :count]
+    return audio
+
+
+def _soundfile_torchaudio_load(filepath: Path | str, *, frame_offset: Any = 0, num_frames: Any = -1) -> tuple[Any, int]:
+    if sf is None:
+        raise RuntimeError("soundfile is not available for audio decode fallback")
+    import torch
+
+    data, sr = sf.read(str(filepath), dtype="float32", always_2d=True)
+    audio = torch.from_numpy(data.T.copy()).float()
+    return _slice_audio_frames(audio, frame_offset, num_frames), int(sr)
+
+
+def _ffmpeg_torchaudio_load(filepath: Path | str, *, frame_offset: Any = 0, num_frames: Any = -1) -> tuple[Any, int]:
+    import numpy as np
+    import torch
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is not available for audio decode fallback")
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(filepath),
+        "-vn",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if proc.returncode != 0 and not proc.stdout:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg failed to decode audio: {detail}")
+    array = np.frombuffer(proc.stdout, dtype="<f4")
+    if array.size < 2:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg produced no audio samples: {detail}")
+    if array.size % 2:
+        array = array[:-1]
+    audio = torch.from_numpy(array.reshape(-1, 2).T.copy()).float()
+    return _slice_audio_frames(audio, frame_offset, num_frames), 48000
+
+
+def install_robust_torchaudio_loader(torchaudio_module: Any, *, log: Callable[[str], None] | None = None) -> None:
+    current_load = getattr(torchaudio_module, "load", None)
+    if getattr(current_load, "_acejam_robust_loader", False):
+        return
+    original_load = current_load
+
+    def _patched_torchaudio_load(filepath: Path | str, *args: Any, **kwargs: Any) -> tuple[Any, int]:
+        frame_offset = kwargs.get("frame_offset", 0)
+        num_frames = kwargs.get("num_frames", -1)
+        attempts = [dict(kwargs)]
+        if "backend" in kwargs:
+            without_backend = dict(kwargs)
+            without_backend.pop("backend", None)
+            attempts.append(without_backend)
+        errors: list[str] = []
+        for attempt in attempts:
+            try:
+                return original_load(filepath, *args, **attempt)
+            except Exception as exc:
+                errors.append(f"torchaudio: {exc}")
+        try:
+            return _soundfile_torchaudio_load(filepath, frame_offset=frame_offset, num_frames=num_frames)
+        except Exception as exc:
+            errors.append(f"soundfile: {exc}")
+        try:
+            audio, sr = _ffmpeg_torchaudio_load(filepath, frame_offset=frame_offset, num_frames=num_frames)
+            if log:
+                log(f"[acejam] audio decode fallback used ffmpeg for {Path(str(filepath)).name}")
+            return audio, sr
+        except Exception as exc:
+            errors.append(f"ffmpeg: {exc}")
+            if log:
+                log(f"[acejam] audio decode failed for {Path(str(filepath)).name}: {' | '.join(errors)}")
+            raise
+
+    _patched_torchaudio_load._acejam_robust_loader = True  # type: ignore[attr-defined]
+    torchaudio_module.load = _patched_torchaudio_load
 
 
 def parse_training_loss_line(line: str) -> float | None:
@@ -1722,21 +1821,12 @@ class AceTrainingManager:
             VARIANT_DIR_MAP.setdefault("xl_sft", "acestep-v15-xl-sft")
         except ImportError:
             pass
-        # Patch torchaudio.load to use soundfile backend (avoids torchcodec/FFmpeg dependency)
+        # Patch torchaudio.load for local/manual paths. Training subprocesses
+        # install the same fallback chain in _acejam_train_bootstrap.py.
         try:
             import torchaudio
-            _orig_torchaudio_load = torchaudio.load
 
-            def _patched_torchaudio_load(filepath, *args, **kwargs):
-                if "backend" not in kwargs:
-                    kwargs["backend"] = "soundfile"
-                try:
-                    return _orig_torchaudio_load(filepath, *args, **kwargs)
-                except Exception:
-                    kwargs.pop("backend", None)
-                    return _orig_torchaudio_load(filepath, *args, **kwargs)
-
-            torchaudio.load = _patched_torchaudio_load
+            install_robust_torchaudio_loader(torchaudio, log=lambda message: print(message, flush=True))
         except ImportError:
             pass
 
@@ -3146,14 +3236,30 @@ class AceTrainingManager:
             preprocess_excluded_samples: list[dict[str, str]] = []
             if tensor_count < len(labels):
                 missing_count = preprocess_excluded_count
-                clean_ratio = (tensor_count / len(labels)) if labels else 0.0
                 failed_samples = self._extract_preprocess_failures(log_path)
-                preprocess_excluded_samples = failed_samples[:25]
-                partial_allowed = self._preprocess_partial_allowed(tensor_count, len(labels))
+                partial_metadata = self._preprocess_partial_metadata(tensor_count, len(labels), failed_samples)
+                clean_ratio = float(partial_metadata["preprocess_clean_ratio"])
+                preprocess_excluded_samples = list(partial_metadata["preprocess_excluded_samples"])
+                effective_sample_count = int(partial_metadata["effective_sample_count"])
+                partial_allowed = not parse_bool(partial_metadata.get("preprocess_failed"), False)
                 if not partial_allowed:
+                    self._set_job_state(
+                        job.id,
+                        stage="preprocess",
+                        progress=55,
+                        result={
+                            "sample_count": len(labels),
+                            "epochs": epochs,
+                            "dataset_warnings": params.get("dataset_warnings") or {},
+                            **partial_metadata,
+                        },
+                    )
+                    failed_names = ", ".join(str(item.get("filename") or "") for item in preprocess_excluded_samples[:8] if item.get("filename"))
+                    failed_suffix = f" Failed samples: {failed_names}." if failed_names else ""
                     raise RuntimeError(
                         f"Preprocess produced only {tensor_count}/{len(labels)} tensor samples. "
                         "Fix failed samples before training so the LoRA dataset is complete."
+                        f"{failed_suffix}"
                     )
                 self._append_log(
                     log_path,
@@ -3169,11 +3275,9 @@ class AceTrainingManager:
                     progress=55,
                     result={
                         "sample_count": len(labels),
-                        "effective_sample_count": tensor_count,
-                        "preprocess_partial": True,
-                        "preprocess_clean_ratio": clean_ratio,
-                        "preprocess_excluded_count": missing_count,
-                        "preprocess_excluded_samples": preprocess_excluded_samples,
+                        "epochs": epochs,
+                        "dataset_warnings": params.get("dataset_warnings") or {},
+                        **partial_metadata,
                     },
                 )
 
@@ -4213,11 +4317,38 @@ class AceTrainingManager:
         missing_count = total_count - clean_count
         if missing_count <= 0:
             return True
+        tiny_failure_set = (
+            missing_count <= PREPROCESS_TINY_FAILURE_MAX
+            and (missing_count / total_count) <= PREPROCESS_TINY_FAILURE_RATIO
+        )
         return (
             clean_count >= PREPROCESS_MIN_CLEAN_SAMPLES_FOR_PARTIAL
-            and (clean_count / total_count) >= PREPROCESS_MIN_CLEAN_RATIO
-            and missing_count <= max(3, int(total_count * (1.0 - PREPROCESS_MIN_CLEAN_RATIO)) + 1)
+            and (
+                tiny_failure_set
+                or (
+                    (clean_count / total_count) >= PREPROCESS_MIN_CLEAN_RATIO
+                    and missing_count <= max(3, int(total_count * (1.0 - PREPROCESS_MIN_CLEAN_RATIO)) + 1)
+                )
+            )
         )
+
+    def _preprocess_partial_metadata(
+        self,
+        clean_count: int,
+        total_count: int,
+        failed_samples: list[dict[str, str]] | None,
+    ) -> dict[str, Any]:
+        missing_count = max(0, total_count - clean_count)
+        clean_ratio = (clean_count / total_count) if total_count else 0.0
+        partial_allowed = self._preprocess_partial_allowed(clean_count, total_count)
+        return {
+            "effective_sample_count": clean_count,
+            "preprocess_partial": bool(missing_count and partial_allowed),
+            "preprocess_failed": bool(missing_count and not partial_allowed),
+            "preprocess_clean_ratio": clean_ratio,
+            "preprocess_excluded_count": missing_count,
+            "preprocess_excluded_samples": list(failed_samples or [])[:25],
+        }
 
     def _caption_fallback(self, entry: dict[str, Any]) -> str:
         relative = str(entry.get("relative_path") or entry.get("filename") or entry.get("path") or "sample")
