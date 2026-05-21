@@ -255,7 +255,7 @@ class AppParityTest(unittest.TestCase):
         issue_ids = {item["id"] for item in report["issues"]}
         self.assertIn("metadata_or_credit_in_caption", issue_ids)
 
-    def test_direct_album_agent_payload_rejects_underfilled_long_rap_lyrics(self):
+    def test_direct_album_agent_payload_allows_underfilled_long_rap_lyrics(self):
         sections = ["[Intro]", "[Verse 1]", "[Pre-Chorus]", "[Chorus]", "[Verse 2]", "[Break]", "[Bridge]", "[Final Chorus]", "[Outro]"]
         lyrics = "\n".join(
             line
@@ -273,13 +273,11 @@ class AppParityTest(unittest.TestCase):
             }
         )
 
-        self.assertFalse(report["gate_passed"])
-        issue_ids = {item["id"] for item in report["issues"]}
-        self.assertIn("lyrics_under_length", issue_ids)
-        self.assertIn("lyrics_too_few_lines", issue_ids)
-        self.assertGreaterEqual(report["lyric_duration_fit"]["min_words"], 340)
+        self.assertTrue(report["gate_passed"])
+        self.assertEqual(report["issues"], [])
+        self.assertEqual(report["lyric_duration_fit"]["status"], "not_applied")
 
-    def test_direct_album_agent_payload_rejects_rap_caption_without_rap_vocal_or_groove(self):
+    def test_direct_album_agent_payload_allows_rap_caption_without_rap_vocal_or_groove(self):
         lyrics = "\n".join(
             ["[Intro]"]
             + ["Concrete truth keeps knocking on the door" for _ in range(8)]
@@ -300,10 +298,9 @@ class AppParityTest(unittest.TestCase):
             }
         )
 
-        self.assertFalse(report["gate_passed"])
-        issue_ids = {item["id"] for item in report["issues"]}
-        self.assertIn("genre_intent_missing_rap_vocal", issue_ids)
-        self.assertIn("genre_intent_missing_rap_groove", issue_ids)
+        self.assertTrue(report["gate_passed"])
+        self.assertEqual(report["issues"], [])
+        self.assertEqual(report["genre_adherence"]["status"], "not_applied")
 
     def test_unreleased_model_is_not_downloadable(self):
         self.assertNotIn("acestep-v15-turbo-rl", acejam_app._downloadable_model_names())
@@ -699,6 +696,27 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["requested_audio_backend"], "mlx")
         self.assertTrue(request["requested_use_mlx_dit"])
         self.assertEqual(request["audio_backend_contract"]["enforced_at"], "official_request")
+
+    def test_official_request_refits_over_budget_caption_instead_of_blocking(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "bright pop, crisp drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                }
+            )
+
+        params["caption"] = ", ".join(f"render tag {idx:02d}" for idx in range(80))
+        self.assertGreater(len(params["caption"]), acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT)
+        with tempfile.TemporaryDirectory() as tmp:
+            request = acejam_app._official_request_payload(params, Path(tmp))
+
+        self.assertLessEqual(len(request["params"]["caption"]), acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT)
+        self.assertIn("caption_runtime_fit", request["ace_step_text_budget"]["lyrics_overflow_action"])
 
     def test_mlx_runner_response_must_confirm_active_mlx(self):
         request = {"audio_backend": "mlx", "use_mlx_dit": True}
@@ -1518,6 +1536,14 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(options["planner_timeout"], 300.0)
         self.assertEqual(options["lm_temperature"], 0.42)
         self.assertEqual(options["embedding_lm_provider"], "ollama")
+
+    def test_album_plan_llm_watchdog_does_not_hard_timeout_by_default(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS", None)
+            self.assertEqual(acejam_app._album_plan_llm_hard_timeout_from_policy(604800.0), 0.0)
+
+        with patch.dict(os.environ, {"ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS": "1200"}, clear=False):
+            self.assertEqual(acejam_app._album_plan_llm_hard_timeout_from_policy(604800.0), 1200.0)
 
     def test_studio_generation_with_supplied_lyrics_leaves_ace_lm_format_off(self):
         payload = {
@@ -2443,6 +2469,49 @@ class AppParityTest(unittest.TestCase):
             1,
         )
         self.assertEqual(params["lora_trigger_conditioning_audit"]["status"], "present")
+
+    def test_lora_trigger_conditioning_refits_caption_before_render(self):
+        terms = [
+            "west coast rap",
+            "g-funk drums",
+            "deep low end",
+            "male rap vocal",
+            "polished mix",
+        ]
+        while True:
+            candidate = ", ".join([*terms, f"texture layer {len(terms):02d}"])
+            if len(candidate) > acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT - 2:
+                break
+            terms.append(f"texture layer {len(terms):02d}")
+        caption = ", ".join(terms)
+        if len(caption) < acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT - 1:
+            pad_prefix = ", " if caption else ""
+            pad_len = acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT - 1 - len(caption) - len(pad_prefix)
+            if pad_len > 0:
+                caption = f"{caption}{pad_prefix}{'x' * pad_len}"
+        self.assertLessEqual(len(caption), acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT)
+        self.assertGreater(len(f"hits, {caption}"), acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT)
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": caption,
+                    "lyrics": "[Verse - rap]\nClear line\n\n[Chorus - rap hook]\nHook line",
+                    "duration": 30,
+                    "use_lora": True,
+                    "lora_adapter_path": "/tmp/unit-adapter",
+                    "use_lora_trigger": True,
+                    "lora_trigger_tag": "hits",
+                    "adapter_model_variant": "xl_sft",
+                }
+            )
+
+        self.assertLessEqual(len(params["caption"]), acejam_app.ACE_STEP_CAPTION_CHAR_LIMIT)
+        self.assertRegex(params["caption"], r"(?i)^hits,")
+        self.assertIn("caption_runtime_fit", params["ace_step_text_budget"]["lyrics_overflow_action"])
 
     def test_no_lora_payload_strips_stale_trigger_from_caption(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
@@ -3456,17 +3525,6 @@ class AppParityTest(unittest.TestCase):
                 ],
             }
 
-        def fake_gate(payload, **_kwargs):
-            return {
-                "status": "needs_review",
-                "gate_passed": False,
-                "blocking_issues": [{"id": "unit_warning", "detail": "test-only warning"}],
-                "issues": [{"id": "unit_warning", "detail": "test-only warning", "severity": "fail"}],
-                "repaired_payload": payload,
-                "lyrics_quality": {},
-                "repair_actions": [],
-            }
-
         request_payload = {
             "song_model_strategy": "single_model_album",
             "song_model": "acestep-v15-xl-sft",
@@ -3499,7 +3557,7 @@ class AppParityTest(unittest.TestCase):
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(album_crew_module, "plan_album", side_effect=AssertionError("album planner must not run on Generate")), \
-            patch.object(acejam_app, "evaluate_album_payload_quality", side_effect=fake_gate), \
+            patch.object(acejam_app, "evaluate_album_payload_quality", side_effect=AssertionError("album quality gate must not run")), \
             patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
             patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
             patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
@@ -3521,7 +3579,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("finished UI caption", calls[0]["caption"])
         self.assertEqual(data["tracks"][0]["planning_status"], "ui_approved")
         self.assertFalse(data["tracks"][0]["skip_render"])
-        self.assertTrue(data["tracks"][0]["model_results"][0]["payload_gate_non_blocking"])
+        self.assertTrue(data["tracks"][0]["model_results"][0]["generated"])
+        self.assertNotIn("payload_gate_non_blocking", data["tracks"][0]["model_results"][0])
         self.assertIn("no album agents will run", " ".join(data["logs"]).lower())
 
     def test_album_lora_model_mismatch_is_ignored_per_track(self):

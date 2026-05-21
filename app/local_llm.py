@@ -35,8 +35,10 @@ PLANNER_LLM_DEFAULTS: dict[str, Any] = {
     "planner_top_k": 40,
     "planner_repeat_penalty": 1.1,
     "planner_seed": "",
-    "planner_max_tokens": 8192,
-    "planner_context_length": 65536,
+    # Ollama supports num_predict=-1 for model-managed generation. Keep the
+    # quality gates in AceJAM, not an artificial local output-token wall.
+    "planner_max_tokens": -1,
+    "planner_context_length": 250000,
     "planner_timeout": PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
 }
 PLANNER_LLM_PRESETS: dict[str, dict[str, Any]] = {
@@ -202,14 +204,19 @@ def planner_llm_settings_from_payload(
         0.8,
         2.0,
     )
-    max_tokens = _clamp_int(
+    raw_max_tokens = (
         _payload_first(source, "planner_max_tokens", "local_llm_max_tokens")
         or os.environ.get("ACEJAM_PLANNER_MAX_TOKENS")
-        or base["planner_max_tokens"],
-        int(base["planner_max_tokens"]),
-        128,
-        8192,
+        or base["planner_max_tokens"]
     )
+    try:
+        max_tokens_number = int(float(raw_max_tokens))
+    except (TypeError, ValueError):
+        max_tokens_number = int(base["planner_max_tokens"])
+    if max_tokens_number <= 0:
+        max_tokens = -1
+    else:
+        max_tokens = max(128, min(262144, max_tokens_number))
     context_length = _clamp_int(
         _payload_first(source, "planner_context_length", "local_llm_context_length", "planner_num_ctx")
         or os.environ.get("ACEJAM_PLANNER_CONTEXT_LENGTH")
@@ -273,9 +280,9 @@ def planner_llm_options_for_provider(
         options["seed"] = settings["planner_seed"]
     if normalize_provider(provider) == "ollama":
         options["num_ctx"] = settings["planner_context_length"]
-        options["num_predict"] = settings["planner_max_tokens"]
+        options["num_predict"] = settings["planner_max_tokens"] if int(settings["planner_max_tokens"]) > 0 else -1
     else:
-        options["max_tokens"] = settings["planner_max_tokens"]
+        options["max_tokens"] = settings["planner_max_tokens"] if int(settings["planner_max_tokens"]) > 0 else 8192
     return options
 
 

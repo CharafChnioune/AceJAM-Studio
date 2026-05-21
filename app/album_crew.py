@@ -1,10 +1,10 @@
 """
-Album generation using AceJAM's local-agent planner plus deterministic tools.
+Minimal studio album generation for ACE-Step.
 
-AceJAM Direct is the default album runtime. CrewAI Micro Tasks is available as
-an experimental wrapper around the same tiny agent calls, delimiter parser, and
-deterministic gates. Legacy large CrewAI constructors remain for import
-compatibility only.
+AceJAM Direct is the default album runtime. CrewAI Micro Tasks stays available
+as a small structured wrapper around the same studio-agent calls. Album tracks
+are stopped only by technical ACE-Step contract errors: parseable structure,
+required fields, caption length, lyric length, and plausible metadata.
 """
 
 from __future__ import annotations
@@ -49,16 +49,6 @@ from ace_step_track_prompt_template import (
     ACE_STEP_TRACK_PROMPT_TEMPLATE_VERSION,
     compact_full_tag_library,
     render_track_prompt_template,
-)
-from album_quality_gate import (
-    build_genre_intent_contract,
-    build_lyrical_craft_contract,
-    build_producer_grade_sonic_contract,
-    evaluate_album_payload_quality,
-    evaluate_genre_adherence,
-    lyric_craft_gate,
-    lyric_density_gate,
-    producer_grade_readiness,
 )
 from local_llm import (
     PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
@@ -140,16 +130,21 @@ ALBUM_EMBEDDING_FALLBACK_MODELS = [
     "mxbai-embed-large:latest",
     "nomic-embed-text:latest",
 ]
-CREWAI_LLM_TIMEOUT_SECONDS = int(os.environ.get("ACEJAM_CREWAI_LLM_TIMEOUT_SECONDS", "86400"))
+CREWAI_LLM_TIMEOUT_SECONDS = int(
+    os.environ.get("ACEJAM_CREWAI_LLM_TIMEOUT_SECONDS", str(int(PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS)))
+)
 CREWAI_EMPTY_RESPONSE_RETRIES = int(os.environ.get("ACEJAM_CREWAI_EMPTY_RESPONSE_RETRIES", "1"))
 CREWAI_EMPTY_RESPONSE_RETRY_DELAY = float(os.environ.get("ACEJAM_CREWAI_EMPTY_RESPONSE_RETRY_DELAY", "8"))
 CREWAI_AGENT_MAX_ITER = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_ITER", "80"))
 CREWAI_AGENT_MAX_RETRY_LIMIT = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_RETRY_LIMIT", "8"))
-CREWAI_TASK_MAX_RETRIES = int(os.environ.get("ACEJAM_CREWAI_TASK_MAX_RETRIES", "8"))
-CREWAI_LLM_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LLM_MAX_TOKENS", "12000"))
-CREWAI_LLM_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_LLM_CONTEXT_WINDOW", "65536"))
+CREWAI_TASK_MAX_RETRIES = int(os.environ.get("ACEJAM_CREWAI_TASK_MAX_RETRIES", "0"))
+CREWAI_LLM_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LLM_MAX_TOKENS", "-1"))
+CREWAI_LLM_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_LLM_CONTEXT_WINDOW", "250000"))
 CREWAI_LLM_NUM_PREDICT = int(os.environ.get("ACEJAM_CREWAI_LLM_NUM_PREDICT", str(CREWAI_LLM_MAX_TOKENS)))
-CREWAI_LMSTUDIO_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LMSTUDIO_MAX_TOKENS", str(CREWAI_LLM_MAX_TOKENS)))
+CREWAI_AGENT_CONTEXT_WINDOW = int(os.environ.get("ACEJAM_CREWAI_AGENT_CONTEXT_WINDOW", str(CREWAI_LLM_CONTEXT_WINDOW)))
+CREWAI_AGENT_MAX_TIMEOUT_SECONDS = int(os.environ.get("ACEJAM_CREWAI_AGENT_MAX_TIMEOUT_SECONDS", "0"))
+CREWAI_AGENT_ALLOW_UNBOUNDED_OUTPUT = os.environ.get("ACEJAM_CREWAI_AGENT_ALLOW_UNBOUNDED_OUTPUT", "1").lower() in {"1", "true", "yes"}
+CREWAI_LMSTUDIO_MAX_TOKENS = int(os.environ.get("ACEJAM_CREWAI_LMSTUDIO_MAX_TOKENS", "-1"))
 CREWAI_LMSTUDIO_DISABLE_THINKING = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_DISABLE_THINKING", "1").lower() in {"1", "true", "yes"}
 CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_NO_THINK_DIRECTIVE", "/no_think").strip()
 CREWAI_LMSTUDIO_NO_THINK_PREFILL = os.environ.get("ACEJAM_CREWAI_LMSTUDIO_NO_THINK_PREFILL", "")
@@ -178,10 +173,10 @@ ALBUM_AGENT_ENGINE_LABELS = {
 ACEJAM_AGENT_JSON_RETRIES = int(os.environ.get("ACEJAM_AGENT_JSON_RETRIES", "2"))
 ACEJAM_AGENT_BLOCK_RETRIES = int(os.environ.get("ACEJAM_AGENT_BLOCK_RETRIES", str(ACEJAM_AGENT_JSON_RETRIES)))
 ACEJAM_AGENT_EMPTY_RETRIES = int(os.environ.get("ACEJAM_AGENT_EMPTY_RETRIES", "1"))
-ACEJAM_AGENT_GATE_REPAIR_RETRIES = int(os.environ.get("ACEJAM_AGENT_GATE_REPAIR_RETRIES", "8"))
+ACEJAM_AGENT_GATE_REPAIR_RETRIES = int(os.environ.get("ACEJAM_AGENT_GATE_REPAIR_RETRIES", "0"))
 ALBUM_WRITER_MODE_PER_TRACK = "per_track_writer_loop"
 ALBUM_WRITER_MODE_DEFAULT = os.environ.get("ACEJAM_ALBUM_WRITER_MODE", ALBUM_WRITER_MODE_PER_TRACK).strip() or ALBUM_WRITER_MODE_PER_TRACK
-ALBUM_TRACK_GATE_REPAIR_RETRIES = max(0, min(3, int(os.environ.get("ACEJAM_ALBUM_TRACK_GATE_REPAIR_RETRIES", "3"))))
+ALBUM_TRACK_GATE_REPAIR_RETRIES = max(0, min(3, int(os.environ.get("ACEJAM_ALBUM_TRACK_GATE_REPAIR_RETRIES", "0"))))
 ACEJAM_AGENT_TEMPERATURE = float(os.environ.get("ACEJAM_AGENT_TEMPERATURE", "0.25"))
 ACEJAM_AGENT_TOP_P = float(os.environ.get("ACEJAM_AGENT_TOP_P", "0.9"))
 ACEJAM_AGENT_MEMORY_DEFAULT = os.environ.get("ACEJAM_AGENT_MEMORY_DEFAULT", "1").lower() in {"1", "true", "yes"}
@@ -680,245 +675,101 @@ class AlbumTaskSpec:
 
 
 ALBUM_TASK_GRAPH_REGISTRY: dict[str, AlbumTaskSpec] = {
-    "album_intake": AlbumTaskSpec(
-        "album_intake",
+    "album_producer": AlbumTaskSpec(
+        "album_producer",
         "Album Intake Agent",
         "album_intake_payload",
-        "Normalize the album brief and locked user intent only.",
+        "Define album concept, track roles, sonic identity, and locked user intent.",
         ("concept", "user_album_contract", "language", "track_count"),
         "_validate_album_intake_payload",
         AlbumIntakePayloadModel,
-        0.25,
-        1800,
-        "Intake",
-    ),
-    "album_sonic_bible": AlbumTaskSpec(
-        "album_sonic_bible",
-        "Album Sonic Bible",
-        "album_intake_payload",
-        "Carry accepted album sound guardrails, not track lyrics.",
-        ("accepted_album_state", "genre_prompt", "mood_vibe", "vocal_type"),
-        "",
-        AlbumIntakePayloadModel,
-        0.25,
-        1800,
-        "Album Sonic Bible",
-    ),
-    "lyric_quality_bible": AlbumTaskSpec(
-        "lyric_quality_bible",
-        "Lyric Quality Bible",
-        "album_intake_payload",
-        "Set lyric craft constraints and anti-patterns for all tracks.",
-        ("accepted_album_state", "lyrical_craft_contract"),
-        "",
-        AlbumIntakePayloadModel,
-        0.25,
-        1800,
-        "Lyric Quality Bible",
-    ),
-    "album_visual_bible": AlbumTaskSpec(
-        "album_visual_bible",
-        "Album Visual Director Agent",
-        "visual_prompt_payload",
-        "Create one family-level cover/video visual identity.",
-        ("accepted_album_state", "sonic_palette", "concept"),
-        "_validate_visual_prompt_payload",
-        VisualPromptPayloadModel,
         0.35,
         1800,
-        "Album Visual Bible",
+        "Album Producer",
     ),
-    "track_concept": AlbumTaskSpec(
-        "track_concept",
-        "Track Concept Agent",
-        "track_concept_payload",
-        "Choose one track's title, style, vibe, narrative, and locked phrases.",
-        ("accepted_album_state", "accepted_previous_track_summaries", "locked_track_fields"),
-        "_validate_track_concept_payload",
-        TrackConceptPayloadModel,
-        0.35,
-        2200,
-        "Track Concept",
-    ),
-    "sonic_dna_tags": AlbumTaskSpec(
-        "sonic_dna_tags",
+    "ace_step_knowledge_producer": AlbumTaskSpec(
+        "ace_step_knowledge_producer",
         "Tag Agent",
         "tag_agent_payload",
-        "Choose ACE-Step sound-DNA tags only.",
-        ("track_concept", "genre_intent_contract", "producer_grade_sonic_contract"),
+        "Select ACE-Step prompt-kit tags and sound-DNA options as inspiration.",
+        ("ace_step_album_knowledge", "track_concept", "genre_prompt"),
         "_validate_tag_payload",
         TagAgentPayloadModel,
         0.35,
-        1600,
-        "Sonic DNA Tags",
+        CREWAI_LLM_MAX_TOKENS,
+        "ACE-Step Knowledge Producer",
     ),
-    "metadata": AlbumTaskSpec(
-        "metadata",
-        "Metadata Agents",
-        "bpm_agent_payload",
-        "Choose exactly one metadata field per call.",
-        ("track_concept", "sonic_dna_tags", "locked_metadata"),
-        "_validate_bpm_payload/_validate_key_payload/_validate_time_signature_payload/_validate_duration_payload",
-        BpmAgentPayloadModel,
-        0.25,
-        900,
-        "Metadata",
-    ),
-    "section_map": AlbumTaskSpec(
-        "section_map",
-        "Section Map Agent",
-        "section_map_payload",
-        "Choose bracketed section tags only.",
-        ("track_concept", "sonic_dna_tags", "metadata"),
-        "_validate_section_map_payload",
-        SectionMapPayloadModel,
-        0.25,
-        1600,
-        "Section Map",
-    ),
-    "hook_promise": AlbumTaskSpec(
-        "hook_promise",
-        "Hook Agent",
-        "hook_payload",
-        "State one concrete hook promise.",
-        ("track_concept", "section_map"),
-        "_validate_hook_payload",
-        HookPayloadModel,
+    "track_producer": AlbumTaskSpec(
+        "track_producer",
+        "Track Concept Agent",
+        "track_concept_payload",
+        "Choose one track's title, role, arrangement intent, style, vibe, and narrative.",
+        ("accepted_album_state", "accepted_previous_track_summaries", "locked_track_fields"),
+        "_validate_track_concept_payload",
+        TrackConceptPayloadModel,
         0.45,
-        1600,
-        "Hook Promise",
+        CREWAI_LLM_MAX_TOKENS,
+        "Track Producer",
     ),
-    "hook_lines": AlbumTaskSpec(
-        "hook_lines",
-        "Hook Agent",
-        "hook_payload",
-        "Write only hook lines, no section tags.",
-        ("hook_promise", "track_concept", "sonic_dna_tags"),
-        "_validate_hook_payload",
-        HookPayloadModel,
-        0.45,
-        1600,
-        "Hook Lines",
-    ),
-    "section_briefs": AlbumTaskSpec(
-        "section_briefs",
-        "Section Briefs",
-        "section_map_payload",
-        "Map each section to one small writing job.",
-        ("section_map", "hook_lines", "lyrical_craft_contract"),
-        "_validate_section_map_payload",
-        SectionMapPayloadModel,
-        0.25,
-        1200,
-        "Section Briefs",
-    ),
-    "lyrics_section_draft": AlbumTaskSpec(
-        "lyrics_section_draft",
+    "songwriter": AlbumTaskSpec(
+        "songwriter",
         "Track Lyrics Agent Part",
         "lyrics_part_n_payload",
-        "Write one accepted section or section group only.",
-        ("section_briefs", "hook_lines", "accepted_previous_sections"),
+        "Write the requested section-tagged song material.",
+        ("track_concept", "section_map", "hook_lines", "accepted_previous_sections"),
         "_validate_lyrics_part_payload",
         LyricsPartPayloadModel,
+        0.65,
+        CREWAI_LLM_MAX_TOKENS,
+        "Songwriter / Topliner",
+    ),
+    "vocal_performance_producer": AlbumTaskSpec(
+        "vocal_performance_producer",
+        "Performance Agent",
+        "performance_agent_payload",
+        "Write delivery, ad-lib, vocal texture, and performance notes.",
+        ("caption_finalizer", "sonic_dna_tags", "lyrics"),
+        "_validate_performance_payload",
+        PerformanceAgentPayloadModel,
         0.45,
-        2200,
-        "Lyrics Section Draft",
+        CREWAI_LLM_MAX_TOKENS,
+        "Vocal & Performance Producer",
     ),
-    "section_craft_critic": AlbumTaskSpec(
-        "section_craft_critic",
-        "Section Craft Critic",
-        "lyric_craft_repair_payload",
-        "Validate the section for craft before it becomes context.",
-        ("lyrics_section_draft", "lyrical_craft_contract"),
-        "lyric_craft_gate(partial=True)",
-        LyricCraftRepairPayloadModel,
-        0.25,
-        1200,
-        "Section Craft Critic",
-    ),
-    "section_repair": AlbumTaskSpec(
-        "section_repair",
-        "Lyric Craft Repair Agent",
-        "lyric_craft_repair_payload",
-        "Rewrite only the rejected section.",
-        ("section_craft_critic", "validator_errors", "accepted_album_state"),
-        "_repair_validator",
-        LyricCraftRepairPayloadModel,
-        0.45,
-        2200,
-        "Section Repair",
-    ),
-    "whole_song_continuity_critic": AlbumTaskSpec(
-        "whole_song_continuity_critic",
-        "Whole Song Continuity Critic",
-        "final_payload",
-        "Validate caption, lyrics, metadata, and ACE-Step consistency.",
-        ("accepted_track_state", "section_map"),
-        "_director_minimal_validate",
-        TrackProductionPayloadModel,
-        0.25,
-        1800,
-        "Whole Song Continuity Critic",
-    ),
-    "caption_finalizer": AlbumTaskSpec(
-        "caption_finalizer",
+    "ace_step_prompt_engineer": AlbumTaskSpec(
+        "ace_step_prompt_engineer",
         "Caption Agent",
         "caption_agent_payload",
         "Write final ACE-Step caption: sound-only under 512 chars.",
-        ("sonic_dna_tags", "producer_grade_sonic_contract"),
+        ("sonic_dna_tags", "ace_step_album_knowledge", "performance_brief"),
         "_validate_caption_payload",
         CaptionAgentPayloadModel,
         0.35,
-        1400,
-        "Caption Finalizer",
+        CREWAI_LLM_MAX_TOKENS,
+        "ACE-Step Prompt Engineer",
     ),
-    "performance_brief": AlbumTaskSpec(
-        "performance_brief",
-        "Performance Agent",
-        "performance_agent_payload",
-        "Write performance and negative-control metadata only.",
-        ("caption_finalizer", "sonic_dna_tags"),
-        "_validate_performance_payload",
-        PerformanceAgentPayloadModel,
-        0.35,
-        1400,
-        "Performance Brief",
-    ),
-    "single_art_prompt": AlbumTaskSpec(
-        "single_art_prompt",
+    "visual_director": AlbumTaskSpec(
+        "visual_director",
         "Track Visual Prompt Agent",
         "visual_prompt_payload",
-        "Write one square single-art prompt.",
-        ("album_visual_bible", "track_concept", "caption_finalizer", "hook_lines"),
+        "Write album art, single art, and video prompts.",
+        ("album_visual_bible", "track_concept", "caption_finalizer", "lyrics"),
         "_validate_visual_prompt_payload",
         VisualPromptPayloadModel,
-        0.35,
-        1600,
-        "Single Art Prompt",
+        0.45,
+        CREWAI_LLM_MAX_TOKENS,
+        "Visual Director",
     ),
-    "video_prompt": AlbumTaskSpec(
-        "video_prompt",
-        "Track Visual Prompt Agent",
-        "visual_prompt_payload",
-        "Write one music-video prompt.",
-        ("album_visual_bible", "track_concept", "lyrics", "visual_palette"),
-        "_validate_visual_prompt_payload",
-        VisualPromptPayloadModel,
-        0.35,
-        1600,
-        "Video Prompt",
-    ),
-    "visual_consistency_critic": AlbumTaskSpec(
-        "visual_consistency_critic",
-        "Visual Consistency Critic",
-        "visual_prompt_payload",
-        "Validate album/track visual prompt consistency and no-text policy.",
-        ("album_visual_bible", "single_art_prompt", "video_prompt"),
-        "_validate_visual_prompt_payload",
-        VisualPromptPayloadModel,
-        0.25,
-        1200,
-        "Visual Consistency Critic",
+    "payload_assembler": AlbumTaskSpec(
+        "payload_assembler",
+        "Final Payload Assembler",
+        "final_payload",
+        "Assemble the accepted studio outputs into the existing album track payload.",
+        ("track_concept", "caption_finalizer", "lyrics", "metadata", "visual_prompts"),
+        "_ace_step_album_payload_contract_check",
+        TrackProductionPayloadModel,
+        0.0,
+        0,
+        "Payload Assembler",
     ),
 }
 
@@ -933,7 +784,29 @@ class AlbumTaskGraph:
         self.accepted_previous_track_summaries: list[dict[str, Any]] = []
 
     def spec(self, task_id: str) -> AlbumTaskSpec:
-        return ALBUM_TASK_GRAPH_REGISTRY[task_id]
+        alias_map = {
+            "album_intake": "album_producer",
+            "album_sonic_bible": "album_producer",
+            "lyric_quality_bible": "album_producer",
+            "sonic_dna_tags": "ace_step_knowledge_producer",
+            "track_concept": "track_producer",
+            "metadata": "track_producer",
+            "section_map": "track_producer",
+            "hook_promise": "songwriter",
+            "hook_lines": "songwriter",
+            "section_briefs": "songwriter",
+            "lyrics_section_draft": "songwriter",
+            "section_craft_critic": "songwriter",
+            "section_repair": "songwriter",
+            "caption_finalizer": "ace_step_prompt_engineer",
+            "performance_brief": "vocal_performance_producer",
+            "album_visual_bible": "visual_director",
+            "single_art_prompt": "visual_director",
+            "video_prompt": "visual_director",
+            "visual_consistency_critic": "visual_director",
+            "whole_song_continuity_critic": "payload_assembler",
+        }
+        return ALBUM_TASK_GRAPH_REGISTRY[alias_map.get(task_id, task_id)]
 
     def _record(
         self,
@@ -1505,8 +1378,8 @@ def _track_gate_retry_message(report: dict[str, Any]) -> str:
         else:
             pieces.append(f"{issue_id}: {detail}".rstrip(": "))
     if not pieces:
-        pieces.append(f"payload_gate_status={report.get('status') or 'unknown'}; call PayloadGateTool and repair before final JSON.")
-    return "Album track guardrail failed; retry with repaired final JSON. " + " | ".join(pieces)
+        pieces.append(f"ace_step_contract_status={report.get('status') or 'unknown'}; return complete technical JSON before render.")
+    return "Album track ACE-Step contract failed; retry with corrected technical JSON. " + " | ".join(pieces)
 
 
 def _track_json_guardrail_factory(
@@ -1530,17 +1403,15 @@ def _track_json_guardrail_factory(
             merged["caption"] = merged.get("tags")
         merged.setdefault("duration", blueprint.get("duration") or options.get("track_duration") or 180)
         merged.setdefault("language", options.get("language") or "en")
-        report = evaluate_album_payload_quality(
+        report = _ace_step_album_payload_contract_check(
             merged,
-            options={
+            _director_section_tags(merged),
+            {
                 **dict(options or {}),
                 "track_duration": merged.get("duration") or options.get("track_duration") or 180,
-                "lyric_density": options.get("lyric_density") or "dense",
-                "structure_preset": options.get("structure_preset") or "auto",
             },
-            repair=True,
         )
-        public_report = {key: value for key, value in report.items() if key != "repaired_payload"}
+        public_report = dict(report)
         _append_album_debug_jsonl(
             options,
             "04_track_guardrails.jsonl",
@@ -1554,7 +1425,7 @@ def _track_json_guardrail_factory(
         )
         if not report.get("gate_passed"):
             return False, _track_gate_retry_message(report)
-        repaired = dict(report.get("repaired_payload") or merged)
+        repaired = dict(merged)
         stats = lyric_stats(str(repaired.get("lyrics") or ""))
         repaired["lyrics_word_count"] = int(stats.get("word_count") or 0)
         repaired["lyrics_line_count"] = int(stats.get("line_count") or 0)
@@ -1563,20 +1434,15 @@ def _track_json_guardrail_factory(
         repaired["hook_count"] = sum(
             1 for section in stats.get("sections") or [] if re.search(r"chorus|hook|refrain", str(section), re.I)
         )
-        repaired["lyric_duration_fit"] = report.get("lyric_duration_fit") or {}
-        repaired["lyric_density_gate"] = report.get("lyric_density_gate") or {}
-        repaired["producer_grade_sonic_contract"] = report.get("producer_grade_sonic_contract") or {}
-        repaired["sonic_dna_coverage"] = report.get("sonic_dna_coverage") or {}
-        repaired["producer_grade_readiness"] = report.get("producer_grade_readiness") or {}
-        covered = [
-            item.get("dimension")
-            for item in ((report.get("tag_coverage") or {}).get("dimensions") or [])
-            if item.get("status") == "pass"
-        ]
-        repaired["caption_dimensions_covered"] = covered
+        repaired["lyric_duration_fit"] = {"status": "not_applied", "technical_only": True}
+        repaired["lyric_density_gate"] = {"status": "not_applied", "technical_only": True}
+        repaired["producer_grade_sonic_contract"] = {}
+        repaired["sonic_dna_coverage"] = {"status": "not_applied", "technical_only": True}
+        repaired["producer_grade_readiness"] = {"status": "not_applied", "technical_only": True}
+        repaired["caption_dimensions_covered"] = repaired.get("caption_dimensions_covered") or []
         repaired["quality_checks"] = {
             **(repaired.get("quality_checks") if isinstance(repaired.get("quality_checks"), dict) else {}),
-            "guardrail_validated": "pass",
+            "ace_step_contract_validated": "pass",
             "lyric_length_plan": {
                 "min_words": lyric_plan.get("min_words"),
                 "min_lines": lyric_plan.get("min_lines"),
@@ -2401,24 +2267,26 @@ def _search_web(query: str) -> str:
 def _crewai_llm_kwargs(model_name: str, provider: str = "ollama") -> dict[str, Any]:
     provider_name = normalize_provider(provider)
     if provider_name == "lmstudio":
-        return {
+        payload = {
             "model": str(model_name or "").strip(),
             "provider": "openai",
             "base_url": lmstudio_api_base_url(),
             "api_key": os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
             "temperature": 0.72,
             "top_p": 0.92,
-            "max_tokens": CREWAI_LMSTUDIO_MAX_TOKENS,
             "timeout": CREWAI_LLM_TIMEOUT_SECONDS,
         }
-    return {
-        "model": str(model_name or "").strip(),
-        "provider": "ollama",
+        if CREWAI_LMSTUDIO_MAX_TOKENS > 0:
+            payload["max_tokens"] = CREWAI_LMSTUDIO_MAX_TOKENS
+        return payload
+    ollama_model = str(model_name or "").strip()
+    if ollama_model and not ollama_model.startswith("ollama/"):
+        ollama_model = f"ollama/{ollama_model}"
+    payload = {
+        "model": ollama_model,
         "base_url": OLLAMA_BASE_URL,
-        "api_base": _ollama_v1_base_url(),
         "temperature": 0.72,
         "top_p": 0.92,
-        "max_tokens": CREWAI_LLM_MAX_TOKENS,
         "additional_params": {
             "extra_body": {
                 "think": False,
@@ -2430,6 +2298,9 @@ def _crewai_llm_kwargs(model_name: str, provider: str = "ollama") -> dict[str, A
         },
         "timeout": CREWAI_LLM_TIMEOUT_SECONDS,
     }
+    if CREWAI_LLM_MAX_TOKENS > 0:
+        payload["max_tokens"] = CREWAI_LLM_MAX_TOKENS
+    return payload
 
 
 def _lmstudio_no_think_text(value: str) -> str:
@@ -2524,27 +2395,6 @@ def _is_lmstudio_model_crash(value: Any) -> bool:
 
 def _make_llm(model_name: str, provider: str = "ollama", debug_log_file: str | None = None):
     provider_name = normalize_provider(provider)
-    if provider_name in {"ollama", "lmstudio"}:
-        options = planner_llm_options_for_provider(
-            provider_name,
-            {
-                "planner_temperature": 0.72,
-                "planner_top_p": 0.92,
-                "planner_max_tokens": CREWAI_LMSTUDIO_MAX_TOKENS if provider_name == "lmstudio" else CREWAI_LLM_MAX_TOKENS,
-                "planner_context_length": CREWAI_LLM_CONTEXT_WINDOW,
-                "planner_timeout": CREWAI_LLM_TIMEOUT_SECONDS,
-            },
-            default_max_tokens=CREWAI_LMSTUDIO_MAX_TOKENS if provider_name == "lmstudio" else CREWAI_LLM_MAX_TOKENS,
-            default_timeout=CREWAI_LLM_TIMEOUT_SECONDS,
-        )
-        local_native_cls = _build_local_native_llm_class()
-        return local_native_cls(
-            model_name=model_name,
-            provider_name=provider_name,
-            options=options,
-            timeout=CREWAI_LLM_TIMEOUT_SECONDS,
-        )
-
     from crewai import LLM
 
     llm = LLM(**_crewai_llm_kwargs(model_name, provider_name))
@@ -2742,7 +2592,6 @@ def _crew_task(
         "description": description,
         "expected_output": expected_output,
         "agent": agent,
-        "guardrail_max_retries": CREWAI_TASK_MAX_RETRIES,
     }
     if context is not None:
         kwargs["context"] = context
@@ -2750,6 +2599,7 @@ def _crew_task(
         kwargs["output_json"] = output_json
     if guardrail is not None:
         kwargs["guardrail"] = guardrail
+        kwargs["guardrail_max_retries"] = CREWAI_TASK_MAX_RETRIES
     return Task(**kwargs)
 
 
@@ -3107,6 +2957,24 @@ def _output_json_for_provider(model: type[BaseModel], planner_provider: str) -> 
     return model
 
 
+def _crewai_micro_output_json_for_provider(
+    model: type[BaseModel] | None,
+    planner_provider: str,
+) -> type[BaseModel] | None:
+    if model is None:
+        return None
+    provider_name = normalize_provider(planner_provider)
+    if provider_name == "ollama":
+        # CrewAI/LiteLLM translates Task(output_json=...) into Ollama's
+        # native `format` schema. Some of our small micro-task schemas contain
+        # flexible fields such as `Any`, which Ollama rejects with
+        # "invalid JSON schema in format" before the model can answer. For
+        # Ollama we keep strict JSON instructions in the prompt and validate
+        # the returned object with AceJAM's server-side parser below.
+        return None
+    return model
+
+
 def _tool_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -3333,7 +3201,6 @@ def create_track_production_crew(
             "lyric_counter_tool",
             "tag_coverage_tool",
             "caption_integrity_tool",
-            "payload_gate_tool",
             "lyric_length_tool",
             "section_map_tool",
             "arrangement_tool",
@@ -3342,13 +3209,10 @@ def create_track_production_crew(
             "metaphor_world_tool",
             "hook_doctor_tool",
             "caption_polisher_tool",
-            "cliche_guard_tool",
             "conflict_checker_tool",
-            "track_repair_tool",
             "validation_checklist_tool",
             "negative_control_tool",
             "effective_settings_tool",
-            "hit_readiness_tool",
             "model_compatibility_tool",
         },
     )
@@ -3404,8 +3268,7 @@ def create_track_production_crew(
             f"ACE-Step track prompt template:\n{_clip_text(track_prompt_template, CREWAI_PROMPT_BUDGET_CHARS)}\n"
             "Write complete lyrics unless the blueprint is explicitly instrumental. "
             "Use AceStepPromptContractTool, TagLibraryTool, LyricLengthTool, LyricCounterTool, "
-            "TagCoverageTool, CaptionIntegrityTool, PayloadGateTool, SectionMapTool, CaptionPolisherTool, "
-            "and TrackRepairTool as needed. "
+            "TagCoverageTool, CaptionIntegrityTool, SectionMapTool, and CaptionPolisherTool as needed. "
             "Your production notes must include a compact ACE_STEP_VALIDATION block with lyrics_word_count, "
             "lyrics_line_count, lyrics_char_count, section_count, hook_count, caption_dimensions_covered, "
             "caption_char_count, and any repairs made. Stay on this single track; do not rewrite album-wide plans."
@@ -3424,16 +3287,13 @@ def create_track_production_crew(
             "lyrics_word_count, lyrics_line_count, lyrics_char_count, section_count, hook_count, "
             "caption_dimensions_covered. "
             f"Apply this prompt template before output:\n{_clip_text(track_prompt_template, CREWAI_PROMPT_BUDGET_CHARS)} "
-            "If lyrics_line_count is below min_lines, split long rap/sung lines into shorter breath units or extend sections. "
-            "If lyrics_word_count is below min_words, extend verses/bridge/final chorus. "
-            "If tags miss a required caption dimension, repair the caption. "
+            "Keep caption under 512 chars and lyrics under 4096 chars. "
             "Preserve the blueprint title and locked fields exactly. No markdown fences."
         ),
         expected_output="Strict JSON object for exactly one produced track with passing validation counts.",
         agent=finalizer,
         context=[task_produce],
         output_json=_output_json_for_provider(TrackProductionPayloadModel, planner_provider),
-        guardrail=_track_json_guardrail_factory(blueprint=blueprint, options=opts, lyric_plan=lyric_plan),
     )
     return Crew(
         agents=[producer, finalizer],
@@ -3634,7 +3494,7 @@ def create_album_crew(
     )
     lyric_editor = Agent(
         role="Lyric Editor and Quality Control",
-        goal="Raise rhyme density, sharpen imagery, enforce punchline discipline, and eliminate cliches across all tracks",
+        goal="Improve lyric focus, imagery, cadence, and album continuity across all tracks",
         backstory=(
             f"{shared_rules}\n\n"
             "You sharpen internal rhyme, multisyllabic/slant rhyme, metaphor worlds, line endings, "
@@ -3685,8 +3545,8 @@ def create_album_crew(
         goal="Reject weak songs, repair issues, and output strict JSON for AceJAM generation",
         backstory=(
             f"{shared_rules}\n\n"
-            "You are the final gate. Reject generic lyrics, cliches, repeated hooks, tag conflicts, "
-            "and under-length songs. Verify every duration is a realistic numeric value in seconds. "
+            "You are the final assembler. Verify every duration is a realistic numeric value in seconds, "
+            "keep captions under 512 characters, keep lyrics under 4096 characters, and preserve required fields. "
             "Final output must be a JSON array only -- no prose, no markdown, no analysis."
         ),
         tools=tools,
@@ -3741,7 +3601,7 @@ def create_album_crew(
             "- intro/interlude: short atmospheric content 20-60 words, or [Instrumental] with section tags.\n"
             "DURATION WILL BE DERIVED: singing ≈ 2.5 words/sec, rap ≈ 3.5 words/sec, sparse EDM ≈ 1.5 words/sec.\n"
             f"{section_tags_ref}\n"
-            "HIT-WRITING QUALITY GATES:\n"
+            "STUDIO WRITING TARGETS:\n"
             "- Every vocal song needs a central emotional promise: what changes between verse and chorus?\n"
             "- Use one central metaphor or concrete situation per song. Do not jump between unrelated images.\n"
             "- Include sensory/physical details: place, object, weather, body feeling, sound, motion, memory.\n"
@@ -3752,7 +3612,7 @@ def create_album_crew(
             "- EDM hooks should be sparse and placed around builds/drops rather than overfilling.\n"
             "- Lyrics must sound like a human wrote them for this artist and language, not a translated motivational poster.\n"
             "Keep sonic/instrument/production tags in caption only, not as random lyric lines. "
-            "Keep each hook unique across the album. No placeholder lines. No AI filler."
+            "Keep each hook unique across the album. No placeholder lines."
         ),
         expected_output="Complete FULL-LENGTH professional lyrics for every track (minimum 200 words per full_song).",
         agent=songwriter,
@@ -3760,17 +3620,15 @@ def create_album_crew(
     )
     task_lyric_edit = _crew_task(
         description=(
-            "Edit every lyric for internal/slant rhyme, metaphor focus, cliche cleanup, repeated-line checks, "
-            "and hook memorability. Use RhymeFlowTool, MetaphorWorldTool, HookDoctorTool, ClicheGuardTool, "
-            "HitScoreTool, and TrackRepairTool.\n"
-            "ANTI-AI REWRITE CHECKLIST:\n"
-            "- Remove vague adjective piles and empty inspirational slogans.\n"
-            "- Replace generic images ('neon dreams', 'fire inside') with concrete specific details.\n"
-            "- Ensure every line adds information or emotion, not filler.\n"
-            "- Check that hooks are short (3-8 words) and repeatable.\n"
-            "- Verify lines are 4-10 syllables for singing, or breathable bars for rap.\n"
-            "- Confirm one metaphor world per song, not random image jumping.\n"
-            "- Check language sounds natural, not like a translation."
+            "Edit every lyric for internal/slant rhyme, metaphor focus, line movement, "
+            "and hook memorability. Use RhymeFlowTool, MetaphorWorldTool, and HookDoctorTool.\n"
+            "STUDIO REWRITE CHECKLIST:\n"
+            "- Make each line feel intentional for the artist and track.\n"
+            "- Strengthen concrete details where the song wants them.\n"
+            "- Ensure verses add information or emotion.\n"
+            "- Check that hooks are short and repeatable.\n"
+            "- Keep sung lines vowel-friendly and rap bars breathable.\n"
+            "- Check language sounds natural for the chosen language."
         ),
         expected_output="Polished lyrics with quality notes and anti-AI confirmation for every track.",
         agent=lyric_editor,
@@ -3919,8 +3777,18 @@ class _AlbumPlanLogs(list[str]):
 
 
 def _agent_completion_cap(agent_name: str, provider_name: str) -> int:
+    env_key = "ACEJAM_AGENT_MAX_TOKENS_" + re.sub(r"[^A-Z0-9]+", "_", str(agent_name or "agent").upper()).strip("_")
+    if env_key in os.environ:
+        raw_value = int(os.environ.get(env_key) or -1)
+        if raw_value > 0 or CREWAI_AGENT_ALLOW_UNBOUNDED_OUTPUT:
+            return raw_value
+    if provider_name == "ollama" and (CREWAI_AGENT_ALLOW_UNBOUNDED_OUTPUT or int(CREWAI_LLM_NUM_PREDICT or 0) <= 0):
+        return -1
     defaults = {
+        "Album Intake Agent": 1800,
         "Album Bible Agent": 1800,
+        "Tag Agent": 1600,
+        "Track Concept Agent": 1800,
         "Track Blueprint Agent": 1600,
         "Track Settings Agent": 2600,
         "Track BPM Agent": 700,
@@ -3936,19 +3804,27 @@ def _agent_completion_cap(agent_name: str, provider_name: str) -> int:
         "Track Writer Agent": 12000,
         "Track Finalizer Agent": 9000,
         "Track Lyric Continuation Agent": 3200,
+        "Visual Director Agent": 2200,
+        "Vocal & Performance Producer": 1400,
+        "ACE-Step Prompt Engineer": 2200,
+        "Payload Assembler": 1600,
     }
     if str(agent_name or "").startswith("Track Lyrics Agent"):
         return max(900, int(os.environ.get("ACEJAM_AGENT_MAX_TOKENS_TRACK_LYRICS_AGENT", "1800")))
-    env_key = "ACEJAM_AGENT_MAX_TOKENS_" + re.sub(r"[^A-Z0-9]+", "_", str(agent_name or "agent").upper()).strip("_")
     fallback = CREWAI_LMSTUDIO_MAX_TOKENS if provider_name == "lmstudio" else CREWAI_LLM_NUM_PREDICT
-    return max(512, int(os.environ.get(env_key, defaults.get(str(agent_name), min(4500, int(fallback))))))
+    if int(fallback or 0) <= 0:
+        return -1
+    return max(512, int(defaults.get(str(agent_name), min(4500, int(fallback)))))
 
 
 def _agent_llm_options(provider: str, agent_name: str = "", planner_settings: dict[str, Any] | None = None) -> dict[str, Any]:
     provider_name = normalize_provider(provider)
     completion_cap = _agent_completion_cap(agent_name, provider_name)
     timeouts = {
+        "Album Intake Agent": 120,
         "Album Bible Agent": 60,
+        "Tag Agent": 90,
+        "Track Concept Agent": 90,
         "Track Blueprint Agent": 75,
         "Track BPM Agent": 45,
         "Track Key Agent": 45,
@@ -3964,15 +3840,29 @@ def _agent_llm_options(provider: str, agent_name: str = "", planner_settings: di
         "Track Writer Agent": 150,
         "Track Finalizer Agent": 150,
         "Track Lyric Continuation Agent": 75,
+        "Visual Director Agent": 90,
+        "Vocal & Performance Producer": 75,
+        "ACE-Step Prompt Engineer": 90,
+        "Payload Assembler": 60,
     }
     default_timeout = timeouts.get(str(agent_name), 120)
     if str(agent_name or "").startswith("Track Lyrics Agent"):
         default_timeout = 75
-    timeout = float(os.environ.get(
-        "ACEJAM_AGENT_TIMEOUT_" + re.sub(r"[^A-Z0-9]+", "_", str(agent_name or "agent").upper()).strip("_"),
-        default_timeout,
-    ))
     source = dict(planner_settings or {})
+    timeout_env_key = "ACEJAM_AGENT_TIMEOUT_" + re.sub(r"[^A-Z0-9]+", "_", str(agent_name or "agent").upper()).strip("_")
+    try:
+        requested_timeout = float(source.get("planner_timeout") or source.get("local_llm_timeout") or 0)
+    except (TypeError, ValueError):
+        requested_timeout = 0.0
+    if timeout_env_key in os.environ:
+        timeout = float(os.environ.get(timeout_env_key) or CREWAI_LLM_TIMEOUT_SECONDS)
+    elif requested_timeout > 0:
+        timeout = requested_timeout
+    else:
+        timeout = float(CREWAI_LLM_TIMEOUT_SECONDS)
+    timeout = max(15.0, timeout)
+    if CREWAI_AGENT_MAX_TIMEOUT_SECONDS > 0:
+        timeout = min(float(CREWAI_AGENT_MAX_TIMEOUT_SECONDS), timeout)
     if "planner_temperature" not in source and "local_llm_temperature" not in source:
         agent_label = str(agent_name or "")
         if re.search(r"Lyrics|Lyric|Hook|Writer", agent_label, re.I):
@@ -3984,17 +3874,29 @@ def _agent_llm_options(provider: str, agent_name: str = "", planner_settings: di
         source["planner_temperature"] = os.environ.get("ACEJAM_PLANNER_TEMPERATURE", str(default_temperature))
     if "planner_top_p" not in source and "local_llm_top_p" not in source:
         source["planner_top_p"] = os.environ.get("ACEJAM_PLANNER_TOP_P", ACEJAM_AGENT_TOP_P)
-    if "planner_context_length" not in source and "local_llm_context_length" not in source and "planner_num_ctx" not in source:
-        source["planner_context_length"] = os.environ.get(
-            "ACEJAM_PLANNER_CONTEXT_LENGTH",
-            os.environ.get("ACEJAM_AGENT_OLLAMA_NUM_CTX", str(CREWAI_LLM_CONTEXT_WINDOW)),
-        )
+    requested_context = int(
+        source.get("planner_context_length")
+        or source.get("local_llm_context_length")
+        or source.get("planner_num_ctx")
+        or os.environ.get("ACEJAM_PLANNER_CONTEXT_LENGTH")
+        or os.environ.get("ACEJAM_AGENT_OLLAMA_NUM_CTX", str(CREWAI_LLM_CONTEXT_WINDOW))
+    )
+    try:
+        requested_max_tokens = int(float(source.get("planner_max_tokens") or source.get("local_llm_max_tokens") or 0))
+    except (TypeError, ValueError):
+        requested_max_tokens = 0
+    effective_max_tokens = requested_max_tokens if requested_max_tokens > 0 else completion_cap
+    source["planner_context_length"] = max(4096, min(int(CREWAI_AGENT_CONTEXT_WINDOW), requested_context))
+    source["planner_timeout"] = timeout
+    source["planner_max_tokens"] = effective_max_tokens
     options = planner_llm_options_for_provider(
         provider_name,
         source,
         default_max_tokens=completion_cap,
         default_timeout=timeout,
     )
+    if effective_max_tokens <= 0 and provider_name != "ollama":
+        options.pop("max_tokens", None)
     return options
 
 
@@ -4326,7 +4228,7 @@ def _ensure_track_rap_tag_payload(
     """
     if not isinstance(payload, dict):
         return payload
-    contract = build_genre_intent_contract({**(track or {}), **payload}, options)
+    contract = _minimal_genre_intent_contract({**(track or {}), **payload}, options)
     if contract.get("family") != "rap":
         return payload
 
@@ -5187,7 +5089,7 @@ def _agent_full_system_prompt(
     """Build the full per-agent system prompt: per-agent task scope from
     `_agent_system_prompt(agent_name)`, plus the album-mode `extra_system`
     block (which carries `prompt_kit_system_block("album")` with the tag
-    library, producer/songwriter/anti-pattern cookbooks and worked examples),
+    library, producer/songwriter references and worked examples),
     plus the thinking directive, plus the schema-specific JSON instruction.
 
     Earlier this function recursed into itself (`_agent_full_system_prompt`
@@ -5415,9 +5317,10 @@ def _crewai_micro_llm_kwargs(
         "model": str(model_name or "").strip(),
         "temperature": float(options.get("temperature") if options.get("temperature") is not None else ACEJAM_AGENT_TEMPERATURE),
         "top_p": float(options.get("top_p") if options.get("top_p") is not None else ACEJAM_AGENT_TOP_P),
-        "max_tokens": max_tokens,
         "timeout": float(options.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
     }
+    if max_tokens > 0:
+        common["max_tokens"] = max_tokens
     if seed_value is not None:
         common["seed"] = seed_value
     top_k = options.get("top_k")
@@ -5439,7 +5342,7 @@ def _crewai_micro_llm_kwargs(
         return payload
     ollama_options: dict[str, Any] = {
         "num_ctx": int(options.get("num_ctx") or CREWAI_LLM_CONTEXT_WINDOW),
-        "num_predict": max_tokens,
+        "num_predict": max_tokens if max_tokens > 0 else -1,
     }
     if top_k is not None:
         ollama_options["top_k"] = int(top_k)
@@ -5468,152 +5371,63 @@ def _crewai_micro_llm_kwargs(
     }
 
 
-def _build_local_native_llm_class():
-    """Build the CrewAI-compatible local LLM class. We construct it
-    inside a factory because it must subclass `crewai.llms.base_llm.BaseLLM`
-    for pydantic validation in `crewai.Agent` to pass, and crewai is
-    imported lazily.
+class _AceJamNativeOllamaCrewLLM(__import__("crewai.llms.base_llm", fromlist=["BaseLLM"]).BaseLLM):
+    """CrewAI-compatible LLM that uses Ollama's native /api/chat path.
 
-    Why subclass BaseLLM (not the public LLM facade): crewai.LLM uses a
-    custom __new__ factory that returns a different concrete class
-    (OpenAICompatibleCompletion) regardless of the cls argument. Subclassing
-    LLM therefore fails with TypeError: LLM.__new__() missing argument.
-    BaseLLM is the actual abstract base accepted by Agent.llm validation
-    (`Annotated[str | BaseLLM | None, ...]`).
+    Some reasoning-capable Ollama models return useful text through native
+    `/api/chat`, but expose an empty `message.content` through the
+    OpenAI-compatible route that CrewAI/LiteLLM normally uses. This wrapper
+    keeps the real CrewAI Agent/Task/Crew orchestration while sending the
+    model call through AceJAM's tested local Ollama client.
     """
-    from crewai.llms.base_llm import BaseLLM as _BaseLLM
 
-    class _AceJamLocalNativeLLM(_BaseLLM):
-        """BaseLLM subclass that lets CrewAI orchestrate agents/tasks while
-        AceJAM talks to Ollama/LM Studio directly through `local_llm.py`.
-        This keeps LiteLLM out of the local album-writing path and still uses
-        CrewAI's documented Task(output_json=...) / TaskOutput.json_dict flow."""
+    json_format: bool = False
+    options: dict[str, Any] = Field(default_factory=dict)
 
-        llm_type: str = "acejam_local_native"
+    def supports_function_calling(self) -> bool:
+        return False
 
-        _provider_name: str = "ollama"
-        _local_options_raw: dict[str, Any] = {}
-        _local_timeout: float = 600.0
+    def supports_multimodal(self) -> bool:
+        return False
 
-        def __init__(self, model_name: str, provider_name: str, options: dict[str, Any], timeout: float = 600.0, **extra: Any):
-            normalized_provider = normalize_provider(provider_name)
-            super().__init__(model=str(model_name or "").strip(), provider=normalized_provider, **extra)
-            object.__setattr__(self, "_provider_name", normalized_provider)
-            object.__setattr__(self, "_local_options_raw", dict(options or {}))
-            object.__setattr__(self, "_local_timeout", float(timeout))
-
-        def supports_function_calling(self) -> bool:
-            return False
-
-        def supports_stop_words(self) -> bool:
-            return False
-
-        def get_context_window_size(self) -> int:
-            try:
-                return int(self._local_options_raw.get("num_ctx") or self._local_options_raw.get("context_length") or CREWAI_LLM_CONTEXT_WINDOW)
-            except Exception:
-                return CREWAI_LLM_CONTEXT_WINDOW
-
-        @staticmethod
-        def _ensure_no_think_directive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            if not messages:
-                return messages
-            adjusted = [dict(m) for m in messages]
-            for i in range(len(adjusted) - 1, -1, -1):
-                if adjusted[i].get("role") == "user":
-                    content = str(adjusted[i].get("content") or "")
-                    if "/no_think" not in content:
-                        adjusted[i]["content"] = "/no_think\n\n" + content
-                    break
-            return adjusted
-
-        @staticmethod
-        def _json_schema_for_response_model(response_model: Any) -> dict[str, Any] | None:
-            if response_model is None:
-                return None
-            try:
-                if hasattr(response_model, "model_json_schema"):
-                    schema = response_model.model_json_schema()
-                elif hasattr(response_model, "schema"):
-                    schema = response_model.schema()
-                else:
-                    return None
-            except Exception:
-                return None
-            if not isinstance(schema, dict) or not schema:
-                return None
-
-            def _stricten(node: Any) -> None:
-                if not isinstance(node, dict):
-                    return
-                props = node.get("properties")
-                if isinstance(props, dict) and props:
-                    node["required"] = list(props.keys())
-                    node["additionalProperties"] = False
-                    for child in props.values():
-                        _stricten(child)
-                items = node.get("items")
-                if isinstance(items, dict):
-                    _stricten(items)
-                for key in ("$defs", "definitions"):
-                    defs = node.get(key)
-                    if isinstance(defs, dict):
-                        for child in defs.values():
-                            _stricten(child)
-
-            schema = dict(schema)
-            _stricten(schema)
-            return schema
-
-        def call(
-            self,
-            messages,
-            tools=None,
-            callbacks=None,
-            available_functions=None,
-            from_task=None,
-            from_agent=None,
-            response_model=None,
-        ):
-            if isinstance(messages, str):
-                payload_messages = [{"role": "user", "content": messages}]
+    def _normalize_messages(self, messages: Any) -> list[dict[str, str]]:
+        if isinstance(messages, str):
+            return [{"role": "user", "content": messages}]
+        normalized: list[dict[str, str]] = []
+        if not isinstance(messages, list):
+            return [{"role": "user", "content": str(messages or "")}]
+        for item in messages:
+            if isinstance(item, dict):
+                role = str(item.get("role") or "user").strip() or "user"
+                content = item.get("content")
             else:
-                payload_messages = []
-                for m in messages or []:
-                    if isinstance(m, dict):
-                        payload_messages.append({"role": str(m.get("role") or "user"), "content": str(m.get("content") or "")})
-                    else:
-                        payload_messages.append({"role": str(getattr(m, "role", "user")), "content": str(getattr(m, "content", ""))})
-
-            if self._provider_name == "lmstudio":
-                payload_messages = _lmstudio_no_think_messages(payload_messages)
+                role = str(getattr(item, "role", "user") or "user").strip() or "user"
+                content = getattr(item, "content", "")
+            if isinstance(content, list):
+                content_text = "\n".join(str(part.get("text") if isinstance(part, dict) else part) for part in content)
             else:
-                payload_messages = self._ensure_no_think_directive(payload_messages)
+                content_text = str(content or "")
+            normalized.append({"role": role, "content": content_text})
+        return normalized or [{"role": "user", "content": ""}]
 
-            schema = self._json_schema_for_response_model(response_model)
-            options = dict(self._local_options_raw)
-            options["timeout"] = self._local_timeout
-            try:
-                data = local_llm_chat_completion_response(
-                    self._provider_name,
-                    self.model,
-                    payload_messages,
-                    options=options,
-                    json_schema=schema,
-                    json_format=bool(schema),
-                )
-            except Exception as exc:
-                raise RuntimeError(f"AceJAMLocalNativeLLM call failed: {type(exc).__name__}: {exc}") from exc
-
-            if isinstance(data, dict) and data.get("truncated"):
-                raise RuntimeError(f"{provider_label(self._provider_name)} response truncated: done_reason={data.get('done_reason')}")
-            content = str((data or {}).get("content") if isinstance(data, dict) else data or "").strip()
-            if not content:
-                return ""
-            stripped = _strip_thinking_blocks(content)
-            return stripped if stripped.strip() else content
-
-    return _AceJamLocalNativeLLM
+    def call(
+        self,
+        messages: Any,
+        tools: list[dict[str, Any]] | None = None,
+        callbacks: list[Any] | None = None,
+        available_functions: dict[str, Any] | None = None,
+        from_task: Any | None = None,
+        from_agent: Any | None = None,
+        response_model: type[BaseModel] | None = None,
+    ) -> str:
+        del tools, callbacks, available_functions, from_task, from_agent
+        return local_llm_chat_completion(
+            "ollama",
+            self.model,
+            self._normalize_messages(messages),
+            options=dict(self.options or {}),
+            json_format=bool(self.json_format or response_model is not None),
+        )
 
 
 def _make_crewai_micro_llm(
@@ -5621,22 +5435,39 @@ def _make_crewai_micro_llm(
     provider: str,
     agent_name: str,
     planner_settings: dict[str, Any] | None = None,
+    json_format: bool = False,
 ):
     provider_name = normalize_provider(provider)
-    # Local album agents should not go through CrewAI's LiteLLM/OpenAI-compat
-    # facade. CrewAI still owns Agent/Task/Crew orchestration, while this
-    # BaseLLM talks directly to Ollama or LM Studio through app/local_llm.py.
-    if provider_name in {"ollama", "lmstudio"}:
-        options = _agent_llm_options(provider_name, agent_name, planner_settings)
-        local_native_cls = _build_local_native_llm_class()
-        return local_native_cls(
-            model_name=model_name,
-            provider_name=provider_name,
-            options=options,
-            timeout=float(options.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
-        )
+    if provider_name not in {"ollama", "lmstudio"}:
+        raise ValueError(f"Unsupported CrewAI local planner provider for album agents: {provider_name}")
+    from crewai import LLM
 
-    raise ValueError(f"Unsupported CrewAI local planner provider for album agents: {provider_name}")
+    options = _agent_llm_options(provider_name, agent_name, planner_settings)
+    if provider_name == "ollama":
+        llm = _AceJamNativeOllamaCrewLLM(
+            model=str(model_name or "").strip(),
+            provider="ollama",
+            base_url=OLLAMA_BASE_URL,
+            temperature=float(options.get("temperature") if options.get("temperature") is not None else ACEJAM_AGENT_TEMPERATURE),
+            options=options,
+            json_format=json_format,
+        )
+    else:
+        llm_kwargs = {
+            "model": str(model_name or "").strip(),
+            "provider": "openai",
+            "base_url": lmstudio_api_base_url(),
+            "api_key": os.environ.get("LMSTUDIO_API_TOKEN", "lm-studio"),
+            "temperature": float(options.get("temperature") if options.get("temperature") is not None else ACEJAM_AGENT_TEMPERATURE),
+            "top_p": float(options.get("top_p") if options.get("top_p") is not None else ACEJAM_AGENT_TOP_P),
+            "timeout": float(options.get("timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
+        }
+        lmstudio_max_tokens = int(options.get("max_tokens") or CREWAI_LMSTUDIO_MAX_TOKENS or 0)
+        if lmstudio_max_tokens > 0:
+            llm_kwargs["max_tokens"] = lmstudio_max_tokens
+        llm = LLM(**llm_kwargs)
+        llm.supports_function_calling = lambda: False
+    return llm
 
 
 def _crewai_micro_block_guardrail(schema_name: str):
@@ -5670,8 +5501,8 @@ def _crewai_micro_block_guardrail(schema_name: str):
 _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
     "Album Intake Agent": (
         "Album A&R Intake Producer",
-        "Distil the user concept into an album bible: title, theme, emotional arc, target audience, sonic identity, motif words, and locked tracks. Never invent producers the user did not ask for. Never copy AI-cliche phrasing.",
-        "You run intake for award-level studio releases. You read what the artist actually wants — concrete details, real references, the locked phrases — and you keep generic AI slop out of the bible.",
+        "Distil the user concept into an album bible: title, theme, emotional arc, target audience, sonic identity, motif words, and locked tracks. Preserve any producers the user explicitly named.",
+        "You run intake for award-level studio releases. You read what the artist actually wants — concrete details, real references, the locked phrases — and make the bible usable for the studio crew.",
     ),
     "Track Concept Agent": (
         "Track Concept Producer (concrete style + vibe + narrative required)",
@@ -5723,27 +5554,27 @@ _AGENT_PERSONAS: dict[str, tuple[str, str, str]] = {
     ),
     "Section Map Agent": (
         "Arrangement Producer",
-        "Build the bracketed section sequence for this duration + genre. Rap tracks include [Verse - rap] sections; hooks repeat verbatim; bridges introduce NEW content; long tracks use [Beat Switch] or [Bridge - melodic rap] to keep momentum.",
-        "You arrange songs the way mixtape engineers arrange them. Verse/Hook/Verse/Hook/Bridge/Final Hook for pop. Intro/Verse/Hook/Verse/Hook/Bridge/Verse/Hook/Outro for rap. Long tracks earn their length with section variety, not repetition.",
+        "Build the bracketed section sequence for this duration + genre. Make the arrangement musical, complete, and natural for the track role; rap tracks need real verse/hook architecture, sung tracks need singable lift.",
+        "You arrange songs the way mixtape engineers arrange them. Choose sections because the song needs them, not because a template says so. Long tracks earn their length through progression, contrast, and payoff.",
     ),
     "Hook Agent": (
         "Topline Hook Writer (2024-2026 chart-craft)",
-        "Write a 2-4 line hook that passes the TikTok 30-second test and the hum-test: by 0:15 a stranger should grasp the thesis. Title-drop on chorus line 1 with vowel-lock rhyme through 3-4 successive end-words. Anthem-shout cadence (4-syllable chant a stadium can sing). Concrete proper noun (brand/place/name). One displaced-downbeat melody phrase (start on beat 2 not the 1). No cliche image bank, no polar 'I am X / I am Y' binary.",
-        "You write 2024-2026 chart hooks the way Sabrina Carpenter writes 'that's that me, espresso', Kendrick writes 'they not like us', Billie Eilish writes 'birds of a feather, we should stick together I know', Beyonce writes 'this ain't Texas, ain't no hold 'em'. Hook FIRST, not buried. Vowel-lock stacked, concrete proper nouns, displaced downbeat, anthem-shout cadence. No 'neon dreams', no 'I am the saint I am the sinner' Nick-Cave-flagged AI tells.",
+        "Write a 2-4 line hook that passes the TikTok 30-second test and the hum-test: by 0:15 a stranger should grasp the thesis. Title-drop on chorus line 1 with vowel-lock rhyme through 3-4 successive end-words. Anthem-shout cadence when it fits. Concrete proper noun when it serves the song. One displaced-downbeat melody phrase when it helps.",
+        "You write 2024-2026 chart hooks the way Sabrina Carpenter writes 'that's that me, espresso', Kendrick writes 'they not like us', Billie Eilish writes 'birds of a feather, we should stick together I know', Beyonce writes 'this ain't Texas, ain't no hold 'em'. Hook FIRST, not buried. Vowel-lock stacked, concrete proper nouns, displaced downbeat, anthem-shout cadence.",
     ),
     "Track Lyrics Agent Part 1": (
         "Tier-1 Lyric Writer Part 1 (2024-2026 chart-craft)",
-        "Write the first lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Full rap songs require TWO rap verses with at least 16 bars each; section_line_minimums are hard and bracket tags never count as bars. Pop verses are 8-12 lines. Pick ONE dominant image field per section and stay inside it. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings. Every verse changes something. Force ONE concrete proper noun per verse (brand / place / name / time / object). Allow ONE deliberate metric overflow per song (Antonoff/Swift rant technique). No cliche phrases. No polar 'I am X / I am Y' binary.",
-        "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops (Mountain Dew, Dior, jet-lag CVS), Kendrick direct diss-track pressure, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas Hemingway-line specificity + 2Pac empathetic clarity stay as the craft floor. You never ship 'I feel sad', 'my heart is broken', 'we all', 'shattered dreams', 'I am the saint I am the sinner'. You choose one image field, write proper nouns, contradictions in the same verse (confidence + jet-lag), conversational micro-overflow lines.",
+        "Write exactly the current ONLY_ALLOWED_SECTION_TAGS as a finished focused lyric section. Full rap tracks still target TWO rap verses overall, but this call writes only its current section. Make every line performable, specific, rhythmically alive, and connected to the track title/narrative. Stack multisyllabic mosaic rhymes with slant-dominant flow + perfect-rhyme landings when the genre calls for it. Every verse changes something.",
+        "You ghost-write for 2024-2026 chart-toppers. Sabrina Carpenter humor + brand drops, Kendrick direct diss-track pressure, Billie Eilish/Finneas conversational close-mic intimacy with idiom-flip titles, Central Cee UK-drill melodic-rap hybrid, Morgan Wallen acoustic-percussion country storytelling. Behind those, Eminem rhyme-stacking + Nas specificity + 2Pac empathetic clarity stay as the craft floor.",
     ),
     "Track Lyrics Agent Part 2": (
         "Tier-1 Lyric Writer Part 2 (2024-2026 chart-craft)",
-        "Continue the lyric for the next section group, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal (never paraphrase V1). Full rap songs require TWO rap verses with at least 16 bars each; section_line_minimums are hard and bracket tags never count as bars. Hook lines repeat verbatim from HOOK_LINES_TO_USE. Force one concrete proper noun per verse. Keep one dominant image field per section.",
-        "You ghost-write for 2024-2026 chart hits. V2 must add what V1 didn't: 'Espresso' V2 jumps from after-party to chapel-to-ICU-to-CVS at dawn. 'Cruel Summer' V2 zooms to drunk-in-back-of-car detail. 'Birds of a Feather' V2 lands the songwriter's thesis. Same craft rules as Part 1: rhyme stacking, concrete proper nouns, contradictions, no cliches, one image field, every verse changes something, hook verbatim every chorus pass.",
+        "Continue only the next focused lyric section, exactly matching ONLY_ALLOWED_SECTION_TAGS. Never repeat content from previous parts. Verse 2 ESCALATES: new scene, new witness, time jump, OR reversal. Hook lines repeat verbatim from HOOK_LINES_TO_USE when the section is a hook/chorus.",
+        "You ghost-write for 2024-2026 chart hits. V2 must add what V1 did not: a new scene, sharper witness, or stronger emotional consequence. Keep the same song world while making the section feel necessary.",
     ),
     "Track Lyrics Agent Part 3": (
         "Tier-1 Lyric Writer Part 3 (2024-2026 chart-craft)",
-        "Write the closing lyric block exactly matching ONLY_ALLOWED_SECTION_TAGS. Bridge OPTIONAL but if present write the 'rant bridge' (Antonoff/Swift): stream-of-consciousness, conversational diction, intrusive thoughts blended with one coherent image field, end on a shouted single-line thesis. Final chorus repeats hook verbatim. Outro lands the thesis in 1-3 short lines. Section_line_minimums are hard and bracket tags never count as lyric lines.",
+        "Write the closing focused lyric section exactly matching ONLY_ALLOWED_SECTION_TAGS. Bridges should reveal a new angle or pressure point. Final chorus repeats hook verbatim when present. Outro lands the thesis cleanly without explanation. Bracket tags never count as lyric lines.",
         "You ghost-write for 2024-2026 chart hits. Closing sections need either a rant-bridge (Cruel Summer style: shout-line ending) OR straight to final hook + outro (Birds of a Feather has no bridge, Not Like Us has no bridge - modern norm). Outro is conversational, short, leaves the listener wanting one more spin.",
     ),
     "Caption Agent": (
@@ -5791,9 +5622,8 @@ def _agent_persona(agent_name: str, schema_name: str) -> tuple[str, str, str]:
         f"Return only delimiter blocks for {schema_name} with award-level production specificity and lyric craft.",
         (
             "You are a hit-album specialist for AceJAM. You apply the appended "
-            "ACE-Step reference (tag library, producer cookbook, songwriter craft, "
-            "anti-patterns, worked examples) to every output. You never ship AI "
-            "slop, never paraphrase locked user fields, never put producer names "
+            "ACE-Step reference (tag library, producer cookbook, songwriter references, "
+            "worked examples) to every output. You preserve locked user fields and never put producer names "
             "in caption."
         ),
     )
@@ -5805,6 +5635,20 @@ def _agent_max_iter(agent_name: str) -> int:
     if any(key in (agent_name or "") for key in creative_keys):
         return 4
     return 1
+
+
+def _is_empty_llm_response_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "none or empty",
+            "empty response",
+            "received none",
+            "message.content",
+            "invalid response from llm call",
+        )
+    )
 
 
 def _crewai_micro_block_call(
@@ -5836,7 +5680,11 @@ def _crewai_micro_block_call(
     last_error = ""
     task_name = re.sub(r"[^a-z0-9]+", "_", str(agent_name or "agent").lower()).strip("_") or "agent"
     response_model = _structured_model_for_schema(schema_name)
+    crewai_output_json = _crewai_micro_output_json_for_provider(response_model, provider_name)
     for attempt in range(1, attempts + 1):
+        task_output: Any = None
+        raw_crewai_output = ""
+        raw = ""
         user_content = _strip_legacy_output_blocks_for_structured(schema_name, prompt) if response_model is not None else prompt
         if response_model is not None:
             user_content = f"{_structured_prompt_instruction(schema_name)}\n\n{user_content}"
@@ -5864,6 +5712,7 @@ def _crewai_micro_block_call(
                 "messages": messages,
                 "options": options,
                 "structured_output": bool(response_model),
+                "crewai_output_json": bool(crewai_output_json),
                 "response_model": getattr(response_model, "__name__", "") if response_model else "",
             },
         )
@@ -5883,6 +5732,7 @@ def _crewai_micro_block_call(
                 "messages": messages,
                 "options": options,
                 "structured_output": bool(response_model),
+                "crewai_output_json": bool(crewai_output_json),
                 "response_model": getattr(response_model, "__name__", "") if response_model else "",
             },
         )
@@ -5892,7 +5742,13 @@ def _crewai_micro_block_call(
         )
         started = time.perf_counter()
         try:
-            llm = _make_crewai_micro_llm(model_name, provider_name, agent_name, planner_settings)
+            llm = _make_crewai_micro_llm(
+                model_name,
+                provider_name,
+                agent_name,
+                planner_settings,
+                json_format=response_model is not None,
+            )
             persona_role, persona_goal, persona_backstory = _agent_persona(agent_name, schema_name)
             agent_iter = _agent_max_iter(agent_name)
             micro_agent = Agent(
@@ -5912,9 +5768,9 @@ def _crewai_micro_block_call(
                 response_template="{{ .Response }}",
                 use_system_prompt=True,
             )
-            micro_task = Task(
-                description=user_content,
-                expected_output=(
+            task_kwargs: dict[str, Any] = {
+                "description": user_content,
+                "expected_output": (
                     (
                         f"Strict JSON object for {schema_name} only. "
                         "No markdown, code fences, commentary, thoughts, or delimiter blocks."
@@ -5922,29 +5778,17 @@ def _crewai_micro_block_call(
                     if response_model is not None
                     else (
                         f"Delimiter blocks for {schema_name} only. "
-                        "Award-level craft (concrete imagery, multisyllabic mosaic rhymes for rap, six-dimension caption coverage). "
-                        "No JSON, no commentary, no AI cliches (neon dreams / fire inside / shattered dreams / we rise), "
-                        "no producer names in caption, no metadata leakage."
+                        "Studio-ready writing, specific sound language, and ACE-Step-ready caption coverage. "
+                        "No JSON, no commentary, no producer names in caption, no metadata leakage."
                     )
                 ),
-                agent=micro_agent,
-                # CrewAI's `output_json` path appends a generic formatter that
-                # tells models to preserve the original content exactly. That is
-                # useful for extraction tasks, but actively contradicts AceJAM's
-                # creative microtasks such as visual prompt generation. The
-                # documented/installed Task model also exposes `response_model`;
-                # CrewAI passes it to BaseLLM.call(..., response_model=...) for
-                # native provider structured outputs without mutating the task
-                # prompt, and our guardrail parses the strict JSON raw result.
-                response_model=response_model,
-                guardrail=_crewai_micro_block_guardrail(schema_name),
-                # CrewAI sends guardrail failures back to the agent until
-                # `guardrail_max_retries` is exhausted. Keep this enabled even
-                # for one-iteration metadata agents such as Album Intake;
-                # otherwise CrewAI raises before AceJAM's outer repair loop can
-                # inspect or recover the raw model response.
-                guardrail_max_retries=CREWAI_TASK_MAX_RETRIES,
-            )
+                "agent": micro_agent,
+            }
+            if crewai_output_json is not None:
+                # CrewAI documents Task(output_json=...) as the supported
+                # structured-output path; TaskOutput.json_dict is parsed below.
+                task_kwargs["output_json"] = crewai_output_json
+            micro_task = Task(**task_kwargs)
             micro_crew = Crew(
                 agents=[micro_agent],
                 tasks=[micro_task],
@@ -5974,18 +5818,88 @@ def _crewai_micro_block_call(
                     "error": last_error,
                 },
             )
-            if attempt >= attempts:
-                break
-            logs.append(f"CrewAI Micro Agent exception: {agent_name}; {last_error}.")
-            prompt = (
-                f"{user_prompt}\n\nRECOVERY: The previous CrewAI Micro {agent_name} call raised {last_error}. "
-                + (
-                    f"{_structured_prompt_instruction(schema_name)}"
-                    if response_model is not None
-                    else "Return the requested delimiter blocks now."
+            if provider_name == "ollama" and _is_empty_llm_response_error(exc):
+                logs.append(
+                    f"CrewAI Micro Agent empty Ollama content: {agent_name}; "
+                    "retrying this attempt through native Ollama /api/chat."
                 )
-            )
-            continue
+                try:
+                    fallback_started = time.perf_counter()
+                    raw_crewai_output = _call_agent_llm(
+                        agent_name=agent_name,
+                        provider=provider_name,
+                        model_name=model_name,
+                        system_prompt=system_prompt,
+                        user_prompt=user_content,
+                        options=options,
+                        logs=logs,
+                        debug_options=debug_options,
+                        attempt=attempt,
+                        json_format=response_model is not None,
+                    )
+                    task_output = raw_crewai_output
+                    raw = _strip_thinking_blocks(raw_crewai_output)
+                    elapsed = round(time.perf_counter() - fallback_started, 3)
+                    _append_album_debug_jsonl(
+                        debug_options,
+                        "04_agent_responses.jsonl",
+                        {
+                            "agent": agent_name,
+                            "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                            "crewai_task_name": task_name,
+                            "provider": provider_name,
+                            "model": model_name,
+                            "attempt": attempt,
+                            "native_ollama_fallback": True,
+                            "elapsed": elapsed,
+                            "response_chars": len(raw),
+                        },
+                    )
+                    logs.append(
+                        f"CrewAI Micro Agent native Ollama fallback: {agent_name} "
+                        f"{len(raw)} chars in {elapsed}s (parse pending)."
+                    )
+                except Exception as fallback_exc:
+                    fallback_error = f"{type(fallback_exc).__name__}: {fallback_exc}"
+                    last_error = f"{last_error}; native_ollama_fallback={fallback_error}"
+                    _append_album_debug_jsonl(
+                        debug_options,
+                        "04_agent_responses.jsonl",
+                        {
+                            "agent": agent_name,
+                            "agent_runtime": CREWAI_MICRO_AGENT_ENGINE,
+                            "crewai_task_name": task_name,
+                            "attempt": attempt,
+                            "native_ollama_fallback_error": fallback_error,
+                        },
+                    )
+                    if attempt >= attempts:
+                        break
+                    logs.append(f"CrewAI Micro Agent exception: {agent_name}; {last_error}.")
+                    prompt = (
+                        f"{user_prompt}\n\nRECOVERY: The previous CrewAI Micro {agent_name} call raised {last_error}. "
+                        + (
+                            f"{_structured_prompt_instruction(schema_name)}"
+                            if response_model is not None
+                            else "Return the requested delimiter blocks now."
+                        )
+                    )
+                    continue
+            else:
+                if attempt >= attempts:
+                    break
+                logs.append(f"CrewAI Micro Agent exception: {agent_name}; {last_error}.")
+                prompt = (
+                    f"{user_prompt}\n\nRECOVERY: The previous CrewAI Micro {agent_name} call raised {last_error}. "
+                    + (
+                        f"{_structured_prompt_instruction(schema_name)}"
+                        if response_model is not None
+                        else "Return the requested delimiter blocks now."
+                    )
+                )
+                continue
+        if task_output is None:
+            task_output = raw_crewai_output
         _print_agent_io(debug_options, f"{agent_name.replace(' ', '_')}_crewai_micro_raw_response_attempt_{attempt}", raw)
         _append_album_debug_jsonl(
             debug_options,
@@ -6422,92 +6336,37 @@ def _director_track_genre_hint(track: dict[str, Any], options: dict[str, Any] | 
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _director_lyric_duration_fit(track: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
-    lyrics = str((track or {}).get("lyrics") or "")
-    duration = parse_duration_seconds(
-        (track or {}).get("duration") or (options or {}).get("track_duration") or 180,
-        (options or {}).get("track_duration") or 180,
-    )
-    genre_hint = _director_track_genre_hint(track, options)
-    density = str((track or {}).get("lyric_density") or (options or {}).get("lyric_density") or "dense")
-    structure_preset = str((track or {}).get("structure_preset") or (options or {}).get("structure_preset") or "auto")
-    plan = lyric_length_plan(duration, density, structure_preset, genre_hint)
-    stats = lyric_stats(lyrics)
-    min_words = int(plan.get("min_words") or 0)
-    raw_min_lines = int(plan.get("min_lines") or 0)
-    min_lines = _director_effective_min_lines(raw_min_lines, min_words)
-    issues: list[str] = []
-    raw_instrumental = (track or {}).get("instrumental")
-    instrumental = lyrics.strip().lower() == "[instrumental]" or str(raw_instrumental).strip().lower() in {"1", "true", "yes", "on"}
-    if lyrics.strip() and not instrumental:
-        if stats.get("word_count", 0) < min_words:
-            issues.append(f"lyrics_under_length:{stats.get('word_count', 0)}/{min_words}_words")
-        if stats.get("line_count", 0) < min_lines:
-            issues.append(f"lyrics_too_few_lines:{stats.get('line_count', 0)}/{min_lines}_lines")
-    density_gate = lyric_density_gate(
-        lyrics,
-        plan,
-        duration=duration,
-        genre_hint=genre_hint,
-        instrumental=instrumental,
-    )
-    for issue in density_gate.get("issues") or []:
-        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
-        detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
-        issues.append(f"{issue_id}:{detail}" if detail else issue_id)
+def _minimal_genre_intent_contract(track: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    hint = _director_track_genre_hint(track, options).lower()
+    if re.search(r"\b(?:rap|hip[-\s]?hop|trap|drill|boom[-\s]?bap|g[-\s]?funk|west coast)\b", hint):
+        family = "rap"
+    elif re.search(r"\b(?:r&b|rnb|soul)\b", hint):
+        family = "soul"
+    elif re.search(r"\b(?:edm|dance|house|techno|club|trance)\b", hint):
+        family = "edm"
+    elif re.search(r"\b(?:rock|punk|metal|guitar)\b", hint):
+        family = "rock"
+    elif re.search(r"\b(?:country|americana|folk)\b", hint):
+        family = "country"
+    elif re.search(r"\b(?:cinematic|score|orchestral|trailer)\b", hint):
+        family = "cinematic"
+    else:
+        family = "pop"
     return {
-        "status": "pass" if not issues else "fail",
-        "issues": issues,
-        "duration": duration,
-        "density": plan.get("density") or density,
-        "genre_hint": _clip_text(genre_hint, 220),
-        "word_count": int(stats.get("word_count") or 0),
-        "line_count": int(stats.get("line_count") or 0),
-        "min_words": min_words,
-        "target_words": int(plan.get("target_words") or 0),
-        "min_lines": min_lines,
-        "target_lines": int(plan.get("target_lines") or 0),
-        "raw_min_lines": raw_min_lines,
-        "lyric_density_gate": density_gate,
+        "status": "not_applied",
+        "technical_only": True,
+        "family": family,
+        "hint": _clip_text(hint, 220),
     }
 
 
-def _director_genre_validation_issues(
-    payload: dict[str, Any],
-    base: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
-    *,
-    include_lyrics: bool = True,
-) -> list[str]:
-    merged = {**(base or {}), **(payload or {})}
-    if not include_lyrics:
-        merged.pop("lyrics", None)
-        merged.pop("lyrics_lines", None)
-    if "lyrics_lines" in merged and not merged.get("lyrics"):
-        merged["lyrics"] = "\n".join(str(line) for line in (merged.get("lyrics_lines") or []))
-    report = evaluate_genre_adherence(merged, options)
-    issues: list[str] = []
-    for issue in report.get("issues") or []:
-        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
-        if issue_id:
-            issues.append(issue_id)
-    return issues
-
-
-def _director_producer_grade_validation_issues(
-    payload: dict[str, Any],
-    base: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
-) -> list[str]:
-    merged = {**(base or {}), **(payload or {})}
-    report = producer_grade_readiness(merged, options=options)
-    issues: list[str] = []
-    for issue in report.get("issues") or []:
-        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
-        detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
-        if issue_id:
-            issues.append(f"{issue_id}:{detail}" if detail else issue_id)
-    return issues
+def _minimal_producer_sonic_contract(track: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "status": "not_applied",
+        "technical_only": True,
+        "caption_dimensions": list(ACE_STEP_CAPTION_DIMENSIONS),
+        "hint": _clip_text(_director_track_genre_hint(track, options), 220),
+    }
 
 
 def _agent_payload_lines(payload: dict[str, Any]) -> list[str]:
@@ -7087,7 +6946,7 @@ def _deterministic_album_bible(concept: str, contract: dict[str, Any], language:
         "continuity_rules": [
             "Locked user-provided titles, producers, BPM, key, style, vibe, narrative, and required phrases remain authoritative.",
             "Generated missing tracks must extend the album concept without renaming or replacing locked tracks.",
-            "Every final track must pass the ACE-Step payload quality gate before audio render.",
+            "Every final track must satisfy the ACE-Step technical payload contract before audio render.",
         ],
         "source": "deterministic_album_bible_after_agent_failure",
     }
@@ -8047,27 +7906,35 @@ class AlbumAgentPromptLibrary:
             caption_dna = ", ".join(str(item) for item in (module.get("caption_dna") or [])[:3])
             section_bias = ", ".join(str(item) for item in (module.get("section_bias") or [])[:3])
             genre_bits.append(f"{slug}: {caption_dna}; sections {section_bias}".strip(": ;"))
-        # Inject the full prompt_kit album-mode reference: tag taxonomy, authoring
+        # Inject the prompt_kit album-mode reference: tag taxonomy, authoring
         # rules, producer-format cookbook, rap-mode cookbook, songwriter craft,
-        # anti-patterns and worked examples. This is the same block prompt-assistant
-        # routes inject for non-album modes; album agents previously ran without it
-        # which left producer requests, craft moves and bar-floor enforcement weak.
+        # and worked examples. Album flow strips taste-filter blocks so creative
+        # writing is not filtered by AceJAM-specific style rules.
         rich_kit_block = prompt_kit_system_block("album")
+        rich_kit_block = re.sub(
+            r"\n\n## Lyric Anti-Patterns.*?(?=\n\n## |\Z)",
+            "",
+            rich_kit_block,
+            flags=re.DOTALL,
+        )
+        rich_kit_block = "\n".join(
+            line for line in rich_kit_block.splitlines()
+            if "Anti-pattern guard:" not in line
+        )
         return (
             "ACEJAM PROMPT-FIRST V2 RULES\n"
             "One small decision per call. Answer the schema only.\n"
             "ACE-Step: caption<512 sound-only; lyrics<4096 temporal script; metadata separate; complete agent lyrics bypass ACE LM rewrite.\n"
             "Lyrics: section tags exact, complete lines, clear section separation, 6-10 syllables as a guide, breaks for long tracks.\n"
-            "Full rap songs: write TWO [Verse - rap] sections with at least 16 bars each. Section_line_minimums are hard; bracket tags and stage directions do not count as bars. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; slant-dominant with perfect-rhyme landings on emphasis. Pack 8-15 syllables per bar.\n"
-            "Lyric image discipline: choose one dominant image field per section and stay inside it; do not mix weather/fire/ocean/war/machine/religion/money families in the same section.\n"
+            "Full rap songs usually benefit from two substantial verse sections. Multisyllabic mosaic rhymes, slant-dominant flow, and perfect-rhyme landings are available craft moves. Pack 8-15 syllables per bar when it fits the pocket.\n"
+            "Lyric image discipline: aim for coherent image worlds section by section when it helps the song.\n"
             "Never put BPM/key/duration/model/seed/title/story/producer/person names in caption or lyrics unless user explicitly wrote a sung line.\n"
             "Producer references: never put producer names in caption. Use the Producer-Format Cookbook below to translate to genre+era+drum+timbre stacks.\n"
-            "Anti-pattern guard: forbid AI-cliche image bank (neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes, we rise, let it burn, chasing the night). Forbid telling-not-showing labels and generic POV.\n"
             f"Language={language_info.get('code') or self.language} {language_info.get('name') or ''}; genre_prompt={genre_prompt or 'not specified'}; "
             f"mood={mood or 'follow concept'}; vocal={vocal or 'choose'}; audience={audience or 'streaming release'}; "
             f"genre_hints={' | '.join(genre_bits) if genre_bits else 'none'}.\n\n"
             "================================================================\n"
-            "ACE-STEP REFERENCE BLOCK (full tag library, authoring rules, producer/rap/songwriter cookbooks, anti-patterns, worked examples):\n"
+            "ACE-STEP REFERENCE BLOCK (full tag library, authoring rules, producer/rap/songwriter cookbooks, worked examples):\n"
             "================================================================\n"
             f"{rich_kit_block}\n"
         )
@@ -8132,12 +7999,79 @@ def _director_section_line_minimums(section_tags: list[str], *, duration: float,
     return minimums
 
 
-def _director_part_char_budget(
+def _director_group_char_budget_cap(group: list[str], section_minimums: dict[str, int]) -> tuple[int, int, int]:
+    floor = 150
+    cap = 420
+    labels = " ".join(str(item or "").lower() for item in group or [])
+    min_lines = sum(
+        max(1, int(section_minimums.get(str(tag or "").strip()) or section_minimums.get(_section_tag_line(str(tag or "").strip())) or 2))
+        for tag in group or []
+    )
+    if re.search(r"\bverse\b", labels) and re.search(r"\brap|hip[-\s]?hop|flow\b", labels):
+        floor = max(620, min_lines * 42 + 42)
+        cap = max(920, min_lines * 56 + 70)
+    elif re.search(r"\bverse\b", labels):
+        floor = max(420, min_lines * 40 + 36)
+        cap = max(720, min_lines * 52 + 60)
+    elif re.search(r"chorus|hook|refrain", labels):
+        floor = max(220, min_lines * 34 + 28)
+        cap = max(360, min_lines * 48 + 44)
+    elif re.search(r"bridge", labels):
+        floor = max(220, min_lines * 34 + 28)
+        cap = max(380, min_lines * 48 + 44)
+    elif re.search(r"break|instrumental|interlude", labels):
+        floor = 120
+        cap = 190
+    elif re.search(r"intro|outro", labels):
+        floor = 140
+        cap = 240
+    return floor, cap, max(1, min_lines)
+
+
+def _director_quality_first_part_char_budget(
     safe_lyrics_budget: int,
     groups: list[list[str]],
     group: list[str],
     section_minimums: dict[str, int],
 ) -> int:
+    """Budget one small lyric task so accepted parts cannot exceed ACE's cap.
+
+    Quality-first mode calls one section at a time. The previous equal-budget
+    floor gave every intro, bridge, hook and outro 600+ characters, so an
+    otherwise good ten-track album could only fail at the final 4096-char gate.
+    This allocator gives rap verses real space, keeps utility sections short,
+    and leaves enough headroom for tags/newlines.
+    """
+    safe_budget = max(1200, int(safe_lyrics_budget or ACE_STEP_LYRICS_SAFE_HEADROOM))
+    infos: list[tuple[list[str], int, int, int]] = []
+    for candidate in groups or [group]:
+        floor, cap, weight = _director_group_char_budget_cap(candidate, section_minimums)
+        infos.append((candidate, floor, cap, weight))
+    total_weight = max(1, sum(weight for _candidate, _floor, _cap, weight in infos))
+    target_key = tuple(str(item) for item in group or [])
+    selected_floor = 150
+    selected_cap = 420
+    selected_weight = 1
+    for candidate, floor, cap, weight in infos:
+        if tuple(str(item) for item in candidate or []) == target_key:
+            selected_floor, selected_cap, selected_weight = floor, cap, weight
+            break
+    proportional = int((safe_budget * selected_weight) / total_weight)
+    # Keep a small local minimum, but never let one small section inherit a
+    # whole-song average. A verse may use its cap; intro/outro/break cannot.
+    return max(90, min(selected_cap, max(selected_floor, proportional)))
+
+
+def _director_part_char_budget(
+    safe_lyrics_budget: int,
+    groups: list[list[str]],
+    group: list[str],
+    section_minimums: dict[str, int],
+    *,
+    quality_first: bool = False,
+) -> int:
+    if quality_first:
+        return _director_quality_first_part_char_budget(safe_lyrics_budget, groups, group, section_minimums)
     group_count = max(1, len(groups or []))
     safe_budget = max(900, int(safe_lyrics_budget or ACE_STEP_LYRICS_SAFE_HEADROOM))
     equal_budget = int(safe_budget / group_count)
@@ -8166,13 +8100,7 @@ def _lyric_image_field_contract(
     section_minimums: dict[str, int] | None = None,
     repair_text: str = "",
 ) -> str:
-    """Compact first-draft craft contract for lyric agents.
-
-    The quality gate rewards coherent imagery, but local models were getting a
-    vague "coherent metaphor" instruction and then mixing weather, fire, war,
-    machine, religion and money in the same section. Give them one simple rule
-    before they write: choose one image field and delete the rest.
-    """
+    """Compact studio-writing context for lyric agents."""
     title = _clip_text(current.get("title") or current.get("locked_title") or "", 80)
     narrative = _clip_text(current.get("narrative") or current.get("description") or "", 240)
     vibe = _clip_text(current.get("vibe") or current.get("mood") or "", 140)
@@ -8186,21 +8114,16 @@ def _lyric_image_field_contract(
     hard_min = sum(section_minimums.values()) if section_minimums else 0
     mixed_metaphor_repair = bool(re.search(r"lyric_craft_mixed_metaphor|mixed[_\s-]?metaphor", repair_text or "", re.I))
     lines = [
-        "Choose ONE dominant image field for this section before writing the first line.",
-        "Stay inside that field through the whole section; use concrete nouns and actions, not image-hopping.",
-        (
-            "Do not combine multiple broad families in one section: weather/cloud/rain, fire/flame/burn, "
-            "ocean/wave/tide, war/blood/battle, machine/data/wire, religion/prayer/holy, money/debt/rent."
-        ),
-        "If the validator names mixed_metaphor, keep only the strongest listed family and remove the other families.",
-        "A proper noun or physical object is better than an abstract slogan.",
+        "Use a coherent image world for this section when it helps the lyric land.",
+        "Concrete nouns, actions, places, textures, and body details usually beat abstract summaries.",
+        "Let the section's images serve the title, vibe, and performance pocket.",
     ]
     if hard_min:
         lines.append(
-            f"Hard line floor: write at least {hard_min} non-tag lyric lines across these sections; bracket tags do not count."
+            f"Suggested line target: around {hard_min} non-tag lyric lines across these sections; bracket tags do not count."
         )
     if section_minimums:
-        lines.append(f"Per-section hard floors: {json.dumps(section_minimums, ensure_ascii=False)}.")
+        lines.append(f"Per-section line targets: {json.dumps(section_minimums, ensure_ascii=False)}.")
     if sections:
         lines.append(f"Sections in this call only: {json.dumps(sections, ensure_ascii=False)}.")
     if any((title, narrative, vibe, caption)):
@@ -8209,7 +8132,7 @@ def _lyric_image_field_contract(
             f"title={title or 'n/a'}; vibe={vibe or 'n/a'}; narrative={narrative or 'n/a'}; sound={caption or 'n/a'}."
         )
     if mixed_metaphor_repair:
-        lines.append("Repair mode: rewrite fresh lines with fewer images, shorter bars, and one chosen image field only.")
+        lines.append("Revision mode: rewrite fresh lines with cleaner imagery and shorter bars.")
     return "\n".join(lines)
 
 
@@ -8436,28 +8359,6 @@ def _validate_lyrics_part_payload(
         issues.append("forbidden_section_tags:" + ",".join(forbidden_hits))
     if not lines:
         issues.append("empty_lyrics_lines")
-    # Per-line minimum content length on non-tag lines. Padding lines like
-    # "yeah", "uh", or single-word fillers slip past min_lines counting.
-    # 12 chars is the floor for a line that actually carries lyric content.
-    non_tag_lines = [
-        str(line or "").strip()
-        for line in lines
-        if str(line or "").strip() and not re.fullmatch(r"\[[^\]]+\]", str(line or "").strip())
-    ]
-    short_lines = [line for line in non_tag_lines if len(line) < 12]
-    # Allow a small budget of short lines (ad-libs, one-word punctuation) but
-    # flag if more than 20% of the lyric body is sub-12-char filler.
-    if non_tag_lines and len(short_lines) > max(2, len(non_tag_lines) // 5):
-        issues.append(
-            f"lyrics_too_many_short_lines:{len(short_lines)}/{len(non_tag_lines)}_lines_under_12_chars"
-        )
-    # Cliche / telling-not-showing / generic-POV detection on the lyric body.
-    # In quality-first album mode these are hard failures: the agent repairs
-    # the focused section before any downstream task can use it as context.
-    lyric_text = "\n".join(non_tag_lines)
-    cliche_hits = _scan_for_cliche_phrases(lyric_text)
-    if cliche_hits:
-        issues.append("lyrics_contain_cliche_phrases:" + ",".join(cliche_hits[:5]))
     return issues
 
 
@@ -8477,27 +8378,13 @@ def _raw_director_section_tags(payload: dict[str, Any]) -> list[str]:
 
 
 def _validate_track_concept_payload(payload: dict[str, Any]) -> list[str]:
-    """Track Concept Agent must populate ALL five fields. Empty values
-    cascade into empty wizard cells (the user's complaint: 'Stijl', 'Vibe',
-    'Narrative' staying blank). The repair-loop reads these issue codes and
-    re-prompts the agent until they fill every slot."""
+    """Track Concept Agent must populate the UI-visible concept fields."""
     issues: list[str] = []
     payload = payload or {}
     for key in ("title", "description", "style", "vibe", "narrative"):
         value = str(payload.get(key) or "").strip()
         if not value:
             issues.append(f"missing_{key}")
-    # Style must have >=2 words: rejects single-word generic outputs like
-    # "rap" or "pop" while accepting real stacks like "warm boom-bap" or
-    # "modern trap with sub-808". Char count would either over-reject ("warm
-    # boom-bap" is 13 chars) or under-reject ("hip-hop pop" is 11 chars).
-    style = str(payload.get("style") or "").strip()
-    if style and len(style.split()) < 2:
-        issues.append(f"style_too_generic:{style!r}_needs_at_least_2_words")
-    # Narrative must have >=4 words: rejects "a sad song" placeholders.
-    narrative = str(payload.get("narrative") or "").strip()
-    if narrative and len(narrative.split()) < 4:
-        issues.append(f"narrative_too_short:{narrative!r}_needs_at_least_4_words")
     return issues
 
 
@@ -8585,8 +8472,6 @@ def _validate_section_map_payload(payload: dict[str, Any]) -> list[str]:
         issues.append("duplicate_section_tags:" + ",".join(duplicate_tags))
     if not all(re.fullmatch(r"\[[^\[\]]+\]", str(tag or "").strip()) for tag in raw_tags):
         issues.append("section_tags_must_be_bracketed")
-    if not any(re.search(r"chorus|hook|refrain", str(tag), re.I) for tag in raw_tags):
-        issues.append("section_map_missing_hook")
     return issues
 
 
@@ -8645,20 +8530,6 @@ def _validate_hook_payload(payload: dict[str, Any]) -> list[str]:
     non_empty = [str(line or "").strip() for line in hook_lines if str(line or "").strip()]
     if not non_empty:
         issues.append("hook_lines_empty")
-    # Hook lines need actual content — under 8 chars is almost always padding
-    # ("yeah", "uh", "ok"). The hum-test fails on filler lines.
-    too_short = [line for line in non_empty if len(line) < 8]
-    if too_short:
-        issues.append(f"hook_lines_too_short:{len(too_short)}_lines_under_8_chars")
-    # Hook promise should explain the song's emotional thesis in one line.
-    hook_promise = str((payload or {}).get("hook_promise") or "").strip()
-    if hook_promise and len(hook_promise) < 20:
-        issues.append(f"hook_promise_too_short:{len(hook_promise)}_chars_min_20")
-    # Cliche image bank check on hook text (the most visible part of the song).
-    hook_text = " ".join(non_empty)
-    cliches = _scan_for_cliche_phrases(hook_text)
-    if cliches:
-        issues.append("hook_contains_cliche_phrases:" + ",".join(cliches[:3]))
     return issues
 
 
@@ -8672,16 +8543,6 @@ def _validate_caption_payload(payload: dict[str, Any], track: dict[str, Any] | N
     issues.extend(_caption_forbidden_markers(caption, track))
     if re.search(r"\[[^\]]+\]", caption):
         issues.append("section_tag_in_caption")
-    # Caption six-dimension coverage check: caption that names "drums" without
-    # specifying kick/snare/hat triad, or "sample" without source-genre, fails
-    # the production-grade rule from ACE_STEP_AUTHORING_RULES.
-    lowered_caption = caption.lower()
-    if re.search(r"\bsample\b", lowered_caption) and not re.search(
-        r"\b(?:soul sample|jazz sample|gospel chop|funk sample|film score|"
-        r"chopped|replayed|sample chops|sample loop|sample chop)\b",
-        lowered_caption,
-    ):
-        issues.append("caption_bare_sample_token_missing_source_genre")
     return sorted(set(issues))
 
 
@@ -8698,11 +8559,6 @@ def _validate_performance_payload(payload: dict[str, Any]) -> list[str]:
     profile = str(payload.get("genre_profile") or "").strip()
     if not brief:
         issues.append("missing_performance_brief")
-    elif len(brief) < 50:
-        # A real vocal performance brief covers persona + cadence + ad-lib +
-        # mix notes. Under 50 chars it is almost always "soulful, confident"
-        # filler that tells the vocalist nothing.
-        issues.append(f"performance_brief_too_short:{len(brief)}_chars_min_50")
     if not negative:
         issues.append("missing_negative_control")
     if not profile:
@@ -8793,7 +8649,7 @@ def _director_sound_tag_candidates(track: dict[str, Any]) -> list[str]:
             "triumphant energy",
             "polished modern mix",
     ]
-    if build_genre_intent_contract(track).get("family") == "rap":
+    if _minimal_genre_intent_contract(track).get("family") == "rap":
         sources = (
             _baseline_caption_tags(track, ""),
             fallback_tags,
@@ -8856,124 +8712,68 @@ def _performance_fallback_payload(track: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], options: dict[str, Any] | None = None) -> dict[str, Any]:
+def _ace_step_album_payload_contract_check(
+    track: dict[str, Any],
+    section_tags: list[str] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Technical ACE-Step album export check.
+
+    This is deliberately not a craft, safety, genre, cliche, or taste gate.
+    It only verifies the fields that ACE-Step needs before render.
+    """
     issues: list[str] = []
-    caption = str(track.get("caption") or track.get("tags") or "")
-    lyrics = str(track.get("lyrics") or "")
+    caption = str(track.get("caption") or track.get("tags") or "").strip()
+    lyrics = str(track.get("lyrics") or "").strip()
     title = str(track.get("title") or "").strip()
     if not title:
         issues.append("missing_title")
-    if not caption.strip():
+    if not caption:
         issues.append("missing_caption")
     if len(caption) > 512:
         issues.append(f"caption_over_512:{len(caption)}")
-    for issue in _caption_forbidden_markers(caption, track):
-        issues.append(issue)
-    if not lyrics.strip():
+    issues.extend(_caption_forbidden_markers(caption, track))
+    if not lyrics:
         issues.append("missing_lyrics")
     if len(lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
         issues.append(f"lyrics_over_4096:{len(lyrics)}")
-    present_keys = {_section_key_for_director(item) for item in re.findall(r"\[[^\]]+\]", lyrics)}
-    expected_keys = {_section_key_for_director(item) for item in section_tags}
-    section_markers = re.findall(r"\[[^\]]+\]", lyrics)
-    section_counts: dict[str, int] = {}
-    for marker in section_markers:
-        key = _section_key_for_director(marker)
-        section_counts[key] = section_counts.get(key, 0) + 1
-    duplicate_sections = [
-        marker for marker in section_tags
-        if section_counts.get(_section_key_for_director(marker), 0) > 1
-        and not _section_family_allows_repeat(marker)
-    ]
-    if duplicate_sections:
-        issues.append("duplicate_section_tags:" + ",".join(duplicate_sections))
-    missing_sections = [tag for tag in section_tags if _section_key_for_director(tag) not in present_keys]
-    if missing_sections:
-        issues.append("section_map_mismatch:" + ",".join(missing_sections))
-    if not any(re.search(r"chorus|hook|refrain", str(tag), re.I) for tag in section_tags):
-        issues.append("section_map_missing_hook")
-    if not any(re.search(r"chorus|hook|refrain", section, re.I) for section in re.findall(r"\[[^\]]+\]", lyrics)):
-        issues.append("lyrics_missing_hook_section")
-    lyric_duration_fit = _director_lyric_duration_fit(track, options)
-    issues.extend(lyric_duration_fit.get("issues") or [])
-    lyrics_quality = _director_lyrics_quality(track, options, {"status": "fail" if issues else "pass", "issues": issues})
-    short_role = bool(lyrics_quality.get("is_short_role"))
-    full_song = not short_role and float(lyrics_quality.get("duration") or 0) >= 150
-    rap_context = bool(lyrics_quality.get("is_rap"))
-    if full_song:
-        verse_sections = [
-            marker for marker in section_markers
-            if re.search(r"\bverse\b", str(marker), re.I)
-        ]
-        bridge_sections = [
-            marker for marker in section_markers
-            if re.search(r"\bbridge\b", str(marker), re.I)
-        ]
-        hook_sections = [
-            marker for marker in section_markers
-            if re.search(r"chorus|hook|refrain", str(marker), re.I)
-        ]
-        if len(verse_sections) < 2:
-            issues.append(f"weak_section_map:verses_{len(verse_sections)}/2")
-        if not bridge_sections:
-            issues.append("weak_section_map:missing_bridge")
-        if len(hook_sections) < 2:
-            issues.append(f"missing_hook:hook_passes_{len(hook_sections)}/2")
-        if rap_context:
-            rap_bar_counts = dict(lyrics_quality.get("rap_bar_counts") or {})
-            rap_verse_count = len(rap_bar_counts)
-            if rap_verse_count < 2:
-                issues.append(f"weak_section_map:rap_verses_{rap_verse_count}/2x16")
-            for section, count in rap_bar_counts.items():
-                if int(count or 0) < 16:
-                    issues.append(f"rap_verses_underfilled:{section}={count}/16")
-    density_plan = ((lyric_duration_fit.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(lyric_duration_fit.get("lyric_density_gate"), dict) else {}
-    instrumental = str(lyrics or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental"))
-    lyric_craft = lyric_craft_gate(
-        lyrics,
-        track,
-        options=options,
-        plan=density_plan,
-        duration=parse_duration_seconds(track.get("duration") or (options or {}).get("track_duration") or 180, 180),
-        genre_hint=_director_track_genre_hint(track, options),
-        instrumental=instrumental,
-    )
-    if lyric_craft.get("status") != "pass":
-        for issue in lyric_craft.get("issues") or []:
-            issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
-            detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
-            issues.append(f"{issue_id}:{detail}" if detail else issue_id)
-    genre_adherence = evaluate_genre_adherence(track, options)
-    issues.extend(str(issue.get("id") or issue) for issue in (genre_adherence.get("issues") or []))
-    producer_ready = producer_grade_readiness(track, options=options)
-    for issue in producer_ready.get("issues") or []:
-        issue_id = str(issue.get("id") if isinstance(issue, dict) else issue)
-        detail = str(issue.get("detail") if isinstance(issue, dict) else "").strip()
-        issues.append(f"{issue_id}:{detail}" if detail else issue_id)
-    lyrics_quality = _director_lyrics_quality(track, options, {"status": "fail" if issues else "pass", "issues": issues})
+    duration_raw = track.get("duration")
+    if duration_raw not in (None, "", -1, -1.0):
+        try:
+            duration = float(duration_raw)
+            if duration > 0 and not (10 <= duration <= 600):
+                issues.append(f"duration_out_of_ace_step_range:{duration:g}")
+        except Exception:
+            issues.append(f"duration_not_numeric:{duration_raw}")
+    bpm_raw = track.get("bpm")
+    if bpm_raw not in (None, "", "auto"):
+        try:
+            bpm = int(float(bpm_raw))
+            if not (30 <= bpm <= 300):
+                issues.append(f"bpm_out_of_ace_step_range:{bpm}")
+        except Exception:
+            issues.append(f"bpm_not_numeric:{bpm_raw}")
+    stats = lyric_stats(lyrics)
+    sections = [f"[{section}]" for section in re.findall(r"\[([^\]]+)\]", lyrics)]
     return {
-        "version": ACEJAM_ALBUM_DIRECTOR_VERSION,
+        "version": "ace-step-album-contract-2026-05-17",
         "gate_passed": not issues,
         "status": "pass" if not issues else "fail",
-        "issues": issues,
+        "issues": sorted(set(issues)),
+        "blocking_issues": [{"id": issue.split(":", 1)[0], "detail": issue} for issue in sorted(set(issues))],
         "caption_chars": len(caption),
         "lyrics_chars": len(lyrics),
-        "lyrics_word_count": int(lyric_duration_fit.get("word_count") or 0),
-        "lyrics_line_count": int(lyric_duration_fit.get("line_count") or 0),
-        "lyrics_quality": lyrics_quality,
-        "lyric_duration_fit": lyric_duration_fit,
-        "lyric_density_gate": lyric_duration_fit.get("lyric_density_gate") or {},
-        "lyrical_craft_contract": lyric_craft.get("contract") or {},
-        "lyric_craft_gate": lyric_craft,
-        "lyric_craft_score": lyric_craft.get("score"),
-        "lyric_craft_issues": lyric_craft.get("issue_ids") or [],
-        "genre_intent_contract": genre_adherence.get("contract") or {},
-        "genre_adherence": {key: value for key, value in genre_adherence.items() if key != "contract"},
-        "producer_grade_sonic_contract": (producer_ready.get("sonic_dna_coverage") or {}).get("contract") or {},
-        "sonic_dna_coverage": producer_ready.get("sonic_dna_coverage") or {},
-        "producer_grade_readiness": producer_ready,
-        "section_tags": section_tags,
+        "lyrics_word_count": int(stats.get("word_count") or 0),
+        "lyrics_line_count": int(stats.get("line_count") or 0),
+        "sections": sections,
+        "section_tags": section_tags or [],
+        "technical_only": True,
+        "filters_applied": [],
     }
+
+
+def _director_minimal_validate(track: dict[str, Any], section_tags: list[str], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _ace_step_album_payload_contract_check(track, section_tags, options)
 
 
 def _director_album_context(album_bible: dict[str, Any]) -> dict[str, Any]:
@@ -9149,8 +8949,6 @@ class AceJamAlbumDirector:
         self.task_graph.accepted_album_state = dict(_director_album_context(album_bible))
         self.task_graph.start("album_sonic_bible", payload=self.task_graph.accepted_album_state)
         self.task_graph.pass_task("album_sonic_bible", payload=self.task_graph.accepted_album_state)
-        self.task_graph.start("lyric_quality_bible", payload=build_lyrical_craft_contract(album_bible, self.opts))
-        self.task_graph.pass_task("lyric_quality_bible", payload=build_lyrical_craft_contract(album_bible, self.opts))
         self._generate_album_visual_prompts(album_bible)
         tracks: list[dict[str, Any]] = []
         previous_summaries: list[dict[str, Any]] = []
@@ -9803,8 +9601,6 @@ class AceJamAlbumDirector:
             "part_target_words_approx": part_target_words,
             "part_min_vocal_lines_approx": hard_min_lines,
             "hard_min_vocal_lines_for_allowed_sections": hard_min_lines,
-            "part_target_chars_max": part_budget,
-            "part_hard_chars_max": part_hard_budget,
             "whole_song_safe_lyrics_chars_max": safe_lyrics_budget,
         }
         image_field_contract = _lyric_image_field_contract(
@@ -9826,9 +9622,8 @@ class AceJamAlbumDirector:
             "Write only this one section group's lyrics_lines. Keep sections exactly equal to only_allowed_section_tags, in order. "
             "Put each section tag once in lyrics_lines, then fresh performable lyric lines for that tag. "
             "Do not include earlier sections, caption, BPM, key, metadata, explanations, markdown, escaped newlines, or producer notes. "
-            "For every section in section_line_minimums, write at least that many non-tag lyric lines; bracket tags do not count. "
-            "If any approximate target conflicts with section_line_minimums, section_line_minimums wins. "
-            "Pick one image field for the section and do not mix weather/fire/ocean/war/machine/religion/money families. "
+            "Use section_line_minimums as approximate studio targets; bracket tags do not count as lyric lines. "
+            "Aim for a coherent image world in the section when it helps the song. "
             "Use concrete scene/action, clean breath length, and title-connected hook lines when the allowed section is a hook/chorus/refrain. "
             "For rap sections, write short bars with internal rhyme and forward motion; for sung sections, keep vowel-friendly lines. "
             "Respect the target char budget."
@@ -9844,9 +9639,9 @@ class AceJamAlbumDirector:
         repair_issues: list[str] | None = None,
     ) -> dict[str, Any]:
         repair_note = ""
-        genre_contract = build_genre_intent_contract(current, self.opts)
+        genre_contract = _minimal_genre_intent_contract(current, self.opts)
         current["genre_intent_contract"] = genre_contract
-        producer_contract = build_producer_grade_sonic_contract(current, self.opts)
+        producer_contract = _minimal_producer_sonic_contract(current, self.opts)
         current["producer_grade_sonic_contract"] = producer_contract
         if repair_issues:
             repair_note = (
@@ -9857,7 +9652,7 @@ class AceJamAlbumDirector:
         producer_note = (
             "\nPRODUCER_GRADE_SONIC_CONTRACT:\n"
             f"{json.dumps(producer_contract, ensure_ascii=False)}\n"
-            "tag_list must cover every required dimension with concrete sound traits; avoid generic-only tags like polished modern mix by itself.\n"
+            "Use this as inspiration for concrete sound traits; it is not a blocking gate.\n"
             "If USER_GENRE_PROMPT, MOOD_VIBE, VOCAL_TYPE, or AUDIENCE_PLATFORM are blank, infer the missing values from CURRENT_TRACK_STATE.style, vibe, description, and narrative. Do not ask for clarification.\n"
         )
         rap_note = ""
@@ -9881,24 +9676,21 @@ class AceJamAlbumDirector:
                 f"caption_dimensions_covered must use only: {json.dumps(ACE_STEP_CAPTION_DIMENSIONS)}.\n"
                 + f"OUTPUT_BLOCKS:\n{_agent_block_template('tag_agent_payload')}\n",
                 "tag_agent_payload",
-                lambda payload: _validate_tag_payload(_ensure_track_rap_tag_payload(payload, current, self.opts), current)
-                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
-                + _director_producer_grade_validation_issues(payload, current, self.opts),
+                lambda payload: _validate_tag_payload(_ensure_track_rap_tag_payload(payload, current, self.opts), current),
                 repair_context=(
                     "tag_list and tags must be filled with sonic traits only. No BPM, key, duration, title, producer, person names, "
-                    "section tags, story prose, or lyric lines. If rap is requested, rap/hip-hop must be primary and front-loaded. "
-                    "Cover primary_genre, drum_groove, low_end_bass, melodic_identity, vocal_delivery, arrangement_movement, texture_space, and mix_master."
+                    "section tags, story prose, or lyric lines."
                 ),
             )
         except Exception as exc:
             self.task_graph.fail_task("sonic_dna_tags", track_number=index + 1, issues=[str(exc)])
             raise
         current.update(tag_payload)
-        current["genre_intent_contract"] = build_genre_intent_contract(current, self.opts)
-        current["genre_adherence"] = evaluate_genre_adherence(current, self.opts)
-        current["producer_grade_sonic_contract"] = build_producer_grade_sonic_contract(current, self.opts)
-        current["producer_grade_readiness"] = producer_grade_readiness(current, options=self.opts)
-        current["sonic_dna_coverage"] = (current["producer_grade_readiness"].get("sonic_dna_coverage") or {})
+        current["genre_intent_contract"] = _minimal_genre_intent_contract(current, self.opts)
+        current["genre_adherence"] = {"status": "not_applied", "technical_only": True}
+        current["producer_grade_sonic_contract"] = _minimal_producer_sonic_contract(current, self.opts)
+        current["producer_grade_readiness"] = {"status": "not_applied", "technical_only": True}
+        current["sonic_dna_coverage"] = {"status": "not_applied", "technical_only": True}
         self.task_graph.pass_task("sonic_dna_tags", track_number=index + 1, payload=tag_payload)
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Tag Agent", "state": current})
         return tag_payload
@@ -9918,19 +9710,19 @@ class AceJamAlbumDirector:
             if requested_duration >= 180
             else "Keep sections concise and complete."
         )
-        genre_contract = build_genre_intent_contract(current, self.opts)
+        genre_contract = _minimal_genre_intent_contract(current, self.opts)
         rap_note = ""
         if genre_contract.get("family") == "rap":
             if requested_duration >= 120:
                 rap_note = (
-                    " Rap-lock for full songs (this is a 120s+ track): use TWO 16-bar rap verses. "
-                    "Recommended layout: [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Hook - reprise], [Bridge], "
-                    "[Final Hook], [Outro]. Avoid pop-style repeated [Pre-Chorus] sections."
+                    " Rap-lock for full songs (this is a 120s+ track): use exactly TWO main rap verses unless the user explicitly asked for more. "
+                    "Recommended compact layout: [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Bridge - short], "
+                    "[Final Hook], [Outro]. Avoid extra reprise/pre-chorus sections; lyric part agents write one section at a time under ACE-Step's 4096-char cap."
                 )
             else:
                 rap_note = (
-                    " Rap-lock: prefer [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Bridge], "
-                    "[Final Hook], [Outro]. Avoid pop-style repeated [Pre-Chorus] sections."
+                    " Rap-lock: prefer [Intro], [Verse 1 - rap], [Hook], [Verse 2 - rap], [Final Hook], [Outro]. "
+                    "Avoid pop-style repeated [Pre-Chorus] sections."
                 )
         repair_note = ""
         if repair_issues:
@@ -9939,18 +9731,6 @@ class AceJamAlbumDirector:
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Plan a clean section_map again. Do not preserve invalid missing-hook or duplicate patterns.\n"
             )
-        def _section_validator(payload: dict[str, Any]) -> list[str]:
-            issues = _validate_section_map_payload(payload)
-            if genre_contract.get("family") == "rap":
-                tags = _raw_director_section_tags(payload if isinstance(payload, dict) else {})
-                verse_tags = [tag for tag in tags if re.search(r"verse", tag, re.I)]
-                if not verse_tags:
-                    issues.append("rap_section_map_missing_verse")
-                if sum(1 for tag in tags if re.search(r"pre[-\s]?chorus", tag, re.I)) > 1:
-                    issues.append("rap_section_map_pop_prechorus_overused")
-                if requested_duration >= 120 and len(verse_tags) < 2:
-                    issues.append(f"rap_full_song_needs_2x16:got_{len(verse_tags)}")
-            return issues
         self.task_graph.start("section_map", track_number=index + 1, payload=current)
         try:
             section_payload = self._call_until_valid(
@@ -9963,12 +9743,10 @@ class AceJamAlbumDirector:
                 + "\nThe lyric part agents must use these tags exactly; do not output lyrics here.\n"
                 + f"OUTPUT_BLOCKS:\n{_agent_block_template('section_map_payload')}\n",
                 "section_map_payload",
-                _section_validator,
+                _validate_section_map_payload,
                 repair_context=(
                     "section_map must be a non-empty list of bracketed section tags. "
-                    "It must contain at least one chorus/hook/refrain tag. No lyrics. "
-                    "Repeated hook/chorus passes are allowed, but prefer distinct render labels like [Hook], [Hook - reprise], [Final Hook]. "
-                    "If rap is requested, keep verse/hook structure primary and avoid repeated pop pre-chorus sections."
+                    "No lyrics. Repeated hook/chorus passes are allowed, but prefer distinct render labels like [Hook], [Hook - reprise], [Final Hook]."
                 ),
             )
         except Exception as exc:
@@ -10001,7 +9779,11 @@ class AceJamAlbumDirector:
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Write a fresh hook. Do not include previous invalid hook lines or bracket tags.\n"
             )
-        craft_contract = build_lyrical_craft_contract(current, self.opts)
+        craft_contract = {
+            "status": "not_applied",
+            "reason": "minimal_studio_album_flow",
+            "technical_only": True,
+        }
         current["lyrical_craft_contract"] = craft_contract
         self.task_graph.start("hook_promise", track_number=index + 1, payload=current)
         self.task_graph.start("hook_lines", track_number=index + 1, payload=current)
@@ -10062,7 +9844,7 @@ class AceJamAlbumDirector:
             str(current.get("structure_preset") or self.opts.get("structure_preset") or "auto"),
             genre_hint,
         )
-        craft_contract = build_lyrical_craft_contract(current, self.opts)
+        craft_contract = {"status": "not_applied", "technical_only": True}
         current["lyrical_craft_contract"] = craft_contract
         min_words = int(lyric_plan.get("min_words") or 0)
         min_lines = _director_effective_min_lines(int(lyric_plan.get("min_lines") or 0), min_words)
@@ -10098,9 +9880,7 @@ class AceJamAlbumDirector:
                 f"{json.dumps(repair_issues, ensure_ascii=False)}\n"
                 "Regenerate clean lyrics_lines from the section map. Do not include previous invalid sections/lines. "
                 "Do not copy duplicated, extra, or rejected tags from earlier attempts. "
-                "If the issue says lyrics_under_length, lyrics_too_few_lines, rap_verses_underfilled, or section_under_min_lines, "
-                "write the missing fresh bars before polishing. If the issue says mixed_metaphor, choose one image family and delete the others. "
-                "Keep one breath per line.\n"
+                "Fix only the technical section/tag issue named above. Keep one breath per line.\n"
             )
         for part_index, group in enumerate(groups):
             self.task_graph.start(
@@ -10109,8 +9889,14 @@ class AceJamAlbumDirector:
                 payload={"part_index": part_index + 1, "sections": group, "previous_sections": forbidden_sections},
             )
             part_section_minimums = {tag: whole_section_minimums[tag] for tag in group if tag in whole_section_minimums}
+            section_floor_lines = sum(max(0, int(value or 0)) for value in (part_section_minimums or {}).values())
+            part_min_lines_for_group = (
+                max(1, section_floor_lines)
+                if quality_first and section_floor_lines
+                else max(2, int(part_min_lines or 0), section_floor_lines)
+            )
             hard_part_min_lines = max(
-                int(part_min_lines or 0),
+                int(part_min_lines_for_group or 0),
                 sum(max(0, int(value or 0)) for value in (part_section_minimums or {}).values()),
             )
             image_field_contract = _lyric_image_field_contract(
@@ -10124,11 +9910,22 @@ class AceJamAlbumDirector:
                 groups,
                 group,
                 whole_section_minimums,
+                quality_first=quality_first,
             )
-            part_hard_budget = min(
-                ACE_STEP_LYRICS_CHAR_LIMIT - 120,
-                max(part_budget + 900, int(part_budget * 1.65)),
+            part_target_words_for_group = max(
+                8,
+                min(
+                    160,
+                    int(part_budget / (6.8 if any(re.search(r"\bverse\b", tag, re.I) for tag in group) else 7.8)),
+                ),
             )
+            if quality_first:
+                part_hard_budget = min(ACE_STEP_LYRICS_CHAR_LIMIT - 120, max(part_budget + 80, int(part_budget * 1.10)))
+            else:
+                part_hard_budget = min(
+                    ACE_STEP_LYRICS_CHAR_LIMIT - 120,
+                    max(part_budget + 900, int(part_budget * 1.65)),
+                )
             if quality_first:
                 lyric_prompt = self._compact_lyrics_part_prompt(
                     index=index,
@@ -10141,8 +9938,8 @@ class AceJamAlbumDirector:
                     requested_duration=requested_duration,
                     lyric_plan=lyric_plan,
                     part_section_minimums=part_section_minimums,
-                    part_target_words=part_target_words,
-                    part_min_lines=part_min_lines,
+                    part_target_words=part_target_words_for_group,
+                    part_min_lines=part_min_lines_for_group,
                     part_budget=part_budget,
                     part_hard_budget=part_hard_budget,
                     safe_lyrics_budget=safe_lyrics_budget,
@@ -10153,7 +9950,7 @@ class AceJamAlbumDirector:
                     self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
                     + repair_note
                     + f"\nWHOLE_SONG_LYRIC_LENGTH_PLAN:\n{json.dumps({'duration': requested_duration, 'density': lyric_plan.get('density'), 'target_words': target_words, 'min_words': min_words, 'target_lines': target_lines, 'min_lines': min_lines, 'max_lyrics_chars': lyric_plan.get('max_lyrics_chars') or ACE_STEP_LYRICS_CHAR_LIMIT}, ensure_ascii=False)}\n"
-                    + f"LYRICAL_CRAFT_CONTRACT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
+                    + f"STUDIO_WRITING_CONTEXT:\n{json.dumps(craft_contract, ensure_ascii=False)}\n"
                     + f"LYRIC_IMAGE_FIELD_CONTRACT:\n{image_field_contract}\n"
                     + f"SECTION_LINE_MINIMUMS_FOR_THIS_PART:\n{json.dumps(part_section_minimums, ensure_ascii=False)}\n"
                     + f"BARS_PER_SECTION_FLOOR:\n{json.dumps(lyric_plan.get('bars_per_section') or {}, ensure_ascii=False)}\n"
@@ -10162,102 +9959,37 @@ class AceJamAlbumDirector:
                     + f"FORBIDDEN_SECTION_TAGS_ALREADY_WRITTEN:\n{json.dumps(forbidden_sections, ensure_ascii=False)}\n"
                     + f"HOOK_LINES_TO_USE_IN_CHORUS_OR_HOOK:\n{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
                     + f"PART_INDEX_REQUIRED: {part_index + 1}\n"
-                    + f"PART_TARGET_WORDS_APPROX: {part_target_words}\n"
+                    + f"PART_TARGET_WORDS_APPROX: {part_target_words_for_group}\n"
                     + f"PART_MIN_VOCAL_LINES_APPROX: {hard_part_min_lines}\n"
                     + f"HARD_MIN_VOCAL_LINES_FOR_ALLOWED_SECTIONS: {hard_part_min_lines}\n"
-                    + f"PART_TARGET_CHARS_MAX: {part_budget}\n"
-                    + f"PART_HARD_CHARS_MAX: {part_hard_budget}\n"
                     + f"WHOLE_SONG_SAFE_LYRICS_TARGET_CHARS_MAX: {safe_lyrics_budget}\n"
                     + "Write lyrics_lines only. sections must equal ONLY_ALLOWED_SECTION_TAGS exactly; do not add any other section tag. "
                     "Each allowed section tag must appear once in lyrics_lines, in the same order. "
                     "Never write a forbidden previous section. Never copy earlier sections. "
                     "Respect SECTION_LINE_MINIMUMS_FOR_THIS_PART with fresh content; bracket tags do not count as lyric lines. "
                     "If PART_MIN_VOCAL_LINES_APPROX conflicts with SECTION_LINE_MINIMUMS_FOR_THIS_PART, the section minimum wins. "
-                    "Choose one image field per section and do not mix weather/fire/ocean/war/machine/religion/money families. "
                     "Verses must be long enough to carry a full vocal track. "
                     "RAP VERSE FLOOR: full rap songs need 2 rap verses of at least 16 bars each (~1 lyric line per bar; 1 bar = 4 beats). "
                     "On tracks under 120 seconds, follow the BARS_PER_SECTION_FLOOR Verse_rap value as the practical floor. "
-                    "Write award-level lyric craft: stack multisyllabic mosaic rhymes (Eminem-style begin/middle/end of bar) with slant-dominant flow and perfect-rhyme landings on emphasis; concrete sensory imagery per line (Nas: trap doors, rooftop snipers, lobby kids); one coherent metaphor world; pat-pattison prosody match (stable=AABB perfect, unstable=ABBA slant). "
-                    "Every verse moves the story forward — new scene, new POV, time jump, escalation, or revelation. A verse that just restates the chorus is dead weight. "
+                    "Write the strongest studio lyric you can in one pass: specific, rhythmic, performable, emotionally intentional, and matched to the track concept. "
+                    "Every verse should move the song forward with new scene, POV, time jump, escalation, or revelation. "
                     "Every hook simplifies into a memorable emotional promise that passes the hum-test (a stranger should grasp the song's thesis from chorus alone). "
                     "For rap or hip-hop, pack 8-15 syllables per bar (push to ~20 only on emotional spikes); pocket beats acrobatics; triplets only at high-tension moments. "
                     "Ad-libs in (parens) on the same line are punctuation, not decoration — use them to mark payoff lines, not every 4 bars. "
                     "For pop, R&B, rock, country, soul, latin, afro, dancehall, or sung tracks, keep vowel-friendly singable line lengths and title-connected hooks. "
                     "For rap or hip-hop, never write stage directions like Instrumental break, orchestra swells, strings fade, taiko drums hit, or production notes as lyrics. "
                     "For [Break] or [Instrumental Break], write the allowed section tag and one short rap ad-lib or crowd-response line only. "
-                    "ANTI-PATTERN GUARD: reject your own draft and rewrite if it contains any of these cliché phrases: neon dreams, fire inside, shattered dreams, endless night, empty streets, embers, whispers, silhouettes, echoes of, we rise, let it burn, chasing the night, broken heart, rising from the ashes, stars aligned, fade away, into the void, burning bright, frozen in time. Reject telling-not-showing labels ('I feel sad', 'my heart is broken'), generic POV ('we all', 'the world', 'everyone'), and explanation lines ('in other words', 'what I mean is'). "
                     "Do not include BPM, key, caption, explanation, producer names, metadata, markdown, or escaped newlines.\n"
                     + f"OUTPUT_BLOCKS:\n{_agent_block_template(f'lyrics_part_{part_index + 1}_payload')}\n"
                 )
 
             def _part_validator(part_payload: dict[str, Any], *, expected_group: list[str] = group, previous_sections: list[str] = list(forbidden_sections), expected_part: int = part_index + 1) -> list[str]:
-                issues = _validate_lyrics_part_payload(
+                return _validate_lyrics_part_payload(
                     part_payload,
                     expected_sections=expected_group,
                     forbidden_sections=previous_sections,
                     expected_part_index=expected_part,
                 )
-                genre_issues = _director_genre_validation_issues(
-                    {"lyrics_lines": _director_payload_lines(part_payload)},
-                    current,
-                    self.opts,
-                    include_lyrics=True,
-                )
-                issues.extend(
-                    issue for issue in genre_issues
-                    if not str(issue).startswith("non_rap_arrangement_lyric_leakage")
-                )
-                char_count = len("\n".join(_director_payload_lines(part_payload)))
-                if char_count > part_hard_budget:
-                    issues.append(f"lyrics_part_over_budget:{char_count}>{part_budget}")
-                part_lines = _director_payload_lines(part_payload)
-                part_craft = lyric_craft_gate(
-                    "\n".join(part_lines),
-                    current,
-                    options=self.opts,
-                    plan=lyric_plan,
-                    duration=requested_duration,
-                    genre_hint=genre_hint,
-                    partial=True,
-                )
-                for craft_issue in part_craft.get("issues") or []:
-                    craft_id = str(craft_issue.get("id") if isinstance(craft_issue, dict) else craft_issue)
-                    if craft_id in {
-                        "lyric_craft_placeholder",
-                        "lyric_craft_fallback_artifact",
-                        "lyric_craft_metadata_leakage",
-                        "lyric_craft_generic_ai_phrase",
-                        "lyric_craft_adjective_stacking",
-                        "lyric_craft_line_breathability",
-                        "lyric_craft_mixed_metaphor",
-                        "lyric_craft_no_concrete_scene",
-                        "lyric_craft_rhyme_chaos",
-                        "lyric_craft_hook_weak",
-                        "lyric_craft_low_score",
-                    }:
-                        issues.append(craft_id)
-                if part_section_minimums:
-                    section_counts: dict[str, int] = {}
-                    active_section = ""
-                    for raw_line in _director_payload_lines(part_payload):
-                        clean_line = str(raw_line or "").strip()
-                        if re.fullmatch(r"\[[^\]]+\]", clean_line):
-                            active_section = clean_line
-                            section_counts.setdefault(active_section, 0)
-                            continue
-                        if active_section:
-                            section_counts[active_section] = section_counts.get(active_section, 0) + 1
-                    for section, minimum in part_section_minimums.items():
-                        actual = section_counts.get(section, 0)
-                        # 10% tolerance — 15/16 was failing the whole part for
-                        # one missing line. The repair loop spent 8 attempts
-                        # trying to coax that last line out and shipped a stub
-                        # track instead. A single line short is close enough
-                        # to ship; bigger gaps still trigger repair.
-                        tolerance = max(1, int(minimum * 0.1))
-                        if actual + tolerance < minimum:
-                            issues.append(f"section_under_min_lines:{section}={actual}/{minimum}")
-                return issues
 
             try:
                 part_payload = self._call_until_valid(
@@ -10271,18 +10003,13 @@ class AceJamAlbumDirector:
                         f"SECTION_LINE_MINIMUMS_FOR_THIS_PART={json.dumps(part_section_minimums, ensure_ascii=False)}. "
                         f"HARD_MIN_VOCAL_LINES_FOR_ALLOWED_SECTIONS={hard_part_min_lines}. "
                         "sections must equal ONLY_ALLOWED_SECTION_TAGS exactly. Each allowed tag appears once. "
-                        "Write at least the section minimum count as non-tag lyric lines; bracket tags do not count. "
                         "Do not include previous invalid sections/lines. If rap is requested, write short rap bars only: "
                         "no Instrumental break text, no orchestral/stage-direction lines, no pop-ballad prose. "
-                        "Fix craft issues with concrete nouns, breathable lines, and no generic AI phrases. "
                         f"{image_field_contract}"
                     ),
                 )
             except AceJamAgentError as exc:
-                allow_fallback = _truthy(
-                    self.opts.get("allow_deterministic_lyric_fallback"),
-                    ACEJAM_ALLOW_DETERMINISTIC_LYRIC_FALLBACK,
-                )
+                allow_fallback = False
                 if not allow_fallback:
                     issue = (
                         f"lyrics_section_draft_failed_no_deterministic_fallback:"
@@ -10350,30 +10077,11 @@ class AceJamAlbumDirector:
                         f"{'; '.join(fallback_issues)}"
                     )
             lines = _director_payload_lines(part_payload)
-            part_craft = lyric_craft_gate(
-                "\n".join(lines),
-                current,
-                options=self.opts,
-                plan=lyric_plan,
-                duration=requested_duration,
-                genre_hint=genre_hint,
-                partial=True,
-            )
-            craft_issues = [str(item) for item in (part_craft.get("issue_ids") or [])]
             self.task_graph.pass_task(
                 "lyrics_section_draft",
                 track_number=index + 1,
                 payload={"part_index": part_index + 1, "sections": group, "line_count": len(lines)},
             )
-            self.task_graph.start(
-                "section_craft_critic",
-                track_number=index + 1,
-                payload={"part_index": part_index + 1, "sections": group, "lyric_craft_gate": part_craft},
-            )
-            if part_craft.get("status") == "pass" or not craft_issues:
-                self.task_graph.pass_task("section_craft_critic", track_number=index + 1, payload=part_craft)
-            else:
-                self.task_graph.fail_task("section_craft_critic", track_number=index + 1, payload=part_craft, issues=craft_issues)
             lyric_lines.extend(lines)
             forbidden_sections.extend(group)
             current["lyrics_lines"] = lyric_lines
@@ -10385,37 +10093,6 @@ class AceJamAlbumDirector:
             )
         current["lyrics_lines"] = lyric_lines
         current["lyrics"] = "\n".join(lyric_lines).strip()
-        expanded_lines, expanded = _expand_director_lyrics_lines_to_fit(
-            lyric_lines,
-            current,
-            min_words=min_words,
-            min_lines=min_lines,
-            max_chars=safe_lyrics_budget,
-        )
-        if expanded:
-            before_stats = lyric_stats("\n".join(lyric_lines))
-            after_stats = lyric_stats("\n".join(expanded_lines))
-            lyric_lines = expanded_lines
-            current["lyrics_lines"] = lyric_lines
-            current["lyrics"] = "\n".join(lyric_lines).strip()
-            self.agent_repair_count += 1
-            self.logs.append(
-                "Agent deterministic lyrics length expansion: "
-                f"track {index + 1} {before_stats.get('word_count')}/{min_words}_words "
-                f"and {before_stats.get('line_count')}/{min_lines}_lines -> "
-                f"{after_stats.get('word_count')}_words/{after_stats.get('line_count')}_lines"
-            )
-            _append_album_debug_jsonl(
-                self.opts,
-                "05_track_state.jsonl",
-                {
-                    "track_number": index + 1,
-                    "stage": "lyrics_length_expansion",
-                    "before": before_stats,
-                    "after": after_stats,
-                    "state": current,
-                },
-            )
         return lyric_lines
 
     def _generate_caption(
@@ -10445,7 +10122,7 @@ class AceJamAlbumDirector:
                 "section_map",
             )
         }
-        producer_contract = build_producer_grade_sonic_contract(current, self.opts)
+        producer_contract = _minimal_producer_sonic_contract(current, self.opts)
         current["producer_grade_sonic_contract"] = producer_contract
         repair_note = ""
         if repair_issues:
@@ -10472,33 +10149,16 @@ class AceJamAlbumDirector:
                 "Do not include BPM, key, time signature, duration, model, seed, producer/person names, track title, story prose, or lyrics.\n"
                 + f"OUTPUT_BLOCKS:\n{_agent_block_template('caption_agent_payload')}\n",
                 "caption_agent_payload",
-                lambda payload: _validate_caption_payload(payload, current)
-                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
-                + _director_producer_grade_validation_issues(
-                    payload,
-                    {"style": current.get("style"), "vibe": current.get("vibe")},
-                    self.opts,
-                ),
+                lambda payload: _validate_caption_payload(payload, current),
                 repair_context=(
                     "caption must be non-empty, under 512 chars, sound-only, and must not contain BPM, key, duration, "
-                    "producer credits, person names, track title, story prose, section tags, or lyric leakage. "
-                    "Cover primary_genre, drum_groove, low_end_bass, melodic_identity, vocal_delivery, arrangement_movement, "
-                    "texture_space, and mix_master. If rap is requested, include rap/hip-hop as primary, rap vocal delivery, hip-hop drums/groove, and low-end."
+                    "producer credits, person names, track title, story prose, section tags, or lyric leakage."
                 ),
             )
         except AceJamAgentError as exc:
             self.task_graph.fail_task("caption_finalizer", track_number=index + 1, issues=[str(exc)])
             caption_payload = _caption_fallback_payload(current)
-            fallback_issues = _validate_caption_payload(caption_payload, current) + _director_genre_validation_issues(
-                caption_payload,
-                current,
-                self.opts,
-                include_lyrics=False,
-            ) + _director_producer_grade_validation_issues(
-                caption_payload,
-                {"style": current.get("style"), "vibe": current.get("vibe")},
-                self.opts,
-            )
+            fallback_issues = _validate_caption_payload(caption_payload, current)
             self.agent_repair_count += 1
             self.logs.append(
                 f"Agent deterministic fallback: Caption Agent after planner failure: {_monitor_preview(exc, 260)}"
@@ -10520,8 +10180,8 @@ class AceJamAlbumDirector:
                 ) from exc
             self.task_graph.repaired("caption_finalizer", track_number=index + 1, payload=caption_payload, issues=[str(exc)])
         current.update(caption_payload)
-        current["producer_grade_readiness"] = producer_grade_readiness(current, options=self.opts)
-        current["sonic_dna_coverage"] = (current["producer_grade_readiness"].get("sonic_dna_coverage") or {})
+        current["producer_grade_readiness"] = {"status": "not_applied", "technical_only": True}
+        current["sonic_dna_coverage"] = {"status": "not_applied", "technical_only": True}
         self.task_graph.pass_task("caption_finalizer", track_number=index + 1, payload=caption_payload)
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Caption Agent", "state": current})
         return caption_payload
@@ -10533,7 +10193,7 @@ class AceJamAlbumDirector:
         current: dict[str, Any],
         sonic_fields: set[str],
     ) -> dict[str, Any]:
-        producer_contract = build_producer_grade_sonic_contract(current, self.opts)
+        producer_contract = _minimal_producer_sonic_contract(current, self.opts)
         producer_note = (
             "\nPRODUCER_GRADE_SONIC_CONTRACT:\n"
             f"{json.dumps(producer_contract, ensure_ascii=False)}\n"
@@ -10560,24 +10220,16 @@ class AceJamAlbumDirector:
                 + "\nTASK:\nWrite performance/mix guidance only for debug metadata. Do not write caption, tags, lyrics, BPM, key, or duration.\n"
                 + f"OUTPUT_BLOCKS:\n{_agent_block_template('performance_agent_payload')}\n",
                 "performance_agent_payload",
-                lambda payload: _validate_performance_payload(payload)
-                + _director_genre_validation_issues(payload, current, self.opts, include_lyrics=False)
-                + _director_producer_grade_validation_issues(_performance_sonic_payload(payload), None, self.opts),
+                _validate_performance_payload,
                 repair_context=(
                     "Return only performance_brief, negative_control, and genre_profile. No caption, tags, lyrics, BPM, key, duration, or extra keys. "
-                    "Cover producer-grade intent across drums, bass, melody/riff/sample, vocal delivery, movement, texture, and mix. "
-                    "If rap is requested, genre_profile and performance_brief must preserve rap delivery and hip-hop groove as primary."
+                    "Write the guidance that helps the studio performance."
                 ),
             )
         except AceJamAgentError as exc:
             self.task_graph.fail_task("performance_brief", track_number=index + 1, issues=[str(exc)])
             performance_payload = _performance_fallback_payload(current)
-            fallback_issues = _validate_performance_payload(performance_payload) + _director_genre_validation_issues(
-                performance_payload,
-                current,
-                self.opts,
-                include_lyrics=False,
-            ) + _director_producer_grade_validation_issues(_performance_sonic_payload(performance_payload), None, self.opts)
+            fallback_issues = _validate_performance_payload(performance_payload)
             self.agent_repair_count += 1
             self.logs.append(
                 f"Agent deterministic fallback: Performance Agent after planner failure: {_monitor_preview(exc, 260)}"
@@ -10599,8 +10251,8 @@ class AceJamAlbumDirector:
                 ) from exc
             self.task_graph.repaired("performance_brief", track_number=index + 1, payload=performance_payload, issues=[str(exc)])
         current.update(performance_payload)
-        current["producer_grade_readiness"] = producer_grade_readiness(current, options=self.opts)
-        current["sonic_dna_coverage"] = (current["producer_grade_readiness"].get("sonic_dna_coverage") or {})
+        current["producer_grade_readiness"] = {"status": "not_applied", "technical_only": True}
+        current["sonic_dna_coverage"] = {"status": "not_applied", "technical_only": True}
         self.task_graph.pass_task("performance_brief", track_number=index + 1, payload=performance_payload)
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Performance Agent", "state": current})
         return performance_payload
@@ -10746,430 +10398,6 @@ class AceJamAlbumDirector:
         _append_album_debug_jsonl(self.opts, "05_track_state.jsonl", {"track_number": index + 1, "stage": "Track Visual Prompt Agent", "state": current})
         return payload
 
-    def _sanitize_arrangement_lyric_leakage(
-        self,
-        index: int,
-        current: dict[str, Any],
-        gate: dict[str, Any],
-    ) -> bool:
-        genre_report = gate.get("genre_adherence") if isinstance(gate.get("genre_adherence"), dict) else {}
-        stats = genre_report.get("stats") if isinstance(genre_report.get("stats"), dict) else {}
-        scan = stats.get("arrangement_lyric_scan") if isinstance(stats.get("arrangement_lyric_scan"), list) else []
-        blocked_items = [
-            item for item in scan
-            if isinstance(item, dict) and item.get("status") == "blocked" and str(item.get("line") or "").strip()
-        ]
-        if not blocked_items:
-            return False
-        blocked_lines = {str(item.get("line") or "").strip() for item in blocked_items}
-        lines = _director_payload_lines(current)
-        if not lines:
-            lines = [line for line in str(current.get("lyrics") or "").splitlines() if str(line).strip()]
-        safe_bars = [
-            "Street truth cuts clear through the city smoke",
-            "Pressure talks loud but the cadence stays clear",
-            "Cold blocks know where the money went",
-            "Every bar lands where the silence broke",
-            "Paper trails crack when the bassline talks",
-            "Loyalty stands tall when the lights get low",
-        ]
-        required_phrases = [
-            str(item).strip()
-            for item in (current.get("required_phrases") or current.get("required_lyrics") or [])
-            if str(item).strip()
-        ]
-        replacements: list[dict[str, str]] = []
-        safe_index = 0
-        updated_lines: list[str] = []
-        for line in lines:
-            clean = str(line or "").strip()
-            if clean in blocked_lines and not re.fullmatch(r"\[[^\]]+\]", clean):
-                replacement = ""
-                for phrase in required_phrases:
-                    if phrase.casefold() in clean.casefold():
-                        replacement = f"{phrase} while the block speaks clear"
-                        break
-                if not replacement:
-                    replacement = safe_bars[safe_index % len(safe_bars)]
-                    safe_index += 1
-                updated_lines.append(replacement)
-                replacements.append({"from": clean, "to": replacement})
-            else:
-                updated_lines.append(line)
-        if not replacements:
-            return False
-        current["lyrics_lines"] = updated_lines
-        current["lyrics"] = "\n".join(updated_lines).strip()
-        self.agent_repair_count += 1
-        self.logs.append(
-            "Final gate deterministic lyric sanitizer: "
-            f"track {index + 1} replaced {len(replacements)} arrangement-leakage line(s): "
-            f"{_monitor_preview('; '.join(item['from'] for item in replacements), 240)}"
-        )
-        _append_album_debug_jsonl(
-            self.opts,
-            "06_gate_reports.jsonl",
-            {
-                "track_number": index + 1,
-                "stage": "deterministic_lyric_sanitizer",
-                "validation_issues": gate.get("issues") or [],
-                "arrangement_lyric_scan": scan,
-                "blocked_lines": [item.get("line") for item in blocked_items],
-                "replacement_lines": replacements,
-                "payload_preview": _monitor_preview(_compact_json({"lyrics_lines": updated_lines}), 900),
-            },
-        )
-        return True
-
-    def _repair_weak_lyric_sections(
-        self,
-        index: int,
-        current: dict[str, Any],
-        gate: dict[str, Any],
-    ) -> bool:
-        issue_texts = [str(issue) for issue in (gate.get("issues") or [])]
-        repairable_names = {
-            "lyrics_under_length",
-            "lyrics_too_few_lines",
-            "lyrics_under_hit_density",
-            "lyrics_under_hit_line_density",
-            "rap_verses_underfilled",
-            "hook_underwritten",
-        }
-        if not any(any(text == name or text.startswith(name + ":") for name in repairable_names) for text in issue_texts):
-            return False
-        lines = _director_payload_lines(current)
-        if not lines:
-            lines = [line.strip() for line in str(current.get("lyrics") or "").splitlines() if line.strip()]
-        if not any(re.fullmatch(r"\[[^\]]+\]", line) for line in lines):
-            return False
-        duration = parse_duration_seconds(current.get("duration") or self.track_duration, self.track_duration)
-        genre_hint = _director_track_genre_hint(current, self.opts)
-        density_gate = gate.get("lyric_density_gate") if isinstance(gate.get("lyric_density_gate"), dict) else {}
-        plan = dict(density_gate.get("plan") or {})
-        if not plan:
-            plan = lyric_length_plan(
-                duration,
-                str(current.get("lyric_density") or self.opts.get("lyric_density") or "dense"),
-                str(current.get("structure_preset") or self.opts.get("structure_preset") or "auto"),
-                genre_hint,
-            )
-        min_words = max(int(plan.get("min_words") or 0), int((int(plan.get("target_words") or 0)) * 0.82))
-        min_lines = max(
-            _director_effective_min_lines(int(plan.get("min_lines") or 0), int(plan.get("min_words") or 0)),
-            int((int(plan.get("target_lines") or 0)) * 0.82),
-        )
-        max_chars = min(3600, int(plan.get("max_lyrics_chars") or ACE_STEP_LYRICS_SAFE_HEADROOM), ACE_STEP_LYRICS_CHAR_LIMIT - 360)
-        tags = [line for line in lines if re.fullmatch(r"\[[^\]]+\]", line)]
-        minimums = current.get("lyric_section_minimums") if isinstance(current.get("lyric_section_minimums"), dict) else {}
-        if not minimums:
-            minimums = _director_section_line_minimums(tags, duration=duration, genre_hint=genre_hint)
-        bars = _director_lyric_extension_lines(current)
-        used = {line.casefold() for line in lines}
-        added: list[dict[str, str]] = []
-        bar_index = 0
-
-        def _section_counts(source: list[str]) -> dict[str, int]:
-            counts: dict[str, int] = {}
-            active = ""
-            for raw_line in source:
-                clean = str(raw_line or "").strip()
-                if re.fullmatch(r"\[[^\]]+\]", clean):
-                    active = clean
-                    counts.setdefault(active, 0)
-                elif active:
-                    counts[active] = counts.get(active, 0) + 1
-            return counts
-
-        def _next_bar() -> str:
-            nonlocal bar_index
-            for _ in range(len(bars) * 3):
-                bar = bars[bar_index % len(bars)]
-                bar_index += 1
-                if bar.casefold() not in used:
-                    used.add(bar.casefold())
-                    return bar
-            bar = f"Street truth rises in measure {bar_index}"
-            bar_index += 1
-            used.add(bar.casefold())
-            return bar
-
-        def _insert(section: str, line: str) -> bool:
-            try:
-                section_index = lines.index(section)
-            except ValueError:
-                return False
-            insert_at = len(lines)
-            for pos in range(section_index + 1, len(lines)):
-                if re.fullmatch(r"\[[^\]]+\]", lines[pos]):
-                    insert_at = pos
-                    break
-            candidate = lines[:insert_at] + [line] + lines[insert_at:]
-            if len("\n".join(candidate)) > max_chars:
-                return False
-            lines[:] = candidate
-            added.append({"section": section, "line": line})
-            return True
-
-        counts = _section_counts(lines)
-        preferred_sections = [tag for tag in tags if re.search(r"verse", tag, re.I)] or [
-            tag for tag in tags if not re.search(r"intro|outro|break|instrumental", tag, re.I)
-        ] or tags
-        for section, minimum in minimums.items():
-            if section not in tags:
-                continue
-            while counts.get(section, 0) < int(minimum or 0):
-                if not _insert(section, _next_bar()):
-                    break
-                counts = _section_counts(lines)
-        stats = lyric_stats("\n".join(lines))
-        round_index = 0
-        while (
-            (int(stats.get("word_count") or 0) < min_words or int(stats.get("line_count") or 0) < min_lines)
-            and round_index < 96
-        ):
-            section = preferred_sections[round_index % len(preferred_sections)]
-            if not _insert(section, _next_bar()):
-                break
-            stats = lyric_stats("\n".join(lines))
-            round_index += 1
-        if not added:
-            return False
-        current["lyrics_lines"] = lines
-        current["lyrics"] = "\n".join(lines).strip()
-        current["lyric_density_gate"] = lyric_density_gate(
-            current["lyrics"],
-            plan,
-            duration=duration,
-            genre_hint=genre_hint,
-            instrumental=False,
-        )
-        self.agent_repair_count += 1
-        self.logs.append(
-            "Final gate deterministic lyric density repair: "
-            f"track {index + 1} inserted {len(added)} targeted bar(s) into weak sections"
-        )
-        _append_album_debug_jsonl(
-            self.opts,
-            "06_gate_reports.jsonl",
-            {
-                "track_number": index + 1,
-                "stage": "deterministic_lyric_density_repair",
-                "validation_issues": issue_texts,
-                "lyric_density_plan": plan,
-                "section_minimums": minimums,
-                "inserted_lines": added,
-                "lyric_density_gate": current["lyric_density_gate"],
-                "payload_preview": _monitor_preview(_compact_json({"lyrics_lines": lines}), 900),
-            },
-        )
-        return True
-
-    def _repair_lyric_craft(
-        self,
-        index: int,
-        album_bible: dict[str, Any],
-        current: dict[str, Any],
-        gate: dict[str, Any],
-        section_tags: list[str],
-        hook_payload: dict[str, Any],
-        lyric_fields: set[str],
-    ) -> bool:
-        craft_gate = gate.get("lyric_craft_gate") if isinstance(gate.get("lyric_craft_gate"), dict) else {}
-        craft_issue_ids = [str(item) for item in (craft_gate.get("issue_ids") or [])]
-        if not craft_issue_ids:
-            return False
-        repairable = {
-            "lyric_craft_generic_ai_phrase",
-            "lyric_craft_adjective_stacking",
-            "lyric_craft_mixed_metaphor",
-            "lyric_craft_hook_weak",
-            "lyric_craft_no_concrete_scene",
-            "lyric_craft_line_breathability",
-            "lyric_craft_rhyme_chaos",
-            "lyric_craft_section_blur",
-        }
-        if not any(issue in repairable for issue in craft_issue_ids):
-            return False
-        lines = _director_payload_lines(current)
-        if not lines:
-            lines = [line.strip() for line in str(current.get("lyrics") or "").splitlines() if line.strip()]
-        if not lines or not any(re.fullmatch(r"\[[^\]]+\]", line) for line in lines):
-            return False
-        blocks = _director_section_blocks_from_lines(lines)
-        existing_by_key = {_section_key_for_director(str(block.get("tag") or "")): str(block.get("tag") or "") for block in blocks}
-        weak_sections: list[str] = []
-        for item in craft_gate.get("weak_sections") or []:
-            section = str(item.get("section") if isinstance(item, dict) else item).strip()
-            key = _section_key_for_director(section)
-            if key in existing_by_key and existing_by_key[key] not in weak_sections and key != "untagged":
-                weak_sections.append(existing_by_key[key])
-        if "lyric_craft_hook_weak" in craft_issue_ids:
-            for block in blocks:
-                tag = str(block.get("tag") or "")
-                if re.search(r"chorus|hook|refrain", tag, re.I) and tag not in weak_sections:
-                    weak_sections.append(tag)
-        if not weak_sections:
-            for block in blocks:
-                tag = str(block.get("tag") or "")
-                if re.search(r"verse|chorus|hook|bridge", tag, re.I) and tag not in weak_sections:
-                    weak_sections.append(tag)
-                if len(weak_sections) >= 2:
-                    break
-        target_sections = [tag for tag in section_tags if _section_key_for_director(tag) in {_section_key_for_director(item) for item in weak_sections}]
-        if not target_sections:
-            target_sections = weak_sections[:3]
-        target_sections = target_sections[:3]
-        if not target_sections:
-            return False
-        current_sections: list[str] = []
-        target_keys = {_section_key_for_director(tag) for tag in target_sections}
-        for block in blocks:
-            tag = str(block.get("tag") or "")
-            if _section_key_for_director(tag) not in target_keys:
-                continue
-            current_sections.append(tag)
-            current_sections.extend(str(line) for line in block.get("lines") or [])
-        duration = parse_duration_seconds(current.get("duration") or self.track_duration, self.track_duration)
-        genre_hint = _director_track_genre_hint(current, self.opts)
-        density_plan = ((gate.get("lyric_density_gate") or {}).get("plan") or {}) if isinstance(gate.get("lyric_density_gate"), dict) else {}
-        craft_contract = build_lyrical_craft_contract(current, self.opts)
-        section_minimums = current.get("lyric_section_minimums") if isinstance(current.get("lyric_section_minimums"), dict) else {}
-        target_section_minimums = {
-            tag: int(section_minimums.get(tag) or section_minimums.get(_section_tag_line(tag)) or 0)
-            for tag in target_sections
-            if int(section_minimums.get(tag) or section_minimums.get(_section_tag_line(tag)) or 0) > 0
-        }
-        image_field_contract = _lyric_image_field_contract(
-            current,
-            target_sections,
-            section_minimums=target_section_minimums,
-            repair_text=" ".join(craft_issue_ids),
-        )
-        repair_prompt = (
-            self._base_track_context(index, album_bible, current, include_lyric_constraints=True, fields=lyric_fields)
-            + "\nLYRIC_CRAFT_REPAIR_ISSUES:\n"
-            + f"{json.dumps(craft_issue_ids, ensure_ascii=False)}\n"
-            + "LYRICAL_CRAFT_CONTRACT:\n"
-            + f"{json.dumps(craft_contract, ensure_ascii=False)}\n"
-            + "LYRIC_IMAGE_FIELD_CONTRACT:\n"
-            + f"{image_field_contract}\n"
-            + "TARGET_SECTIONS_TO_REWRITE:\n"
-            + f"{json.dumps(target_sections, ensure_ascii=False)}\n"
-            + "CURRENT_TARGET_SECTION_LINES:\n"
-            + f"{json.dumps(current_sections, ensure_ascii=False)}\n"
-            + "FULL_SECTION_MAP_DO_NOT_CHANGE:\n"
-            + f"{json.dumps(section_tags, ensure_ascii=False)}\n"
-            + "HOOK_LINES_TO_PRESERVE_OR_IMPROVE:\n"
-            + f"{json.dumps(hook_payload.get('hook_lines') or [], ensure_ascii=False)}\n"
-            + "Rewrite only the target sections. Keep each target bracket tag exactly once. "
-            "Do not output any non-target section. Do not include previous weak lines unless they are genuinely strong. "
-            "Replace generic phrases with concrete human details, coherent metaphor, breathable lines, and genre-correct flow. "
-            "Never include BPM, key, caption, metadata, producer names, markdown, explanations, or stage directions.\n"
-            + f"OUTPUT_BLOCKS:\n{_agent_block_template('lyric_craft_repair_payload')}\n"
-        )
-
-        def _repair_validator(payload: dict[str, Any]) -> list[str]:
-            issues: list[str] = []
-            actual_sections = _director_section_tags({"section_map": payload.get("sections") or []})
-            if [_section_key_for_director(item) for item in actual_sections] != [_section_key_for_director(item) for item in target_sections]:
-                issues.append("sections_mismatch")
-            replacement_lines = _director_payload_lines(payload)
-            _merged, _changed, merge_issues = _director_replace_section_blocks(lines, replacement_lines, target_sections)
-            issues.extend(merge_issues)
-            partial_craft = lyric_craft_gate(
-                "\n".join(replacement_lines),
-                current,
-                options=self.opts,
-                plan=density_plan,
-                duration=duration,
-                genre_hint=genre_hint,
-                partial=True,
-            )
-            for craft_issue in partial_craft.get("issues") or []:
-                craft_id = str(craft_issue.get("id") if isinstance(craft_issue, dict) else craft_issue)
-                if craft_id in {
-                    "lyric_craft_placeholder",
-                    "lyric_craft_fallback_artifact",
-                    "lyric_craft_metadata_leakage",
-                    "lyric_craft_generic_ai_phrase",
-                    "lyric_craft_adjective_stacking",
-                    "lyric_craft_line_breathability",
-                    "lyric_craft_mixed_metaphor",
-                    "lyric_craft_low_score",
-                }:
-                    issues.append(craft_id)
-            return sorted(set(issues))
-
-        try:
-            repair_payload = self._call_until_valid(
-                "Lyric Craft Repair Agent",
-                repair_prompt,
-                "lyric_craft_repair_payload",
-                _repair_validator,
-                repair_context=(
-                    f"Rewrite only TARGET_SECTIONS_TO_REWRITE={json.dumps(target_sections, ensure_ascii=False)}. "
-                    "sections must match exactly. Use delimiter blocks only. Remove generic AI phrases, mixed metaphors, "
-                    "overlong lines, weak hook wording, and filler while preserving the bracket tags. "
-                    f"{image_field_contract}"
-                ),
-            )
-        except AceJamAgentError as exc:
-            self.logs.append(
-                f"Lyric Craft Repair Agent failed for track {index + 1}; falling back to lyric part regeneration: "
-                f"{_monitor_preview(exc, 240)}"
-            )
-            _append_album_debug_jsonl(
-                self.opts,
-                "06_gate_reports.jsonl",
-                {
-                    "track_number": index + 1,
-                    "stage": "lyric_craft_repair_failed",
-                    "validation_issues": craft_issue_ids,
-                    "target_sections": target_sections,
-                    "source_error": str(exc),
-                    "repair_strategy": "part_regeneration",
-                },
-            )
-            return False
-        replacement_lines = _director_payload_lines(repair_payload)
-        merged, changed, merge_issues = _director_replace_section_blocks(lines, replacement_lines, target_sections)
-        if not changed or merge_issues:
-            return False
-        current["lyrics_lines"] = merged
-        current["lyrics"] = "\n".join(merged).strip()
-        current["lyrical_craft_contract"] = craft_contract
-        current["lyric_craft_gate"] = lyric_craft_gate(
-            current["lyrics"],
-            current,
-            options=self.opts,
-            plan=density_plan,
-            duration=duration,
-            genre_hint=genre_hint,
-            partial=False,
-        )
-        self.agent_repair_count += 1
-        self.logs.append(
-            "Final gate lyric craft repair: "
-            f"track {index + 1} rewrote {', '.join(target_sections)} for {', '.join(craft_issue_ids)}"
-        )
-        _append_album_debug_jsonl(
-            self.opts,
-            "06_gate_reports.jsonl",
-            {
-                "track_number": index + 1,
-                "stage": "lyric_craft_repair",
-                "validation_issues": craft_issue_ids,
-                "weak_sections": craft_gate.get("weak_sections") or [],
-                "target_sections": target_sections,
-                "repair_strategy": "section_rewrite",
-                "lyric_craft_gate": current["lyric_craft_gate"],
-                "rejected_lyric_preview": _monitor_preview("\n".join(current_sections), 900),
-                "payload_preview": _monitor_preview(_compact_json(repair_payload), 900),
-            },
-        )
-        return True
-
     def _assemble_track(
         self,
         index: int,
@@ -11209,26 +10437,17 @@ class AceJamAlbumDirector:
         track["use_cot_caption"] = False
         track["use_cot_lyrics"] = False
         track["use_cot_language"] = False
-        genre_adherence = evaluate_genre_adherence(track, self.opts)
-        track["genre_intent_contract"] = genre_adherence.get("contract") or {}
-        track["genre_adherence"] = {key: value for key, value in genre_adherence.items() if key != "contract"}
-        track["genre_validation_issues"] = genre_adherence.get("issue_ids") or []
-        producer_readiness = producer_grade_readiness(track, options=self.opts)
-        track["producer_grade_sonic_contract"] = (producer_readiness.get("sonic_dna_coverage") or {}).get("contract") or {}
-        track["sonic_dna_coverage"] = producer_readiness.get("sonic_dna_coverage") or {}
-        track["producer_grade_readiness"] = producer_readiness
-        craft_gate = lyric_craft_gate(
-            track.get("lyrics") or "",
-            track,
-            options=self.opts,
-            duration=track.get("duration") or self.track_duration,
-            genre_hint=_director_track_genre_hint(track, self.opts),
-            instrumental=str(track.get("lyrics") or "").strip().lower() == "[instrumental]" or bool(track.get("instrumental")),
-        )
-        track["lyrical_craft_contract"] = craft_gate.get("contract") or {}
+        track["genre_intent_contract"] = _minimal_genre_intent_contract(track, self.opts)
+        track["genre_adherence"] = {"status": "not_applied", "technical_only": True}
+        track["genre_validation_issues"] = []
+        track["producer_grade_sonic_contract"] = _minimal_producer_sonic_contract(track, self.opts)
+        track["sonic_dna_coverage"] = {"status": "not_applied", "technical_only": True}
+        track["producer_grade_readiness"] = {"status": "not_applied", "technical_only": True}
+        craft_gate = {"status": "not_applied", "score": None, "issue_ids": [], "technical_only": True}
+        track["lyrical_craft_contract"] = {"status": "not_applied", "technical_only": True}
         track["lyric_craft_gate"] = craft_gate
-        track["lyric_craft_score"] = craft_gate.get("score")
-        track["lyric_craft_issues"] = craft_gate.get("issue_ids") or []
+        track["lyric_craft_score"] = None
+        track["lyric_craft_issues"] = []
         track["agent_complete_payload"] = True
         track["agent_director_version"] = ACEJAM_ALBUM_DIRECTOR_VERSION
         # Fill remaining UI-visible fields so the album wizard does not show
@@ -11371,14 +10590,12 @@ class AceJamAlbumDirector:
         # The first pass above ran before the UI floor filled style/profile
         # fields. Recompute the visible readiness mirrors so JobTracker and
         # Review show the same conditioning that ACE-Step will receive.
-        genre_adherence = evaluate_genre_adherence(track, self.opts)
-        track["genre_intent_contract"] = genre_adherence.get("contract") or {}
-        track["genre_adherence"] = {key: value for key, value in genre_adherence.items() if key != "contract"}
-        track["genre_validation_issues"] = genre_adherence.get("issue_ids") or []
-        producer_readiness = producer_grade_readiness(track, options=self.opts)
-        track["producer_grade_sonic_contract"] = (producer_readiness.get("sonic_dna_coverage") or {}).get("contract") or {}
-        track["sonic_dna_coverage"] = producer_readiness.get("sonic_dna_coverage") or {}
-        track["producer_grade_readiness"] = producer_readiness
+        track["genre_intent_contract"] = _minimal_genre_intent_contract(track, self.opts)
+        track["genre_adherence"] = {"status": "not_applied", "technical_only": True}
+        track["genre_validation_issues"] = []
+        track["producer_grade_sonic_contract"] = _minimal_producer_sonic_contract(track, self.opts)
+        track["sonic_dna_coverage"] = {"status": "not_applied", "technical_only": True}
+        track["producer_grade_readiness"] = {"status": "not_applied", "technical_only": True}
         # Inference settings: pass through album-level config so wizard shows
         # the actual values that will be sent to ACE-Step rather than blanks.
         track["inference_steps"] = clamp_int(
@@ -11413,14 +10630,14 @@ class AceJamAlbumDirector:
                 "executive_producer": "AceJAM Director Agent",
                 "artist_performer": str(track.get("artist_name") or ""),
                 "songwriter": "AceJAM Track Concept + Lyrics Agents",
-                "rhyme_metaphor_editor": "AceJAM Lyric Craft Gate",
+                "rhyme_metaphor_editor": "AceJAM Songwriter / Topliner",
                 "beat_producer": str(track.get("producer_credit") or "AceJAM Sonic Tags Agent"),
                 "ace_step_prompt_engineer": "AceJAM Caption Polisher",
                 "studio_engineer": "AceJAM Final Payload Assembler",
-                "ar_quality_gate": "AceJAM Payload + Lyric Craft Gates",
+                "ar_quality_gate": "ACE-Step technical contract only",
             }
         self.task_graph.start("whole_song_continuity_critic", track_number=index + 1, payload=track)
-        gate = _director_minimal_validate(track, section_tags, self.opts)
+        gate = _ace_step_album_payload_contract_check(track, section_tags, self.opts)
         if gate.get("gate_passed"):
             self.task_graph.pass_task("whole_song_continuity_critic", track_number=index + 1, payload=gate)
         else:
@@ -11443,11 +10660,11 @@ class AceJamAlbumDirector:
                 "hit_angle": str(track.get("description") or "")[:240],
                 "hook": (track.get("hook_promise") or current.get("hook_promise") or ""),
                 "metaphor_world": str(track.get("style") or current.get("style") or "")[:240],
-                "rhyme_flow": str((craft_gate or {}).get("summary") or "")[:240],
+                "rhyme_flow": "not_applied",
                 "energy_curve": str(track.get("vibe") or current.get("vibe") or "")[:240],
                 "lyric_word_target": int((track.get("lyrics_quality") or {}).get("target_words") or 0),
                 "section_plan": list(section_tags or []),
-                "warnings": list((gate or {}).get("warnings") or (track.get("lyric_craft_issues") or [])),
+                "warnings": list((gate or {}).get("warnings") or []),
             }
         _append_album_debug_jsonl(self.opts, "06_gate_reports.jsonl", {"track_number": index + 1, "title": track.get("title"), "gate": gate})
         _print_agent_io(self.opts, f"track_{index + 1}_gate_report", gate)
@@ -11492,7 +10709,7 @@ class AceJamAlbumDirector:
         self.task_graph.pass_task("track_concept", track_number=index + 1, payload=concept_payload)
         current = {**slot, **concept_payload, "track_number": index + 1}
         current["title"] = slot.get("title") or current.get("title") or f"Track {index + 1}"
-        current["genre_intent_contract"] = build_genre_intent_contract(current, self.opts)
+        current["genre_intent_contract"] = _minimal_genre_intent_contract(current, self.opts)
 
         self._generate_tags(index, album_bible, current, sonic_fields)
 
@@ -11578,211 +10795,28 @@ class AceJamAlbumDirector:
         self._generate_visual_prompts(index, album_bible, current, section_tags)
 
         track, gate = self._assemble_track(index, slot, current, section_tags)
-        issue_history: list[dict[str, Any]] = []
-        requested_repair_rounds = int(self.opts.get("max_track_repair_rounds") or ALBUM_TRACK_GATE_REPAIR_RETRIES)
-        max_gate_repairs = max(0, min(3, requested_repair_rounds, ACEJAM_AGENT_GATE_REPAIR_RETRIES))
-
-        def _has_issue(issues: list[str], *names: str) -> bool:
-            return any(
-                str(issue) == name or str(issue).startswith(name + ":")
-                for issue in issues
-                for name in names
-            )
-
-        for repair_attempt in range(1, max_gate_repairs + 1):
-            if gate.get("gate_passed"):
-                break
-            issues = [str(issue) for issue in (gate.get("issues") or [])]
-            issue_history.append({"attempt": repair_attempt, "issues": issues})
-            issue_text = "; ".join(issues)
-            self.agent_repair_count += 1
-            self.logs.append(
-                f"Final gate repair retry: track {index + 1} attempt {repair_attempt}/{max_gate_repairs}: {issue_text}"
-            )
-            _append_album_debug_jsonl(
-                self.opts,
-                "06_gate_reports.jsonl",
-                {
-                    "track_number": index + 1,
-                    "title": track.get("title"),
-                    "final_gate_repair_attempt": repair_attempt,
-                    "repair_attempt": repair_attempt,
-                    "validation_issues": issues,
-                    "rejected_payload_preview": _monitor_preview(_compact_json(track), 900),
-                },
-            )
-            if (
-                _has_issue(issues, "non_rap_arrangement_lyric_leakage")
-                and all(_has_issue([issue], "non_rap_arrangement_lyric_leakage") for issue in issues)
-                and self._sanitize_arrangement_lyric_leakage(index, current, gate)
-            ):
-                track, gate = self._assemble_track(index, slot, current, section_tags)
-                if gate.get("gate_passed"):
-                    break
-                issues = [str(issue) for issue in (gate.get("issues") or [])]
-                if not _has_issue(issues, "non_rap_arrangement_lyric_leakage"):
-                    continue
-            if (
-                _has_issue(
-                    issues,
-                    "lyrics_under_length",
-                    "lyrics_too_few_lines",
-                    "lyrics_under_hit_density",
-                    "lyrics_under_hit_line_density",
-                    "rap_verses_underfilled",
-                    "hook_underwritten",
-                )
-                and self._repair_weak_lyric_sections(index, current, gate)
-            ):
-                track, gate = self._assemble_track(index, slot, current, section_tags)
-                if gate.get("gate_passed"):
-                    break
-                issues = [str(issue) for issue in (gate.get("issues") or [])]
-            craft_issue_names = {
-                "lyric_craft_generic_ai_phrase",
-                "lyric_craft_adjective_stacking",
-                "lyric_craft_mixed_metaphor",
-                "lyric_craft_hook_weak",
-                "lyric_craft_no_concrete_scene",
-                "lyric_craft_line_breathability",
-                "lyric_craft_rhyme_chaos",
-                "lyric_craft_section_blur",
-                "lyric_craft_low_score",
-            }
-            if _has_issue(issues, "lyric_craft_hook_weak"):
-                hook_payload = self._generate_hook(index, album_bible, current, lyric_fields, repair_issues=issues)
-            if _has_issue(issues, *sorted(craft_issue_names)) and self._repair_lyric_craft(
-                index,
-                album_bible,
-                current,
-                gate,
-                section_tags,
-                hook_payload,
-                lyric_fields,
-            ):
-                track, gate = self._assemble_track(index, slot, current, section_tags)
-                if gate.get("gate_passed"):
-                    break
-                issues = [str(issue) for issue in (gate.get("issues") or [])]
-            needs_section_hook_lyrics = _has_issue(issues, "section_map_missing_hook", "lyrics_missing_hook_section")
-            needs_lyrics = needs_section_hook_lyrics or _has_issue(
-                issues,
-                "duplicate_section_tags",
-                "section_map_mismatch",
-                "missing_lyrics",
-                "lyrics_over_4096",
-                "lyrics_under_length",
-                "lyrics_too_few_lines",
-                "lyrics_under_hit_density",
-                "lyrics_under_hit_line_density",
-                "rap_verses_underfilled",
-                "hook_underwritten",
-                "lyric_unique_line_ratio_low",
-                "fallback_reprise_overuse",
-                "non_rap_arrangement_lyric_leakage",
-                "rap_lines_not_bar_like",
-                *sorted(craft_issue_names),
-            )
-            needs_tags = _has_issue(
-                issues,
-                "genre_intent_missing_rap_core",
-                "genre_intent_missing_rap_vocal",
-                "genre_intent_missing_rap_groove",
-                "genre_intent_missing_low_end",
-                "rap_not_dominant",
-                "orchestral_overdominant",
-                "producer_grade_missing_primary_genre",
-                "producer_grade_missing_drum_groove",
-                "producer_grade_missing_low_end_bass",
-                "producer_grade_missing_melodic_identity",
-                "producer_grade_missing_vocal_delivery",
-                "producer_grade_missing_arrangement_movement",
-                "producer_grade_missing_texture_space",
-                "producer_grade_missing_mix_master",
-                "producer_grade_sonic_dna_unrepaired",
-            )
-            needs_caption = _has_issue(
-                issues,
-                "missing_caption",
-                "caption_over_512",
-                "metadata_or_credit_in_caption",
-                "producer_credit_in_caption",
-                "artist_name_in_caption",
-                "title_in_caption",
-                "lyric_or_story_marker_in_caption",
-                "section_tag_in_caption",
-            ) or needs_tags
-            needs_performance = needs_tags
-            if not any([needs_section_hook_lyrics, needs_lyrics, needs_caption, needs_tags, needs_performance]):
-                needs_caption = True
-                needs_lyrics = True
-            if needs_tags:
-                self._generate_tags(index, album_bible, current, sonic_fields, repair_issues=issues)
-            if needs_section_hook_lyrics:
-                _section_payload, section_tags = self._generate_section_map(
-                    index,
-                    album_bible,
-                    current,
-                    lyric_fields,
-                    repair_issues=issues,
-                )
-                hook_payload = self._generate_hook(index, album_bible, current, lyric_fields, repair_issues=issues)
-                self._generate_lyrics_parts(
-                    index,
-                    album_bible,
-                    current,
-                    lyric_fields,
-                    section_tags,
-                    hook_payload,
-                    repair_issues=issues,
-                )
-            elif needs_lyrics:
-                self._generate_lyrics_parts(
-                    index,
-                    album_bible,
-                    current,
-                    lyric_fields,
-                    section_tags,
-                    hook_payload,
-                    repair_issues=issues,
-                )
-            if needs_caption:
-                self._generate_caption(index, album_bible, current, sonic_fields, repair_issues=issues)
-            if needs_performance:
-                self._generate_performance(index, album_bible, current, sonic_fields)
-            track, gate = self._assemble_track(index, slot, current, section_tags)
-
         if not gate.get("gate_passed"):
-            final_issues = [str(issue) for issue in (gate.get("issues") or [])]
-            issue_history.append({"attempt": "final", "issues": final_issues})
-            debug_paths = {
-                "responses": str(Path(self.agent_debug_dir) / "04_agent_responses.jsonl") if self.agent_debug_dir else "",
-                "gate_reports": str(Path(self.agent_debug_dir) / "06_gate_reports.jsonl") if self.agent_debug_dir else "",
-                "rejected_payloads": str(Path(self.agent_debug_dir) / "07_rejected_payloads.jsonl") if self.agent_debug_dir else "",
-            }
+            issues = [str(issue) for issue in (gate.get("issues") or [])]
             _append_album_debug_jsonl(
                 self.opts,
                 "07_rejected_payloads.jsonl",
                 {
                     "track_number": index + 1,
-                    "title": track.get("title"),
+                    "stage": "ace_step_contract",
+                    "planning_status": "failed",
+                    "issues": issues,
                     "payload": track,
-                    "gate": gate,
-                    "issue_history": issue_history,
-                    "debug_paths": debug_paths,
                 },
             )
-            _print_agent_io(self.opts, f"track_{index + 1}_rejected_payload", track)
-            self.logs.append(
-                f"Payload gate hard stop: track {index + 1} rejected after {max_gate_repairs} repair attempt(s): "
-                f"{'; '.join(final_issues[:8]) or 'quality gate failed'}"
-            )
             raise AceJamAgentError(
-                f"Final payload gate failed for track {index + 1} after {max_gate_repairs} repair attempt(s): "
-                f"{'; '.join(final_issues[:8]) or 'quality gate failed'}"
+                f"Track {index + 1} ACE-Step technical contract failed: "
+                f"{'; '.join(issues[:8]) or gate.get('status')}"
             )
-        _append_album_debug_jsonl(self.opts, "07_final_payloads.jsonl", {"track_number": index + 1, "title": track.get("title"), "payload": track})
-        _print_agent_io(self.opts, f"track_{index + 1}_final_payload", track)
+        _append_album_debug_jsonl(
+            self.opts,
+            "08_final_payloads.jsonl",
+            {"track_number": index + 1, "title": track.get("title"), "payload": track, "gate": gate},
+        )
         return track
 
 
@@ -11835,9 +10869,14 @@ def plan_album(
     opts["print_agent_io"] = _truthy(opts.get("print_agent_io"), ACEJAM_PRINT_AGENT_IO_DEFAULT)
     planner_settings = planner_llm_settings_from_payload(opts)
     planner_settings["planner_timeout"] = max(
-        float(planner_settings.get("planner_timeout") or 0),
-        PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS,
+        15.0,
+        float(planner_settings.get("planner_timeout") or CREWAI_LLM_TIMEOUT_SECONDS),
     )
+    if CREWAI_AGENT_MAX_TIMEOUT_SECONDS > 0:
+        planner_settings["planner_timeout"] = min(
+            float(CREWAI_AGENT_MAX_TIMEOUT_SECONDS),
+            float(planner_settings["planner_timeout"]),
+        )
     opts.update(planner_settings)
     if input_tracks:
         opts["editable_plan_tracks"] = [dict(item) for item in input_tracks if isinstance(item, dict)]
@@ -11888,28 +10927,20 @@ def plan_album(
             + ", ".join(
                 ALBUM_TASK_GRAPH_REGISTRY[key].debug_label
                 for key in (
-                    "track_concept",
-                    "sonic_dna_tags",
-                    "metadata",
-                    "section_map",
-                    "hook_promise",
-                    "hook_lines",
-                    "section_briefs",
-                    "lyrics_section_draft",
-                    "section_craft_critic",
-                    "section_repair",
-                    "whole_song_continuity_critic",
-                    "caption_finalizer",
-                    "performance_brief",
-                    "single_art_prompt",
-                    "video_prompt",
-                    "visual_consistency_critic",
+                    "album_producer",
+                    "ace_step_knowledge_producer",
+                    "track_producer",
+                    "songwriter",
+                    "vocal_performance_producer",
+                    "ace_step_prompt_engineer",
+                    "visual_director",
+                    "payload_assembler",
                 )
             )
             + "."
         )
         logs.append(f"Watch the log for 'CrewAI Micro Agent call:' lines — that is each agent invoking crewai.Agent + crewai.Task.")
-        logs.append("Knowledge injected per agent: ACE-Step tag library, Producer-Format Cookbook (17 entries incl. Dre G-funk + Chronic 2001 + Pete Rock + Havoc + Stoupe), Rap-Mode Cookbook, Songwriter Craft Cookbook (Eminem/2Pac/Kendrick/Nas signatures), Lyric Anti-Patterns, Worked Examples, full-rap rule 2x16 bars.")
+        logs.append("Knowledge injected per agent: ACE-Step tag library, Prompt Kit genre modules, taxonomy tags, language/keyscale/task metadata, and ACE-Step caption/lyrics/export limits.")
         logs.append("================================================================")
     else:
         logs.append("(Tip: switch agent_engine to 'crewai_micro' to run multi-agent CrewAI flow with full visibility.)")

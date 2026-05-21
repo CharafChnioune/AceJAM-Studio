@@ -71,6 +71,13 @@ def _env_float(name: str, default: float = 0.0) -> float:
         return default
 
 
+def _album_plan_llm_hard_timeout_from_policy(planner_timeout_seconds: float) -> float:
+    raw = os.environ.get("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS")
+    if raw is None or str(raw).strip() == "":
+        return 0.0
+    return max(0.0, _env_float("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS", 0.0))
+
+
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_CACHE_DIR = BASE_DIR / "model_cache"
 DATA_DIR = BASE_DIR / "data"
@@ -941,6 +948,62 @@ def _caption_with_vocal_clarity_traits(caption: Any) -> str:
             terms.append(trait)
             lowered.add(trait.lower())
     return ", ".join(terms).strip(", ") or ", ".join(VOCAL_CLARITY_CAPTION_TRAITS[:3])
+
+
+def _fit_caption_to_ace_step_limit(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) <= ACE_STEP_CAPTION_CHAR_LIMIT:
+        return text
+    terms = split_terms(text)
+    kept: list[str] = []
+    for term in terms:
+        term = str(term or "").strip()
+        if not term:
+            continue
+        candidate = ", ".join([*kept, term]).strip(", ")
+        if len(candidate) <= ACE_STEP_CAPTION_CHAR_LIMIT:
+            kept.append(term)
+    if kept:
+        return ", ".join(kept).strip(", ")
+    clipped = text[:ACE_STEP_CAPTION_CHAR_LIMIT]
+    return clipped.rsplit(",", 1)[0].strip(" ,.") or clipped.strip(" ,.")
+
+
+def _enforce_runtime_caption_budget(params: dict[str, Any], *, source: str) -> None:
+    caption = str(params.get("caption") or "")
+    fitted = _fit_caption_to_ace_step_limit(caption)
+    if fitted == caption:
+        return
+    params["caption"] = fitted
+    params["tag_list"] = split_terms(fitted)
+    if not str(params.get("tags") or "").strip() or str(params.get("tags") or "").strip() == caption:
+        params["tags"] = fitted
+    warnings = list(params.get("payload_warnings") or [])
+    warning = f"Caption fit to ACE-Step {ACE_STEP_CAPTION_CHAR_LIMIT}-character limit after {source}."
+    if warning not in warnings:
+        warnings.append(warning)
+    params["payload_warnings"] = warnings
+    budget = dict(params.get("ace_step_text_budget") or {})
+    previous_action = str(budget.get("lyrics_overflow_action") or "none")
+    action = "caption_runtime_fit"
+    if previous_action and previous_action != "none" and action not in previous_action.split("+"):
+        action = f"{previous_action}+{action}"
+    elif previous_action and previous_action != "none":
+        action = previous_action
+    try:
+        source_caption_count = int(budget.get("source_caption_char_count") or 0)
+    except (TypeError, ValueError):
+        source_caption_count = 0
+    budget.update(
+        {
+            "caption_char_limit": ACE_STEP_CAPTION_CHAR_LIMIT,
+            "source_caption_char_count": max(source_caption_count, len(caption)),
+            "runtime_caption_char_count": len(fitted),
+            "lyrics_overflow_action": action,
+            "caption_runtime_budget_source": source,
+        }
+    )
+    params["ace_step_text_budget"] = budget
 
 
 def _disable_acestep_mlx_backends(handler_cls: Any) -> None:
@@ -7350,6 +7413,7 @@ def _validate_direct_album_agent_payload(payload: dict[str, Any]) -> dict[str, A
     issues: list[dict[str, Any]] = []
     caption = str(payload.get("caption") or payload.get("tags") or "")
     lyrics = str(payload.get("lyrics") or "")
+    stats = lyric_stats(lyrics)
     if not str(payload.get("title") or "").strip():
         issues.append({"id": "missing_title", "severity": "fail", "detail": "title is required"})
     if not caption.strip():
@@ -7367,31 +7431,40 @@ def _validate_direct_album_agent_payload(payload: dict[str, Any]) -> dict[str, A
         value = str(payload.get(field) or "").strip()
         if value and value.lower() in caption.lower():
             issues.append({"id": f"{field}_in_caption", "severity": "fail", "detail": value})
-    if not lyrics.strip() or lyrics.strip().lower() == "[instrumental]":
-        issues.append({"id": "missing_vocal_lyrics", "severity": "fail", "detail": "album agent payload needs complete lyrics"})
+    if not lyrics.strip():
+        issues.append({"id": "missing_lyrics", "severity": "fail", "detail": "lyrics are required"})
     if len(lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
         issues.append({"id": "lyrics_over_limit", "severity": "fail", "detail": f"{len(lyrics)}/{ACE_STEP_LYRICS_CHAR_LIMIT} chars"})
+    duration_value = payload.get("duration")
+    if duration_value not in (None, "", "auto", "Auto", -1):
+        duration = parse_duration_seconds(duration_value, -1)
+        if duration > 0 and not 10 <= duration <= 600:
+            issues.append({"id": "duration_out_of_range", "severity": "fail", "detail": str(duration_value)})
+    bpm_value = payload.get("bpm")
+    if bpm_value not in (None, "", "auto", "Auto", -1):
+        try:
+            bpm = float(bpm_value)
+        except (TypeError, ValueError):
+            bpm = -1
+        if bpm > 0 and not 30 <= bpm <= 300:
+            issues.append({"id": "bpm_out_of_range", "severity": "fail", "detail": str(bpm_value)})
     sections = re.findall(r"\[([^\]]+)\]", lyrics)
-    if not any(re.search(r"chorus|hook|refrain", section, re.I) for section in sections):
-        issues.append({"id": "hook_missing", "severity": "fail", "detail": "no chorus/hook/refrain section"})
-    lyric_duration_fit = _direct_album_lyric_duration_fit(payload)
-    issues.extend(lyric_duration_fit.get("issues") or [])
-    genre_adherence = evaluate_genre_adherence(payload)
-    issues.extend(dict(issue) for issue in (genre_adherence.get("issues") or []))
     return {
-        "version": "direct-album-agent-payload-2026-05-01",
+        "version": "minimal-studio-ace-step-contract-2026-05-17",
         "gate_passed": not issues,
         "status": "pass" if not issues else "fail",
         "issues": issues,
         "blocking_issues": issues,
         "caption_chars": len(caption),
         "lyrics_chars": len(lyrics),
-        "lyrics_word_count": int(lyric_duration_fit.get("word_count") or 0),
-        "lyrics_line_count": int(lyric_duration_fit.get("line_count") or 0),
-        "lyric_duration_fit": lyric_duration_fit,
-        "genre_intent_contract": genre_adherence.get("contract") or {},
-        "genre_adherence": {key: value for key, value in genre_adherence.items() if key != "contract"},
+        "lyrics_word_count": int(stats.get("word_count") or 0),
+        "lyrics_line_count": int(stats.get("line_count") or 0),
+        "lyric_duration_fit": {"status": "not_applied", "technical_only": True},
+        "genre_intent_contract": {},
+        "genre_adherence": {"status": "not_applied", "technical_only": True},
         "sections": [f"[{section}]" for section in sections],
+        "technical_only": True,
+        "filters_applied": [],
     }
 
 
@@ -8526,6 +8599,7 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if "vocal_clarity_recovery_caption_traits" not in parsed["payload_warnings"]:
             parsed["payload_warnings"].append("vocal_clarity_recovery_caption_traits")
     _apply_lora_trigger_conditioning(parsed)
+    _enforce_runtime_caption_budget(parsed, source="post_conditioning")
     _enforce_model_correct_render_settings(parsed, source="parse")
     _apply_mac_mlx_xl_repetition_guard(parsed, source="parse")
     _apply_mps_long_lora_memory_guard(parsed, source="parse")
@@ -9047,6 +9121,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
     params = _enforce_model_correct_render_settings(dict(params), source="official_request")
     _apply_audio_backend_defaults(params, source="official_request")
     _apply_mps_long_lora_memory_guard(params, source="official_request")
+    _enforce_runtime_caption_budget(params, source="official_request")
     needs_lm = _requires_lm(params)
     lm_model = _concrete_lm_model(params["ace_lm_model"]) if needs_lm else None
     seed_text = str(params.get("seed") or "-1").strip()
@@ -9071,7 +9146,7 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
     runtime_lyrics = "[Instrumental]" if params["instrumental"] else str(params.get("lyrics") or "")
     if len(runtime_caption) > ACE_STEP_CAPTION_CHAR_LIMIT:
         raise RuntimeError(
-            f"Official ACE-Step runner blocked an over-budget caption: "
+            f"Official ACE-Step runner could not fit caption: "
             f"{len(runtime_caption)}/{ACE_STEP_CAPTION_CHAR_LIMIT} chars."
         )
     if not params["instrumental"] and len(runtime_lyrics) > ACE_STEP_LYRICS_CHAR_LIMIT:
@@ -13418,11 +13493,11 @@ def generate_album(
             _ensure_album_agent_modules_current()
             from album_crew import plan_album as _plan_album
 
-            logs.append(f"Phase 1: Planning album with {planning_engine_label} and deterministic gates...")
+            logs.append(f"Phase 1: Planning album with {planning_engine_label} studio crew...")
             logs.append(f"Album writer mode: {album_options.get('album_writer_mode')}; per-track AI writing, audit, repair and debug before render.")
             _album_job_log(
                 album_job_id,
-                f"Phase 1: Planning album with {planning_engine_label} and deterministic gates.",
+                f"Phase 1: Planning album with {planning_engine_label} studio crew.",
                 status="Planning album",
                 progress=3,
                 planning_engine=planning_engine,
@@ -14013,19 +14088,7 @@ def generate_album(
                             "payload": generation_payload,
                         },
                     )
-                    if direct_agent_payload:
-                        gate = _validate_direct_album_agent_payload(generation_payload)
-                    else:
-                        generation_payload["lyrics"] = strip_ace_step_lyrics_leakage(generation_payload.get("lyrics"))
-                        gate = evaluate_album_payload_quality(
-                            generation_payload,
-                            options={
-                                **album_options,
-                                "track_duration": generation_payload.get("duration") or track_duration,
-                            },
-                            repair=True,
-                        )
-                        generation_payload = gate["repaired_payload"]
+                    gate = _validate_direct_album_agent_payload(generation_payload)
                     for public_field in [
                         "caption",
                         "tags",
@@ -14073,7 +14136,7 @@ def generate_album(
                     track["caption_integrity"] = gate.get("caption_integrity")
                     track["lyric_duration_fit"] = gate.get("lyric_duration_fit")
                     track["lyrics_quality"] = generation_payload.get("lyrics_quality") or gate.get("lyrics_quality") or track.get("lyrics_quality") or {}
-                    track["repair_actions"] = [] if direct_agent_payload else (gate.get("repair_actions") or [])
+                    track["repair_actions"] = []
                     if model_index == 1:
                         for public_field in [
                             "caption",
@@ -14157,19 +14220,19 @@ def generate_album(
                                 base_track["payload_gate_passed"] = False
                                 base_track["payload_gate_blocking_issues"] = _jsonable(blocking_issues)
                             logs.append(
-                                "    Payload gate warning on UI-approved track "
+                                "    ACE-Step contract warning on UI-approved track "
                                 f"{track_title}: {issue_preview or gate.get('status')}. Continuing render without another agent loop."
                             )
                             _album_job_log(
                                 album_job_id,
-                                f"Payload gate warning on UI-approved track {i + 1}: {track_title}; continuing render.",
+                                f"ACE-Step contract warning on UI-approved track {i + 1}: {track_title}; continuing render.",
                                 current_track=f"{i + 1}/{len(tracks)} {track_title}",
                                 stage="render_existing_tracks",
                                 current_task="Render existing Album Wizard tracks",
                                 warnings=[issue_preview or str(gate.get("status") or "payload_gate_warning")],
                             )
                         else:
-                            raise ValueError(f"AlbumPayloadQualityGate failed: {issue_preview or gate.get('status')}")
+                            raise ValueError(f"Album ACE-Step technical contract failed: {issue_preview or gate.get('status')}")
                     if gate.get("status") == "auto_repair" and not direct_agent_payload:
                         logs.append(
                             f"    Payload gate auto-repaired {track_title}: "
@@ -17667,14 +17730,15 @@ def _album_plan_job_worker(job_id: str, body: dict[str, Any]) -> None:
             ).get("planner_timeout")
             or PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS
         )
-        default_hard_timeout = max(PLANNER_LLM_DEFAULT_TIMEOUT_SECONDS, planner_timeout_seconds + 300.0)
-        hard_timeout_seconds = max(
-            0.0,
-            _env_float("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS", default_hard_timeout),
-        )
+        hard_timeout_seconds = _album_plan_llm_hard_timeout_from_policy(planner_timeout_seconds)
         _album_job_log(
             job_id,
-            f"Album LLM wait policy: warn_after={int(wait_warn_seconds)}s; hard_timeout={int(hard_timeout_seconds)}s.",
+            (
+                f"Album LLM wait policy: warn_after={int(wait_warn_seconds)}s; "
+                f"hard_timeout={int(hard_timeout_seconds)}s."
+                if hard_timeout_seconds > 0
+                else f"Album LLM wait policy: warn_after={int(wait_warn_seconds)}s; hard_timeout=disabled."
+            ),
             planner_timeout=planner_timeout_seconds,
             llm_hard_timeout_seconds=hard_timeout_seconds,
         )

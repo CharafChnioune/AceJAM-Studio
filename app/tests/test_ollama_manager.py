@@ -206,7 +206,7 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(settings["planner_top_k"], 200)
         self.assertEqual(settings["planner_repeat_penalty"], 0.8)
         self.assertEqual(settings["planner_seed"], 42)
-        self.assertEqual(settings["planner_max_tokens"], 8192)
+        self.assertEqual(settings["planner_max_tokens"], 99999)
         # New ceiling is 262144 (Qwen native context max)
         self.assertEqual(settings["planner_context_length"], 262144)
         self.assertEqual(settings["planner_timeout"], 2592000.0)
@@ -216,7 +216,16 @@ class OllamaManagerTest(unittest.TestCase):
         self.assertEqual(options["repeat_penalty"], 0.8)
         self.assertEqual(options["seed"], 42)
         self.assertEqual(options["num_ctx"], 262144)
-        self.assertEqual(options["num_predict"], 8192)
+        self.assertEqual(options["num_predict"], 99999)
+
+    def test_planner_llm_defaults_use_ollama_auto_generation_and_large_context(self):
+        settings = local_llm.planner_llm_settings_from_payload({})
+        options = local_llm.planner_llm_options_for_provider("ollama", {})
+
+        self.assertEqual(settings["planner_max_tokens"], -1)
+        self.assertEqual(settings["planner_context_length"], 250000)
+        self.assertEqual(options["num_predict"], -1)
+        self.assertEqual(options["num_ctx"], 250000)
 
     def test_planner_llm_default_timeout_allows_large_local_album_calls(self):
         settings = local_llm.planner_llm_settings_from_payload({})
@@ -328,7 +337,7 @@ class OllamaManagerTest(unittest.TestCase):
                 catalog = client.get("/api/local-llm/catalog")
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["settings"]["planner_max_tokens"], 8192)
+        self.assertEqual(saved.json()["settings"]["planner_max_tokens"], 99999)
         self.assertEqual(saved.json()["settings"]["art_model"], "")
         self.assertFalse(saved.json()["settings"]["auto_single_art"])
         self.assertFalse(saved.json()["settings"]["auto_album_art"])
