@@ -1153,17 +1153,57 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(len(manager.commands), 2)
             self.assertTrue(all(cmd[cmd.index("--save-every") + 1] == "1" for _, cmd in manager.commands))
             self.assertTrue(all("--scheduler-epochs" in cmd for _, cmd in manager.commands))
-            self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2])
-            self.assertEqual(manager.audition_requests[0]["duration"], 20)
-            self.assertIn("[Verse - spoken word]", manager.audition_requests[0]["lyrics"])
-            self.assertNotIn("seconds", manager.audition_requests[0]["lyrics"])
-            self.assertIn("Line one", manager.audition_requests[0]["lyrics"])
-            self.assertEqual(manager.audition_requests[0]["vocal_language"], "en")
-            self.assertEqual(manager.audition_requests[0]["lyrics_fit"]["action"], "fit_for_20s")
-            self.assertTrue(manager.audition_requests[0]["lyrics_fit"]["timed_structure"])
-            self.assertTrue(manager.audition_requests[0]["checkpoint_path"].endswith("epoch_1_loss_0.1000"))
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 1, 2])
+            self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora"])
+            self.assertFalse(manager.audition_requests[0]["use_lora"])
+            self.assertEqual(manager.audition_requests[0]["checkpoint_path"], "")
+            self.assertTrue(manager.audition_requests[1]["use_lora"])
+            self.assertEqual(manager.audition_requests[1]["duration"], 20)
+            self.assertIn("[Verse - spoken word]", manager.audition_requests[1]["lyrics"])
+            self.assertNotIn("seconds", manager.audition_requests[1]["lyrics"])
+            self.assertIn("Line one", manager.audition_requests[1]["lyrics"])
+            self.assertEqual(manager.audition_requests[1]["vocal_language"], "en")
+            self.assertEqual(manager.audition_requests[1]["lyrics_fit"]["action"], "fit_for_20s")
+            self.assertTrue(manager.audition_requests[1]["lyrics_fit"]["timed_structure"])
+            self.assertTrue(manager.audition_requests[1]["checkpoint_path"].endswith("epoch_1_loss_0.1000"))
             stored = manager.get_job("auditionjob")
-            self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded"])
+            self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded", "succeeded"])
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epochs"], [1, 2])
+
+    def test_epoch_auditions_only_render_lora_for_final_three_epochs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="lastthree",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            manager._run_train_command_with_epoch_auditions(
+                "lastthree",
+                ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "5"],
+                output_dir,
+                Path(job.log_path),
+                epochs=5,
+                params={
+                    "adapter_type": "lora",
+                    "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
+                },
+            )
+
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 3, 4, 5])
+            self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora", "lora"])
+            self.assertIn("LoRA auditions are limited to the final 3 epochs", Path(job.log_path).read_text(encoding="utf-8"))
 
     def test_epoch_audition_failure_stops_vocal_training(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1204,8 +1244,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(len(manager.commands), 1)
             stored = manager.get_job("failaudition")
             auditions = stored["result"]["epoch_auditions"]
-            self.assertEqual([item["status"] for item in auditions], ["failed"])
-            self.assertIn("audition boom", auditions[0]["error"])
+            self.assertEqual([item["status"] for item in auditions], ["succeeded", "failed"])
+            self.assertIn("audition boom", auditions[1]["error"])
 
     def test_epoch_audition_vocal_gate_failure_stops_training(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1253,7 +1293,7 @@ class LoraTrainerTest(unittest.TestCase):
                 )
 
             stored = manager.get_job("gatefail")
-            audition = stored["result"]["epoch_auditions"][0]
+            audition = stored["result"]["epoch_auditions"][-1]
             self.assertEqual(audition["status"], "failed")
             self.assertEqual(audition["transcript_preview"], "yeah yeah yeah yeah")
 
@@ -1307,7 +1347,7 @@ class LoraTrainerTest(unittest.TestCase):
 
             stored = manager.get_job("gatereview")
             auditions = stored["result"]["epoch_auditions"]
-            self.assertEqual([item["status"] for item in auditions], ["needs_review", "needs_review"])
+            self.assertEqual([item["status"] for item in auditions], ["needs_review", "needs_review", "needs_review"])
             self.assertEqual(len(manager.commands), 2)
             self.assertIn("needs manual review; training will continue", Path(job.log_path).read_text(encoding="utf-8"))
 
@@ -1467,8 +1507,10 @@ class LoraTrainerTest(unittest.TestCase):
 
             self.assertEqual(resumed["params"]["device"], "mps")
             self.assertEqual(resumed["params"]["precision"], "fp32")
-            self.assertEqual([item["epoch"] for item in manager.audition_requests], [1, 2, 3])
-            self.assertEqual(manager.audition_requests[0]["lora_adapter_name"], "epoch_1_epoch_1_loss_0_9130")
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 1, 2, 3])
+            self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora", "lora"])
+            self.assertFalse(manager.audition_requests[0]["use_lora"])
+            self.assertEqual(manager.audition_requests[1]["lora_adapter_name"], "epoch_1_epoch_1_loss_0_9130")
             self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 2/3", "train epoch 3/3"])
             first_command = manager.commands[0][1]
             self.assertEqual(first_command[first_command.index("--device") + 1], "mps")
@@ -1591,9 +1633,10 @@ class LoraTrainerTest(unittest.TestCase):
                 resumed = manager.resume_job("resumeepoch2")
 
             self.assertEqual(resumed["params"]["device"], "mps")
-            self.assertEqual([item["epoch"] for item in manager.audition_requests], [2, 3])
-            self.assertEqual(manager.audition_requests[0]["checkpoint_path"], str(checkpoint_2))
-            self.assertEqual(manager.audition_requests[0]["lora_adapter_name"], "epoch_2_epoch_2_loss_0_8726")
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 2, 3])
+            self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora"])
+            self.assertEqual(manager.audition_requests[1]["checkpoint_path"], str(checkpoint_2))
+            self.assertEqual(manager.audition_requests[1]["lora_adapter_name"], "epoch_2_epoch_2_loss_0_8726")
             self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 3/3"])
             command = manager.commands[0][1]
             self.assertEqual(command[command.index("--resume-from") + 1], str(checkpoint_2))

@@ -2622,7 +2622,7 @@ class AppParityTest(unittest.TestCase):
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
-            patch.object(acejam_app, "_run_lora_preflight_verifier", return_value=None), \
+            patch.object(acejam_app, "_run_lora_preflight_verifier", side_effect=AssertionError("epoch auditions render directly")), \
             patch.object(acejam_app, "_transcribe_audio_paths", return_value=gate_transcripts), \
             patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_generation):
             result = acejam_app._run_lora_epoch_audition(
@@ -2663,8 +2663,9 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(captured["use_cot_lyrics"])
         self.assertFalse(captured["use_cot_language"])
         self.assertFalse(captured["save_to_library"])
-        self.assertTrue(captured["lora_preflight_required"])
+        self.assertFalse(captured["lora_preflight_required"])
         self.assertTrue(captured["use_lora"])
+        self.assertTrue(captured["use_lora_trigger"])
         self.assertEqual(captured["lora_adapter_path"], "/tmp/checkpoints/epoch_2_loss_0.1")
         self.assertEqual(captured["lora_scale"], 0.7)
         if acejam_app._IS_APPLE_SILICON:
@@ -2699,7 +2700,7 @@ class AppParityTest(unittest.TestCase):
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-turbo", "acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
-            patch.object(acejam_app, "_run_lora_preflight_verifier", return_value=None), \
+            patch.object(acejam_app, "_run_lora_preflight_verifier", side_effect=AssertionError("epoch auditions render directly")), \
             patch.object(acejam_app, "_transcribe_audio_paths", return_value=gate_transcripts), \
             patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_generation):
             result = acejam_app._run_lora_epoch_audition(
@@ -2761,7 +2762,7 @@ class AppParityTest(unittest.TestCase):
 
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
-            patch.object(acejam_app, "_run_lora_preflight_verifier", return_value=None), \
+            patch.object(acejam_app, "_run_lora_preflight_verifier", side_effect=AssertionError("epoch auditions render directly")), \
             patch.object(acejam_app, "_transcribe_audio_paths", return_value=gate_transcripts), \
             patch.object(acejam_app, "_run_advanced_generation_once", side_effect=fake_generation):
             result = acejam_app._run_lora_epoch_audition(

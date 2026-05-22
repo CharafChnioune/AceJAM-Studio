@@ -3468,6 +3468,8 @@ def _lora_epoch_audition_song_model(request: dict[str, Any]) -> str:
 
 def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     epoch = int(request.get("epoch") or 0)
+    attempt_role = str(request.get("attempt_role") or request.get("role") or "lora").strip().lower() or "lora"
+    use_lora = parse_bool(request.get("use_lora"), attempt_role != "baseline")
     trigger = str(request.get("trigger_tag") or "LoRA").strip() or "LoRA"
     duration = clamp_int(request.get("duration"), 30, 10, 60)
     request_fit = request.get("lyrics_fit") if isinstance(request.get("lyrics_fit"), dict) else {}
@@ -3509,7 +3511,7 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "task_type": "text2music",
         "ui_mode": "lora_epoch_audition",
         "artist_name": "MLX Media LoRA",
-        "title": f"{trigger} epoch {epoch}",
+        "title": f"{trigger} no-LoRA baseline" if not use_lora else f"{trigger} epoch {epoch}",
         "caption": caption,
         "lyrics": runtime_lyrics,
         "style_profile": style_profile,
@@ -3530,11 +3532,14 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "inference_steps": inference_steps,
         "shift": shift,
         "batch_size": 1,
-        "use_lora": True,
-        "lora_adapter_path": str(request.get("checkpoint_path") or ""),
-        "lora_adapter_name": str(request.get("lora_adapter_name") or f"{trigger} epoch {epoch}"),
-        "lora_scale": request.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
+        "use_lora": use_lora,
+        "lora_adapter_path": str(request.get("checkpoint_path") or "") if use_lora else "",
+        "lora_adapter_name": str(request.get("lora_adapter_name") or f"{trigger} epoch {epoch}") if use_lora else "",
+        "lora_scale": request.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE) if use_lora else 0.0,
         "adapter_model_variant": str(request.get("model_variant") or ""),
+        "use_lora_trigger": use_lora,
+        "lora_trigger_tag": safe_generation_trigger_tag(trigger),
+        "lora_trigger_source": "training_epoch_audition" if use_lora else "training_baseline_strip",
         "save_to_library": False,
         "ace_lm_model": "none",
         "allow_supplied_lyrics_lm": False,
@@ -3547,39 +3552,14 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
         "use_cot_lyrics": False,
         "use_cot_language": False,
         "vocal_intelligibility_gate": True,
-        "lora_preflight_required": True,
+        "lora_preflight_required": False,
         "auto_score": False,
         "auto_lrc": False,
         "audio_format": "wav",
         "payload_warnings": backend_defaults.get("payload_warnings", []),
     }
     params = _parse_generation_payload(raw_payload)
-    params["lora_preflight_required"] = True
-    preflight_result = _run_lora_preflight_verifier(params)
-    if preflight_result is not None:
-        audios = list(preflight_result.get("audios") or [])
-        first_audio = audios[0] if audios else {}
-        preflight = preflight_result.get("lora_preflight") if isinstance(preflight_result.get("lora_preflight"), dict) else {}
-        gate = preflight_result.get("vocal_intelligibility_gate") if isinstance(preflight_result.get("vocal_intelligibility_gate"), dict) else {}
-        return {
-            "success": False,
-            "error": str(preflight_result.get("error") or "LoRA epoch audition preflight failed."),
-            "result_id": str(preflight_result.get("result_id") or first_audio.get("result_id") or ""),
-            "audio_url": str(first_audio.get("audio_url") or ""),
-            "audios": audios,
-            "lyrics_fit": lyrics_fit,
-            "vocal_intelligibility_gate": gate,
-            "lora_preflight": preflight,
-            "transcript_preview": _vocal_gate_transcript_preview(gate),
-            "song_model": params.get("song_model"),
-            "inference_steps": params.get("inference_steps"),
-            "shift": params.get("shift"),
-            "lora_scale": params.get("lora_scale"),
-            "style_profile": params.get("style_profile"),
-            "style_caption_tags": params.get("style_caption_tags"),
-            "style_lyric_tags_applied": params.get("style_lyric_tags_applied"),
-            "style_conditioning_audit": params.get("style_conditioning_audit"),
-        }
+    params["lora_preflight_required"] = False
     result = _run_advanced_generation_once(params)
     gate = _apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=1)
     _annotate_generation_attempt_result(
@@ -3634,6 +3614,8 @@ def _run_lora_epoch_audition(request: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": bool(result.get("success") and gate.get("passed")),
         "error": str(result.get("error") or ""),
+        "attempt_role": attempt_role,
+        "use_lora": use_lora,
         "result_id": str(result.get("result_id") or first_audio.get("result_id") or ""),
         "audio_url": str(first_audio.get("audio_url") or ""),
         "audios": audios,

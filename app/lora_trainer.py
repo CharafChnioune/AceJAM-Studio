@@ -47,6 +47,7 @@ EPOCH_AUDITION_CLARITY_CAPTION = (
     "30-second LoRA audition, clear intelligible vocal, dry upfront lead vocal, "
     "sparse arrangement, steady rhythm, no noisy vocal artifacts"
 )
+EPOCH_AUDITION_LORA_TEST_COUNT = 3
 DEFAULT_LORA_GENERATION_SCALE = 0.45
 DEFAULT_SFT_BASE_INFERENCE_STEPS = 50
 DEFAULT_SFT_BASE_SHIFT = 1.0
@@ -3697,10 +3698,46 @@ class AceTrainingManager:
             reasons.append("Original dataset failed the vocal LoRA preflight.")
         return list(dict.fromkeys(str(reason) for reason in reasons if str(reason).strip()))
 
-    def _audition_needs_resume_for_epoch(self, job: TrainingJob, epoch: int) -> bool:
+    def _audition_role(self, item: dict[str, Any]) -> str:
+        return str(item.get("attempt_role") or item.get("role") or "lora").strip().lower() or "lora"
+
+    def _lora_audition_epochs(self, total_epochs: int) -> set[int]:
+        total = max(1, int(total_epochs or 1))
+        first = max(1, total - EPOCH_AUDITION_LORA_TEST_COUNT + 1)
+        return set(range(first, total + 1))
+
+    def _has_listenable_audition(
+        self,
+        job: TrainingJob,
+        *,
+        attempt_role: str,
+        epoch: int | None = None,
+    ) -> bool:
+        role = str(attempt_role or "lora").strip().lower() or "lora"
+        for item in list((job.result or {}).get("epoch_auditions") or []):
+            if not isinstance(item, dict) or self._audition_role(item) != role:
+                continue
+            if epoch is not None:
+                try:
+                    item_epoch = int(item.get("epoch") or -1)
+                except (TypeError, ValueError):
+                    item_epoch = -1
+                if item_epoch != int(epoch):
+                    continue
+            status = str(item.get("status") or "").lower()
+            if status in {"succeeded", "needs_review"} and (
+                str(item.get("audio_url") or "").strip() or str(item.get("result_id") or "").strip()
+            ):
+                return True
+        return False
+
+    def _audition_needs_resume_for_epoch(self, job: TrainingJob, epoch: int, *, attempt_role: str = "lora") -> bool:
         found = False
+        role = str(attempt_role or "lora").strip().lower() or "lora"
         for item in list((job.result or {}).get("epoch_auditions") or []):
             if not isinstance(item, dict):
+                continue
+            if self._audition_role(item) != role:
                 continue
             try:
                 item_epoch = int(item.get("epoch") or -1)
@@ -3866,19 +3903,34 @@ class AceTrainingManager:
             current = self._read_job_unlocked(job_id)
             result = dict(current.result or {})
             audition_epoch = _audition_epoch(audition)
+            audition_role = self._audition_role(audition)
             auditions = [
                 dict(item)
                 for item in list(result.get("epoch_auditions") or [])
-                if isinstance(item, dict) and _audition_epoch(item) != audition_epoch
+                if isinstance(item, dict)
+                and not (_audition_epoch(item) == audition_epoch and self._audition_role(item) == audition_role)
             ]
             auditions.append(dict(audition))
-            auditions.sort(key=lambda item: _audition_epoch(item))
+            auditions.sort(key=lambda item: (_audition_epoch(item), self._audition_role(item)))
             result["epoch_auditions"] = auditions
             current.result = result
             current.updated_at = utc_now()
             self._write_job_unlocked(current)
 
-    def _run_epoch_audition(self, job_id: str, params: dict[str, Any], checkpoint_path: Path, epoch: int, log_path: Path) -> None:
+    def _run_epoch_audition(
+        self,
+        job_id: str,
+        params: dict[str, Any],
+        checkpoint_path: Path | None,
+        epoch: int,
+        log_path: Path,
+        *,
+        attempt_role: str = "lora",
+        use_lora: bool = True,
+    ) -> None:
+        attempt_role = str(attempt_role or "lora").strip().lower() or "lora"
+        use_lora = bool(use_lora)
+        log_label = "baseline" if attempt_role == "baseline" else f"epoch {epoch}"
         config = dict(params.get("epoch_audition") or {})
         duration = parse_int(config.get("duration"), EPOCH_AUDITION_DURATION_SECONDS, 10, 60)
         audition_lyrics_source = str(config.get("lyrics") or "")
@@ -3898,7 +3950,9 @@ class AceTrainingManager:
         )
         base_record = {
             "epoch": int(epoch),
-            "checkpoint_path": str(checkpoint_path),
+            "attempt_role": attempt_role,
+            "use_lora": use_lora,
+            "checkpoint_path": str(checkpoint_path or ""),
             "status": "running",
             "error": "",
             "result_id": "",
@@ -3922,16 +3976,19 @@ class AceTrainingManager:
         if self.audition_runner is None:
             skipped = {**base_record, "status": "skipped", "error": "No epoch audition runner is configured"}
             self._record_epoch_audition(job_id, skipped)
-            self._append_log(log_path, f"[audition epoch {epoch}] skipped: no audition runner configured\n")
+            self._append_log(log_path, f"[audition {log_label}] skipped: no audition runner configured\n")
             return
 
         variant = model_to_variant(str(params.get("model_variant") or params.get("song_model") or DEFAULT_LORA_TRAINING_SONG_MODEL))
         song_model = model_from_variant(variant, normalize_training_song_model(str(params.get("song_model") or "")))
+        checkpoint_name = checkpoint_path.name if checkpoint_path is not None else "no_lora_baseline"
         request = {
             "job_id": job_id,
             "epoch": int(epoch),
-            "checkpoint_path": str(checkpoint_path),
-            "lora_adapter_name": safe_peft_adapter_name(f"epoch_{int(epoch)}_{checkpoint_path.name}"),
+            "attempt_role": attempt_role,
+            "use_lora": use_lora,
+            "checkpoint_path": str(checkpoint_path or ""),
+            "lora_adapter_name": safe_peft_adapter_name(f"epoch_{int(epoch)}_{checkpoint_name}") if use_lora else "",
             "caption": str(config.get("caption") or ""),
             "lyrics": runtime_lyrics,
             "duration": duration,
@@ -3965,7 +4022,7 @@ class AceTrainingManager:
             self._append_log(
                 log_path,
                 (
-                    f"[audition epoch {epoch}] fitted lyrics for {duration}s: "
+                    f"[audition {log_label}] fitted lyrics for {duration}s: "
                     f"{lyrics_fit['source_lyrics_chars']}->{lyrics_fit['runtime_lyrics_chars']} chars, "
                     f"{lyrics_fit['source_lyrics_lines']}->{lyrics_fit['runtime_lyrics_lines']} lines\n"
                 ),
@@ -3975,7 +4032,10 @@ class AceTrainingManager:
         except Exception as exc:
             record = {**base_record, "status": "failed", "error": str(exc), "created_at": utc_now()}
             self._record_epoch_audition(job_id, record)
-            self._append_log(log_path, f"[audition epoch {epoch}] failed; stopping vocal training: {exc}\n")
+            if not use_lora:
+                self._append_log(log_path, f"[audition {log_label}] failed; training will continue: {exc}\n")
+                return
+            self._append_log(log_path, f"[audition {log_label}] failed; stopping vocal training: {exc}\n")
             raise
 
         audios = list(result.get("audios") or []) if isinstance(result, dict) else []
@@ -4039,12 +4099,15 @@ class AceTrainingManager:
         }
         self._record_epoch_audition(job_id, record)
         if failure_reason:
-            self._append_log(log_path, f"[audition epoch {epoch}] failed vocal quality gate; stopping training: {failure_reason}\n")
+            if not use_lora:
+                self._append_log(log_path, f"[audition {log_label}] failed vocal quality gate; training will continue: {failure_reason}\n")
+                return
+            self._append_log(log_path, f"[audition {log_label}] failed vocal quality gate; stopping training: {failure_reason}\n")
             raise RuntimeError(f"Epoch {epoch} audition failed vocal quality gate: {failure_reason}")
         if review_reason:
-            self._append_log(log_path, f"[audition epoch {epoch}] needs manual review; training will continue: {review_reason}\n")
+            self._append_log(log_path, f"[audition {log_label}] needs manual review; training will continue: {review_reason}\n")
             return
-        self._append_log(log_path, f"[audition epoch {epoch}] generated {record['audio_url'] or record['result_id']}\n")
+        self._append_log(log_path, f"[audition {log_label}] generated {record['audio_url'] or record['result_id']}\n")
 
     def _run_train_command_with_epoch_auditions(
         self,
@@ -4100,6 +4163,31 @@ class AceTrainingManager:
         first_epoch = max(1, int(start_epoch or 1))
         last_checkpoint: Path | None = initial_checkpoint
         stopped_for_plateau = False
+        lora_audition_epochs = self._lora_audition_epochs(total_epochs)
+        self._set_job_state(
+            job_id,
+            result={
+                "epoch_auditions_policy": {
+                    "baseline": "one no-LoRA baseline audition",
+                    "lora_epochs": sorted(lora_audition_epochs),
+                    "lora_test_count": EPOCH_AUDITION_LORA_TEST_COUNT,
+                }
+            },
+        )
+        with self._lock:
+            baseline_job = self._read_job_unlocked(job_id)
+            baseline_done = self._has_listenable_audition(baseline_job, attempt_role="baseline")
+        if not baseline_done:
+            self._set_job_state(job_id, stage="audition no-LoRA baseline", progress=progress_start)
+            self._run_epoch_audition(
+                job_id,
+                params,
+                None,
+                0,
+                log_path,
+                attempt_role="baseline",
+                use_lora=False,
+            )
         for epoch in range(first_epoch, total_epochs + 1):
             before_progress = progress_start + ((epoch - 1) / total_epochs) * (progress_end - progress_start)
             self._set_job_state(job_id, stage=f"train epoch {epoch}/{total_epochs}", progress=before_progress)
@@ -4115,8 +4203,17 @@ class AceTrainingManager:
                 raise FileNotFoundError(f"Epoch {epoch} finished but no checkpoint was found in {output_dir / 'checkpoints'}")
             last_checkpoint = checkpoint
             audition_progress = progress_start + (epoch / total_epochs) * (progress_end - progress_start)
-            self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
-            self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path)
+            if epoch in lora_audition_epochs:
+                self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
+                self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path, attempt_role="lora", use_lora=True)
+            else:
+                self._append_log(
+                    log_path,
+                    (
+                        f"[audition epoch {epoch}] skipped: LoRA auditions are limited to the final "
+                        f"{EPOCH_AUDITION_LORA_TEST_COUNT} epochs ({', '.join(str(item) for item in sorted(lora_audition_epochs))}).\n"
+                    ),
+                )
             plateau = self._record_epoch_loss(
                 job_id,
                 epoch=epoch,
@@ -4151,10 +4248,26 @@ class AceTrainingManager:
                 log_path,
                 f"\n[resume] continuing from {latest_checkpoint} on device {params.get('device') or 'auto'}\n",
             )
-            if self._epoch_audition_enabled(params) and self._audition_needs_resume_for_epoch(job, latest_epoch):
-                self._append_log(log_path, f"[resume] retrying incomplete audition for epoch {latest_epoch}\n")
-                self._set_job_state(job_id, stage=f"audition epoch {latest_epoch}/{total_epochs}", progress=0.0)
-                self._run_epoch_audition(job_id, params, latest_checkpoint, latest_epoch, log_path)
+            if self._epoch_audition_enabled(params):
+                if not self._has_listenable_audition(job, attempt_role="baseline"):
+                    self._append_log(log_path, "[resume] creating missing no-LoRA baseline audition\n")
+                    self._set_job_state(job_id, stage="audition no-LoRA baseline", progress=0.0)
+                    self._run_epoch_audition(
+                        job_id,
+                        params,
+                        None,
+                        0,
+                        log_path,
+                        attempt_role="baseline",
+                        use_lora=False,
+                    )
+                    with self._lock:
+                        job = self._read_job_unlocked(job_id)
+                lora_audition_epochs = self._lora_audition_epochs(total_epochs)
+                if latest_epoch in lora_audition_epochs and self._audition_needs_resume_for_epoch(job, latest_epoch, attempt_role="lora"):
+                    self._append_log(log_path, f"[resume] retrying incomplete LoRA audition for epoch {latest_epoch}\n")
+                    self._set_job_state(job_id, stage=f"audition epoch {latest_epoch}/{total_epochs}", progress=0.0)
+                    self._run_epoch_audition(job_id, params, latest_checkpoint, latest_epoch, log_path, attempt_role="lora", use_lora=True)
 
             if latest_epoch < total_epochs:
                 self._run_train_command_with_epoch_auditions(
