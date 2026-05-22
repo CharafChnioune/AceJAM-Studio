@@ -69,7 +69,7 @@ function docsCorrectRenderDefaults(songModel: string) {
   if (songModel.includes("turbo")) {
     return { inference_steps: 8, shift: 3 };
   }
-  return { inference_steps: 50, shift: 1 };
+  return { inference_steps: 64, shift: 3 };
 }
 
 const TAG_SUGGESTIONS = [
@@ -98,9 +98,9 @@ export function CustomWizard() {
     () => ({
       ...simpleDefaults,
       task_type: "text2music",
-      inference_steps: 50,
-      guidance_scale: 7,
-      shift: 1,
+      inference_steps: 64,
+      guidance_scale: 8,
+      shift: 3,
       audio_format: "wav32",
       batch_size: 1,
       ...(ACE_STEP_ADVANCED_DEFAULTS as Partial<CustomFormValues>),

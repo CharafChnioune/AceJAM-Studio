@@ -22,10 +22,10 @@ function normalizeAceStepRenderDraft<T extends Record<string, unknown>>(values: 
     if ("shift" in normalized) normalized.shift = 3;
     return normalized as T;
   }
-  if ("inference_steps" in normalized && Number(normalized.inference_steps) < 50) {
-    normalized.inference_steps = 50;
+  if ("inference_steps" in normalized && Number(normalized.inference_steps) < 64) {
+    normalized.inference_steps = 64;
   }
-  if ("shift" in normalized) normalized.shift = 1;
+  if ("shift" in normalized) normalized.shift = 3;
   return normalized as T;
 }
 

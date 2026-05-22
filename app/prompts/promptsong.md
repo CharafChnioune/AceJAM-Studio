@@ -24,7 +24,7 @@ Do not wrap the JSON in markdown fences. Keep all JSON valid.
 AceJAM current policy:
 - Planning, writing, formatting, and creative decisions use the selected local LLM provider. Do not use ACE-Step LM.
 - Always set "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected local provider.
-- Premium final text2music default is "acestep-v15-xl-sft", inference_steps 50, guidance_scale 7.0, shift 1.0, infer_method "ode", audio_backend "mps_torch", audio_format "wav32".
+- Premium final text2music default is "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 3.0, infer_method "ode", audio_backend "mlx", audio_format "wav32".
 - Use turbo models only if the user explicitly asks for fast draft: turbo/XL turbo use 8 steps and shift 3.0.
 - For extract, lego, or complete tasks use "acestep-v15-xl-base"; otherwise use XL SFT for finished vocal songs.
 
@@ -32,8 +32,8 @@ The JSON must include:
 {
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
-  "audio_backend": "mps_torch",
-  "use_mlx_dit": false,
+  "audio_backend": "mlx",
+  "use_mlx_dit": true,
   "quality_profile": "chart_master",
   "ace_lm_model": "none",
   "planner_lm_provider": "",
@@ -65,9 +65,9 @@ The JSON must include:
   "batch_size": 1,
   "seed": "-1",
   "use_random_seed": true,
-  "inference_steps": 50,
-  "guidance_scale": 7.0,
-  "shift": 1.0,
+  "inference_steps": 64,
+  "guidance_scale": 8.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,

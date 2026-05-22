@@ -96,6 +96,7 @@ from studio_core import (
     ACE_STEP_LYRICS_SAFE_HEADROOM,
     ACE_STEP_LYRICS_SOFT_TARGET_MAX,
     DEFAULT_BPM,
+    DEFAULT_ALBUM_TRACK_VARIANTS,
     DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
     clamp_int,
@@ -2919,7 +2920,7 @@ def _coerce_options(
     opts.setdefault("bpm_strategy", "varied")
     opts.setdefault("key_strategy", "related")
     opts.setdefault("use_web_inspiration", False)
-    opts.setdefault("track_variants", 1)
+    opts.setdefault("track_variants", DEFAULT_ALBUM_TRACK_VARIANTS)
     opts.setdefault("inference_steps", ALBUM_FINAL_DOCS_BEST["inference_steps"])
     opts.setdefault("guidance_scale", ALBUM_FINAL_DOCS_BEST["guidance_scale"])
     opts.setdefault("shift", ALBUM_FINAL_DOCS_BEST["shift"])
@@ -3425,7 +3426,7 @@ def create_album_crew(
         "Use one emotional promise per song, one coherent metaphor world, one dominant image field per section, concrete scene details (place, object, weather, body, action), "
         "a repeatable title-connected hook short enough to remember after one listen, "
         "language/script discipline, genre-module routing, and a duration-realistic section_map. "
-        "Default generation profile is chart_master: use ACE-Step docs-correct 50-step SFT/Base final-render settings with shift 1.0, wav32 output, "
+        "Default generation profile is chart_master: use ACE-Step v0.1.8 max-quality 64-step SFT/Base final-render settings with shift 3.0, wav32 output, "
         "ADG only for Base/XL Base, and one album take per track/model unless the user explicitly asks for more. "
         "Use AceStepSettingsPolicyTool, ChartMasterProfileTool, AceStepCoverageAuditTool, EffectiveSettingsTool, "
         "AandRVariantPlanTool, TaskApplicabilityTool, and ModelCompatibilityTool for generation controls; "

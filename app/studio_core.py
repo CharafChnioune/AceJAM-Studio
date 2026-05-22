@@ -560,13 +560,13 @@ OFFICIAL_TRAINING_FEATURES: dict[str, dict[str, Any]] = {
     "tensorboard_runs": {"status": "guarded", "endpoint": "/api/lora/status"},
 }
 
-DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-docs-correct-defaults-2026-05-05"
+DOCS_BEST_QUALITY_POLICY_VERSION = "ace-step-v0.1.8-mlx-lora-max-2026-05-22"
 DOCS_BEST_AUDIO_FORMAT = "wav32"
 DOCS_BEST_TURBO_STEPS = 8
 DOCS_BEST_TURBO_HIGH_CAP_STEPS = 20
 PREVIEW_FAST_STANDARD_STEPS = 50
 BALANCED_PRO_STANDARD_STEPS = 50
-CHART_MASTER_STANDARD_STEPS = 50
+CHART_MASTER_STANDARD_STEPS = 64
 DOCS_BEST_STANDARD_STEPS = CHART_MASTER_STANDARD_STEPS
 DOCS_BEST_MODEL_STEPS = {
     "acestep-v15-turbo": 8,
@@ -594,11 +594,11 @@ BALANCED_PRO_MODEL_STEPS = {
     }.items()
 }
 DOCS_BEST_TURBO_GUIDANCE = 7.0
-DOCS_BEST_STANDARD_GUIDANCE = 7.0
+DOCS_BEST_STANDARD_GUIDANCE = 8.0
 DOCS_BEST_TURBO_SHIFT = 3.0
 PREVIEW_FAST_STANDARD_SHIFT = 1.0
 BALANCED_PRO_STANDARD_SHIFT = 1.0
-CHART_MASTER_STANDARD_SHIFT = 1.0
+CHART_MASTER_STANDARD_SHIFT = 3.0
 DOCS_BEST_STANDARD_SHIFT = CHART_MASTER_STANDARD_SHIFT
 DOCS_DAILY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 MAX_QUALITY_DEFAULT_LM_MODEL = "acestep-5Hz-lm-4B"
@@ -1353,6 +1353,8 @@ ALLOWED_AUDIO_EXTENSIONS = {
     ".caf",
 }
 MAX_BATCH_SIZE = 8
+DEFAULT_ALBUM_TRACK_VARIANTS = 4
+MAX_ALBUM_TRACK_VARIANTS = MAX_BATCH_SIZE
 
 FAST_HANDLER_FIELDS = {
     "audio_code_string",
@@ -1849,9 +1851,9 @@ def _field_note(field: str) -> str:
         "lyrics": f"Official request budget: less than {ACE_STEP_LYRICS_CHAR_LIMIT} characters.",
         "duration": "Official range is 10-600 seconds; source-audio tasks lock duration to the source where ACE-Step does that internally.",
         "quality_profile": "MLX Media profile selector: laag/preview_fast, middel/balanced_pro, hoog/chart_master, plus official_raw for parity debugging.",
-        "inference_steps": "ACE-Step docs-correct defaults: Turbo uses 8 steps; Base/SFT/XL SFT use 50 steps for normal/high quality.",
+        "inference_steps": "ACE-Step docs-correct defaults: Turbo uses 8 steps; Max Quality Base/SFT/XL SFT uses 64 steps.",
         "guidance_scale": "Only effective for non-turbo models.",
-        "shift": "ACE-Step docs-correct defaults: shift 3.0 for Turbo, shift 1.0 for Base/SFT/XL SFT. Custom timesteps override shift.",
+        "shift": "ACE-Step docs-correct defaults: shift 3.0 for Turbo and Max Quality Base/SFT/XL SFT. Custom timesteps override shift.",
         "timesteps": "Overrides inference_steps and shift when present.",
         "audio_format": "Official runner supports flac/mp3/opus/aac/wav/wav32; fast in-process runner supports a smaller subset.",
         "audio_cover_strength": "Higher values keep more source structure; lower values transform more freely.",
@@ -1914,7 +1916,7 @@ class AceStepSettingsRegistry:
                 "effective_guidance": False,
             },
             "base_sft": {
-                "inference_steps_range": [50, 64],
+                "inference_steps_range": [64, 64],
                 "chart_master_default_steps": CHART_MASTER_STANDARD_STEPS,
                 "balanced_pro_default_steps": BALANCED_PRO_STANDARD_STEPS,
                 "guidance_scale_range": [5.0, 9.0],

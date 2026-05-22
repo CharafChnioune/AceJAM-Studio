@@ -1,6 +1,6 @@
 export type AudioBackend = "mlx" | "mps_torch";
 
-export const DEFAULT_AUDIO_BACKEND: AudioBackend = "mps_torch";
+export const DEFAULT_AUDIO_BACKEND: AudioBackend = "mlx";
 
 export function normalizeAudioBackend(value: unknown): AudioBackend {
   const raw = String(value || "").trim().toLowerCase().replace("-", "_");

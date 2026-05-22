@@ -450,12 +450,14 @@ from studio_core import (
     DOCS_BEST_LM_DEFAULTS,
     DOCS_BEST_SOURCE_TASK_LM_SKIPS,
     DOCS_BEST_TURBO_HIGH_CAP_STEPS,
+    DEFAULT_ALBUM_TRACK_VARIANTS,
     DEFAULT_BPM,
     DEFAULT_KEY_SCALE,
     DEFAULT_QUALITY_PROFILE,
     QUALITY_PROFILE_OFFICIAL_RAW,
     QUALITY_PROFILE_DOCS_DAILY,
     KNOWN_ACE_STEP_MODELS,
+    MAX_ALBUM_TRACK_VARIANTS,
     MAX_BATCH_SIZE,
     OFFICIAL_ACE_STEP_MODEL_REGISTRY,
     OFFICIAL_ACE_STEP_MANIFEST,
@@ -790,7 +792,7 @@ def _normalize_lm_backend(value: Any) -> str:
 
 
 def _default_audio_backend() -> str:
-    return "mps_torch"
+    return "mlx" if _IS_APPLE_SILICON else "mps_torch"
 
 
 ACE_AUDIO_BACKEND_DEFAULT = _default_audio_backend()
@@ -813,8 +815,8 @@ def _normalize_audio_backend(value: Any = None, use_mlx_dit: Any = None) -> str:
     """Normalize the user-facing audio runtime choice.
 
     `lm_backend` controls ACE-Step's language model path. Audio DiT/VAE runtime
-    needs a separate switch so the UI can default to PyTorch/MPS quality while
-    keeping native MLX available as an explicit fast/experimental choice.
+    needs a separate switch so Apple Silicon can default to native MLX while
+    keeping PyTorch/MPS available as an explicit compatibility choice.
     """
     raw = str(value or "").strip().lower().replace("-", "_")
     if raw in {"mlx", "native_mlx", "mlx_dit", "mlx_audio"}:
@@ -2291,7 +2293,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         )
         normalized["duration_mode"] = duration_mode
         normalized["track_duration"] = clamp_float(fallback_duration, 180.0, 30.0, 600.0)
-        normalized.setdefault("track_variants", 1)
+        normalized.setdefault("track_variants", DEFAULT_ALBUM_TRACK_VARIANTS)
         normalized.setdefault("save_to_library", True)
         tracks = normalized.get("tracks")
         if not isinstance(tracks, list) or not tracks:
@@ -2618,6 +2620,9 @@ def _album_wizard_track_dict(track: Any) -> dict[str, Any]:
     if not isinstance(track, dict):
         return {}
     role = str(track.get("role") or "").strip() or "single"
+    song_model = str(track.get("song_model") or "acestep-v15-xl-sft")
+    quality_profile = str(track.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
+    model_defaults = quality_profile_model_settings(song_model, quality_profile)
     return {
         "track_number": int(track.get("track_number") or 0),
         "title": str(track.get("title") or "").strip(),
@@ -2636,13 +2641,13 @@ def _album_wizard_track_dict(track: Any) -> dict[str, Any]:
         "time_signature": str(track.get("time_signature") or "4"),
         "vocal_language": str(track.get("vocal_language") or track.get("language") or "en"),
         "instrumental": bool(track.get("instrumental")),
-        "song_model": str(track.get("song_model") or "acestep-v15-xl-sft"),
-        "quality_profile": str(track.get("quality_profile") or "chart_master"),
+        "song_model": song_model,
+        "quality_profile": quality_profile,
         "ace_lm_model": "none",
-        "inference_steps": int(track.get("inference_steps") or 50),
-        "guidance_scale": float(track.get("guidance_scale") or 8.0),
-        "shift": float(track.get("shift") or 1.0),
-        "infer_method": str(track.get("infer_method") or "ode"),
+        "inference_steps": int(track.get("inference_steps") or model_defaults["inference_steps"]),
+        "guidance_scale": float(track.get("guidance_scale") or model_defaults["guidance_scale"]),
+        "shift": float(track.get("shift") or model_defaults["shift"]),
+        "infer_method": str(track.get("infer_method") or model_defaults["infer_method"]),
         "audio_format": str(track.get("audio_format") or "wav32"),
         "seed": str(track.get("seed") or "-1"),
         "use_random_seed": bool(track.get("use_random_seed", True)),
@@ -2819,7 +2824,7 @@ def _run_prompt_assistant_album_crew(
     happens separately when the user clicks Generate (track-by-track,
     outside the crew). The `track_variants` field controls how many
     variations per track the crew produces — same lever the Custom mode
-    uses, defaulting to 1 unless the user requests more."""
+    uses, defaulting to 4 unless the user requests another count."""
     # Force module-current check BEFORE importing plan_album so a live dev
     # server picks up source-level fixes (e.g. the _agent_full_system_prompt
     # recursion fix) without requiring an app restart.
@@ -2870,11 +2875,11 @@ def _run_prompt_assistant_album_crew(
             or current_payload.get("batch_size")
             or body.get("track_variants")
             or body.get("batch_size")
-            or 1
+            or DEFAULT_ALBUM_TRACK_VARIANTS
         )
     except (TypeError, ValueError):
-        track_variants = 1
-    track_variants = max(1, min(8, track_variants))
+        track_variants = DEFAULT_ALBUM_TRACK_VARIANTS
+    track_variants = max(1, min(MAX_ALBUM_TRACK_VARIANTS, track_variants))
     global_llm_settings = _load_local_llm_settings()
     embedding_payload = {
         **global_llm_settings,
@@ -2908,7 +2913,7 @@ def _run_prompt_assistant_album_crew(
     bridge_payload["track_duration"] = track_duration
     bridge_payload["language"] = language
     bridge_payload["track_variants"] = track_variants
-    bridge_payload["batch_size"] = max(1, min(track_variants, 4))
+    bridge_payload["batch_size"] = max(1, min(track_variants, MAX_ALBUM_TRACK_VARIANTS))
     bridge_payload["planner_lm_provider"] = planner_provider
     bridge_payload["planner_model"] = planner_model
     bridge_payload["planner_ollama_model"] = planner_model
@@ -3448,7 +3453,7 @@ def _unload_llm_models_for_generation() -> None:
         pass
 
 
-EPOCH_AUDITION_INFERENCE_STEPS = 50
+EPOCH_AUDITION_INFERENCE_STEPS = 64
 
 
 def _apply_verified_vocal_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dict[str, Any]:
@@ -7528,7 +7533,12 @@ def _album_options_from_payload(payload: dict[str, Any], song_model: str = "auto
         "inspiration_queries": payload.get("inspiration_queries") or "",
         "use_web_inspiration": parse_bool(payload.get("use_web_inspiration"), False),
         "vocal_clarity_recovery": _vocal_clarity_recovery_enabled(payload),
-        "track_variants": clamp_int(payload.get("track_variants"), 1, 1, MAX_BATCH_SIZE),
+        "track_variants": clamp_int(
+            payload.get("track_variants"),
+            DEFAULT_ALBUM_TRACK_VARIANTS,
+            1,
+            MAX_ALBUM_TRACK_VARIANTS,
+        ),
         "seed": str(payload.get("seed") or "-1"),
         "inference_steps": clamp_int(payload.get("inference_steps"), model_defaults["inference_steps"], 1, 200),
         "guidance_scale": clamp_float(payload.get("guidance_scale"), model_defaults["guidance_scale"], 1.0, 15.0),
@@ -7704,6 +7714,77 @@ def _official_generation_memory_plan(params: dict[str, Any]) -> dict[str, Any]:
         "lora_scale": params.get("lora_scale"),
         "reason": reason,
     }
+
+
+ALBUM_VARIANT_SEED_STEP = 1_000_003
+ALBUM_VARIANT_SEED_MODULUS = 2_147_483_647
+
+
+def _normalize_album_seed_value(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text or text == "-1":
+        return None
+    try:
+        seed = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    seed = seed % ALBUM_VARIANT_SEED_MODULUS
+    if seed <= 0:
+        seed += 1
+    return seed
+
+
+def _album_variant_seed_at(base_seed: int, variant_index: int) -> int:
+    return ((base_seed + max(0, variant_index) * ALBUM_VARIANT_SEED_STEP - 1) % ALBUM_VARIANT_SEED_MODULUS) + 1
+
+
+def _stable_album_track_seed(
+    *,
+    concept: str,
+    album_title: str,
+    track: dict[str, Any] | None,
+    track_index: int,
+) -> int:
+    track = track or {}
+    seed_material = "\n".join(
+        [
+            str(album_title or ""),
+            str(concept or ""),
+            str(track.get("track_number") or track_index + 1),
+            str(track.get("title") or ""),
+            str(track.get("tags") or track.get("caption") or ""),
+        ]
+    )
+    digest = hashlib.sha256(seed_material.encode("utf-8", errors="ignore")).hexdigest()
+    return int(digest[:16], 16) % (ALBUM_VARIANT_SEED_MODULUS - 1) + 1
+
+
+def _album_variant_seed_list(
+    seed_value: Any,
+    variants: int,
+    *,
+    concept: str = "",
+    album_title: str = "",
+    track: dict[str, Any] | None = None,
+    track_index: int = 0,
+) -> list[str]:
+    count = clamp_int(variants, DEFAULT_ALBUM_TRACK_VARIANTS, 1, MAX_ALBUM_TRACK_VARIANTS)
+    seeds: list[int] = []
+    raw = str(seed_value or "").strip()
+    if raw and raw != "-1":
+        for piece in raw.split(","):
+            seed = _normalize_album_seed_value(piece)
+            if seed is not None:
+                seeds.append(seed)
+    base_seed = seeds[0] if seeds else _stable_album_track_seed(
+        concept=concept,
+        album_title=album_title,
+        track=track,
+        track_index=track_index,
+    )
+    while len(seeds) < count:
+        seeds.append(_album_variant_seed_at(base_seed, len(seeds)))
+    return [str(seed) for seed in seeds[:count]]
 
 
 def _seed_for_official_take(params: dict[str, Any], take_index: int) -> str:
@@ -11632,7 +11713,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "recommended_take": None,
             "rerender_suggestions": [
                 "Free memory by closing local LLM/image/video apps, then retry.",
-                "Keep XL-SFT 50 steps and shift 1.0, but render one take at a time.",
+                "Keep XL-SFT 64 steps and shift 3.0, but render one take at a time.",
                 "If memory still fails at one take, shorten duration for the LoRA test.",
             ],
         }
@@ -11733,7 +11814,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
             "recommended_take": None,
             "rerender_suggestions": [
                 "Retry after freeing memory; high-quality XL-SFT full-song renders can take a long time on MPS.",
-                "Keep XL-SFT 50 steps and shift 1.0; do not use Turbo as a silent fallback for this primary render.",
+                "Keep XL-SFT 64 steps and shift 3.0; do not use Turbo as a silent fallback for this primary render.",
                 "If it still exceeds the timeout, shorten duration for the LoRA test before a full-song render.",
             ],
         }
@@ -13622,7 +13703,17 @@ def generate_album(
         album_family_title = safe_filename(concept[:48] or "album", "album")
         generated_audios: list[dict[str, Any]] = []
         model_albums: list[dict[str, Any]] = []
-        default_variants = clamp_int(album_options.get("track_variants"), 1, 1, MAX_BATCH_SIZE)
+        default_variants = clamp_int(
+            album_options.get("track_variants"),
+            DEFAULT_ALBUM_TRACK_VARIANTS,
+            1,
+            MAX_ALBUM_TRACK_VARIANTS,
+        )
+        expected_audio_count = len(album_models) * sum(
+            clamp_int(track.get("track_variants", default_variants), default_variants, 1, MAX_ALBUM_TRACK_VARIANTS)
+            for track in tracks
+            if isinstance(track, dict)
+        )
         for base_track in tracks:
             base_track["model_results"] = []
             base_track["audios"] = []
@@ -13680,6 +13771,7 @@ def generate_album(
                     "album_status": "running" if completed_renders < expected else "completed",
                     "track_count": len(tracks),
                     "expected_renders": expected,
+                    "expected_audio_count": expected_audio_count,
                     "generated_count": completed_renders,
                     "completed_track_count": completed_renders,
                     "completed_audio_count": len(generated_audios),
@@ -13793,12 +13885,22 @@ def generate_album(
                     model_render_settings = raw_model_settings.get(track_model) or raw_model_settings.get(album_model_slug) or {}
                     if not isinstance(model_render_settings, dict):
                         model_render_settings = {}
-                variants = clamp_int(track.get("track_variants", default_variants), default_variants, 1, MAX_BATCH_SIZE)
+                variants = clamp_int(track.get("track_variants", default_variants), default_variants, 1, MAX_ALBUM_TRACK_VARIANTS)
+                variant_seeds = _album_variant_seed_list(
+                    track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "",
+                    variants,
+                    concept=concept,
+                    album_title=str(request_payload.get("album_title") or result.get("album_title") or concept),
+                    track=track,
+                    track_index=i,
+                )
+                variant_seed_csv = ",".join(variant_seeds)
                 logs.append(f"  Track {i+1}/{len(tracks)}: {track_title} ({variants} variant{'s' if variants != 1 else ''})")
+                logs.append(f"    Track {i + 1:02d} variants: seeds {variant_seed_csv}")
                 print(f"[generate_album] Generating {album_id} track {i+1}/{len(tracks)}: {track_title}")
                 _album_job_log(
                     album_job_id,
-                    f"Generating {album_id} track {i+1}/{len(tracks)}: {track_title}",
+                    f"Generating {album_id} track {i+1}/{len(tracks)}: {track_title} ({variants} variants, seeds {variant_seed_csv})",
                     current_model_album=track_model,
                     current_track=f"{i + 1}/{len(tracks)} {track_title}",
                     status=f"{model_item.get('label') or track_model}: track {i + 1}/{len(tracks)}",
@@ -13931,7 +14033,11 @@ def generate_album(
                         "time_signature": track.get("time_signature") or request_payload.get("time_signature") or "4",
                         "vocal_language": track.get("language") or request_payload.get("vocal_language") or language,
                         "batch_size": variants,
-                        "seed": str(track.get("seed") or request_payload.get("seed") or request_payload.get("seeds") or "-1"),
+                        "seed": variant_seed_csv,
+                        "seeds": variant_seed_csv,
+                        "use_random_seed": False,
+                        "variant_seeds": variant_seeds,
+                        "variant_count": variants,
                         "song_model": track_model,
                         "ace_lm_model": track_lm_model,
                         "vocal_clarity_recovery": vocal_clarity_recovery,
@@ -14019,6 +14125,8 @@ def generate_album(
                             "album_toolkit_report": _jsonable(result.get("toolkit_report", {})),
                             "track_number": track.get("track_number", i + 1),
                             "track_variant": "batch",
+                            "track_variant_count": variants,
+                            "track_variant_seeds": variant_seeds,
                             "tool_report": _jsonable(track.get("tool_report", {})),
                             "production_team": _jsonable(track.get("production_team", {})),
                             "model_render_settings": _jsonable(model_render_settings),
@@ -14095,6 +14203,8 @@ def generate_album(
                         "key_scale",
                         "time_signature",
                         "vocal_language",
+                        "variant_count",
+                        "variant_seeds",
                         "lyrics_quality",
                         "use_lora",
                         "lora_adapter_path",
@@ -14133,6 +14243,8 @@ def generate_album(
                             "tag_coverage",
                             "caption_integrity",
                             "lyric_duration_fit",
+                            "variant_count",
+                            "variant_seeds",
                             "lyrics_quality",
                             "repair_actions",
                             "album_art_prompt",
@@ -14296,12 +14408,17 @@ def generate_album(
                         track["song_id"] = first_audio.get("song_id")
                         track["audio_url"] = first_audio.get("audio_url") or first_audio.get("library_url")
                     for audio_index, audio in enumerate(track["audios"]):
+                        variant_seed = variant_seeds[audio_index] if audio_index < len(variant_seeds) else _seed_for_official_take(generation_payload, audio_index)
                         audio["artist_name"] = track_artist
                         audio["album_id"] = album_id
                         audio["album_family_id"] = album_family_id
                         audio["album_model_requested"] = track_model
                         audio["album_model"] = actual_render_model
                         audio["album_model_label"] = model_label(actual_render_model)
+                        audio["track_variant"] = audio_index + 1
+                        audio["variant_count"] = variants
+                        audio["variant_seed"] = variant_seed
+                        audio.setdefault("seed", variant_seed)
                         if rescue_model:
                             audio["vocal_intelligibility_rescue_model"] = rescue_model
                         audio["payload_gate_status"] = track.get("payload_gate_status")
@@ -14333,6 +14450,9 @@ def generate_album(
                                     "vocal_intelligibility_rescue_model": rescue_model,
                                     "track_number": track.get("track_number", i + 1),
                                     "track_variant": audio_index + 1,
+                                    "variant_count": variants,
+                                    "variant_seed": variant_seed,
+                                    "track_variant_seeds": variant_seeds,
                                     "album_toolkit_report": result.get("toolkit_report", {}),
                                     "tool_report": track.get("tool_report", {}),
                                     "production_team": track.get("production_team", {}),
@@ -14434,6 +14554,7 @@ def generate_album(
                     "album_status": album_status,
                     "track_count": len(tracks),
                     "generated_count": album_success_count,
+                    "generated_audio_count": len(album_audios),
                     "failed_count": len(album_failed_tracks),
                     "failed_tracks": album_failed_tracks,
                     "tracks": album_tracks,
@@ -14464,6 +14585,7 @@ def generate_album(
                     "album_status": album_status,
                     "track_count": len(tracks),
                     "generated_count": album_success_count,
+                    "generated_audio_count": len(album_audios),
                     "failed_count": len(album_failed_tracks),
                     "failed_tracks": album_failed_tracks,
                     "audios": album_audios,
@@ -14498,7 +14620,9 @@ def generate_album(
                 "track_count": len(tracks),
                 "model_count": len(album_models),
                 "expected_renders": expected_count,
+                "expected_audio_count": expected_audio_count,
                 "generated_count": generated_count,
+                "generated_audio_count": len(generated_audios),
                 "failed_count": len(failed_tracks),
                 "failed_tracks": failed_tracks,
                 "planning_failed_count": int(result.get("planning_failed_count") or 0),
@@ -14537,6 +14661,7 @@ def generate_album(
             ),
             generated_count=generated_count,
             expected_count=expected_count,
+            expected_audio_count=expected_audio_count,
             album_family_id=album_family_id,
             download_url=f"/api/album-families/{album_family_id}/download",
             progress=100 if album_success else 98,
@@ -14553,7 +14678,9 @@ def generate_album(
             "album_model_portfolio": album_models,
             "album_status": album_status,
             "expected_renders": expected_count,
+            "expected_audio_count": expected_audio_count,
             "generated_count": generated_count,
+            "generated_audio_count": len(generated_audios),
             "failed_count": len(failed_tracks),
             "failed_tracks": failed_tracks,
             "planning_failed_count": int(result.get("planning_failed_count") or 0),

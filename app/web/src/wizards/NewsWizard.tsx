@@ -103,7 +103,7 @@ export function NewsWizard() {
       duration: 90,
       vocal_language: "nl",
       song_model: "acestep-v15-xl-sft",
-      audio_backend: "mps_torch",
+      audio_backend: "mlx",
       use_lora: false,
       lora_adapter_path: "",
       lora_adapter_name: "",

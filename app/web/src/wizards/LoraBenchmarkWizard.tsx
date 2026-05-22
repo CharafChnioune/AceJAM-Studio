@@ -124,7 +124,7 @@ const QUALITY_PROFILES = [
 ] as const;
 
 function docsCorrectDefaults(songModel: string) {
-  return songModel.includes("turbo") ? { inference_steps: 8, shift: 3 } : { inference_steps: 50, shift: 1 };
+  return songModel.includes("turbo") ? { inference_steps: 8, shift: 3 } : { inference_steps: 64, shift: 3 };
 }
 
 function text(value: unknown, fallback = ""): string {

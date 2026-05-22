@@ -415,7 +415,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("component_status", payload["manifest"]["core_bundle"])
         self.assertIn("boot_downloads", payload["manifest"]["runtime"])
         self.assertEqual(payload["manifest"]["settings_registry"]["version"], "ace-step-settings-parity-2026-04-26")
-        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 50)
+        self.assertEqual(payload["manifest"]["quality_policy"]["sft_base_models"]["inference_steps"], 64)
         self.assertEqual(payload["manifest"]["quality_policy"]["balanced_pro_models"]["inference_steps"], 50)
         self.assertEqual(payload["manifest"]["quality_policy"]["default_profile"], "chart_master")
         self.assertEqual(payload["manifest"]["quality_policy"]["turbo_models"]["inference_steps"], 8)
@@ -641,7 +641,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("ACE_STEP_ADVANCED_PAYLOAD_FIELDS", custom)
         self.assertIn("ACE_STEP_ADVANCED_PAYLOAD_FIELDS", batch)
 
-    def test_audio_backend_defaults_to_mps_torch_and_allows_explicit_mlx(self):
+    def test_audio_backend_defaults_to_mlx_on_apple_silicon_and_allows_explicit_mlx(self):
         with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -665,8 +665,8 @@ class AppParityTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(defaulted["audio_backend"], "mps_torch")
-        self.assertFalse(defaulted["use_mlx_dit"])
+        self.assertEqual(defaulted["audio_backend"], "mlx")
+        self.assertTrue(defaulted["use_mlx_dit"])
         self.assertEqual(defaulted["device"], "mps")
         self.assertEqual(defaulted["dtype"], "float32")
         self.assertEqual(explicit_mlx["audio_backend"], "mlx")
@@ -822,8 +822,8 @@ class AppParityTest(unittest.TestCase):
             request = acejam_app._official_request_payload(params, Path(tmp))
 
         official_params = request["params"]
-        self.assertEqual(request["audio_backend"], "mps_torch")
-        self.assertFalse(request["use_mlx_dit"])
+        self.assertEqual(request["audio_backend"], "mlx")
+        self.assertTrue(request["use_mlx_dit"])
         self.assertFalse(official_params["dcw_enabled"])
         self.assertEqual(official_params["dcw_mode"], "low")
         self.assertEqual(official_params["dcw_scaler"], 0.07)
@@ -960,6 +960,49 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(plan["requested_take_count"], 3)
         self.assertEqual(plan["actual_runner_batch_size"], 3)
         self.assertEqual(plan["render_pass_count"], 1)
+
+    def test_album_variant_seed_list_is_stable_and_spaced(self):
+        track = {"track_number": 2, "title": "Seed Route", "tags": "rap, hard drums"}
+
+        seeds = acejam_app._album_variant_seed_list(
+            "",
+            4,
+            concept="seed album",
+            album_title="Seed Album",
+            track=track,
+            track_index=1,
+        )
+        repeat = acejam_app._album_variant_seed_list(
+            "-1",
+            4,
+            concept="seed album",
+            album_title="Seed Album",
+            track=track,
+            track_index=1,
+        )
+
+        self.assertEqual(seeds, repeat)
+        self.assertEqual(len(seeds), 4)
+        self.assertEqual(len(set(seeds)), 4)
+        seed_numbers = [int(seed) for seed in seeds]
+        expected = [
+            acejam_app._album_variant_seed_at(seed_numbers[0], index)
+            for index in range(4)
+        ]
+        self.assertEqual(seed_numbers, expected)
+
+    def test_album_variant_seed_list_honors_seed_csv_and_extends(self):
+        seeds = acejam_app._album_variant_seed_list(
+            "42,99",
+            4,
+            concept="ignored",
+            album_title="ignored",
+            track={"title": "ignored"},
+            track_index=0,
+        )
+
+        self.assertEqual(seeds[:2], ["42", "99"])
+        self.assertEqual(seeds[2:], [str(acejam_app._album_variant_seed_at(42, 2)), str(acejam_app._album_variant_seed_at(42, 3))])
 
     def test_memory_error_gate_blocks_recommended_take(self):
         result = {
@@ -1465,7 +1508,7 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(normalized["use_format"])
         self.assertEqual(normalized["sample_query"], "")
         self.assertTrue(normalized["sample_mode"] is False)
-        self.assertEqual(normalized["inference_steps"], 50)
+        self.assertEqual(normalized["inference_steps"], 64)
 
     def test_planner_settings_stay_separate_from_ace_step_lm_controls(self):
         payload = {
@@ -1564,9 +1607,9 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(normalized["use_cot_caption"])
         self.assertFalse(normalized["use_cot_lyrics"])
         self.assertFalse(normalized["use_cot_language"])
-        self.assertEqual(normalized["inference_steps"], 50)
-        self.assertEqual(normalized["guidance_scale"], 7.0)
-        self.assertEqual(normalized["shift"], 1.0)
+        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["guidance_scale"], 8.0)
+        self.assertEqual(normalized["shift"], 3.0)
         self.assertTrue(normalized["use_adg"])
         self.assertEqual(normalized["batch_size"], 1)
         self.assertEqual(normalized["sampler_mode"], "heun")
@@ -1813,7 +1856,7 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(validation["hit_readiness"]["version"], acejam_app.PRO_QUALITY_AUDIT_VERSION)
         self.assertEqual(validation["settings_coverage"].get("status"), "complete")
 
-    def test_xl_sft_defaults_to_chart_master_50_steps_shift_1(self):
+    def test_xl_sft_defaults_to_chart_master_64_steps_shift_3(self):
         payload = {
             "task_type": "text2music",
             "song_model": "acestep-v15-xl-sft",
@@ -1826,8 +1869,8 @@ class AppParityTest(unittest.TestCase):
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
             normalized = acejam_app._parse_generation_payload(payload)
 
-        self.assertEqual(normalized["inference_steps"], 50)
-        self.assertEqual(normalized["shift"], 1.0)
+        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["shift"], 3.0)
         self.assertEqual(normalized["song_model"], "acestep-v15-xl-sft")
         self.assertEqual(normalized["duration"], 180)
 
@@ -1848,10 +1891,10 @@ class AppParityTest(unittest.TestCase):
             normalized = acejam_app._parse_generation_payload(payload)
             official = acejam_app._official_request_payload(dict(normalized), Path("/tmp/acejam-test"))
 
-        self.assertEqual(normalized["inference_steps"], 50)
-        self.assertEqual(normalized["shift"], 1.0)
-        self.assertEqual(official["params"]["inference_steps"], 50)
-        self.assertEqual(official["params"]["shift"], 1.0)
+        self.assertEqual(normalized["inference_steps"], 64)
+        self.assertEqual(normalized["shift"], 3.0)
+        self.assertEqual(official["params"]["inference_steps"], 64)
+        self.assertEqual(official["params"]["shift"], 3.0)
 
     def test_simple_custom_helpers_always_use_local_writer(self):
         client = TestClient(acejam_app.app)
@@ -2652,7 +2695,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("clear intelligible vocal", captured["caption"])
         self.assertEqual(captured["vocal_language"], "en")
         self.assertEqual(captured["seed"], "123")
-        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 50)
+        self.assertEqual(acejam_app.EPOCH_AUDITION_INFERENCE_STEPS, 64)
         self.assertEqual(captured["inference_steps"], acejam_app.EPOCH_AUDITION_INFERENCE_STEPS)
         self.assertEqual(captured["ace_lm_model"], "none")
         self.assertFalse(captured["thinking"])
@@ -2671,8 +2714,8 @@ class AppParityTest(unittest.TestCase):
         if acejam_app._IS_APPLE_SILICON:
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
-            self.assertEqual(captured["audio_backend"], "mps_torch")
-            self.assertFalse(captured["use_mlx_dit"])
+            self.assertEqual(captured["audio_backend"], "mlx")
+            self.assertTrue(captured["use_mlx_dit"])
         self.assertIn(result["lyrics_fit"]["action"], {"none", "fit_for_20s"})
         self.assertTrue(result["lyrics_fit"]["timed_structure"])
 
@@ -2798,8 +2841,8 @@ class AppParityTest(unittest.TestCase):
         if acejam_app._IS_APPLE_SILICON:
             self.assertEqual(captured["device"], "mps")
             self.assertEqual(captured["dtype"], "float32")
-            self.assertEqual(captured["audio_backend"], "mps_torch")
-            self.assertFalse(captured["use_mlx_dit"])
+            self.assertEqual(captured["audio_backend"], "mlx")
+            self.assertTrue(captured["use_mlx_dit"])
         self.assertEqual(result["lyrics_fit"]["action"], "fit_for_30s")
 
     def test_lora_upload_path_sanitizer_preserves_relative_folders(self):
@@ -3060,15 +3103,15 @@ class AppParityTest(unittest.TestCase):
                     "use_lora": True,
                     "lora_adapter_path": str(adapter),
                     "lora_scale": 1.0,
-                    "guidance_scale": 8.0,
+                    "guidance_scale": 7.0,
                     "dcw_enabled": True,
                 }
             )
 
-        self.assertEqual(normalized["guidance_scale"], 7.0)
+        self.assertEqual(normalized["guidance_scale"], 8.0)
         self.assertFalse(normalized["dcw_enabled"])
         self.assertTrue(
-            any(str(item).startswith("model_corrected_render_settings:parse") and "guidance=8.0->7.0" in str(item) for item in normalized["payload_warnings"])
+            any(str(item).startswith("model_corrected_render_settings:parse") and "guidance=7.0->8.0" in str(item) for item in normalized["payload_warnings"])
         )
         self.assertTrue(
             any(str(item).startswith("mps_long_lora_memory_guard:parse") for item in normalized["payload_warnings"])
@@ -3190,6 +3233,81 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("ace_lm_model", validation["field_errors"])
         self.assertEqual(validation["normalized_payload"]["ace_lm_model"], "none")
         self.assertEqual(validation["normalized_payload"]["sample_query"], "")
+
+    def test_album_missing_track_variants_defaults_to_four_seeded_versions(self):
+        calls = []
+
+        def fake_generation(payload):
+            calls.append(dict(payload))
+            seeds = [item.strip() for item in str(payload["seed"]).split(",") if item.strip()]
+            return {
+                "success": True,
+                "result_id": "album-variants-01",
+                "active_song_model": payload["song_model"],
+                "runner": "mock",
+                "params": payload,
+                "payload_warnings": [],
+                "audios": [
+                    {
+                        "id": f"take-{index + 1}",
+                        "result_id": "album-variants-01",
+                        "filename": f"take-{index + 1}.wav",
+                        "audio_url": f"/media/results/album-variants-01/take-{index + 1}.wav",
+                        "download_url": f"/media/results/album-variants-01/take-{index + 1}.wav",
+                        "title": payload["title"],
+                        "seed": seed,
+                    }
+                    for index, seed in enumerate(seeds)
+                ],
+            }
+
+        request_payload = {
+            "agent_engine": "editable_plan",
+            "toolbelt_only": True,
+            "song_model_strategy": "single_model_album",
+            "song_model": "acestep-v15-xl-sft",
+            "ace_lm_model": "none",
+            "save_to_library": False,
+            "tracks": [
+                {
+                    "track_number": 1,
+                    "artist_name": "Unit Signal",
+                    "title": "Variant Seed Test",
+                    "tags": "rap, hard drums, deep bass, clear lead vocal, polished mix",
+                    "lyrics": _LONG_TEST_LYRICS,
+                    "duration": 60,
+                    "bpm": 92,
+                    "key_scale": "D minor",
+                    "time_signature": "4",
+                }
+            ],
+        }
+
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(album_crew_module, "plan_album", return_value=self._mock_direct_album_plan(request_payload["tracks"])), \
+            patch.object(acejam_app, "_validate_direct_album_agent_payload", return_value={"status": "pass", "gate_passed": True, "blocking_issues": []}), \
+            patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "payload_warnings": []}), \
+            patch.object(acejam_app, "_run_advanced_generation", side_effect=fake_generation), \
+            patch.object(acejam_app, "_write_album_manifest", side_effect=lambda album_id, manifest: {**manifest, "album_id": album_id}):
+            raw = acejam_app.generate_album(
+                concept="unit test album",
+                num_tracks=1,
+                track_duration=60,
+                request_json=json.dumps(request_payload),
+            )
+
+        data = json.loads(raw)
+        self.assertTrue(data["success"])
+        self.assertEqual(len(calls), 1)
+        payload = calls[0]
+        seeds = payload["seed"].split(",")
+        self.assertEqual(payload["batch_size"], 4)
+        self.assertEqual(payload["seeds"], payload["seed"])
+        self.assertFalse(payload["use_random_seed"])
+        self.assertEqual(len(seeds), 4)
+        self.assertEqual(data["expected_audio_count"], 4)
+        self.assertEqual([audio["track_variant"] for audio in data["audios"]], [1, 2, 3, 4])
+        self.assertEqual([audio["variant_seed"] for audio in data["audios"]], seeds)
 
     def test_album_all_models_calls_advanced_generation_for_each_model(self):
         calls = []
@@ -4450,11 +4568,11 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(by_model["acestep-v15-turbo"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo-shift1"]["inference_steps"], 8)
         self.assertEqual(by_model["acestep-v15-turbo-continuous"]["inference_steps"], 8)
-        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 50)
+        self.assertEqual(by_model["acestep-v15-sft"]["inference_steps"], 64)
         self.assertEqual(by_model["acestep-v15-turbo"]["guidance_scale"], 7.0)
-        self.assertEqual(by_model["acestep-v15-sft"]["guidance_scale"], 7.0)
+        self.assertEqual(by_model["acestep-v15-sft"]["guidance_scale"], 8.0)
         self.assertEqual(by_model["acestep-v15-turbo"]["shift"], 3.0)
-        self.assertEqual(by_model["acestep-v15-sft"]["shift"], 1.0)
+        self.assertEqual(by_model["acestep-v15-sft"]["shift"], 3.0)
         self.assertEqual(data["render_strategy"], "all_models_song")
 
     def test_delete_generated_outputs_preserves_uploads_and_lora(self):
@@ -4979,8 +5097,8 @@ class AppParityTest(unittest.TestCase):
                 [call["song_model"] for call in calls],
                 ["acestep-v15-xl-sft", "acestep-v15-xl-sft", "acestep-v15-xl-sft", "acestep-v15-turbo"],
             )
-            self.assertTrue(all(call["inference_steps"] == 50 for call in calls[:3]))
-            self.assertTrue(all(call["shift"] == 1.0 for call in calls[:3]))
+            self.assertTrue(all(call["inference_steps"] == 64 for call in calls[:3]))
+            self.assertTrue(all(call["shift"] == 3.0 for call in calls[:3]))
             self.assertEqual(calls[3]["inference_steps"], 8)
             self.assertEqual(calls[3]["shift"], 3.0)
             self.assertEqual(result["result_id"], "modelrescue3")
@@ -5055,8 +5173,8 @@ class AppParityTest(unittest.TestCase):
 
             self.assertEqual([call["song_model"] for call in calls], ["acestep-v15-xl-sft", "acestep-v15-turbo"])
             self.assertEqual(calls[0]["duration"], acejam_app.ACEJAM_LORA_PREFLIGHT_DURATION_SECONDS)
-            self.assertEqual(calls[0]["inference_steps"], 50)
-            self.assertEqual(calls[0]["shift"], 1.0)
+            self.assertEqual(calls[0]["inference_steps"], 64)
+            self.assertEqual(calls[0]["shift"], 3.0)
             self.assertEqual(calls[1]["inference_steps"], 8)
             self.assertEqual(calls[1]["shift"], 3.0)
             self.assertFalse(result["success"])
@@ -5331,8 +5449,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("mergeWizardDraft", draft_hook)
         self.assertIn("usePromptMirror", draft_hook)
         self.assertIn("normalizeAceStepRenderDraft", draft_hook)
-        self.assertIn("Number(normalized.inference_steps) < 50", draft_hook)
-        self.assertIn("normalized.shift = 1", draft_hook)
+        self.assertIn("Number(normalized.inference_steps) < 64", draft_hook)
+        self.assertIn("normalized.shift = 3", draft_hook)
         self.assertIn("docsCorrectRenderDefaults(nextModel)", custom)
         self.assertNotIn("docsCorrectRenderDefaults(nextProfile)", custom)
 
@@ -5566,7 +5684,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("JSON toepassen", batch)
         self.assertIn("Pas huidige instellingen toe op alle songs", batch)
         self.assertIn('raw === "mlx"', audio_backend)
-        self.assertIn('"audio_backend": "mps_torch"', promptsong)
+        self.assertIn('"audio_backend": "mlx"', promptsong)
         self.assertIn('"ace_lm_model": "none"', promptsong)
         self.assertNotIn('"ace_lm_model": "acestep-5Hz-lm-4B"', promptsong)
         self.assertIn('"song_model_strategy": "single_model_album"', promptalbum)

@@ -50,6 +50,9 @@ import { toast } from "@/components/ui/sonner";
 import { cn, formatDuration } from "@/lib/utils";
 
 const MODE = "album" as const;
+const DEFAULT_ALBUM_TRACK_VARIANTS = 4;
+const MAX_ALBUM_TRACK_VARIANTS = 8;
+const ALBUM_PORTFOLIO_MODEL_COUNT = 9;
 
 function jobText(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value);
@@ -112,6 +115,11 @@ interface AlbumTrack {
   ignored_lora_adapter_name?: string;
   ignored_lora_adapter_path?: string;
   ignored_lora_adapter_song_model?: string;
+  variant_count?: number;
+  variant_seeds?: string[];
+  track_variant?: number;
+  variant_seed?: string | number;
+  audios?: Array<Record<string, unknown>>;
   result_id?: string;
   audio_url?: string;
   art?: { url?: string };
@@ -262,13 +270,14 @@ export function AlbumWizard() {
       concept: "",
       num_tracks: 7,
       track_duration: 180,
+      track_variants: DEFAULT_ALBUM_TRACK_VARIANTS,
       duration_mode: "ai_per_track",
       album_writer_mode: "per_track_writer_loop",
       language: "en",
       song_model: "acestep-v15-xl-sft",
-      audio_backend: "mps_torch",
+      audio_backend: "mlx",
       song_model_strategy: "single_model_album",
-      quality_profile: "standard",
+      quality_profile: "chart_master",
       style_profile: "auto",
       custom_tags: "",
       negative_tags: "",
@@ -325,6 +334,7 @@ export function AlbumWizard() {
       "artist_name",
       "num_tracks",
       "track_duration",
+      "track_variants",
       "duration_mode",
       "album_writer_mode",
       "language",
@@ -471,10 +481,19 @@ export function AlbumWizard() {
     () => normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration),
     [plan?.tracks, values.track_duration, values.tracks],
   );
+  const albumTrackVariantCount = Math.max(
+    1,
+    Math.min(MAX_ALBUM_TRACK_VARIANTS, Number(values.track_variants || DEFAULT_ALBUM_TRACK_VARIANTS)),
+  );
+  const requestedModelAlbumCount = values.song_model_strategy === "all_models_album" ? ALBUM_PORTFOLIO_MODEL_COUNT : 1;
+  const requestedAudioRenderCount = Math.max(0, reviewTracks.length) * albumTrackVariantCount * requestedModelAlbumCount;
 
   const albumCurrentPayload = React.useMemo(
     () => ({
       ...stripAlbumLevelLoraFields(form.getValues()),
+      track_variants: albumTrackVariantCount,
+      album_render_model_count: requestedModelAlbumCount,
+      album_render_audio_count: requestedAudioRenderCount,
       use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
       planner_lm_provider: plannerProvider,
       ollama_model: plannerModel || undefined,
@@ -486,7 +505,18 @@ export function AlbumWizard() {
       track_lora_count: reviewTracks.filter((track) => Boolean(track.use_lora && track.lora_adapter_path)).length,
       tracks: reviewTracks,
     }),
-    [embeddingModel, embeddingProvider, form, plannerModel, plannerProvider, reviewTracks, values],
+    [
+      albumTrackVariantCount,
+      embeddingModel,
+      embeddingProvider,
+      form,
+      plannerModel,
+      plannerProvider,
+      requestedAudioRenderCount,
+      requestedModelAlbumCount,
+      reviewTracks,
+      values,
+    ],
   );
 
   // ---- Async generate ----
@@ -499,6 +529,7 @@ export function AlbumWizard() {
         artist_name: values.artist_name,
         num_tracks: values.num_tracks,
         track_duration: values.track_duration,
+        track_variants: albumTrackVariantCount,
         duration_mode: values.duration_mode,
         album_writer_mode: values.album_writer_mode,
         language: values.language,
@@ -574,6 +605,7 @@ export function AlbumWizard() {
         concept: values.concept,
         num_tracks: values.num_tracks,
         track_duration: values.track_duration,
+        track_variants: albumTrackVariantCount,
         duration_mode: values.duration_mode,
         planner_provider: plannerProvider,
         planner_model: plannerModel,
@@ -1238,6 +1270,43 @@ export function AlbumWizard() {
               />
             </div>
           </FieldGroup>
+          <FieldGroup title="Versies">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(180px,240px)]">
+              <div className="space-y-1.5">
+                <Label>Versies per track</Label>
+                <Controller
+                  control={form.control}
+                  name="track_variants"
+                  render={({ field }) => (
+                    <Input
+                      type="number"
+                      min={1}
+                      max={MAX_ALBUM_TRACK_VARIANTS}
+                      step={1}
+                      value={field.value ?? DEFAULT_ALBUM_TRACK_VARIANTS}
+                      onChange={(event) => {
+                        const parsed = Number(event.target.value);
+                        const next = Number.isFinite(parsed)
+                          ? Math.max(1, Math.min(MAX_ALBUM_TRACK_VARIANTS, Math.round(parsed)))
+                          : DEFAULT_ALBUM_TRACK_VARIANTS;
+                        field.onChange(next);
+                      }}
+                    />
+                  )}
+                />
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Totaal</p>
+                <p className="mt-1 text-sm font-medium">{requestedAudioRenderCount} audio renders</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {reviewTracks.length} tracks × {albumTrackVariantCount} versies × {requestedModelAlbumCount} model{requestedModelAlbumCount === 1 ? "" : "len"}
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Elke versie gebruikt dezelfde lyrics, caption, metadata en LoRA; alleen de ACE-Step seed verandert.
+            </p>
+          </FieldGroup>
           <FieldGroup title="Kwaliteit">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
@@ -1319,6 +1388,8 @@ export function AlbumWizard() {
               { key: "album_title", label: "Album titel" },
               { key: "artist_name", label: "Artiest" },
               { key: "num_tracks", label: "Tracks" },
+              { key: "track_variants", label: "Versies per track" },
+              { key: "album_render_audio_count", label: "Totaal renders", format: (v) => `${Number(v) || 0} audio renders` },
               { key: "duration_mode", label: "Duurbeleid", format: (v) => v === "fixed" ? "Vaste duur" : "AI per track" },
               { key: "album_writer_mode", label: "AI writer", format: () => "Per-track loop" },
               { key: "track_duration", label: "Fallback duur", format: (v) => formatDuration(Number(v) || 0) },
@@ -1453,57 +1524,85 @@ export function AlbumWizard() {
               targetId={albumFamilyId || (lastResult.album_id as string | undefined)}
             />
             <div className="space-y-2">
-              {resultTracks.map((t, i) => (
-                <motion.div
-                  key={t.result_id || i}
-                  initial={{ opacity: 0, x: -6 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.04 }}
-                  className="space-y-2 rounded-xl border bg-card/30 p-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {String(i + 1).padStart(2, "0")}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{t.title || "Track"}</p>
-                      <p className="truncate text-xs text-muted-foreground">{t.caption}</p>
-                    </div>
-                    {typeof t.duration === "number" && (
+              {resultTracks.map((t, i) => {
+                const trackAudios = Array.isArray(t.audios) ? t.audios : [];
+                const audioItems = trackAudios.length
+                  ? trackAudios
+                  : t.audio_url
+                    ? [{
+                        audio_url: t.audio_url,
+                        result_id: t.result_id,
+                        song_id: t.song_id,
+                        track_variant: t.track_variant || 1,
+                        variant_seed: t.variant_seed,
+                      }]
+                    : [];
+                return (
+                  <motion.div
+                    key={t.result_id || i}
+                    initial={{ opacity: 0, x: -6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.04 }}
+                    className="space-y-2 rounded-xl border bg-card/30 p-3"
+                  >
+                    <div className="flex items-center gap-3">
                       <span className="font-mono text-xs text-muted-foreground">
-                        {formatDuration(t.duration)}
+                        {String(i + 1).padStart(2, "0")}
                       </span>
-                    )}
-                  </div>
-                  {t.audio_url && (
-                    <div className="space-y-2">
-                      <WaveformPlayer
-                        src={t.audio_url}
-                        title={t.title}
-                        artist={values.artist_name}
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => navigate("/wizard/video", {
-                          state: {
-                            audio_url: t.audio_url,
-                            title: t.title,
-                            artist_name: values.artist_name,
-                            prompt: String(t.caption || values.concept || t.title || ""),
-                            target_type: "song",
-                            target_id: t.result_id || t.song_id || `${lastResult.album_id || albumFamilyId || "album"}:track:${i + 1}`,
-                          },
-                        })}
-                        className="gap-2"
-                      >
-                        <Video className="size-3.5" />
-                        Create video
-                      </Button>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">{t.title || "Track"}</p>
+                        <p className="truncate text-xs text-muted-foreground">{t.caption}</p>
+                      </div>
+                      {typeof t.duration === "number" && (
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {formatDuration(t.duration)}
+                        </span>
+                      )}
                     </div>
-                  )}
-                </motion.div>
-              ))}
+                    {audioItems.length > 0 && (
+                      <div className="space-y-3">
+                        {audioItems.map((audio, audioIndex) => {
+                          const audioUrl = String(audio.audio_url || audio.library_url || "");
+                          const variantNumber = Number(audio.track_variant || audioIndex + 1);
+                          const variantSeed = audio.variant_seed || audio.seed;
+                          if (!audioUrl) return null;
+                          return (
+                            <div key={`${audioUrl}-${audioIndex}`} className="space-y-2 rounded-lg border border-border/50 bg-background/40 p-2">
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <Badge variant="outline">v{variantNumber}</Badge>
+                                {variantSeed ? <Badge variant="muted">seed {String(variantSeed)}</Badge> : null}
+                              </div>
+                              <WaveformPlayer
+                                src={audioUrl}
+                                title={`${t.title || "Track"} v${variantNumber}`}
+                                artist={values.artist_name}
+                              />
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => navigate("/wizard/video", {
+                                  state: {
+                                    audio_url: audioUrl,
+                                    title: `${t.title || "Track"} v${variantNumber}`,
+                                    artist_name: values.artist_name,
+                                    prompt: String(t.caption || values.concept || t.title || ""),
+                                    target_type: "song",
+                                    target_id: audio.result_id || audio.song_id || `${lastResult.album_id || albumFamilyId || "album"}:track:${i + 1}:v${variantNumber}`,
+                                  },
+                                })}
+                                className="gap-2"
+                              >
+                                <Video className="size-3.5" />
+                                Create video
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </motion.div>
+                );
+              })}
             </div>
             <div className="flex flex-wrap items-center gap-2 pt-2">
               {(lastResult.album_id || albumFamilyId) && (

@@ -126,7 +126,7 @@ function docsCorrectRenderDefaults(songModel: string) {
   if (songModel.includes("turbo")) {
     return { inference_steps: 8, shift: 3 };
   }
-  return { inference_steps: 50, shift: 1 };
+  return { inference_steps: 64, shift: 3 };
 }
 
 function uid() {
@@ -165,11 +165,11 @@ function makeSong(seed: Partial<SongDraft> = {}, index = 0): SongDraft {
     time_signature: seed.time_signature || "4/4",
     vocal_language: seed.vocal_language || "en",
     song_model: songModel,
-    audio_backend: seed.audio_backend || "mps_torch",
+    audio_backend: seed.audio_backend || "mlx",
     quality_profile: seed.quality_profile || "chart_master",
     seed: seed.seed ?? -1,
     inference_steps: Number(seed.inference_steps ?? defaults.inference_steps),
-    guidance_scale: Number(seed.guidance_scale ?? 7),
+    guidance_scale: Number(seed.guidance_scale ?? 8),
     shift: Number(seed.shift ?? defaults.shift),
     audio_format: seed.audio_format || "wav32",
     batch_size: Number(seed.batch_size ?? 1),

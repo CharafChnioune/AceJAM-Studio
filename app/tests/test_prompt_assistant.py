@@ -176,7 +176,7 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertIn("talkbox lead", track["caption"])
         self.assertIn("Mama working doubles", track["lyrics"])
         # Inference defaults are pre-filled so the wizard is not blank
-        self.assertEqual(track["inference_steps"], 50)
+        self.assertEqual(track["inference_steps"], 64)
         self.assertEqual(track["audio_format"], "wav32")
         # Production team is exposed in the wizard so user sees the crew makeup
         self.assertIn("executive_producer", track["production_team"])
@@ -222,6 +222,31 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertEqual(captured["options"]["track_variants"], 3)
         self.assertEqual(result["payload"]["track_variants"], 3)
         self.assertEqual(result["payload"]["batch_size"], 3)
+
+    def test_album_wizard_fill_defaults_to_four_track_variants(self):
+        captured: dict[str, Any] = {}
+
+        def fake_plan_album(**kwargs):
+            captured.update(kwargs)
+            return {
+                "tracks": [{"track_number": 1, "title": "T1", "bpm": 100, "duration": 180.0}],
+                "success": True,
+                "warnings": [],
+            }
+
+        with patch("album_crew.plan_album", fake_plan_album):
+            result = acejam_app._run_prompt_assistant_album_crew(
+                body={"mode": "album", "user_prompt": "test"},
+                user_prompt="test concept",
+                current_payload={"num_tracks": 1},
+                planner_provider="ollama",
+                planner_model="qwen-test",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(captured["options"]["track_variants"], 4)
+        self.assertEqual(result["payload"]["track_variants"], 4)
+        self.assertEqual(result["payload"]["batch_size"], 4)
 
     def test_album_plan_request_uses_explicit_prompt_contract_over_stale_draft(self):
         prompt = """
@@ -417,8 +442,8 @@ ACEJAM_PAYLOAD_JSON
   "bpm": 124,
   "key_scale": "D minor",
   "time_signature": "4",
-  "inference_steps": 50,
-  "guidance_scale": 7.0,
+  "inference_steps": 64,
+  "guidance_scale": 8.0,
   "audio_format": "wav",
   "auto_score": true,
   "auto_lrc": true

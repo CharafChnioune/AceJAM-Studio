@@ -13,7 +13,7 @@ module.exports = {
       venv: "env",
       path: "app",
       message: [
-        "python -c \"from pathlib import Path; import subprocess; target=Path('vendor/ACE-Step-1.5'); target.parent.mkdir(parents=True, exist_ok=True); subprocess.check_call(['git','clone','--depth','1','https://github.com/ace-step/ACE-Step-1.5',str(target)]) if not target.exists() else subprocess.check_call(['git','-C',str(target),'pull','--ff-only'])\""
+        "python sync_ace_step_vendor.py"
       ]
     }
   }, {

@@ -508,8 +508,8 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["rank"], 64)
             self.assertEqual(params["alpha"], 128)
             self.assertEqual(params["dropout"], 0.1)
-            self.assertEqual(params["training_shift"], 1.0)
-            self.assertEqual(params["num_inference_steps"], 50)
+            self.assertEqual(params["training_shift"], 3.0)
+            self.assertEqual(params["num_inference_steps"], 64)
             self.assertEqual(params["training_seed"], 42)
             self.assertIsNone(params["train_epochs"])
             self.assertEqual(params["save_every_n_epochs"], 1)
@@ -521,7 +521,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["song_model"], "acestep-v15-xl-sft")
             self.assertEqual(params["model_variant"], "xl_sft")
             self.assertTrue(params["epoch_audition"]["enabled"])
-            self.assertEqual(params["epoch_audition"]["scale"], 0.45)
+            self.assertEqual(params["epoch_audition"]["scale"], 1.0)
             self.assertEqual(params["device"], "mps")
             self.assertEqual(params["precision"], "fp32")
             self.assertEqual(manager.auto_epochs(20), 800)
@@ -1548,7 +1548,7 @@ class LoraTrainerTest(unittest.TestCase):
 
             self.assertEqual(resumed["stage"], "quarantined")
             self.assertEqual(resumed["result"]["quality_status"], "quarantined")
-            self.assertIn("expected shift=1.0", resumed["error"])
+            self.assertIn("expected 64", resumed["error"])
             self.assertEqual(manager.commands, [])
 
     def test_resume_job_retries_incomplete_latest_audition_from_latest_checkpoint(self):
@@ -1811,7 +1811,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(adapters[0]["quality_status"], "quarantined")
             self.assertTrue(adapters[0]["is_loadable"])
             self.assertTrue(adapters[0]["generation_loadable"])
-            self.assertIn("expected shift=1.0", " ".join(adapters[0]["quality_reasons"]))
+            self.assertIn("expected 64", " ".join(adapters[0]["quality_reasons"]))
 
     def test_lora_registry_flags_needs_review_adapters_but_keeps_manual_testing_open(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -32,7 +32,7 @@ AceJAM current policy:
 - Album writing is track-by-track. Set "album_writer_mode": "per_track_writer_loop" so every track gets its own brief, section map, hook, lyrics, enrichment, audit and repair loop before rendering.
 - Default album strategy is "single_model_album": AceJAM renders the approved album plan with ACE-Step v1.5 XL SFT unless the user explicitly requests a model portfolio.
 - The only valid song_model_strategy values are "single_model_album" and "all_models_album". The model portfolio is: acestep-v15-turbo, acestep-v15-turbo-shift1, acestep-v15-sft, acestep-v15-base, acestep-v15-xl-turbo, acestep-v15-xl-sft, acestep-v15-xl-base.
-- Per-track defaults are docs-correct: SFT/Base/XL SFT/XL Base use 50 steps and shift 1.0; Turbo/XL Turbo use 8 steps and shift 3.0; wav32 output.
+- Per-track defaults are ACE-Step v0.1.8 max quality: SFT/Base/XL SFT/XL Base use 64 steps and shift 3.0; Turbo/XL Turbo use 8 steps and shift 3.0; wav32 output.
 - LoRA, when selected by the user, is album-wide: preserve `use_lora`, `lora_adapter_path`, `lora_adapter_name`, `lora_scale`, `use_lora_trigger`, `lora_trigger_tag`, and adapter model fields. The trigger belongs in caption/tags only, never in lyrics.
 
 The album JSON must include:
@@ -47,8 +47,8 @@ The album JSON must include:
   "song_model_strategy": "single_model_album",
   "final_song_model": "acestep-v15-xl-sft",
   "song_model": "acestep-v15-xl-sft",
-  "audio_backend": "mps_torch",
-  "use_mlx_dit": false,
+  "audio_backend": "mlx",
+  "use_mlx_dit": true,
   "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": false,
@@ -76,13 +76,13 @@ The album JSON must include:
   "structure_preset": "album_arc",
   "bpm_strategy": "varied",
   "key_strategy": "related",
-  "track_variants": 1,
-  "batch_size": 1,
+  "track_variants": 4,
+  "batch_size": 4,
   "seed": "-1",
   "use_random_seed": true,
-  "inference_steps": 50,
+  "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,
@@ -107,8 +107,8 @@ Each track must include:
   "role": "opener | single | escalation | breather | climax | cooldown | closer",
   "duration": 210,
   "song_model": "acestep-v15-xl-sft",
-  "audio_backend": "mps_torch",
-  "use_mlx_dit": false,
+  "audio_backend": "mlx",
+  "use_mlx_dit": true,
   "quality_profile": "chart_master",
   "caption": "",
   "tags": "",
@@ -120,9 +120,9 @@ Each track must include:
   "key_scale": "C major",
   "time_signature": "4",
   "seed": "-1",
-  "inference_steps": 50,
+  "inference_steps": 64,
   "guidance_scale": 8.0,
-  "shift": 1.0,
+  "shift": 3.0,
   "infer_method": "ode",
   "audio_format": "wav32",
   "auto_score": false,

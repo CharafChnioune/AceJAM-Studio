@@ -11,7 +11,7 @@ export interface LoraSelection {
   adapter_song_model: string;
 }
 
-export const DEFAULT_LORA_SCALE = 0.45;
+export const DEFAULT_LORA_SCALE = 1.0;
 
 export function emptyLoraSelection(): LoraSelection {
   return {
