@@ -49,6 +49,7 @@ const ICONS: Record<JobKind, React.ComponentType<{ className?: string }>> = {
   "mlx-video": Video,
   lora: GraduationCap,
   "lora-benchmark": BarChart3,
+  "lora-sweep": BarChart3,
   "ollama-pull": Brain,
   "model-download": Download,
   "lm-download": Download,
@@ -185,6 +186,7 @@ function kindLabel(kind: JobKind): string {
   if (kind === "song-batch") return "Song batch";
   if (kind === "lora") return "LoRA training";
   if (kind === "lora-benchmark") return "LoRA benchmark";
+  if (kind === "lora-sweep") return "LoRA sweep";
   if (kind === "mflux") return "MFLUX image";
   if (kind === "mlx-video") return "MLX video";
   if (kind === "album") return "Album job";
@@ -362,6 +364,28 @@ function jobPatchFromLoraBenchmark(job: JsonRecord): JobEntry {
     kindLabel: "LoRA benchmark",
     detailsPath: `/api/lora/benchmarks/jobs/${encodeURIComponent(id)}`,
     logPath: `/api/lora/benchmarks/jobs/${encodeURIComponent(id)}/log`,
+    metadata: job,
+    error: text(job.error || asArray(job.errors)[0], ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
+  };
+}
+
+function jobPatchFromLoraSweep(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const id = text(job.id, "lora-sweep-job");
+  const label = text(job.sweep_title || payload.sweep_title || id, "LoRA Sweep");
+  return {
+    id,
+    kind: "lora-sweep",
+    label,
+    progress: progressOf({ id, kind: "lora-sweep", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "lora-sweep", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "lora-sweep", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "LoRA sweep",
+    detailsPath: `/api/lora/sweeps/jobs/${encodeURIComponent(id)}`,
+    logPath: `/api/lora/sweeps/jobs/${encodeURIComponent(id)}/log`,
     metadata: job,
     error: text(job.error || asArray(job.errors)[0], ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
@@ -1278,6 +1302,117 @@ function LoraBenchmarkDetails({
   );
 }
 
+function LoraSweepDetails({
+  job,
+  log,
+}: {
+  job: JsonRecord;
+  log: string;
+}) {
+  const payload = asRecord(job.payload);
+  const summary = asRecord(job.payload_summary);
+  const results = asArray(job.results).map(asRecord);
+  const items = asArray(job.items).map(asRecord);
+  const rows = items.length ? items : results;
+  const logs = log ? log.split("\n") : asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
+  return (
+    <div className="space-y-4">
+      <Section title="Sweep setup" icon={BarChart3}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <InfoRow label="Sweep" value={job.sweep_title || payload.sweep_title} />
+          <InfoRow label="Current group" value={job.current_item ? `${text(job.current_item)} / ${text(job.total_items)}` : ""} />
+          <InfoRow label="Completed" value={job.completed_items} />
+          <InfoRow label="Failed" value={job.failed_items} />
+          <InfoRow label="Skipped" value={job.skipped_items} />
+          <InfoRow label="Audios" value={`${text(job.generated_audio_count || 0)} / ${text(job.expected_audio_count || summary.expected_audio_count || 0)}`} />
+          <InfoRow label="Variations" value={summary.variant_count} />
+          <InfoRow label="Child job" value={job.child_generation_job_id} />
+        </div>
+      </Section>
+
+      <Section title="LoRA groups">
+        <div className="space-y-3">
+          {rows.map((row, index) => {
+            const result = asRecord(row.result);
+            const rowSummary = asRecord(row.payload_summary);
+            const seeds = asArray(row.variant_seeds).map((item) => text(item, "")).filter(Boolean);
+            const variants = asArray(row.variants).map(asRecord);
+            const readyVariants = variants.filter((variant) => String(variant.state || "").toLowerCase() === "succeeded").length;
+            const failedVariants = variants.filter((variant) => String(variant.state || "").toLowerCase() === "failed").length;
+            const variantTotal = Number(row.variant_count || variants.length || seeds.length || 0);
+            const state = String(row.state || "").toLowerCase();
+            return (
+              <div key={`${row.item_id || index}-${row.generation_job_id || row.adapter_name}`} className="rounded-lg border bg-background/35 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {text(row.item_number || index + 1)}. {text(row.adapter_name, "LoRA")}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {text(row.song_model || rowSummary.song_model, "auto")} · scale {text(row.lora_scale)} · trigger {text(row.trigger_tag || "off")} · {readyVariants}/{variantTotal || "?"} varianten klaar · job {text(row.generation_job_id)}
+                    </p>
+                  </div>
+                  <Badge variant={state === "failed" ? "destructive" : state === "succeeded" ? "default" : state === "skipped" ? "secondary" : "outline"}>
+                    {text(row.status || row.state)}
+                  </Badge>
+                </div>
+                {Number.isFinite(Number(row.progress)) && (
+                  <Progress value={Math.max(0, Math.min(100, Number(row.progress)))} className="mt-2 h-1" />
+                )}
+                {seeds.length > 0 && (
+                  <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground" title={seeds.join(", ")}>
+                    Seeds: {seeds.join(", ")}
+                  </p>
+                )}
+                {variants.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {variants.map((variant, variantIndex) => {
+                      const variantState = String(variant.state || "").toLowerCase();
+                      return (
+                        <Badge
+                          key={`${row.item_id || index}-variant-${variant.variant_index || variantIndex}`}
+                          variant={variantState === "failed" ? "destructive" : variantState === "succeeded" ? "default" : variantState === "running" ? "secondary" : "outline"}
+                          className="font-mono text-[10px]"
+                        >
+                          v{text(variant.variant_index || variantIndex + 1)} · {text(variant.variant_seed || variant.seed)} · {text(variant.status || variant.state, "queued")}
+                        </Badge>
+                      );
+                    })}
+                    {failedVariants > 0 && (
+                      <Badge variant="destructive" className="text-[10px]">
+                        {failedVariants} failed
+                      </Badge>
+                    )}
+                  </div>
+                )}
+                {Boolean(row.error) && (
+                  <p className="mt-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                    {text(row.error)}
+                  </p>
+                )}
+                {Object.keys(result).length > 0 && (
+                  <GenerationAudioList
+                    result={result}
+                    title={text(row.adapter_name, `Sweep ${index + 1}`)}
+                    artist="LoRA Sweep"
+                    className="mt-3 space-y-2"
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -1383,6 +1518,23 @@ function JobDetailsDialog({
           job.detailsPath || `/api/lora/benchmarks/jobs/${encodeURIComponent(job.id)}`,
         );
         const nextLog = await getOptionalLog(job.logPath || `/api/lora/benchmarks/jobs/${encodeURIComponent(job.id)}/log`);
+        const next = asRecord(jobResp.job);
+        setRemoteJob(next);
+        if (nextLog !== null) setLog(nextLog);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
+          metadata: next,
+          error: text(next.error || asArray(next.errors)[0], ""),
+        });
+      } else if (job.kind === "lora-sweep") {
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/lora/sweeps/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/lora/sweeps/jobs/${encodeURIComponent(job.id)}/log`);
         const next = asRecord(jobResp.job);
         setRemoteJob(next);
         if (nextLog !== null) setLog(nextLog);
@@ -1631,6 +1783,8 @@ function JobDetailsDialog({
             <SongBatchDetails job={remote} log={log} />
           ) : job.kind === "lora-benchmark" ? (
             <LoraBenchmarkDetails job={remote} log={log} />
+          ) : job.kind === "lora-sweep" ? (
+            <LoraSweepDetails job={remote} log={log} />
           ) : job.kind === "album" ? (
             <AlbumDetails job={remote} />
           ) : job.kind === "mflux" ? (
@@ -1660,11 +1814,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
     let cancelled = false;
     const hydrateRemoteJobs = async () => {
       try {
-        const [loraResult, generationResult, songBatchResult, loraBenchmarkResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
+        const [loraResult, generationResult, songBatchResult, loraBenchmarkResult, loraSweepResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/song-batches/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/benchmarks/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/sweeps/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mflux/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mlx-video/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/album/jobs"),
@@ -1676,6 +1831,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
         const songBatchJobs = songBatchResult.status === "fulfilled" ? songBatchResult.value.jobs || [] : [];
         const loraBenchmarkJobs = loraBenchmarkResult.status === "fulfilled" ? loraBenchmarkResult.value.jobs || [] : [];
+        const loraSweepJobs = loraSweepResult.status === "fulfilled" ? loraSweepResult.value.jobs || [] : [];
         const mfluxJobs = mfluxResult.status === "fulfilled" ? mfluxResult.value.jobs || [] : [];
         const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
         const albumJobs = albumResult.status === "fulfilled" ? albumResult.value.jobs || [] : [];
@@ -1703,6 +1859,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           if (!id) continue;
           if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
           addJob(jobPatchFromLoraBenchmark(rawJob));
+        }
+        for (const [index, rawJob] of loraSweepJobs.entries()) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          addJob(jobPatchFromLoraSweep(rawJob));
         }
         for (const [index, rawJob] of mfluxJobs.entries()) {
           const id = text(rawJob.id, "");

@@ -87,6 +87,7 @@ RESULTS_DIR = DATA_DIR / "results"
 ALBUMS_DIR = DATA_DIR / "albums"
 SONG_BATCHES_DIR = DATA_DIR / "song_batches"
 LORA_BENCHMARKS_DIR = DATA_DIR / "lora_benchmarks"
+LORA_SWEEPS_DIR = DATA_DIR / "lora_sweeps"
 ART_DIR = DATA_DIR / "art"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
@@ -110,6 +111,7 @@ ALBUM_JOB_KEEP_LIMIT = 50
 GENERATION_JOB_KEEP_LIMIT = 50
 SONG_BATCH_JOB_KEEP_LIMIT = 50
 LORA_BENCHMARK_JOB_KEEP_LIMIT = 50
+LORA_SWEEP_JOB_KEEP_LIMIT = 50
 ACE_LM_ABLITERATED_DIR = MODEL_CACHE_DIR / "ace_lm_abliterated"
 ACE_LM_PREFERRED_MODEL = "acestep-5Hz-lm-4B"
 ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS = _env_flag("ACEJAM_BOOT_DOWNLOAD_OFFICIAL_HELPERS", default=True)
@@ -301,6 +303,7 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
 SONG_BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 LORA_BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
+LORA_SWEEPS_DIR.mkdir(parents=True, exist_ok=True)
 ART_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -4927,6 +4930,49 @@ def _language_for_generation(language: str) -> str:
     return "unknown"
 
 
+_AUTO_VOCAL_LANGUAGE_VALUES = {"", "auto", "none", "n/a", "na", "null", "unknown"}
+
+
+def _auto_vocal_language_value(value: Any) -> bool:
+    return str(value or "").strip().lower() in _AUTO_VOCAL_LANGUAGE_VALUES
+
+
+def _vocal_language_or_english(value: Any, *, has_vocal_lyrics: bool) -> str:
+    language = _language_for_generation(str(value or "unknown"))
+    if language != "unknown":
+        return language
+    return "en" if has_vocal_lyrics else "unknown"
+
+
+def _album_track_vocal_language(
+    track: dict[str, Any] | None,
+    request_payload: dict[str, Any] | None,
+    fallback_language: Any,
+    lyrics: Any,
+    *,
+    lora_active: bool = False,
+) -> str:
+    has_vocal_lyrics = bool(str(lyrics or "").strip() and str(lyrics or "").strip().lower() != "[instrumental]")
+    # The local LoRAs in this workspace are trained on English vocals; do not let
+    # stale "unknown" UI metadata weaken the text conditioning.
+    if lora_active and has_vocal_lyrics:
+        return "en"
+    sources = [
+        (track or {}).get("vocal_language"),
+        (track or {}).get("language"),
+        (request_payload or {}).get("vocal_language"),
+        (request_payload or {}).get("language"),
+        fallback_language,
+    ]
+    for candidate in sources:
+        if _auto_vocal_language_value(candidate):
+            continue
+        language = _language_for_generation(str(candidate or ""))
+        if language != "unknown":
+            return language
+    return "en" if has_vocal_lyrics else "unknown"
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -5431,6 +5477,8 @@ _song_batch_jobs: dict[str, dict[str, Any]] = {}
 _song_batch_jobs_lock = threading.Lock()
 _lora_benchmark_jobs: dict[str, dict[str, Any]] = {}
 _lora_benchmark_jobs_lock = threading.Lock()
+_lora_sweep_jobs: dict[str, dict[str, Any]] = {}
+_lora_sweep_jobs_lock = threading.Lock()
 _lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
 _lora_autolabel_jobs_lock = threading.Lock()
 
@@ -7716,7 +7764,8 @@ def _official_generation_memory_plan(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-ALBUM_VARIANT_SEED_STEP = 1_000_003
+ALBUM_VARIANT_SEED_VERSION = "acejam-album-variant-seeds-v2-vocal-safe-2026-05-22"
+GENERATION_VARIANT_SEED_VERSION = "acejam-generation-variant-seeds-v1-sweep-2026-05-23"
 ALBUM_VARIANT_SEED_MODULUS = 2_147_483_647
 
 
@@ -7735,7 +7784,17 @@ def _normalize_album_seed_value(value: Any) -> int | None:
 
 
 def _album_variant_seed_at(base_seed: int, variant_index: int) -> int:
-    return ((base_seed + max(0, variant_index) * ALBUM_VARIANT_SEED_STEP - 1) % ALBUM_VARIANT_SEED_MODULUS) + 1
+    return _variant_seed_at(base_seed, variant_index, version=ALBUM_VARIANT_SEED_VERSION)
+
+
+def _variant_seed_at(base_seed: int, variant_index: int, *, version: str = GENERATION_VARIANT_SEED_VERSION) -> int:
+    normalized_base = _normalize_album_seed_value(base_seed) or 1
+    index = max(0, int(variant_index or 0))
+    if index == 0:
+        return normalized_base
+    seed_material = f"{version}:{normalized_base}:{index}"
+    digest = hashlib.sha256(seed_material.encode("utf-8", errors="ignore")).hexdigest()
+    return int(digest[:16], 16) % (ALBUM_VARIANT_SEED_MODULUS - 1) + 1
 
 
 def _stable_album_track_seed(
@@ -7782,8 +7841,59 @@ def _album_variant_seed_list(
         track=track,
         track_index=track_index,
     )
+    collision = 0
     while len(seeds) < count:
-        seeds.append(_album_variant_seed_at(base_seed, len(seeds)))
+        seed = _album_variant_seed_at(base_seed + collision, len(seeds))
+        while seed in seeds:
+            collision += 1
+            seed = _album_variant_seed_at(base_seed + collision, len(seeds))
+        seeds.append(seed)
+    return [str(seed) for seed in seeds[:count]]
+
+
+def _stable_generation_variant_seed(payload: dict[str, Any] | None, *, context: str = "") -> int:
+    payload = payload or {}
+    seed_material = "\n".join(
+        [
+            GENERATION_VARIANT_SEED_VERSION,
+            str(context or ""),
+            str(payload.get("title") or ""),
+            str(payload.get("artist_name") or ""),
+            str(payload.get("caption") or payload.get("tags") or ""),
+            str(payload.get("lyrics") or ""),
+            str(payload.get("song_model") or ""),
+            str(payload.get("lora_adapter_path") or ""),
+            str(payload.get("lora_adapter_name") or ""),
+        ]
+    )
+    digest = hashlib.sha256(seed_material.encode("utf-8", errors="ignore")).hexdigest()
+    return int(digest[:16], 16) % (ALBUM_VARIANT_SEED_MODULUS - 1) + 1
+
+
+def _variant_seed_list(
+    seed_value: Any,
+    variants: int,
+    *,
+    payload: dict[str, Any] | None = None,
+    context: str = "",
+    default_count: int = 1,
+) -> list[str]:
+    count = clamp_int(variants, default_count, 1, MAX_BATCH_SIZE)
+    seeds: list[int] = []
+    raw = str(seed_value or "").strip()
+    if raw and raw != "-1":
+        for piece in raw.split(","):
+            seed = _normalize_album_seed_value(piece)
+            if seed is not None and seed not in seeds:
+                seeds.append(seed)
+    base_seed = seeds[0] if seeds else _stable_generation_variant_seed(payload, context=context)
+    collision = 0
+    while len(seeds) < count:
+        seed = _variant_seed_at(base_seed + collision, len(seeds), version=GENERATION_VARIANT_SEED_VERSION)
+        while seed in seeds:
+            collision += 1
+            seed = _variant_seed_at(base_seed + collision, len(seeds), version=GENERATION_VARIANT_SEED_VERSION)
+        seeds.append(seed)
     return [str(seed) for seed in seeds[:count]]
 
 
@@ -7819,6 +7929,11 @@ def _official_take_params(params: dict[str, Any], memory_plan: dict[str, Any], t
 
 
 def _vocal_language_from_payload(payload: dict[str, Any]) -> str:
+    if _supplied_vocal_lyrics(payload):
+        return _vocal_language_or_english(
+            get_param(payload, "vocal_language", payload.get("language") or "unknown"),
+            has_vocal_lyrics=True,
+        )
     if not _metadata_field_locked(payload, "vocal_language"):
         return "unknown"
     return _language_for_generation(str(get_param(payload, "vocal_language", "unknown") or "unknown"))
@@ -8465,6 +8580,28 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Use adapter is enabled but no LoRA adapter was selected")
     _validate_lora_request_for_song_model(lora_request, song_model)
     payload_warnings = list(payload.get("payload_warnings") or [])
+    raw_seed_value = payload.get("seeds") or payload.get("seed") or "-1"
+    variant_seeds: list[str] = []
+    if batch_size > 1:
+        variant_seed_payload = {
+            **payload,
+            "title": title,
+            "artist_name": artist_name,
+            "song_model": song_model,
+            "lora_adapter_path": lora_request.get("lora_adapter_path", ""),
+            "lora_adapter_name": lora_request.get("lora_adapter_name", ""),
+        }
+        variant_seeds = _variant_seed_list(
+            raw_seed_value,
+            batch_size,
+            payload=variant_seed_payload,
+            context=str(payload.get("wizard_mode") or payload.get("ui_mode") or task_type),
+        )
+        seed_text = ",".join(variant_seeds)
+        use_random_seed = False
+    else:
+        seed_text = str(raw_seed_value or "-1")
+        use_random_seed = parse_bool(payload.get("use_random_seed"), seed_text.strip() in {"", "-1"})
     render_shift = _docs_correct_render_shift(song_model, quality_profile, payload.get("shift"))
     audio_code_string = str(get_param(payload, "audio_code_string", "") or "")
     src_audio = None if task_type == "text2music" else _resolve_audio_reference(payload, "src_audio_id", "src_result_id")
@@ -8516,8 +8653,11 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "time_signature": time_signature,
         "vocal_language": vocal_language,
         "batch_size": batch_size,
-        "seed": str(payload.get("seeds") or payload.get("seed") or "-1"),
-        "use_random_seed": parse_bool(payload.get("use_random_seed"), str(payload.get("seeds") or payload.get("seed") or "-1").strip() in {"", "-1"}),
+        "seed": seed_text,
+        "seeds": seed_text,
+        "variant_count": batch_size,
+        "variant_seeds": variant_seeds,
+        "use_random_seed": use_random_seed,
         "song_model": song_model,
         "ace_lm_model": requested_lm_model,
         "lm_model_path": requested_lm_model,
@@ -9981,7 +10121,7 @@ def _vocal_gate_required(params: dict[str, Any]) -> bool:
 
 def _manual_lora_review_allowed(params: dict[str, Any]) -> bool:
     mode = str(params.get("ui_mode") or params.get("wizard_mode") or "").strip().lower()
-    if mode in {"lora_benchmark", "album"}:
+    if mode in {"lora_benchmark", "lora_sweep", "album"}:
         return True
     default = parse_bool(params.get("allow_manual_lora_review"), False)
     default = parse_bool(params.get("manual_lora_review"), default)
@@ -10239,6 +10379,7 @@ def _apply_vocal_intelligibility_gate_to_result(
     manual_lora_review = _manual_lora_review_allowed(params)
     by_path = {str(item.get("path")): item for item in transcripts}
     passed_ids: list[str] = []
+    audio_ids = [str(audio.get("id") or "") for audio in audios if isinstance(audio, dict)]
     for audio in audios:
         path = RESULTS_DIR / safe_id(result_id) / str(audio.get("filename") or "")
         audit = by_path.get(str(path)) or {
@@ -10255,16 +10396,21 @@ def _apply_vocal_intelligibility_gate_to_result(
         if audit.get("passed") and audit.get("status") not in {"error", "unavailable"}:
             passed_ids.append(str(audio.get("id") or ""))
     verifier_error = bool(transcripts and any(item.get("status") in {"error", "unavailable"} for item in transcripts))
+    require_all_variants = bool(parse_bool(params.get("require_all_vocal_variants_pass"), False) and len(audio_ids) > 1)
+    failed_variant_ids = [audio_id for audio_id in audio_ids if audio_id and audio_id not in passed_ids]
+    partial_variant_failure = bool(require_all_variants and passed_ids and failed_variant_ids and not verifier_error)
     blocking = (not passed_ids) and (
         not transcripts
         or any(item.get("blocking") for item in transcripts)
     )
+    if partial_variant_failure:
+        blocking = True
     if verifier_error or (manual_lora_review and not passed_ids):
         blocking = False
     status = (
-        "pass"
-        if passed_ids
-        else ("needs_review" if verifier_error or manual_lora_review else "fail")
+        "fail"
+        if partial_variant_failure
+        else ("pass" if passed_ids else ("needs_review" if verifier_error or manual_lora_review else "fail"))
     )
     transcript_preview = [
         {
@@ -10278,7 +10424,7 @@ def _apply_vocal_intelligibility_gate_to_result(
     gate = {
         "version": "acejam-vocal-intelligibility-gate-2026-05-01",
         "status": status,
-        "passed": bool(passed_ids),
+        "passed": bool(passed_ids and not partial_variant_failure),
         "blocking": blocking,
         "needs_review": bool((verifier_error or manual_lora_review) and not passed_ids),
         "manual_review_allowed": bool(manual_lora_review),
@@ -10286,11 +10432,13 @@ def _apply_vocal_intelligibility_gate_to_result(
         "max_attempts": max_attempts,
         "expected_keywords": keywords,
         "passed_audio_ids": passed_ids,
+        "failed_audio_ids": failed_variant_ids,
+        "require_all_vocal_variants_pass": require_all_variants,
         "transcripts": transcripts,
         "transcript_preview": transcript_preview,
     }
     result["vocal_intelligibility_gate"] = gate
-    if passed_ids:
+    if passed_ids and not partial_variant_failure:
         for audio in audios:
             audio["is_recommended_take"] = str(audio.get("id") or "") == passed_ids[0]
         chosen = next((audio for audio in audios if str(audio.get("id") or "") == passed_ids[0]), None)
@@ -10306,7 +10454,18 @@ def _apply_vocal_intelligibility_gate_to_result(
         for audio in audios:
             audio["is_recommended_take"] = False
         result.pop("recommended_take", None)
-    if manual_lora_review and not passed_ids:
+    if partial_variant_failure:
+        result["success"] = False
+        result["error"] = "Vocal intelligibility gate rejected one or more required album variants."
+        suggestions = list(result.get("rerender_suggestions") or [])
+        suggestions.extend(
+            [
+                "One or more album variants did not pass vocal intelligibility; regenerate the variant set with clearer seeds.",
+                "Keep the same lyrics/caption/model/LoRA and try a different seed set before publishing.",
+            ]
+        )
+        result["rerender_suggestions"] = suggestions
+    elif manual_lora_review and not passed_ids:
         result["needs_review"] = True
         suggestions = list(result.get("rerender_suggestions") or [])
         suggestion = (
@@ -13297,8 +13456,17 @@ def sanitize_album_ui_track_for_render(
     track["track_number"] = clamp_int(track.get("track_number"), index, 1, 999)
     track["title"] = str(track.get("title") or f"Track {index}").strip()
     track["duration"] = parse_duration_seconds(track.get("duration") or track_duration, track_duration)
-    track["language"] = str(track.get("language") or track.get("vocal_language") or language or "en")
-    track["vocal_language"] = str(track.get("vocal_language") or track.get("language") or language or "en")
+    raw_lyrics_text = str(track.get("lyrics") or "")
+    lora_active = bool(_lora_adapter_request(_album_track_lora_source(track, request_payload)).get("use_lora"))
+    track_vocal_language = _album_track_vocal_language(
+        track,
+        request_payload,
+        language,
+        raw_lyrics_text,
+        lora_active=lora_active,
+    )
+    track["language"] = track_vocal_language
+    track["vocal_language"] = track_vocal_language
     track["bpm"] = clamp_int(track.get("bpm") or request_payload.get("bpm"), DEFAULT_BPM, 40, 220)
     track["key_scale"] = normalize_key_scale(track.get("key_scale") or track.get("key") or request_payload.get("key_scale") or DEFAULT_KEY_SCALE)
     track["time_signature"] = str(track.get("time_signature") or request_payload.get("time_signature") or "4")
@@ -13324,7 +13492,7 @@ def sanitize_album_ui_track_for_render(
         caption = ", ".join(list(dict.fromkeys([term for term in fallback_terms if term]))[:14])
         track["caption"] = caption
         track["tags"] = caption
-    lyrics = strip_ace_step_lyrics_leakage(str(track.get("lyrics") or ""))
+    lyrics = strip_ace_step_lyrics_leakage(raw_lyrics_text)
     stats = lyric_stats(lyrics)
     agent_complete = parse_bool(track.get("agent_complete_payload"), False)
     needs_repair = (not agent_complete) and (
@@ -13971,6 +14139,15 @@ def generate_album(
                         and track_lora_request.get("use_lora_trigger")
                         and track_lora_request.get("lora_trigger_tag")
                     )
+                    track_vocal_language = _album_track_vocal_language(
+                        track,
+                        request_payload,
+                        language,
+                        track.get("lyrics", ""),
+                        lora_active=bool(track_lora_request.get("use_lora")),
+                    )
+                    track["language"] = track_vocal_language
+                    track["vocal_language"] = track_vocal_language
                     track.update(
                         {
                             "use_lora": track_lora_request["use_lora"],
@@ -14031,13 +14208,21 @@ def generate_album(
                         "bpm": track.get("bpm") or request_payload.get("bpm") or DEFAULT_BPM,
                         "key_scale": effective_key_scale,
                         "time_signature": track.get("time_signature") or request_payload.get("time_signature") or "4",
-                        "vocal_language": track.get("language") or request_payload.get("vocal_language") or language,
+                        "vocal_language": track_vocal_language,
                         "batch_size": variants,
                         "seed": variant_seed_csv,
                         "seeds": variant_seed_csv,
                         "use_random_seed": False,
                         "variant_seeds": variant_seeds,
                         "variant_count": variants,
+                        "vocal_intelligibility_gate": True if track_has_vocal_lyrics else parse_bool(request_payload.get("vocal_intelligibility_gate"), ACEJAM_VOCAL_INTELLIGIBILITY_GATE),
+                        "vocal_intelligibility_attempts": clamp_int(
+                            track.get("vocal_intelligibility_attempts", request_payload.get("vocal_intelligibility_attempts")),
+                            ACEJAM_VOCAL_INTELLIGIBILITY_ATTEMPTS,
+                            1,
+                            32,
+                        ),
+                        "require_all_vocal_variants_pass": bool(track_has_vocal_lyrics and variants > 1),
                         "song_model": track_model,
                         "ace_lm_model": track_lm_model,
                         "vocal_clarity_recovery": vocal_clarity_recovery,
@@ -14127,6 +14312,8 @@ def generate_album(
                             "track_variant": "batch",
                             "track_variant_count": variants,
                             "track_variant_seeds": variant_seeds,
+                            "vocal_language": track_vocal_language,
+                            "require_all_vocal_variants_pass": bool(track_has_vocal_lyrics and variants > 1),
                             "tool_report": _jsonable(track.get("tool_report", {})),
                             "production_team": _jsonable(track.get("production_team", {})),
                             "model_render_settings": _jsonable(model_render_settings),
@@ -17185,6 +17372,904 @@ def _rate_lora_benchmark_result(job_id: str, body: dict[str, Any]) -> dict[str, 
     return _set_lora_benchmark_job(job_id, results=results, attempts=attempts, logs=[f"Review saved for {attempt_id}: {suffix}"])
 
 
+def _lora_sweep_job_path(job_id: str) -> Path:
+    return LORA_SWEEPS_DIR / safe_id(job_id) / "job.json"
+
+
+def _persist_lora_sweep_job(job: dict[str, Any]) -> None:
+    job_id = safe_id(str(job.get("id") or ""))
+    if not job_id:
+        return
+    path = _lora_sweep_job_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(_jsonable(job), ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _lora_sweep_adapter_in_exports(adapter: dict[str, Any]) -> bool:
+    path_text = str(adapter.get("path") or adapter.get("lora_adapter_path") or "").strip()
+    if not path_text:
+        return False
+    if str(adapter.get("source") or "").strip().lower() == "exports":
+        return True
+    try:
+        Path(path_text).expanduser().resolve().relative_to(LORA_EXPORTS_DIR.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _lora_sweep_generation_adapters() -> list[dict[str, Any]]:
+    adapters: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in training_manager.list_adapters():
+        try:
+            adapter = _lora_benchmark_adapter_from_item(item)
+        except Exception:
+            continue
+        path = str(adapter.get("path") or "").strip()
+        if not path or path in seen:
+            continue
+        if not _lora_sweep_adapter_in_exports(adapter):
+            continue
+        adapter_type = str(adapter.get("adapter_type") or (adapter.get("metadata") or {}).get("adapter_type") or "lora").lower()
+        if adapter_type != "lora":
+            continue
+        seen.add(path)
+        adapters.append(adapter)
+    adapters.sort(key=lambda item: (_lora_benchmark_adapter_label(item).lower(), str(item.get("updated_at") or "")))
+    return adapters
+
+
+def _lora_sweep_base_payload(body: dict[str, Any]) -> dict[str, Any]:
+    source = body.get("render_payload") if isinstance(body.get("render_payload"), dict) else body
+    payload = dict(source or {})
+    payload["task_type"] = str(payload.get("task_type") or "text2music").strip() or "text2music"
+    payload["title"] = str(payload.get("title") or body.get("title") or "LoRA Sweep").strip() or "LoRA Sweep"
+    payload["artist_name"] = str(payload.get("artist_name") or "").strip()
+    payload["caption"] = str(
+        payload.get("caption")
+        or "rap, hip hop, clear English vocal, hard drums, deep bass, polished full mix"
+    ).strip()
+    payload["tags"] = str(payload.get("tags") or "rap, hip hop, clear vocal, hard drums, deep bass").strip()
+    payload["negative_tags"] = str(payload.get("negative_tags") or "mumbled vocals, muddy mix, weak drums").strip()
+    payload["lyrics"] = str(
+        payload.get("lyrics")
+        or "[Verse 1 - rap]\nEvery line lands clean in the pocket of the beat\nPressure in the drums while the bass stays deep\n\n[Chorus - rap hook]\nRun it through the sweep, let the strongest voice appear\nSame song, new color, make the difference clear"
+    ).strip()
+    payload["instrumental"] = parse_bool(payload.get("instrumental"), payload["lyrics"].strip() == "[Instrumental]")
+    duration = clamp_int(payload.get("audio_duration") or payload.get("duration"), 180, 10, 600)
+    payload["duration"] = duration
+    payload["audio_duration"] = duration
+    payload["vocal_language"] = str(payload.get("vocal_language") or payload.get("language") or "en").strip() or "en"
+    payload["song_model"] = str(payload.get("song_model") or "acestep-v15-xl-sft").strip() or "acestep-v15-xl-sft"
+    backend = _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit"))
+    payload["audio_backend"] = backend
+    payload["use_mlx_dit"] = backend == "mlx"
+    payload["quality_profile"] = str(payload.get("quality_profile") or "max_quality").strip() or "max_quality"
+    defaults = quality_profile_model_settings(payload["song_model"], payload["quality_profile"])
+    payload["inference_steps"] = clamp_int(payload.get("inference_steps"), int(defaults.get("inference_steps") or 64), 1, 200)
+    payload["guidance_scale"] = clamp_float(payload.get("guidance_scale"), float(defaults.get("guidance_scale") or 8), 1.0, 15.0)
+    payload["shift"] = clamp_float(payload.get("shift"), float(defaults.get("shift") or 3), 0.0, 10.0)
+    payload["audio_format"] = str(payload.get("audio_format") or "wav32").strip() or "wav32"
+    payload["seed"] = str(payload.get("seed") or payload.get("seeds") or "-1").strip() or "-1"
+    payload["use_lora"] = False
+    payload["lora_adapter_path"] = ""
+    payload["lora_adapter_name"] = ""
+    payload["use_lora_trigger"] = False
+    payload["lora_trigger_tag"] = ""
+    payload["lora_scale"] = 0.0
+    payload["vocal_intelligibility_gate"] = parse_bool(payload.get("vocal_intelligibility_gate"), True)
+    payload["vocal_intelligibility_model_rescue"] = False
+    payload["manual_lora_review"] = True
+    payload["lora_preflight_required"] = False
+    payload["wizard_mode"] = "lora_sweep"
+    payload["ui_mode"] = "lora_sweep"
+    return payload
+
+
+def _lora_sweep_adapter_song_model(adapter: dict[str, Any], fallback_model: str) -> str:
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    direct = str(adapter.get("song_model") or metadata.get("song_model") or "").strip()
+    if direct:
+        return direct
+    variant = str(adapter.get("model_variant") or metadata.get("model_variant") or "").strip()
+    return model_from_variant(variant, fallback_model) if variant else fallback_model
+
+
+def _lora_sweep_item_entry(
+    index: int,
+    *,
+    role: str,
+    adapter: dict[str, Any] | None,
+    payload: dict[str, Any],
+    seeds: list[str],
+    variant_count: int,
+    skip_reason: str = "",
+) -> dict[str, Any]:
+    adapter = adapter or {}
+    label = _lora_benchmark_adapter_label(adapter) if adapter else "No LoRA"
+    variants = [
+        {
+            "variant_index": seed_index + 1,
+            "variant_number": seed_index + 1,
+            "variant_count": variant_count,
+            "variant_seed": str(seed),
+            "seed": str(seed),
+            "state": "skipped" if skip_reason else "queued",
+            "status": "Skipped" if skip_reason else "Queued",
+            "progress": 100 if skip_reason else 0,
+            "generation_job_id": "",
+            "result": None,
+            "result_summary": {},
+            "audio_urls": [],
+            "error": skip_reason,
+            "started_at": None,
+            "finished_at": None,
+        }
+        for seed_index, seed in enumerate(seeds)
+    ]
+    return {
+        "item_id": f"sweep_{index + 1:03d}",
+        "index": index,
+        "item_number": index + 1,
+        "role": role,
+        "state": "skipped" if skip_reason else "queued",
+        "status": "Skipped" if skip_reason else "Queued",
+        "progress": 0,
+        "generation_job_id": "",
+        "adapter": _jsonable(adapter),
+        "adapter_name": label,
+        "adapter_path": str(adapter.get("path") or ""),
+        "adapter_epoch": adapter.get("epoch"),
+        "adapter_loss": adapter.get("loss"),
+        "quality_status": str(adapter.get("quality_status") or ("baseline" if role == "baseline" else "unknown")),
+        "song_model": str(payload.get("song_model") or ""),
+        "lora_scale": float(payload.get("lora_scale") or 0),
+        "trigger_tag": str(payload.get("lora_trigger_tag") or ""),
+        "variant_count": variant_count,
+        "variant_seeds": list(seeds),
+        "variants": variants,
+        "payload": _jsonable(payload),
+        "payload_summary": _generation_payload_summary(payload),
+        "result": None,
+        "result_summary": {},
+        "audio_urls": [],
+        "warnings": [],
+        "error": skip_reason,
+        "started_at": None,
+        "finished_at": None,
+    }
+
+
+def _lora_sweep_annotate_result(
+    result: dict[str, Any] | None,
+    *,
+    job_id: str,
+    item: dict[str, Any],
+    seeds: list[str],
+    variant_index: int | None = None,
+    variant_count: int | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return result
+    annotated = dict(result)
+    audios = []
+    for index, audio in enumerate(result.get("audios") or []):
+        if not isinstance(audio, dict):
+            continue
+        resolved_variant_index = int(variant_index or (index + 1))
+        variant_seed = str(seeds[index] if index < len(seeds) else audio.get("seed") or "")
+        next_audio = dict(audio)
+        next_audio.update(
+            {
+                "sweep_id": job_id,
+                "sweep_item_id": item.get("item_id"),
+                "adapter_name": item.get("adapter_name"),
+                "adapter_path": item.get("adapter_path"),
+                "lora_scale": item.get("lora_scale"),
+                "track_variant": resolved_variant_index,
+                "variant_index": resolved_variant_index,
+                "variant_count": variant_count or item.get("variant_count"),
+                "variant_seed": variant_seed,
+            }
+        )
+        if variant_seed:
+            next_audio["seed"] = variant_seed
+        audios.append(next_audio)
+    annotated["audios"] = audios
+    annotated["lora_sweep_id"] = job_id
+    annotated["lora_sweep_item_id"] = item.get("item_id")
+    return _jsonable(annotated)
+
+
+def _normalise_lora_sweep_body(body: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(body, dict):
+        raise ValueError("Sweep payload must be an object.")
+    adapters = _lora_sweep_generation_adapters()
+    include_baseline = parse_bool(body.get("include_baseline"), False)
+    if not adapters and not include_baseline:
+        raise ValueError("No audio LoRA adapters found in app/data/loras.")
+    if len(adapters) > 160:
+        raise ValueError("LoRA Sweep supports maximaal 160 adapters per run.")
+    base_payload = _lora_sweep_base_payload(body)
+    variant_count = clamp_int(body.get("variant_count", body.get("batch_size", base_payload.get("batch_size"))), 1, 1, MAX_BATCH_SIZE)
+    scale = clamp_float(body.get("lora_scale", base_payload.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE)), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0)
+    trigger_mode = str(body.get("trigger_mode") or "auto").strip().lower() or "auto"
+    if trigger_mode not in {"auto", "custom", "off"}:
+        trigger_mode = "auto"
+    custom_trigger = str(body.get("lora_trigger_tag") or body.get("custom_trigger_tag") or "").strip()
+    stop_on_error = parse_bool(body.get("stop_on_error"), False)
+    raw_seed_value = body.get("seeds") or body.get("seed") or base_payload.get("seeds") or base_payload.get("seed") or "-1"
+
+    items: list[dict[str, Any]] = []
+    validation_errors: list[str] = []
+
+    if include_baseline:
+        baseline_payload = {
+            **base_payload,
+            "title": f"{base_payload['title']} — no LoRA",
+            "batch_size": variant_count,
+            "variant_count": variant_count,
+            "use_lora": False,
+            "lora_adapter_path": "",
+            "lora_adapter_name": "",
+            "use_lora_trigger": False,
+            "lora_trigger_tag": "",
+            "lora_scale": 0.0,
+        }
+        baseline_seeds = _variant_seed_list(raw_seed_value, variant_count, payload=baseline_payload, context="lora_sweep:baseline")
+        baseline_payload["seed"] = ",".join(baseline_seeds)
+        baseline_payload["seeds"] = baseline_payload["seed"]
+        baseline_payload["use_random_seed"] = False
+        validation = _validate_generation_payload(baseline_payload)
+        skip_reason = ""
+        if not validation.get("valid"):
+            errors = validation.get("field_errors") if isinstance(validation.get("field_errors"), dict) else {}
+            skip_reason = "; ".join(f"{key}: {value}" for key, value in errors.items()) or "invalid baseline payload"
+            validation_errors.append(f"Baseline: {skip_reason}")
+        items.append(
+            _lora_sweep_item_entry(
+                len(items),
+                role="baseline",
+                adapter=None,
+                payload=baseline_payload,
+                seeds=baseline_seeds,
+                variant_count=variant_count,
+                skip_reason=skip_reason,
+            )
+        )
+
+    fallback_model = str(base_payload.get("song_model") or "acestep-v15-xl-sft").strip() or "acestep-v15-xl-sft"
+    for adapter in adapters:
+        label = _lora_benchmark_adapter_label(adapter)
+        adapter_path = str(adapter.get("path") or "").strip()
+        trigger_tag, use_trigger, trigger_source = _lora_benchmark_adapter_trigger(adapter, mode=trigger_mode, custom=custom_trigger)
+        song_model = _lora_sweep_adapter_song_model(adapter, fallback_model)
+        payload = {
+            **base_payload,
+            "title": f"{base_payload['title']} — {label}",
+            "song_model": song_model,
+            "batch_size": variant_count,
+            "variant_count": variant_count,
+            "use_lora": True,
+            "lora_adapter_path": adapter_path,
+            "lora_adapter_name": label,
+            "lora_scale": scale,
+            "use_lora_trigger": use_trigger,
+            "lora_trigger_tag": trigger_tag,
+            "lora_trigger_source": trigger_source if use_trigger else "",
+            "lora_trigger_aliases": adapter.get("trigger_aliases") or (adapter.get("metadata") or {}).get("trigger_aliases") or [],
+            "lora_trigger_candidates": adapter.get("trigger_candidates") or (adapter.get("metadata") or {}).get("trigger_candidates") or [],
+            "adapter_model_variant": adapter.get("model_variant") or "",
+            "adapter_song_model": adapter.get("song_model") or song_model,
+            "allow_unsafe_lora_for_benchmark": True,
+            "allow_unsafe_lora_for_sweep": True,
+        }
+        seeds = _variant_seed_list(raw_seed_value, variant_count, payload=payload, context=f"lora_sweep:{adapter_path}")
+        payload["seed"] = ",".join(seeds)
+        payload["seeds"] = payload["seed"]
+        payload["use_random_seed"] = False
+        skip_reason = ""
+        if not adapter_path or not Path(adapter_path).expanduser().exists():
+            skip_reason = "adapter_file_missing"
+        elif str(adapter.get("quality_status") or "").lower() == "not_generation_loadable":
+            skip_reason = "adapter_not_generation_loadable"
+        else:
+            validation = _validate_generation_payload(payload)
+            if not validation.get("valid"):
+                errors = validation.get("field_errors") if isinstance(validation.get("field_errors"), dict) else {}
+                skip_reason = "; ".join(f"{key}: {value}" for key, value in errors.items()) or "invalid payload"
+        if skip_reason:
+            validation_errors.append(f"{label}: {skip_reason}")
+        items.append(
+            _lora_sweep_item_entry(
+                len(items),
+                role="lora",
+                adapter=adapter,
+                payload=payload,
+                seeds=seeds,
+                variant_count=variant_count,
+                skip_reason=skip_reason,
+            )
+        )
+
+    if len(items) > 200:
+        raise ValueError("LoRA Sweep supports maximaal 200 render groups per run.")
+    renderable = [item for item in items if not item.get("error")]
+    if not renderable:
+        raise ValueError("LoRA Sweep has no renderable adapters. " + " | ".join(validation_errors[:12]))
+
+    payload = {
+        "sweep_title": str(body.get("sweep_title") or body.get("benchmark_title") or body.get("title") or "LoRA Sweep").strip() or "LoRA Sweep",
+        "stop_on_error": stop_on_error,
+        "include_baseline": include_baseline,
+        "trigger_mode": trigger_mode,
+        "custom_trigger_tag": custom_trigger,
+        "lora_scale": scale,
+        "variant_count": variant_count,
+        "base_payload": _jsonable(base_payload),
+        "adapters": adapters,
+        "items": items,
+        "validation_warnings": validation_errors,
+    }
+    return payload, items
+
+
+def _lora_sweep_payload_summary(body: dict[str, Any]) -> dict[str, Any]:
+    items = body.get("items") if isinstance(body.get("items"), list) else []
+    adapters = body.get("adapters") if isinstance(body.get("adapters"), list) else []
+    renderable = [item for item in items if isinstance(item, dict) and not item.get("error")]
+    return {
+        "sweep_title": str(body.get("sweep_title") or "LoRA Sweep").strip(),
+        "adapter_count": len(adapters),
+        "item_count": len(items),
+        "renderable_item_count": len(renderable),
+        "variant_count": clamp_int(body.get("variant_count"), 1, 1, MAX_BATCH_SIZE),
+        "expected_audio_count": len(renderable) * clamp_int(body.get("variant_count"), 1, 1, MAX_BATCH_SIZE),
+        "include_baseline": parse_bool(body.get("include_baseline"), False),
+        "trigger_mode": str(body.get("trigger_mode") or "auto"),
+        "lora_scale": body.get("lora_scale"),
+        "stop_on_error": parse_bool(body.get("stop_on_error"), False),
+        "duration": (body.get("base_payload") or {}).get("duration") if isinstance(body.get("base_payload"), dict) else None,
+        "song_model": (body.get("base_payload") or {}).get("song_model") if isinstance(body.get("base_payload"), dict) else None,
+        "audio_backend": (body.get("base_payload") or {}).get("audio_backend") if isinstance(body.get("base_payload"), dict) else None,
+    }
+
+
+def _set_lora_sweep_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _lora_sweep_jobs_lock:
+        job = _lora_sweep_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "kind": "lora_sweep",
+                "state": "queued",
+                "status": "Queued",
+                "stage": "queued",
+                "progress": 0,
+                "sweep_title": "LoRA Sweep",
+                "payload": {},
+                "payload_summary": {},
+                "items": [],
+                "results": [],
+                "logs": [],
+                "errors": [],
+                "current_item": 0,
+                "total_items": 0,
+                "completed_items": 0,
+                "failed_items": 0,
+                "skipped_items": 0,
+                "remaining_items": 0,
+                "generated_audio_count": 0,
+                "expected_audio_count": 0,
+                "child_generation_job_id": "",
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "updated_at": now,
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-700:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-700:]
+        if "errors" in updates:
+            old_errors = list(job.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                job["errors"] = (old_errors + [str(item) for item in new_errors])[-150:]
+            elif new_errors:
+                job["errors"] = (old_errors + [str(new_errors)])[-150:]
+        updates.setdefault("updated_at", now)
+        job.update(_jsonable(updates))
+        if len(_lora_sweep_jobs) > LORA_SWEEP_JOB_KEEP_LIMIT:
+            removable = sorted(
+                _lora_sweep_jobs.values(),
+                key=lambda item: str(item.get("finished_at") or item.get("created_at") or ""),
+            )
+            for old in removable[: max(0, len(_lora_sweep_jobs) - LORA_SWEEP_JOB_KEEP_LIMIT)]:
+                if old.get("state") not in {"queued", "running"}:
+                    _lora_sweep_jobs.pop(str(old.get("id")), None)
+        snapshot = dict(job)
+    try:
+        _persist_lora_sweep_job(snapshot)
+    except Exception as exc:
+        print(f"[lora_sweep] failed to persist {job_id}: {exc}")
+    return snapshot
+
+
+def _lora_sweep_job_view(job: dict[str, Any]) -> dict[str, Any]:
+    return _jsonable(dict(job))
+
+
+def _lora_sweep_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _lora_sweep_jobs_lock:
+        if job_id:
+            job = dict(_lora_sweep_jobs.get(job_id) or {})
+            if not job:
+                path = _lora_sweep_job_path(job_id)
+                if path.is_file():
+                    try:
+                        job = json.loads(path.read_text(encoding="utf-8"))
+                        _lora_sweep_jobs[job_id] = dict(job)
+                    except Exception:
+                        job = {}
+            return _lora_sweep_job_view(job) if job else {}
+        jobs = [dict(job) for job in _lora_sweep_jobs.values()]
+        known_ids = {str(job.get("id") or "") for job in jobs}
+    for path in LORA_SWEEPS_DIR.glob("*/job.json"):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        job_id_from_disk = str(job.get("id") or path.parent.name)
+        if job_id_from_disk in known_ids:
+            continue
+        with _lora_sweep_jobs_lock:
+            _lora_sweep_jobs[job_id_from_disk] = dict(job)
+        jobs.append(dict(job))
+    return [
+        _lora_sweep_job_view(job)
+        for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
+    ]
+
+
+def _lora_sweep_worker(job_id: str, payload: dict[str, Any]) -> None:
+    items = list(payload.get("items") or [])
+    existing = _lora_sweep_snapshot(job_id)
+    existing_entries = list(existing.get("items") or []) if isinstance(existing, dict) else []
+    entries = json.loads(json.dumps(_jsonable(existing_entries or items)))
+    total = len(items)
+    completed = 0
+    failed = 0
+    skipped = 0
+    generated_audio_count = 0
+    stop_on_error = parse_bool(payload.get("stop_on_error"), False)
+
+    def ensure_variants(entry: dict[str, Any]) -> list[dict[str, Any]]:
+        seeds = [str(seed) for seed in (entry.get("variant_seeds") or []) if str(seed)]
+        if not seeds:
+            raw_seed = str((entry.get("payload") or {}).get("seed") or "-1")
+            seeds = [seed.strip() for seed in raw_seed.split(",") if seed.strip()] or ["-1"]
+        variant_count = max(1, min(MAX_BATCH_SIZE, int(entry.get("variant_count") or len(seeds) or 1)))
+        if len(seeds) < variant_count:
+            seeds.extend([seeds[-1]] * (variant_count - len(seeds)))
+        existing_variants = entry.get("variants") if isinstance(entry.get("variants"), list) else []
+        variants: list[dict[str, Any]] = []
+        for variant_index in range(variant_count):
+            current = dict(existing_variants[variant_index]) if variant_index < len(existing_variants) and isinstance(existing_variants[variant_index], dict) else {}
+            seed = str(current.get("variant_seed") or current.get("seed") or seeds[variant_index] or "")
+            current.setdefault("variant_index", variant_index + 1)
+            current.setdefault("variant_number", variant_index + 1)
+            current.setdefault("variant_count", variant_count)
+            current["variant_seed"] = seed
+            current["seed"] = seed
+            current.setdefault("state", "queued")
+            current.setdefault("status", "Queued")
+            current.setdefault("progress", 0)
+            current.setdefault("generation_job_id", "")
+            current.setdefault("result", None)
+            current.setdefault("result_summary", {})
+            current.setdefault("audio_urls", [])
+            current.setdefault("error", "")
+            current.setdefault("started_at", None)
+            current.setdefault("finished_at", None)
+            variants.append(current)
+        entry["variants"] = variants
+        entry["variant_seeds"] = [str(variant.get("variant_seed") or "") for variant in variants]
+        entry["variant_count"] = variant_count
+        return variants
+
+    for entry in entries:
+        if isinstance(entry, dict):
+            ensure_variants(entry)
+    total_render_variants = sum(
+        len(entry.get("variants") or [])
+        for entry in entries
+        if isinstance(entry, dict) and not str(entry.get("error") or "").strip()
+    )
+    processed_variants = 0
+    abort_after_failure = False
+
+    _set_lora_sweep_job(
+        job_id,
+        state="running",
+        status="LoRA Sweep running",
+        stage="running",
+        progress=1,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        total_items=total,
+        remaining_items=total,
+        items=entries,
+        logs=[f"LoRA Sweep {job_id} started with {total} group(s)."],
+    )
+    try:
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            if index >= len(entries):
+                entries.append(json.loads(json.dumps(_jsonable(item))))
+            item = entries[index]
+            variants = ensure_variants(item)
+            snapshot = _lora_sweep_snapshot(job_id)
+            if isinstance(snapshot, dict) and parse_bool(snapshot.get("stop_requested"), False):
+                _set_lora_sweep_job(
+                    job_id,
+                    state="stopped",
+                    status="LoRA Sweep stopped",
+                    stage="stopped",
+                    progress=int((completed + failed + skipped) / max(1, total) * 100),
+                    child_generation_job_id="",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    logs=["LoRA Sweep stopped before the next group."],
+                )
+                return
+            item_number = index + 1
+            item_id = str(item.get("item_id") or f"sweep_{item_number:03d}")
+            label = str(item.get("adapter_name") or item_id)
+            skip_reason = str(item.get("error") or "").strip()
+            if skip_reason:
+                skipped += 1
+                item.update(
+                    state="skipped",
+                    status="Skipped",
+                    progress=100,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                if entries and index < len(entries):
+                    entries[index].update(item)
+                else:
+                    entries.append(item)
+                _set_lora_sweep_job(
+                    job_id,
+                    items=entries,
+                    skipped_items=skipped,
+                    remaining_items=max(0, total - completed - failed - skipped),
+                    progress=int(((index + 1) / max(1, total)) * 100),
+                    logs=[f"Group {item_number}/{total} skipped: {label} · {skip_reason}"],
+                    errors=[f"{label}: {skip_reason}"],
+                )
+                continue
+
+            payload_for_generation = dict(item.get("payload") or {})
+            if entries and index < len(entries):
+                entries[index] = {
+                    **entries[index],
+                    "state": "running",
+                    "status": "Rendering",
+                    "progress": 0,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "error": "",
+                }
+                item = entries[index]
+                variants = ensure_variants(item)
+            base_progress = int((index / max(1, total)) * 100)
+            _set_lora_sweep_job(
+                job_id,
+                items=entries,
+                current_item=item_number,
+                stage="rendering",
+                status=f"Rendering LoRA {item_number}/{total}",
+                progress=max(1, base_progress),
+                remaining_items=max(0, total - index),
+                logs=[f"Group {item_number}/{total} queued: {label} · variants {len(variants)} · seeds {', '.join([str(v.get('variant_seed') or '') for v in variants[:8]])}"],
+            )
+
+            for variant_position, variant in enumerate(variants):
+                snapshot = _lora_sweep_snapshot(job_id)
+                if isinstance(snapshot, dict) and parse_bool(snapshot.get("stop_requested"), False):
+                    _set_lora_sweep_job(
+                        job_id,
+                        state="stopped",
+                        status="LoRA Sweep stopped",
+                        stage="stopped",
+                        progress=int((processed_variants / max(1, total_render_variants)) * 100),
+                        child_generation_job_id="",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        logs=["LoRA Sweep stopped before the next variant."],
+                    )
+                    return
+
+                variant_index = int(variant.get("variant_index") or variant_position + 1)
+                variant_seed = str(variant.get("variant_seed") or variant.get("seed") or "-1")
+                child_payload = {
+                    **payload_for_generation,
+                    "batch_size": 1,
+                    "variant_count": 1,
+                    "seed": variant_seed,
+                    "seeds": variant_seed,
+                    "use_random_seed": False,
+                    "wizard_mode": "lora_sweep",
+                    "ui_mode": "lora_sweep",
+                    "lora_sweep_id": job_id,
+                    "lora_sweep_item_id": item_id,
+                    "lora_sweep_variant_index": variant_index,
+                    "lora_sweep_variant_count": len(variants),
+                    "lora_sweep_variant_seed": variant_seed,
+                }
+                variant.update(
+                    state="running",
+                    status="Rendering",
+                    progress=0,
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                    error="",
+                )
+                item["state"] = "running"
+                item["status"] = f"Rendering variant {variant_index}/{len(variants)}"
+                item["progress"] = int((variant_position / max(1, len(variants))) * 100)
+                _set_lora_sweep_job(
+                    job_id,
+                    items=entries,
+                    current_item=item_number,
+                    stage="rendering",
+                    status=f"Rendering LoRA {item_number}/{total} · variant {variant_index}/{len(variants)}",
+                    progress=max(1, int((processed_variants / max(1, total_render_variants)) * 100)),
+                    logs=[f"Group {item_number}/{total} variant {variant_index}/{len(variants)} queued: seed {variant_seed}"],
+                )
+
+                child = _submit_api_generation_task(child_payload)
+                child_id = str(child.get("job_id") or child.get("task_id") or "")
+                variant["generation_job_id"] = child_id
+                item["generation_job_id"] = child_id
+                _set_lora_sweep_job(
+                    job_id,
+                    child_generation_job_id=child_id,
+                    items=entries,
+                    logs=[f"Group {item_number}/{total} variant {variant_index}/{len(variants)} render started: generation job {child_id}."],
+                )
+
+                last_progress = -1
+                child_snapshot: dict[str, Any] = {}
+                while True:
+                    child_snapshot = _generation_job_snapshot(child_id)
+                    if not isinstance(child_snapshot, dict) or not child_snapshot:
+                        raise RuntimeError(f"Child generation job missing: {child_id}")
+                    child_progress = clamp_int(child_snapshot.get("progress"), 0, 0, 100)
+                    if child_progress != last_progress:
+                        last_progress = child_progress
+                        variant["progress"] = child_progress
+                        variant["status"] = str(child_snapshot.get("status") or child_snapshot.get("stage") or "Rendering")
+                        item["progress"] = int(((variant_position + child_progress / 100.0) / max(1, len(variants))) * 100)
+                        _set_lora_sweep_job(
+                            job_id,
+                            items=entries,
+                            progress=max(1, min(99, int(((processed_variants + child_progress / 100.0) / max(1, total_render_variants)) * 100))),
+                            status=f"Rendering LoRA {item_number}/{total} · variant {variant_index}/{len(variants)}",
+                            stage=str(child_snapshot.get("stage") or "rendering").lower() or "rendering",
+                            logs=[f"Group {item_number}/{total} variant {variant_index}/{len(variants)}: {child_progress}%"],
+                        )
+                    state = str(child_snapshot.get("state") or "").lower()
+                    if state in {"succeeded", "complete", "completed", "success", "failed", "error", "stopped"}:
+                        break
+                    snapshot = _lora_sweep_snapshot(job_id)
+                    if isinstance(snapshot, dict) and parse_bool(snapshot.get("stop_requested"), False):
+                        _set_lora_sweep_job(
+                            job_id,
+                            state="stopping",
+                            status="Stop requested; waiting for current render result",
+                            stage="stopping",
+                            items=entries,
+                            logs=[f"Stop requested during group {item_number}/{total} variant {variant_index}/{len(variants)}."],
+                        )
+                    time.sleep(2.0)
+
+                result = child_snapshot.get("result") if isinstance(child_snapshot.get("result"), dict) else None
+                annotated_result = _lora_sweep_annotate_result(
+                    result,
+                    job_id=job_id,
+                    item=item,
+                    seeds=[variant_seed],
+                    variant_index=variant_index,
+                    variant_count=len(variants),
+                )
+                result_summary = child_snapshot.get("result_summary") if isinstance(child_snapshot.get("result_summary"), dict) else _generation_result_summary(annotated_result)
+                state = str(child_snapshot.get("state") or "").lower()
+                audio_urls = _song_batch_audio_urls(annotated_result)
+                gate = (annotated_result or {}).get("vocal_intelligibility_gate") if isinstance((annotated_result or {}).get("vocal_intelligibility_gate"), dict) else {}
+                manual_review_success = bool(
+                    audio_urls
+                    and _manual_lora_review_allowed(payload_for_generation)
+                    and isinstance(annotated_result, dict)
+                    and str(gate.get("status") or "").lower() in {"needs_review", "fail"}
+                )
+                success = (
+                    state == "succeeded"
+                    and (not isinstance(annotated_result, dict) or annotated_result.get("success") is not False)
+                ) or manual_review_success
+                error = "" if success else str(child_snapshot.get("error") or (annotated_result or {}).get("error") or "Generation failed")
+                variant.update(
+                    state="succeeded" if success else "failed",
+                    status="Complete" if success and not manual_review_success else ("Manual review" if manual_review_success else "Failed"),
+                    progress=100,
+                    result=annotated_result,
+                    result_summary=result_summary,
+                    audio_urls=audio_urls,
+                    error=error,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                if success:
+                    existing_result = item.get("result") if isinstance(item.get("result"), dict) else {}
+                    combined_result = dict(existing_result or annotated_result or {})
+                    existing_audios = [
+                        dict(audio)
+                        for audio in (combined_result.get("audios") or [])
+                        if isinstance(audio, dict)
+                    ]
+                    existing_keys = {
+                        (str(audio.get("audio_url") or audio.get("download_url") or ""), str(audio.get("variant_index") or ""))
+                        for audio in existing_audios
+                    }
+                    for audio in (annotated_result or {}).get("audios") or []:
+                        if not isinstance(audio, dict):
+                            continue
+                        key = (str(audio.get("audio_url") or audio.get("download_url") or ""), str(audio.get("variant_index") or ""))
+                        if key not in existing_keys:
+                            existing_audios.append(dict(audio))
+                            existing_keys.add(key)
+                    combined_result["audios"] = existing_audios
+                    combined_result["success"] = True
+                    combined_result["lora_sweep_id"] = job_id
+                    combined_result["lora_sweep_item_id"] = item_id
+                    item["result"] = _jsonable(combined_result)
+                    item["result_summary"] = _generation_result_summary(item["result"])
+                    item["audio_urls"] = _song_batch_audio_urls(item["result"])
+                    generated_audio_count += len(audio_urls)
+                    log_line = f"Group {item_number}/{total} variant {variant_index}/{len(variants)} complete: {label} · audios {len(audio_urls)}"
+                else:
+                    log_line = f"Group {item_number}/{total} variant {variant_index}/{len(variants)} failed: {error}"
+                processed_variants += 1
+                _set_lora_sweep_job(
+                    job_id,
+                    items=entries,
+                    generated_audio_count=generated_audio_count,
+                    progress=max(1, min(99, int((processed_variants / max(1, total_render_variants)) * 100))),
+                    logs=[log_line],
+                    errors=[] if success else [error],
+                )
+                if (not success) and stop_on_error:
+                    abort_after_failure = True
+                    break
+
+            variant_states = [str(variant.get("state") or "").lower() for variant in variants]
+            success_count = sum(1 for state in variant_states if state == "succeeded")
+            fail_count = sum(1 for state in variant_states if state == "failed")
+            if success_count and not fail_count and not abort_after_failure:
+                completed += 1
+                item.update(state="succeeded", status="Complete", progress=100, error="", finished_at=datetime.now(timezone.utc).isoformat())
+                log_line = f"Group {item_number}/{total} complete: {label} · variants {success_count}/{len(variants)}"
+            elif success_count:
+                failed += 1
+                item.update(state="completed_with_errors", status="Partial", progress=100, error=f"{fail_count} variant(s) failed", finished_at=datetime.now(timezone.utc).isoformat())
+                log_line = f"Group {item_number}/{total} partial: {label} · variants {success_count}/{len(variants)}"
+            else:
+                failed += 1
+                first_error = next((str(variant.get("error") or "") for variant in variants if str(variant.get("error") or "")), "Generation failed")
+                item.update(state="failed", status="Failed", progress=100, error=first_error, finished_at=datetime.now(timezone.utc).isoformat())
+                log_line = f"Group {item_number}/{total} failed: {first_error}"
+            _set_lora_sweep_job(
+                job_id,
+                items=entries,
+                completed_items=completed,
+                failed_items=failed,
+                skipped_items=skipped,
+                generated_audio_count=generated_audio_count,
+                remaining_items=max(0, total - completed - failed - skipped),
+                progress=int(((index + 1) / max(1, total)) * 100),
+                logs=[log_line],
+                errors=[] if success_count else [str(item.get("error") or "Generation failed")],
+            )
+            if abort_after_failure:
+                break
+
+        finished = datetime.now(timezone.utc).isoformat()
+        if failed and stop_on_error:
+            state = "failed"
+            status = "LoRA Sweep stopped after failed group"
+        elif failed or skipped:
+            state = "succeeded"
+            status = "LoRA Sweep completed with warnings"
+        else:
+            state = "succeeded"
+            status = "LoRA Sweep completed"
+        _set_lora_sweep_job(
+            job_id,
+            state=state,
+            status=status,
+            stage="complete" if state == "succeeded" else "failed",
+            progress=100,
+            items=entries,
+            results=entries,
+            current_item=completed + failed + skipped,
+            completed_items=completed,
+            failed_items=failed,
+            skipped_items=skipped,
+            generated_audio_count=generated_audio_count,
+            remaining_items=max(0, total - completed - failed - skipped),
+            child_generation_job_id="",
+            finished_at=finished,
+            logs=[status],
+        )
+    except Exception as exc:
+        _set_lora_sweep_job(
+            job_id,
+            state="failed",
+            status="LoRA Sweep failed",
+            stage="failed",
+            progress=100,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            child_generation_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        _cleanup_accelerator_memory()
+
+
+def _submit_lora_sweep_job(body: dict[str, Any]) -> dict[str, Any]:
+    payload, items = _normalise_lora_sweep_body(body)
+    job_id = uuid.uuid4().hex[:12]
+    summary = _lora_sweep_payload_summary(payload)
+    _set_lora_sweep_job(
+        job_id,
+        payload=payload,
+        payload_summary=summary,
+        sweep_title=summary["sweep_title"],
+        total_items=len(items),
+        remaining_items=len(items),
+        expected_audio_count=summary["expected_audio_count"],
+        items=items,
+        logs=[f"LoRA Sweep {job_id} queued with {len(items)} group(s), {summary['variant_count']} variation(s) each."],
+    )
+    thread = threading.Thread(target=_lora_sweep_worker, args=(job_id, payload), daemon=True)
+    thread.start()
+    return {"job_id": job_id, "job": _lora_sweep_snapshot(job_id)}
+
+
+def _stop_lora_sweep_job(job_id: str) -> dict[str, Any]:
+    job = _lora_sweep_snapshot(job_id)
+    if not isinstance(job, dict) or not job:
+        raise KeyError("LoRA sweep job not found")
+    state = str(job.get("state") or "").lower()
+    if state in {"succeeded", "success", "failed", "error", "stopped"}:
+        return job
+    return _set_lora_sweep_job(
+        job_id,
+        state="stopped",
+        status="LoRA Sweep stopped",
+        stage="stopped",
+        stop_requested=True,
+        child_generation_job_id="",
+        finished_at=datetime.now(timezone.utc).isoformat(),
+        logs=["LoRA Sweep stopped."],
+    )
+
+
 def _official_query_item(task_id: str) -> dict[str, Any]:
     with _api_generation_tasks_lock:
         task = dict(_api_generation_tasks.get(task_id) or {})
@@ -17292,6 +18377,11 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "active_lora_benchmark_jobs": [
             job
             for job in _lora_benchmark_snapshot()
+            if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
+        ],
+        "active_lora_sweep_jobs": [
+            job
+            for job in _lora_sweep_snapshot()
             if isinstance(job, dict) and str(job.get("state") or "").lower() in {"queued", "running"}
         ],
         "ollama": json.loads(ollama_models()),
@@ -19318,14 +20408,14 @@ async def api_lora_benchmark_jobs_list():
 
 @app.post("/api/lora/benchmarks/jobs")
 async def api_lora_benchmark_jobs_start(request: Request):
-    try:
-        payload = await request.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Benchmark payload must be an object")
-        task = _submit_lora_benchmark_job(payload)
-        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
-    except Exception as exc:
-        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+    return JSONResponse(
+        {
+            "success": False,
+            "error": "LoRA Benchmark is replaced by LoRA Sweep. Start new runs with /api/lora/sweeps/jobs.",
+            "replacement": "/api/lora/sweeps/jobs",
+        },
+        status_code=410,
+    )
 
 
 @app.get("/api/lora/benchmarks/jobs/{job_id}")
@@ -19358,11 +20448,55 @@ async def api_lora_benchmark_job_stop(job_id: str):
 
 @app.post("/api/lora/benchmarks/jobs/{job_id}/rating")
 async def api_lora_benchmark_job_rating(job_id: str, request: Request):
+    return JSONResponse(
+        {
+            "success": False,
+            "error": "LoRA Benchmark rating is read-only/deprecated. Use LoRA Sweep for new manual listening runs.",
+            "replacement": "/api/lora/sweeps/jobs",
+        },
+        status_code=410,
+    )
+
+
+@app.get("/api/lora/sweeps/jobs")
+async def api_lora_sweep_jobs_list():
+    jobs = _lora_sweep_snapshot()
+    return JSONResponse({"success": True, "jobs": jobs})
+
+
+@app.post("/api/lora/sweeps/jobs")
+async def api_lora_sweep_jobs_start(request: Request):
     try:
         payload = await request.json()
         if not isinstance(payload, dict):
-            raise ValueError("Rating payload must be an object")
-        job = _rate_lora_benchmark_result(safe_id(job_id), payload)
+            raise ValueError("Sweep payload must be an object")
+        task = _submit_lora_sweep_job(payload)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/lora/sweeps/jobs/{job_id}")
+async def api_lora_sweep_job_detail(job_id: str):
+    job = _lora_sweep_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="LoRA sweep job not found")
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/lora/sweeps/jobs/{job_id}/log")
+async def api_lora_sweep_job_log(job_id: str):
+    job = _lora_sweep_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="LoRA sweep job not found")
+    logs = [str(item) for item in (job.get("logs") or []) if str(item)]
+    return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.post("/api/lora/sweeps/jobs/{job_id}/stop")
+async def api_lora_sweep_job_stop(job_id: str):
+    try:
+        job = _stop_lora_sweep_job(safe_id(job_id))
         return JSONResponse({"success": True, "job": job})
     except KeyError as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=404)

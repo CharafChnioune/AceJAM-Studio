@@ -78,10 +78,10 @@ const cards: ModeCard[] = [
   },
   {
     to: "/wizard/lora-benchmark",
-    title: "LoRA Benchmark",
-    blurb: "Test adapters één voor één met dezelfde lyrics, scores, grafieken en luisterrating.",
+    title: "LoRA Sweep",
+    blurb: "Maak één volledige song en render hem automatisch met elke audio-LoRA in de LoRA-map.",
     icon: BarChart3,
-    badge: "Compare",
+    badge: "Sweep",
     enabled: true,
   },
   {

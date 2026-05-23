@@ -591,7 +591,7 @@ export function CustomWizard() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Aantal takes</Label>
+                <Label>Variaties</Label>
                 <Controller
                   control={form.control}
                   name="batch_size"
@@ -600,7 +600,7 @@ export function CustomWizard() {
                   )}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {values.batch_size} take{values.batch_size === 1 ? "" : "s"} · XL-SFT/Base rendert takes een voor een op MPS.
+                  {values.batch_size} variatie{values.batch_size === 1 ? "" : "s"} · zelfde song, andere seed.
                 </p>
               </div>
               <div className="space-y-1.5">
@@ -646,7 +646,7 @@ export function CustomWizard() {
               { key: "quality_profile", label: "Kwaliteit" },
               { key: "tags", label: "Tags" },
               { key: "inference_steps", label: "Steps" },
-              { key: "batch_size", label: "Takes" },
+              { key: "batch_size", label: "Variaties" },
             ]}
           />
           <RenderInsightPanel payload={buildPayload()} warnings={warnings} />

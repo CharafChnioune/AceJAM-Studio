@@ -425,27 +425,111 @@ export interface LoraBenchmarkJobResponse {
   error?: string;
 }
 
-export const startLoraBenchmarkJob = (body: Record<string, unknown>) =>
-  api.post<LoraBenchmarkJobResponse>("/api/lora/benchmarks/jobs", body);
-
 export const getLoraBenchmarkJob = (jobId: string) =>
   api.get<LoraBenchmarkJobResponse>(`/api/lora/benchmarks/jobs/${encodeURIComponent(jobId)}`);
 
 export const listLoraBenchmarkJobs = () =>
   api.get<LoraBenchmarkJobResponse>("/api/lora/benchmarks/jobs");
 
-export const rateLoraBenchmarkResult = (
-  jobId: string,
-  body: {
-    attempt_id: string;
-    user_rating?: number;
-    user_scores?: Record<string, number>;
-    user_verdict?: "keep" | "maybe" | "reject" | "";
-    user_notes?: string;
-    played?: boolean;
-  },
-) =>
-  api.post<LoraBenchmarkJobResponse>(`/api/lora/benchmarks/jobs/${encodeURIComponent(jobId)}/rating`, body);
+// ---- LoRA sweeps ---------------------------------------------------------
+
+export interface LoraSweepItem {
+  item_id?: string;
+  item_number?: number;
+  role?: "baseline" | "lora" | string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  generation_job_id?: string;
+  adapter_name?: string;
+  adapter_path?: string;
+  adapter_epoch?: number | null;
+  adapter_loss?: number | null;
+  quality_status?: string;
+  song_model?: string;
+  lora_scale?: number;
+  trigger_tag?: string;
+  variant_count?: number;
+  variant_seeds?: string[];
+  variants?: LoraSweepVariant[];
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  result?: GenerateAdvancedResponse | Record<string, unknown> | null;
+  result_summary?: Record<string, unknown>;
+  audio_urls?: string[];
+  warnings?: string[];
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface LoraSweepVariant {
+  variant_index?: number;
+  variant_number?: number;
+  variant_count?: number;
+  variant_seed?: string;
+  seed?: string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  generation_job_id?: string;
+  result?: GenerateAdvancedResponse | Record<string, unknown> | null;
+  result_summary?: Record<string, unknown>;
+  audio_urls?: string[];
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface LoraSweepJob {
+  id: string;
+  kind?: "lora_sweep";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  sweep_title?: string;
+  payload?: Record<string, unknown>;
+  payload_summary?: Record<string, unknown>;
+  items?: LoraSweepItem[];
+  results?: LoraSweepItem[];
+  logs?: string[];
+  errors?: string[];
+  current_item?: number;
+  total_items?: number;
+  completed_items?: number;
+  failed_items?: number;
+  skipped_items?: number;
+  remaining_items?: number;
+  generated_audio_count?: number;
+  expected_audio_count?: number;
+  child_generation_job_id?: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+}
+
+export interface LoraSweepJobResponse {
+  success: boolean;
+  job_id?: string;
+  job?: LoraSweepJob;
+  jobs?: LoraSweepJob[];
+  error?: string;
+}
+
+export const startLoraSweepJob = (body: Record<string, unknown>) =>
+  api.post<LoraSweepJobResponse>("/api/lora/sweeps/jobs", body);
+
+export const getLoraSweepJob = (jobId: string) =>
+  api.get<LoraSweepJobResponse>(`/api/lora/sweeps/jobs/${encodeURIComponent(jobId)}`);
+
+export const listLoraSweepJobs = () =>
+  api.get<LoraSweepJobResponse>("/api/lora/sweeps/jobs");
+
+export const stopLoraSweepJob = (jobId: string) =>
+  api.post<LoraSweepJobResponse>(`/api/lora/sweeps/jobs/${encodeURIComponent(jobId)}/stop`, {});
 
 // ---- LoRA adapters -------------------------------------------------------
 

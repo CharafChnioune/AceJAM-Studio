@@ -1004,6 +1004,39 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(seeds[:2], ["42", "99"])
         self.assertEqual(seeds[2:], [str(acejam_app._album_variant_seed_at(42, 2)), str(acejam_app._album_variant_seed_at(42, 3))])
 
+    def test_album_lora_unknown_language_defaults_to_english_for_vocal_lyrics(self):
+        track = acejam_app.sanitize_album_ui_track_for_render(
+            {
+                "track_number": 1,
+                "title": "English LoRA",
+                "language": "unknown",
+                "vocal_language": "unknown",
+                "use_lora": True,
+                "lora_adapter_path": "/tmp/test-lora",
+                "lora_adapter_name": "test-lora",
+                "tags": "west coast rap, hard drums, deep bass, clear male rap vocal, crisp mix",
+                "lyrics": _LONG_TEST_LYRICS,
+                "duration": 60,
+            },
+            index=1,
+            concept="english lora album",
+            track_duration=60,
+            language="unknown",
+            request_payload={"language": "unknown", "vocal_language": "unknown"},
+            album_options={},
+        )
+
+        self.assertEqual(track["language"], "en")
+        self.assertEqual(track["vocal_language"], "en")
+
+    def test_vocal_language_unknown_becomes_english_when_vocal_lyrics_are_supplied(self):
+        payload = {
+            "vocal_language": "unknown",
+            "lyrics": "[Verse]\nThe English vocal needs clear consonants\n[Chorus]\nThe hook lands clean",
+        }
+
+        self.assertEqual(acejam_app._vocal_language_from_payload(payload), "en")
+
     def test_memory_error_gate_blocks_recommended_take(self):
         result = {
             "success": True,
@@ -1066,9 +1099,9 @@ class AppParityTest(unittest.TestCase):
         custom = (web_src / "wizards" / "CustomWizard.tsx").read_text(encoding="utf-8")
         tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
 
-        self.assertIn("Aantal takes", custom)
-        self.assertIn("XL-SFT/Base rendert takes een voor een op MPS", custom)
-        self.assertIn('label: "Takes"', custom)
+        self.assertIn("Variaties", custom)
+        self.assertIn("zelfde song, andere seed", custom)
+        self.assertIn('label: "Variaties"', custom)
         self.assertIn("Requested takes", tracker)
         self.assertIn("Runner batch", tracker)
         self.assertIn("Memory policy", tracker)
@@ -3273,6 +3306,8 @@ class AppParityTest(unittest.TestCase):
                     "track_number": 1,
                     "artist_name": "Unit Signal",
                     "title": "Variant Seed Test",
+                    "language": "unknown",
+                    "vocal_language": "unknown",
                     "tags": "rap, hard drums, deep bass, clear lead vocal, polished mix",
                     "lyrics": _LONG_TEST_LYRICS,
                     "duration": 60,
@@ -3304,6 +3339,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(payload["batch_size"], 4)
         self.assertEqual(payload["seeds"], payload["seed"])
         self.assertFalse(payload["use_random_seed"])
+        self.assertEqual(payload["vocal_language"], "en")
+        self.assertTrue(payload["require_all_vocal_variants_pass"])
         self.assertEqual(len(seeds), 4)
         self.assertEqual(data["expected_audio_count"], 4)
         self.assertEqual([audio["track_variant"] for audio in data["audios"]], [1, 2, 3, 4])
@@ -4722,6 +4759,70 @@ class AppParityTest(unittest.TestCase):
             saved = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["vocal_intelligibility_gate"]["status"], "pass")
 
+    def test_vocal_intelligibility_gate_requires_all_album_variants_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            result_dir = results / "albumvariantsgate"
+            result_dir.mkdir()
+            for filename in ["take1.wav", "take2.wav"]:
+                (result_dir / filename).write_text("audio", encoding="utf-8")
+            result = {
+                "success": True,
+                "result_id": "albumvariantsgate",
+                "audios": [
+                    {"id": "take-1", "filename": "take1.wav"},
+                    {"id": "take-2", "filename": "take2.wav"},
+                ],
+            }
+            (result_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+            params = {
+                "task_type": "text2music",
+                "ui_mode": "album",
+                "instrumental": False,
+                "lyrics": "[Chorus]\nAlbus rises bright",
+                "title": "Album Variant Test",
+                "artist_name": "Acejam",
+                "vocal_language": "en",
+                "vocal_intelligibility_gate": True,
+                "require_all_vocal_variants_pass": True,
+            }
+            transcripts = [
+                {
+                    "path": str(result_dir / "take1.wav"),
+                    "status": "pass",
+                    "passed": True,
+                    "blocking": False,
+                    "text": "Albus rises bright with clear words",
+                    "word_count": 6,
+                    "keyword_hits": ["albus", "rises", "bright"],
+                    "missing_keywords": [],
+                    "issue": "",
+                },
+                {
+                    "path": str(result_dir / "take2.wav"),
+                    "status": "fail",
+                    "passed": False,
+                    "blocking": True,
+                    "text": "uh ah",
+                    "word_count": 2,
+                    "keyword_hits": [],
+                    "missing_keywords": ["albus"],
+                    "issue": "asr_words_2_min_8",
+                },
+            ]
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_transcribe_audio_paths", return_value=transcripts):
+                gate = acejam_app._apply_vocal_intelligibility_gate_to_result(result, params, attempt=1, max_attempts=3)
+
+            self.assertEqual(gate["status"], "fail")
+            self.assertFalse(gate["passed"])
+            self.assertTrue(gate["blocking"])
+            self.assertEqual(gate["passed_audio_ids"], ["take-1"])
+            self.assertEqual(gate["failed_audio_ids"], ["take-2"])
+            self.assertFalse(result["success"])
+            self.assertNotIn("recommended_take", result)
+
     def test_vocal_intelligibility_gate_failure_clears_recommended_take(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = Path(tmp)
@@ -5653,7 +5754,7 @@ class AppParityTest(unittest.TestCase):
         jobs_store = (web_src / "store" / "jobs.ts").read_text(encoding="utf-8")
         tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
         batch = (web_src / "wizards" / "BatchSongsWizard.tsx").read_text(encoding="utf-8")
-        benchmark = (web_src / "wizards" / "LoraBenchmarkWizard.tsx").read_text(encoding="utf-8")
+        sweep = (web_src / "wizards" / "LoraBenchmarkWizard.tsx").read_text(encoding="utf-8")
         audio_backend = (web_src / "lib" / "audioBackend.ts").read_text(encoding="utf-8")
         promptsong = (acejam_app.BASE_DIR / "prompts" / "promptsong.md").read_text(encoding="utf-8")
         promptalbum = (acejam_app.BASE_DIR / "prompts" / "promptalbum.md").read_text(encoding="utf-8")
@@ -5661,26 +5762,30 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('path="/wizard/batch"', app_tsx)
         self.assertIn('path="/wizard/lora-benchmark"', app_tsx)
         self.assertIn("BatchSongsWizard", app_tsx)
-        self.assertIn("LoraBenchmarkWizard", app_tsx)
+        self.assertIn("LoraSweepWizard", app_tsx)
         self.assertIn('to: "/wizard/batch"', home)
         self.assertIn('to: "/wizard/lora-benchmark"', home)
+        self.assertIn("LoRA Sweep", home)
         self.assertIn("startSongBatchJob", api_ts)
         self.assertIn("/api/song-batches/jobs", api_ts)
-        self.assertIn("startLoraBenchmarkJob", api_ts)
-        self.assertIn("/api/lora/benchmarks/jobs", api_ts)
+        self.assertIn("startLoraSweepJob", api_ts)
+        self.assertIn("/api/lora/sweeps/jobs", api_ts)
+        self.assertNotIn("startLoraBenchmarkJob", api_ts)
+        self.assertNotIn("rateLoraBenchmarkResult", api_ts)
         self.assertIn('"song-batch"', jobs_store)
-        self.assertIn('"lora-benchmark"', jobs_store)
+        self.assertIn('"lora-sweep"', jobs_store)
         self.assertIn("SongBatchDetails", tracker)
-        self.assertIn("LoraBenchmarkDetails", tracker)
+        self.assertIn("LoraSweepDetails", tracker)
         self.assertIn("/api/song-batches/jobs", tracker)
-        self.assertIn("/api/lora/benchmarks/jobs", tracker)
+        self.assertIn("/api/lora/sweeps/jobs", tracker)
         self.assertIn("AudioStyleSelector", batch)
         self.assertIn("AudioBackendSelector", batch)
         self.assertIn("LoraSelector", batch)
         self.assertIn("GenerationAudioList", batch)
-        self.assertIn("GenerationAudioList", benchmark)
-        self.assertIn("rateLoraBenchmarkResult", benchmark)
-        self.assertIn("Score grafiek", benchmark)
+        self.assertIn("GenerationAudioList", sweep)
+        self.assertIn("startLoraSweepJob", sweep)
+        self.assertIn("totalRenders", sweep)
+        self.assertNotIn("rateLoraBenchmarkResult", sweep)
         self.assertIn("JSON toepassen", batch)
         self.assertIn("Pas huidige instellingen toe op alle songs", batch)
         self.assertIn('raw === "mlx"', audio_backend)
@@ -5928,6 +6033,246 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(rated["results"][0]["user_verdict"], "keep")
         self.assertTrue(rated["results"][0]["played_at"])
         self.assertEqual(rated["review_summary"]["keep"], 1)
+
+    def test_lora_sweep_body_uses_exported_adapters_variants_and_model_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            adapter_dir = root / "dre-final"
+            adapter_dir.mkdir()
+
+            class StubTrainingManager:
+                def list_adapters(self):
+                    return [
+                        {
+                            "path": str(adapter_dir),
+                            "display_name": "Dre Final",
+                            "adapter_type": "lora",
+                            "source": "exports",
+                            "generation_loadable": True,
+                            "quality_status": "ready",
+                            "song_model": "acestep-v15-xl-base",
+                            "metadata": {
+                                "generation_trigger_tag": "dre2001",
+                                "song_model": "acestep-v15-xl-base",
+                                "model_variant": "xl_base",
+                            },
+                        }
+                    ]
+
+            with patch.object(acejam_app, "training_manager", StubTrainingManager()), \
+                patch.object(acejam_app, "LORA_EXPORTS_DIR", root), \
+                patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):
+                payload, items = acejam_app._normalise_lora_sweep_body(
+                    {
+                        "sweep_title": "Unit Sweep",
+                        "variant_count": 3,
+                        "include_baseline": False,
+                        "lora_scale": 0.75,
+                        "render_payload": {
+                            "title": "Sweep Song",
+                            "caption": "rap, hard drums",
+                            "lyrics": "[Verse]\nunit line",
+                            "song_model": "acestep-v15-xl-sft",
+                            "audio_backend": "mlx",
+                        },
+                    }
+                )
+
+        self.assertEqual(payload["sweep_title"], "Unit Sweep")
+        self.assertEqual(payload["variant_count"], 3)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["adapter_name"], "Dre Final")
+        self.assertEqual(items[0]["payload"]["song_model"], "acestep-v15-xl-base")
+        self.assertEqual(items[0]["payload"]["lora_scale"], 0.75)
+        self.assertEqual(items[0]["payload"]["lora_trigger_tag"], "dre2001")
+        self.assertEqual(items[0]["payload"]["batch_size"], 3)
+        self.assertEqual(len(items[0]["variant_seeds"]), 3)
+        self.assertEqual(len(set(items[0]["variant_seeds"])), 3)
+        self.assertEqual(len(items[0]["variants"]), 3)
+        self.assertEqual(items[0]["variants"][0]["state"], "queued")
+        self.assertEqual(items[0]["variants"][0]["variant_seed"], items[0]["variant_seeds"][0])
+
+    def test_lora_sweep_worker_runs_groups_and_annotates_variant_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with acejam_app._lora_sweep_jobs_lock:
+                acejam_app._lora_sweep_jobs.clear()
+
+            with patch.object(acejam_app, "LORA_SWEEPS_DIR", root), \
+                patch.object(acejam_app, "_cleanup_accelerator_memory"):
+                payload = {
+                    "sweep_title": "Sequential Sweep",
+                    "stop_on_error": False,
+                    "items": [
+                        {
+                            "item_id": "sweep_001",
+                            "item_number": 1,
+                            "role": "lora",
+                            "state": "queued",
+                            "status": "Queued",
+                            "adapter_name": "Adapter A",
+                            "adapter_path": "/tmp/a",
+                            "lora_scale": 1.0,
+                            "variant_count": 2,
+                            "variant_seeds": ["111", "222"],
+                            "payload": {
+                                "title": "Sweep A",
+                                "caption": "rap",
+                                "lyrics": "[Verse]\nline",
+                                "lora_adapter_name": "Adapter A",
+                                "batch_size": 2,
+                            },
+                            "payload_summary": {},
+                            "error": "",
+                        }
+                    ],
+                }
+                acejam_app._set_lora_sweep_job(
+                    "sweepunit",
+                    payload=payload,
+                    sweep_title="Sequential Sweep",
+                    total_items=1,
+                    remaining_items=1,
+                    expected_audio_count=2,
+                    items=payload["items"],
+                )
+
+                submitted = []
+
+                def fake_submit(body):
+                    submitted.append(dict(body))
+                    self.assertEqual(body["wizard_mode"], "lora_sweep")
+                    self.assertEqual(body["lora_sweep_item_id"], "sweep_001")
+                    self.assertEqual(body["batch_size"], 1)
+                    self.assertEqual(body["variant_count"], 1)
+                    if len(submitted) == 2:
+                        parent = acejam_app._lora_sweep_snapshot("sweepunit")
+                        self.assertEqual(parent["generated_audio_count"], 1)
+                        self.assertEqual(len(parent["items"][0]["result"]["audios"]), 1)
+                        self.assertEqual(parent["items"][0]["variants"][0]["state"], "succeeded")
+                    child_id = f"sweepchild{len(submitted)}"
+                    return {"job_id": child_id, "task_id": child_id, "status": 0, "job": {"id": child_id}}
+
+                def fake_snapshot(child_id):
+                    variant = int(str(child_id).replace("sweepchild", "") or "1")
+                    return {
+                        "id": child_id,
+                        "state": "succeeded",
+                        "progress": 100,
+                        "result": {
+                            "success": True,
+                            "audios": [
+                                {"audio_url": f"/media/results/sweep/take-{variant}.wav"},
+                            ],
+                        },
+                        "result_summary": {"title": child_id},
+                    }
+
+                with patch.object(acejam_app, "_submit_api_generation_task", side_effect=fake_submit), \
+                    patch.object(acejam_app, "_generation_job_snapshot", side_effect=fake_snapshot):
+                    acejam_app._lora_sweep_worker("sweepunit", payload)
+
+                job = acejam_app._lora_sweep_snapshot("sweepunit")
+
+        self.assertEqual(job["state"], "succeeded")
+        self.assertEqual(job["completed_items"], 1)
+        self.assertEqual(job["generated_audio_count"], 2)
+        self.assertEqual(len(submitted), 2)
+        self.assertEqual([body["seed"] for body in submitted], ["111", "222"])
+        audios = job["results"][0]["result"]["audios"]
+        self.assertEqual(audios[0]["sweep_id"], "sweepunit")
+        self.assertEqual(audios[0]["adapter_name"], "Adapter A")
+        self.assertEqual(audios[0]["variant_seed"], "111")
+        self.assertEqual(audios[1]["variant_index"], 2)
+        self.assertEqual(job["results"][0]["variants"][1]["generation_job_id"], "sweepchild2")
+
+    def test_lora_sweep_worker_keeps_finished_variant_when_next_variant_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with acejam_app._lora_sweep_jobs_lock:
+                acejam_app._lora_sweep_jobs.clear()
+
+            with patch.object(acejam_app, "LORA_SWEEPS_DIR", root), \
+                patch.object(acejam_app, "_cleanup_accelerator_memory"):
+                payload = {
+                    "sweep_title": "Partial Sweep",
+                    "stop_on_error": False,
+                    "items": [
+                        {
+                            "item_id": "sweep_001",
+                            "item_number": 1,
+                            "role": "lora",
+                            "state": "queued",
+                            "status": "Queued",
+                            "adapter_name": "Adapter A",
+                            "adapter_path": "/tmp/a",
+                            "lora_scale": 1.0,
+                            "variant_count": 2,
+                            "variant_seeds": ["111", "222"],
+                            "payload": {
+                                "title": "Sweep A",
+                                "caption": "rap",
+                                "lyrics": "[Verse]\nline",
+                                "lora_adapter_name": "Adapter A",
+                                "batch_size": 2,
+                            },
+                            "payload_summary": {},
+                            "error": "",
+                        }
+                    ],
+                }
+                acejam_app._set_lora_sweep_job(
+                    "sweeppartial",
+                    payload=payload,
+                    sweep_title="Partial Sweep",
+                    total_items=1,
+                    remaining_items=1,
+                    expected_audio_count=2,
+                    items=payload["items"],
+                )
+
+                submitted = []
+
+                def fake_submit(body):
+                    submitted.append(dict(body))
+                    child_id = f"sweepchild{len(submitted)}"
+                    return {"job_id": child_id, "task_id": child_id, "status": 0, "job": {"id": child_id}}
+
+                def fake_snapshot(child_id):
+                    variant = int(str(child_id).replace("sweepchild", "") or "1")
+                    if variant == 2:
+                        return {
+                            "id": child_id,
+                            "state": "failed",
+                            "progress": 100,
+                            "error": "boom",
+                            "result": {"success": False, "error": "boom", "audios": []},
+                            "result_summary": {"title": child_id},
+                        }
+                    return {
+                        "id": child_id,
+                        "state": "succeeded",
+                        "progress": 100,
+                        "result": {
+                            "success": True,
+                            "audios": [{"audio_url": "/media/results/sweep/take-1.wav"}],
+                        },
+                        "result_summary": {"title": child_id},
+                    }
+
+                with patch.object(acejam_app, "_submit_api_generation_task", side_effect=fake_submit), \
+                    patch.object(acejam_app, "_generation_job_snapshot", side_effect=fake_snapshot):
+                    acejam_app._lora_sweep_worker("sweeppartial", payload)
+
+                job = acejam_app._lora_sweep_snapshot("sweeppartial")
+
+        self.assertEqual(job["state"], "succeeded")
+        self.assertEqual(job["status"], "LoRA Sweep completed with warnings")
+        self.assertEqual(job["generated_audio_count"], 1)
+        self.assertEqual(len(job["results"][0]["result"]["audios"]), 1)
+        self.assertEqual(job["results"][0]["variants"][0]["state"], "succeeded")
+        self.assertEqual(job["results"][0]["variants"][1]["state"], "failed")
+        self.assertEqual(job["results"][0]["variants"][1]["error"], "boom")
 
     def test_mlx_video_upload_endpoint_accepts_image_audio_and_rejects_text(self):
         client = TestClient(acejam_app.app)

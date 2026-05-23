@@ -225,6 +225,7 @@ function buildPayload(song: SongDraft): Record<string, unknown> {
     shift: song.shift,
     audio_format: song.audio_format,
     batch_size: song.batch_size,
+    variant_count: song.batch_size,
     ...advanced,
     auto_song_art: song.auto_song_art,
     auto_album_art: false,
@@ -486,6 +487,7 @@ export function BatchSongsWizard() {
 
   const jobSongs = activeJob?.songs || [];
   const activeProgress = activeJob?.progress ?? 0;
+  const totalVariations = songs.reduce((sum, song) => sum + Math.max(1, Number(song.batch_size || 1)), 0);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -502,7 +504,7 @@ export function BatchSongsWizard() {
           </div>
           <Button onClick={startBatch} size="lg" disabled={submitting || songs.length === 0}>
             {submitting ? <RefreshCw className="size-4 animate-spin" /> : <ListMusic className="size-4" />}
-            Genereer batch
+            Genereer batch ({totalVariations})
           </Button>
         </div>
       </header>
@@ -751,7 +753,7 @@ export function BatchSongsWizard() {
                       <Input type="number" value={selectedSong.seed ?? -1} onChange={(event) => updateSong(selectedSong.id, { seed: Number(event.target.value) })} />
                     </div>
                     <div className="space-y-1.5">
-                      <Label>Takes</Label>
+                      <Label>Variaties</Label>
                       <div className="flex items-center gap-3">
                         <Slider
                           value={[selectedSong.batch_size]}

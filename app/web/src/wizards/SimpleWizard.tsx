@@ -142,6 +142,8 @@ export function SimpleWizard() {
       use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
       quality_profile: v.quality_profile,
       seed: v.seed,
+      batch_size: v.batch_size,
+      variant_count: v.batch_size,
       auto_song_art: v.auto_song_art,
       auto_album_art: false,
       auto_video_clip: v.auto_video_clip,
@@ -416,6 +418,20 @@ export function SimpleWizard() {
                 {...form.register("seed", { valueAsNumber: true })}
               />
             </div>
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <Label>Variaties</Label>
+                <span className="font-mono text-xs">{values.batch_size}</span>
+              </div>
+              <Controller
+                control={form.control}
+                name="batch_size"
+                render={({ field }) => (
+                  <Slider value={[field.value]} min={1} max={8} step={1} onValueChange={(v) => field.onChange(v[0] ?? 1)} />
+                )}
+              />
+              <p className="text-xs text-muted-foreground">Zelfde song, andere seed.</p>
+            </div>
           </FieldGroup>
         </div>
       ),
@@ -442,6 +458,7 @@ export function SimpleWizard() {
               { key: "quality_profile", label: "Kwaliteit" },
               { key: "tags", label: "Tags" },
               { key: "bpm", label: "BPM" },
+              { key: "batch_size", label: "Variaties" },
             ]}
           />
           <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
