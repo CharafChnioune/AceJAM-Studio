@@ -49,6 +49,10 @@ class LauncherScriptTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         start_js = (root / "start.js").read_text(encoding="utf-8")
 
+        self.assertIn("!exists('app/web/dist/index.html')", start_js)
+        self.assertIn('path: "app/web"', start_js)
+        self.assertIn('"npm install --no-audit --no-fund"', start_js)
+        self.assertIn('"npm run build"', start_js)
         self.assertIn('GRADIO_SERVER_NAME: "127.0.0.1"', start_js)
         self.assertIn('event: "/(http:\\\\/\\\\/[0-9.:]+)/"', start_js)
         self.assertIn('url: "{{input.event[1]}}"', start_js)

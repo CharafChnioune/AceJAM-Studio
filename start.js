@@ -8,6 +8,17 @@ module.exports = {
       }
     },
     {
+      when: "{{exists('app/web/package.json') && !exists('app/web/dist/index.html')}}",
+      method: "shell.run",
+      params: {
+        path: "app/web",
+        message: [
+          "npm install --no-audit --no-fund",
+          "npm run build"
+        ]
+      }
+    },
+    {
       method: "shell.run",
       params: {
         venv: "env",
