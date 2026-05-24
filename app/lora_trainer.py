@@ -3703,8 +3703,38 @@ class AceTrainingManager:
 
     def _lora_audition_epochs(self, total_epochs: int) -> set[int]:
         total = max(1, int(total_epochs or 1))
-        first = max(1, total - EPOCH_AUDITION_LORA_TEST_COUNT + 1)
-        return set(range(first, total + 1))
+        return set(range(1, total + 1))
+
+    def _prune_epoch_auditions(self, auditions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep the permanent baseline plus the latest listenable LoRA test window."""
+
+        lora_items = [dict(item) for item in auditions if self._audition_role(item) == "lora"]
+        if len(lora_items) <= EPOCH_AUDITION_LORA_TEST_COUNT:
+            return auditions
+
+        def _epoch_key(item: dict[str, Any]) -> tuple[int, str]:
+            try:
+                epoch = int(item.get("epoch") or -1)
+            except (TypeError, ValueError):
+                epoch = -1
+            return epoch, str(item.get("created_at") or "")
+
+        keep_epochs = {
+            int(item.get("epoch") or -1)
+            for item in sorted(lora_items, key=_epoch_key)[-EPOCH_AUDITION_LORA_TEST_COUNT:]
+        }
+        pruned: list[dict[str, Any]] = []
+        for item in auditions:
+            if self._audition_role(item) != "lora":
+                pruned.append(item)
+                continue
+            try:
+                epoch = int(item.get("epoch") or -1)
+            except (TypeError, ValueError):
+                epoch = -1
+            if epoch in keep_epochs:
+                pruned.append(item)
+        return pruned
 
     def _has_listenable_audition(
         self,
@@ -3912,6 +3942,7 @@ class AceTrainingManager:
             ]
             auditions.append(dict(audition))
             auditions.sort(key=lambda item: (_audition_epoch(item), self._audition_role(item)))
+            auditions = self._prune_epoch_auditions(auditions)
             result["epoch_auditions"] = auditions
             current.result = result
             current.updated_at = utc_now()
@@ -4169,7 +4200,9 @@ class AceTrainingManager:
             result={
                 "epoch_auditions_policy": {
                     "baseline": "one no-LoRA baseline audition",
+                    "lora_epoch_mode": "every_epoch_checkpoint",
                     "lora_epochs": sorted(lora_audition_epochs),
+                    "retained_lora_test_count": EPOCH_AUDITION_LORA_TEST_COUNT,
                     "lora_test_count": EPOCH_AUDITION_LORA_TEST_COUNT,
                 }
             },
@@ -4206,14 +4239,6 @@ class AceTrainingManager:
             if epoch in lora_audition_epochs:
                 self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
                 self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path, attempt_role="lora", use_lora=True)
-            else:
-                self._append_log(
-                    log_path,
-                    (
-                        f"[audition epoch {epoch}] skipped: LoRA auditions are limited to the final "
-                        f"{EPOCH_AUDITION_LORA_TEST_COUNT} epochs ({', '.join(str(item) for item in sorted(lora_audition_epochs))}).\n"
-                    ),
-                )
             plateau = self._record_epoch_loss(
                 job_id,
                 epoch=epoch,

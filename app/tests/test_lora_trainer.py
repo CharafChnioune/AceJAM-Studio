@@ -1169,8 +1169,10 @@ class LoraTrainerTest(unittest.TestCase):
             stored = manager.get_job("auditionjob")
             self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded", "succeeded"])
             self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epochs"], [1, 2])
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epoch_mode"], "every_epoch_checkpoint")
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["retained_lora_test_count"], 3)
 
-    def test_epoch_auditions_only_render_lora_for_final_three_epochs(self):
+    def test_epoch_auditions_render_each_epoch_but_keep_latest_three_lora_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
@@ -1201,9 +1203,14 @@ class LoraTrainerTest(unittest.TestCase):
                 },
             )
 
-            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 3, 4, 5])
-            self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora", "lora"])
-            self.assertIn("LoRA auditions are limited to the final 3 epochs", Path(job.log_path).read_text(encoding="utf-8"))
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 1, 2, 3, 4, 5])
+            self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora", "lora", "lora", "lora"])
+            stored = manager.get_job("lastthree")
+            self.assertEqual([item["epoch"] for item in stored["result"]["epoch_auditions"]], [0, 3, 4, 5])
+            self.assertEqual([item["attempt_role"] for item in stored["result"]["epoch_auditions"]], ["baseline", "lora", "lora", "lora"])
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epoch_mode"], "every_epoch_checkpoint")
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["retained_lora_test_count"], 3)
+            self.assertNotIn("LoRA auditions are limited to the final 3 epochs", Path(job.log_path).read_text(encoding="utf-8"))
 
     def test_epoch_audition_failure_stops_vocal_training(self):
         with tempfile.TemporaryDirectory() as tmp:
