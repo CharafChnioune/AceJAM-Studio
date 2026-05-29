@@ -1212,7 +1212,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(stored["result"]["epoch_auditions_policy"]["retained_lora_test_count"], 3)
             self.assertNotIn("LoRA auditions are limited to the final 3 epochs", Path(job.log_path).read_text(encoding="utf-8"))
 
-    def test_epoch_audition_failure_stops_vocal_training(self):
+    def test_epoch_audition_runner_failure_does_not_stop_training_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache", fail_epoch=1)
@@ -1238,23 +1238,69 @@ class LoraTrainerTest(unittest.TestCase):
                 "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
             }
 
+            manager._run_train_command_with_epoch_auditions(
+                "failaudition",
+                command,
+                output_dir,
+                Path(job.log_path),
+                epochs=2,
+                params=params,
+            )
+
+            self.assertEqual(len(manager.commands), 2)
+            stored = manager.get_job("failaudition")
+            auditions = stored["result"]["epoch_auditions"]
+            self.assertEqual(stored["result"]["completed_epochs"], 2)
+            self.assertEqual([item["status"] for item in auditions], ["succeeded", "failed", "succeeded"])
+            self.assertIn("audition boom", auditions[1]["error"])
+            self.assertIn("failed; training will continue", Path(job.log_path).read_text(encoding="utf-8"))
+
+    def test_epoch_audition_runner_failure_can_be_configured_to_stop_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache", fail_epoch=1)
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="fatalaudition",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+            params = {
+                "adapter_type": "lora",
+                "song_model": "acestep-v15-turbo",
+                "model_variant": "turbo",
+                "epoch_audition": {
+                    "enabled": True,
+                    "caption": "test",
+                    "lyrics": "[Verse]\nLine",
+                    "duration": 20,
+                    "stop_on_failure": True,
+                },
+            }
+
             with self.assertRaisesRegex(RuntimeError, "audition boom"):
                 manager._run_train_command_with_epoch_auditions(
-                    "failaudition",
-                    command,
+                    "fatalaudition",
+                    ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "2"],
                     output_dir,
                     Path(job.log_path),
                     epochs=2,
                     params=params,
                 )
 
+            stored = manager.get_job("fatalaudition")
+            self.assertEqual(stored["result"]["completed_epochs"], 1)
             self.assertEqual(len(manager.commands), 1)
-            stored = manager.get_job("failaudition")
-            auditions = stored["result"]["epoch_auditions"]
-            self.assertEqual([item["status"] for item in auditions], ["succeeded", "failed"])
-            self.assertIn("audition boom", auditions[1]["error"])
 
-    def test_epoch_audition_vocal_gate_failure_stops_training(self):
+    def test_epoch_audition_vocal_gate_failure_does_not_stop_training_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
@@ -1289,20 +1335,22 @@ class LoraTrainerTest(unittest.TestCase):
                 "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
             }
 
-            with self.assertRaisesRegex(RuntimeError, "phrase loop detected"):
-                manager._run_train_command_with_epoch_auditions(
-                    "gatefail",
-                    ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "2"],
-                    output_dir,
-                    Path(job.log_path),
-                    epochs=2,
-                    params=params,
-                )
+            manager._run_train_command_with_epoch_auditions(
+                "gatefail",
+                ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "2"],
+                output_dir,
+                Path(job.log_path),
+                epochs=2,
+                params=params,
+            )
 
             stored = manager.get_job("gatefail")
             audition = stored["result"]["epoch_auditions"][-1]
             self.assertEqual(audition["status"], "failed")
             self.assertEqual(audition["transcript_preview"], "yeah yeah yeah yeah")
+            self.assertEqual(stored["result"]["completed_epochs"], 2)
+            self.assertEqual(len(manager.commands), 2)
+            self.assertIn("failed vocal quality gate; training will continue", Path(job.log_path).read_text(encoding="utf-8"))
 
     def test_epoch_audition_needs_review_does_not_stop_training(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1358,7 +1406,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(len(manager.commands), 2)
             self.assertIn("needs manual review; training will continue", Path(job.log_path).read_text(encoding="utf-8"))
 
-    def test_epoch_audition_missing_vocal_gate_stops_training(self):
+    def test_epoch_audition_missing_vocal_gate_records_failure_without_stopping_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
@@ -1388,19 +1436,19 @@ class LoraTrainerTest(unittest.TestCase):
                 "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20},
             }
 
-            with self.assertRaisesRegex(RuntimeError, "no vocal intelligibility gate"):
-                manager._run_epoch_audition(
-                    "missinggate",
-                    params,
-                    output_dir / "checkpoints" / "epoch_1_loss_0.1",
-                    1,
-                    Path(job.log_path),
-                )
+            manager._run_epoch_audition(
+                "missinggate",
+                params,
+                output_dir / "checkpoints" / "epoch_1_loss_0.1",
+                1,
+                Path(job.log_path),
+            )
 
             stored = manager.get_job("missinggate")
             audition = stored["result"]["epoch_auditions"][0]
             self.assertEqual(audition["status"], "failed")
             self.assertIn("no vocal intelligibility gate", audition["error"])
+            self.assertIn("failed vocal quality gate; training will continue", Path(job.log_path).read_text(encoding="utf-8"))
 
     def test_startup_marks_running_epoch_auditions_failed(self):
         with tempfile.TemporaryDirectory() as tmp:

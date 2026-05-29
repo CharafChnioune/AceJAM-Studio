@@ -3627,6 +3627,12 @@ class AceTrainingManager:
         config = params.get("epoch_audition")
         return isinstance(config, dict) and parse_bool(config.get("enabled"), False)
 
+    def _epoch_audition_stop_on_failure(self, params: dict[str, Any]) -> bool:
+        config = params.get("epoch_audition")
+        if isinstance(config, dict):
+            return parse_bool(config.get("stop_on_failure"), False)
+        return False
+
     def _command_with_arg(self, command: list[str], flag: str, value: Any) -> list[str]:
         updated = list(command)
         if flag in updated:
@@ -4063,7 +4069,7 @@ class AceTrainingManager:
         except Exception as exc:
             record = {**base_record, "status": "failed", "error": str(exc), "created_at": utc_now()}
             self._record_epoch_audition(job_id, record)
-            if not use_lora:
+            if not use_lora or not self._epoch_audition_stop_on_failure(params):
                 self._append_log(log_path, f"[audition {log_label}] failed; training will continue: {exc}\n")
                 return
             self._append_log(log_path, f"[audition {log_label}] failed; stopping vocal training: {exc}\n")
@@ -4130,7 +4136,7 @@ class AceTrainingManager:
         }
         self._record_epoch_audition(job_id, record)
         if failure_reason:
-            if not use_lora:
+            if not use_lora or not self._epoch_audition_stop_on_failure(params):
                 self._append_log(log_path, f"[audition {log_label}] failed vocal quality gate; training will continue: {failure_reason}\n")
                 return
             self._append_log(log_path, f"[audition {log_label}] failed vocal quality gate; stopping training: {failure_reason}\n")
@@ -4235,10 +4241,6 @@ class AceTrainingManager:
             if checkpoint is None:
                 raise FileNotFoundError(f"Epoch {epoch} finished but no checkpoint was found in {output_dir / 'checkpoints'}")
             last_checkpoint = checkpoint
-            audition_progress = progress_start + (epoch / total_epochs) * (progress_end - progress_start)
-            if epoch in lora_audition_epochs:
-                self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
-                self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path, attempt_role="lora", use_lora=True)
             plateau = self._record_epoch_loss(
                 job_id,
                 epoch=epoch,
@@ -4247,6 +4249,10 @@ class AceTrainingManager:
                 command_result=command_result,
                 params=params,
             )
+            audition_progress = progress_start + (epoch / total_epochs) * (progress_end - progress_start)
+            if epoch in lora_audition_epochs:
+                self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
+                self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path, attempt_role="lora", use_lora=True)
             if plateau.get("should_stop"):
                 message = str(plateau.get("reason") or "loss plateau reached")
                 self._append_log(log_path, f"[early stop] loss plateau at epoch {epoch}/{total_epochs}: {message}\n")

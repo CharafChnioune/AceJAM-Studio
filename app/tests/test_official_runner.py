@@ -198,6 +198,41 @@ class OfficialRunnerTest(unittest.TestCase):
         self.assertEqual(status["effective_audio_backend"], "mps_torch")
         self.assertIn("MLX DiT was requested", status["fallback_reason"])
 
+    def test_generation_result_payload_does_not_deep_copy_audio_tensors(self):
+        class TensorLike:
+            shape = (2, 48000)
+
+        class FakeResult:
+            success = True
+            error = None
+            status_message = "ok"
+            audios = [
+                {
+                    "path": "/tmp/out.wav",
+                    "key": "take-1",
+                    "sample_rate": 48000,
+                    "tensor": TensorLike(),
+                    "params": {"seed": 42, "cover_tensor": TensorLike()},
+                }
+            ]
+            extra_outputs = {"time_costs": {"total": 1.25}, "lm_metadata": {"backend": "mlx"}}
+
+            def to_dict(self):
+                raise AssertionError("to_dict deep-copies audio tensors")
+
+        payload = official_runner._generation_result_payload(
+            FakeResult(),
+            lora_status={"active": True},
+            audio_backend_status={"effective_audio_backend": "mlx"},
+            request={"official_api_fields": {"dcw": True}, "guarded_api_fields": {"unsafe": False}},
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["audios"][0]["path"], "/tmp/out.wav")
+        self.assertNotIn("tensor", payload["audios"][0])
+        self.assertEqual(payload["audios"][0]["params"]["cover_tensor"], {"shape": [2, 48000]})
+        self.assertEqual(payload["lora_status"]["active"], True)
+
     def test_mlx_progress_patch_runs_service_generate_inline(self):
         GenerateMusicExecuteMixin, saved = self._fake_generate_music_execute_module()
         official_runner._patch_mlx_thread_stream(object)

@@ -46,6 +46,40 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _generation_result_payload(
+    result: Any,
+    *,
+    lora_status: dict[str, Any],
+    audio_backend_status: dict[str, Any],
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    audios = []
+    for audio in list(getattr(result, "audios", []) or []):
+        if not isinstance(audio, dict):
+            continue
+        audios.append(
+            {
+                "path": audio.get("path", ""),
+                "key": audio.get("key", ""),
+                "sample_rate": audio.get("sample_rate", 48000),
+                "params": _jsonable(audio.get("params") or {}),
+            }
+        )
+    extra_outputs = getattr(result, "extra_outputs", {}) or {}
+    return {
+        "success": bool(getattr(result, "success", False)),
+        "error": getattr(result, "error", None),
+        "status_message": getattr(result, "status_message", ""),
+        "audios": audios,
+        "time_costs": _jsonable(extra_outputs.get("time_costs", {})),
+        "lm_metadata": _jsonable(extra_outputs.get("lm_metadata")),
+        "lora_status": _jsonable(lora_status),
+        "audio_backend_status": _jsonable(audio_backend_status),
+        "official_api_fields": _jsonable(request.get("official_api_fields") or {}),
+        "guarded_api_fields": _jsonable(request.get("guarded_api_fields") or {}),
+    }
+
+
 def _parse_seeds(value: Any) -> list[int] | None:
     if value in (None, "", "-1"):
         return None
@@ -614,31 +648,14 @@ def _run(request_path: Path, response_path: Path) -> None:
         config=config,
         save_dir=str(save_dir),
     )
-    result_data = result.to_dict()
-    audios = []
-    for audio in result_data.get("audios", []):
-        audios.append(
-            {
-                "path": audio.get("path", ""),
-                "key": audio.get("key", ""),
-                "sample_rate": audio.get("sample_rate", 48000),
-                "params": _jsonable(audio.get("params") or {}),
-            }
-        )
     response_path.write_text(
         json.dumps(
-            {
-                "success": bool(result_data.get("success")),
-                "error": result_data.get("error"),
-                "status_message": result_data.get("status_message", ""),
-                "audios": audios,
-                "time_costs": _jsonable((result_data.get("extra_outputs") or {}).get("time_costs", {})),
-                "lm_metadata": _jsonable((result_data.get("extra_outputs") or {}).get("lm_metadata")),
-                "lora_status": _jsonable(lora_status),
-                "audio_backend_status": _jsonable(audio_backend_status),
-                "official_api_fields": _jsonable(request.get("official_api_fields") or {}),
-                "guarded_api_fields": _jsonable(request.get("guarded_api_fields") or {}),
-            },
+            _generation_result_payload(
+                result,
+                lora_status=lora_status,
+                audio_backend_status=audio_backend_status,
+                request=request,
+            ),
             indent=2,
         ),
         encoding="utf-8",
@@ -651,7 +668,7 @@ def main() -> int:
     try:
         _run(request_path, response_path)
         return 0
-    except Exception as exc:
+    except BaseException as exc:
         response_path.write_text(
             json.dumps({"success": False, "error": str(exc), "traceback": traceback.format_exc()}, indent=2),
             encoding="utf-8",
