@@ -33,7 +33,7 @@ import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWi
 import { useWizardStore } from "@/store/wizard";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
-import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "news" as const;
@@ -62,7 +62,7 @@ interface NewsForm {
   key_scale?: string;
   vocal_language: string;
   song_model: string;
-  audio_backend: "mlx" | "mps_torch";
+  audio_backend: "mlx";
   batch_size: number;
   use_lora: boolean;
   lora_adapter_path: string;
@@ -104,7 +104,7 @@ export function NewsWizard() {
       duration: 90,
       vocal_language: "nl",
       song_model: "acestep-v15-xl-sft",
-      audio_backend: "mlx",
+      audio_backend: DEFAULT_AUDIO_BACKEND,
       batch_size: 1,
       use_lora: false,
       lora_adapter_path: "",

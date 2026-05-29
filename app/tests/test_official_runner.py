@@ -233,6 +233,71 @@ class OfficialRunnerTest(unittest.TestCase):
         self.assertEqual(payload["audios"][0]["params"]["cover_tensor"], {"shape": [2, 48000]})
         self.assertEqual(payload["lora_status"]["active"], True)
 
+    def test_lora_request_keeps_mlx_dit_before_service_init(self):
+        request = {
+            "use_lora": True,
+            "audio_backend": "mlx",
+            "use_mlx_dit": True,
+            "params": {},
+        }
+
+        official_runner._apply_lora_audio_backend_compatibility(request)
+
+        self.assertEqual(request["audio_backend"], "mlx")
+        self.assertTrue(request["use_mlx_dit"])
+        self.assertTrue(request["allow_mlx_lora_experimental"])
+        self.assertNotIn("payload_warnings", request["params"])
+
+    def test_lora_request_keeps_mlx_dit_with_experimental_opt_in(self):
+        request = {
+            "use_lora": True,
+            "audio_backend": "mlx",
+            "use_mlx_dit": True,
+            "allow_mlx_lora_experimental": True,
+            "params": {},
+        }
+
+        official_runner._apply_lora_audio_backend_compatibility(request)
+
+        self.assertEqual(request["audio_backend"], "mlx")
+        self.assertTrue(request["use_mlx_dit"])
+
+    def test_vocal_request_keeps_mlx_dit_before_service_init(self):
+        request = {
+            "audio_backend": "mlx",
+            "use_mlx_dit": True,
+            "params": {
+                "task_type": "text2music",
+                "instrumental": False,
+                "lyrics": "[Verse]\nClear vocal line",
+                "vocal_language": "en",
+            },
+        }
+
+        official_runner._apply_vocal_audio_backend_compatibility(request)
+
+        self.assertEqual(request["audio_backend"], "mlx")
+        self.assertTrue(request["use_mlx_dit"])
+        self.assertTrue(request["allow_mlx_vocal_experimental"])
+        self.assertNotIn("payload_warnings", request["params"])
+
+    def test_vocal_request_keeps_mlx_dit_with_experimental_opt_in(self):
+        request = {
+            "audio_backend": "mlx",
+            "use_mlx_dit": True,
+            "allow_mlx_vocal_experimental": True,
+            "params": {
+                "task_type": "text2music",
+                "lyrics": "[Verse]\nClear vocal line",
+                "vocal_language": "en",
+            },
+        }
+
+        official_runner._apply_vocal_audio_backend_compatibility(request)
+
+        self.assertEqual(request["audio_backend"], "mlx")
+        self.assertTrue(request["use_mlx_dit"])
+
     def test_mlx_progress_patch_runs_service_generate_inline(self):
         GenerateMusicExecuteMixin, saved = self._fake_generate_music_execute_module()
         official_runner._patch_mlx_thread_stream(object)

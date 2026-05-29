@@ -1,15 +1,10 @@
-export type AudioBackend = "mlx" | "mps_torch";
+export type AudioBackend = "mlx";
 
 export const DEFAULT_AUDIO_BACKEND: AudioBackend = "mlx";
 
 export function normalizeAudioBackend(value: unknown): AudioBackend {
   const raw = String(value || "").trim().toLowerCase().replace("-", "_");
-  if (raw === "mlx" || raw === "native_mlx" || raw === "mlx_dit" || raw === "mlx_audio") {
-    return "mlx";
-  }
-  if (raw === "mps" || raw === "mps_torch" || raw === "torch" || raw === "pytorch" || raw === "pt") {
-    return "mps_torch";
-  }
+  if (raw) return "mlx";
   return DEFAULT_AUDIO_BACKEND;
 }
 
@@ -18,5 +13,6 @@ export function useMlxDitForAudioBackend(value: unknown): boolean {
 }
 
 export function audioBackendLabel(value: unknown): string {
-  return normalizeAudioBackend(value) === "mlx" ? "MLX" : "MPS/Torch";
+  normalizeAudioBackend(value);
+  return "MLX";
 }

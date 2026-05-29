@@ -641,7 +641,7 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("ACE_STEP_ADVANCED_PAYLOAD_FIELDS", custom)
         self.assertIn("ACE_STEP_ADVANCED_PAYLOAD_FIELDS", batch)
 
-    def test_audio_backend_defaults_to_mlx_on_apple_silicon_and_allows_explicit_mlx(self):
+    def test_audio_backend_defaults_to_verified_mlx_for_vocal_quality(self):
         with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -664,6 +664,17 @@ class AppParityTest(unittest.TestCase):
                     "audio_backend": "mlx",
                 }
             )
+            stale_mps = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "audio_backend": "mps_torch",
+                    "use_mlx_dit": False,
+                }
+            )
 
         self.assertEqual(defaulted["audio_backend"], "mlx")
         self.assertTrue(defaulted["use_mlx_dit"])
@@ -671,8 +682,20 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(defaulted["dtype"], "float32")
         self.assertEqual(explicit_mlx["audio_backend"], "mlx")
         self.assertTrue(explicit_mlx["use_mlx_dit"])
+        self.assertEqual(stale_mps["audio_backend"], "mlx")
+        self.assertTrue(stale_mps["use_mlx_dit"])
 
-    def test_official_request_forces_mlx_backend_even_with_stale_flag(self):
+    def test_runtime_status_exposes_mlx_as_verified_quality_default(self):
+        status = acejam_app._audio_backend_runtime_status()
+
+        self.assertEqual(status["quality_default"], "mlx")
+        self.assertTrue(status["mlx_lora_effective_weight_sync"])
+        self.assertTrue(status["mlx_verified_quality_default"])
+        self.assertTrue(status["mlx_lora_default_enabled"])
+        self.assertTrue(status["mlx_vocal_default_enabled"])
+        self.assertEqual(status["mlx_lora_experimental_flag"], "")
+
+    def test_official_request_forces_mlx_backend_even_with_stale_flag_when_experimental_allowed(self):
         with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -685,6 +708,7 @@ class AppParityTest(unittest.TestCase):
                     "duration": 30,
                     "audio_backend": "mlx",
                     "use_mlx_dit": False,
+                    "allow_mlx_vocal_experimental": True,
                 }
             )
 
@@ -696,6 +720,31 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["requested_audio_backend"], "mlx")
         self.assertTrue(request["requested_use_mlx_dit"])
         self.assertEqual(request["audio_backend_contract"]["enforced_at"], "official_request")
+
+    def test_lora_render_uses_verified_mlx_lora_path(self):
+        with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
+            patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "rap, hard drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "audio_backend": "mlx",
+                    "use_lora": True,
+                    "lora_adapter_path": "/tmp/test-lora",
+                    "lora_adapter_name": "test-lora",
+                    "lora_scale": 1.0,
+                }
+            )
+
+        self.assertEqual(params["audio_backend"], "mlx")
+        self.assertTrue(params["use_mlx_dit"])
+        self.assertTrue(params["allow_mlx_lora_experimental"])
+        self.assertTrue(params["allow_mlx_vocal_experimental"])
+        self.assertFalse(any("lora_mlx_dit_disabled" in item for item in params.get("payload_warnings", [])))
 
     def test_official_request_refits_over_budget_caption_instead_of_blocking(self):
         with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
@@ -3099,6 +3148,7 @@ class AppParityTest(unittest.TestCase):
                     "duration": 30,
                     "audio_backend": "mlx",
                     "use_mlx_dit": True,
+                    "allow_mlx_vocal_experimental": True,
                     "lm_backend": "mlx",
                     "dcw_enabled": True,
                     "audio_cover_strength": 1.0,
@@ -3113,7 +3163,7 @@ class AppParityTest(unittest.TestCase):
 
     def test_mps_long_lora_memory_guard_uses_docs_guidance_and_disables_dcw(self):
         with tempfile.TemporaryDirectory() as tmp, \
-            patch.dict(os.environ, {"ACEJAM_MPS_LONG_LORA_MEMORY_GUARD": "1"}), \
+            patch.dict(os.environ, {"ACEJAM_MPS_LONG_LORA_MEMORY_GUARD": "1", "ACEJAM_ALLOW_MPS_AUDIO_BACKEND": "1"}), \
             patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
@@ -3152,7 +3202,7 @@ class AppParityTest(unittest.TestCase):
 
     def test_official_generation_retries_mps_oom_once_without_dcw(self):
         with tempfile.TemporaryDirectory() as tmp, \
-            patch.dict(os.environ, {"ACEJAM_MPS_LONG_LORA_MEMORY_GUARD": "0"}), \
+            patch.dict(os.environ, {"ACEJAM_MPS_LONG_LORA_MEMORY_GUARD": "0", "ACEJAM_ALLOW_MPS_AUDIO_BACKEND": "1"}), \
             patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
             patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}), \
@@ -5788,7 +5838,9 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("rateLoraBenchmarkResult", sweep)
         self.assertIn("JSON toepassen", batch)
         self.assertIn("Pas huidige instellingen toe op alle songs", batch)
-        self.assertIn('raw === "mlx"', audio_backend)
+        self.assertIn('export type AudioBackend = "mlx"', audio_backend)
+        self.assertIn('DEFAULT_AUDIO_BACKEND: AudioBackend = "mlx"', audio_backend)
+        self.assertNotIn("mps_torch", audio_backend)
         self.assertIn('"audio_backend": "mlx"', promptsong)
         self.assertIn('"ace_lm_model": "none"', promptsong)
         self.assertNotIn('"ace_lm_model": "acestep-5Hz-lm-4B"', promptsong)

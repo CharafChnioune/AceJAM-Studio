@@ -139,7 +139,7 @@ def _audio_backend_status(
     requested_mlx_dit: bool,
     initialize_status: str = "",
 ) -> dict[str, Any]:
-    requested_audio_backend = str(request.get("audio_backend") or ("mlx" if requested_mlx_dit else "mps_torch"))
+    requested_audio_backend = str(request.get("audio_backend") or "mlx")
     effective_use_mlx_dit = bool(getattr(handler, "use_mlx_dit", False)) if handler is not None else False
     mlx_decoder_active = bool(getattr(handler, "mlx_decoder", None) is not None) if handler is not None else False
     mlx_vae_active = bool(getattr(handler, "use_mlx_vae", False) and getattr(handler, "mlx_vae", None) is not None) if handler is not None else False
@@ -158,6 +158,7 @@ def _audio_backend_status(
         "effective_mlx_dit_active": effective_mlx_dit_active,
         "mlx_decoder_active": mlx_decoder_active,
         "mlx_vae_active": mlx_vae_active,
+        "mlx_lora_effective_weight_sync": bool(callable(getattr(handler, "_sync_mlx_dit_weights_from_torch", None))) if handler is not None else False,
         "initialize_status": initialize_status,
         "fallback_reason": fallback_reason,
     }
@@ -337,6 +338,25 @@ def _bool_or_auto(value: Any) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _apply_lora_audio_backend_compatibility(request: dict[str, Any]) -> None:
+    request["allow_mlx_lora_experimental"] = True
+
+
+def _request_has_vocal_lyrics(request: dict[str, Any]) -> bool:
+    params = request.get("params") if isinstance(request.get("params"), dict) else {}
+    if _bool_or_auto(params.get("instrumental", False)):
+        return False
+    lyrics = str(params.get("lyrics") or "").strip()
+    if lyrics and lyrics.lower() != "[instrumental]":
+        return True
+    language = str(params.get("vocal_language") or params.get("language") or "").strip().lower()
+    return bool(language and language not in {"none", "instrumental", "no-vocal", "novocal"})
+
+
+def _apply_vocal_audio_backend_compatibility(request: dict[str, Any]) -> None:
+    request["allow_mlx_vocal_experimental"] = True
+
+
 def _filter_generation_params(params_data: dict[str, Any], generation_params_cls: Any) -> dict[str, Any]:
     fields = getattr(generation_params_cls, "__dataclass_fields__", None) or {}
     if not fields:
@@ -451,6 +471,8 @@ def _run(request_path: Path, response_path: Path) -> None:
     from acestep.llm_inference import LLMHandler
 
     _is_apple_silicon = sys.platform == "darwin" and platform.machine() == "arm64"
+    _apply_lora_audio_backend_compatibility(request)
+    _apply_vocal_audio_backend_compatibility(request)
     requested_mlx_dit = _bool_or_auto(request.get("use_mlx_dit", False))
     use_mlx_dit = bool(_is_apple_silicon and requested_mlx_dit)
     if not use_mlx_dit:

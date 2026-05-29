@@ -43,7 +43,7 @@ import {
 } from "@/lib/aceStepSettings";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
-import { useMlxDitForAudioBackend, type AudioBackend } from "@/lib/audioBackend";
+import { DEFAULT_AUDIO_BACKEND, useMlxDitForAudioBackend, type AudioBackend } from "@/lib/audioBackend";
 import { simpleDefaults, type CustomFormValues } from "@/lib/schemas";
 import { cn, formatDuration } from "@/lib/utils";
 import { useJobsStore } from "@/store/jobs";
@@ -165,7 +165,7 @@ function makeSong(seed: Partial<SongDraft> = {}, index = 0): SongDraft {
     time_signature: seed.time_signature || "4/4",
     vocal_language: seed.vocal_language || "en",
     song_model: songModel,
-    audio_backend: seed.audio_backend || "mlx",
+    audio_backend: seed.audio_backend || DEFAULT_AUDIO_BACKEND,
     quality_profile: seed.quality_profile || "chart_master",
     seed: seed.seed ?? -1,
     inference_steps: Number(seed.inference_steps ?? defaults.inference_steps),

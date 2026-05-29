@@ -32,7 +32,7 @@ import {
 import { type WizardMode, api } from "@/lib/api";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
-import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
@@ -86,7 +86,7 @@ interface BaseSourceForm {
   key_scale?: string;
   vocal_language: string;
   song_model: string;
-  audio_backend: "mlx" | "mps_torch";
+  audio_backend: "mlx";
   batch_size: number;
   // Mode-specific:
   audio_cover_strength?: number;
@@ -137,7 +137,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       duration: 60,
       vocal_language: "en",
       song_model: config.defaultModel ?? "acestep-v15-xl-sft",
-      audio_backend: "mlx",
+      audio_backend: DEFAULT_AUDIO_BACKEND,
       batch_size: 1,
       audio_cover_strength: 0.6,
       cover_noise_strength: 0.2,

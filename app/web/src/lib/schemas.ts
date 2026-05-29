@@ -36,6 +36,11 @@ const audioFormatField = z
   .preprocess((value) => (value === "wav16" ? "wav" : value), z.enum(OFFICIAL_AUDIO_FORMAT_VALUES as [string, ...string[]]))
   .default("wav32");
 
+const audioBackendField = z.preprocess(() => DEFAULT_AUDIO_BACKEND, z.literal(DEFAULT_AUDIO_BACKEND)).default(DEFAULT_AUDIO_BACKEND);
+
+const deviceField = z
+  .preprocess((value) => (value === "metal" ? "auto" : value), z.enum(["auto", "cuda", "cpu"]).optional());
+
 const optionalBoolean = z.boolean().optional();
 
 const optionalStringArray = z
@@ -70,7 +75,7 @@ export const simpleSchema = z.object({
   time_signature: optionalString,
   vocal_language: z.string().default("en"),
   song_model: z.string().default("acestep-v15-xl-sft"),
-  audio_backend: z.enum(["mlx", "mps_torch"]).default(DEFAULT_AUDIO_BACKEND),
+  audio_backend: audioBackendField,
   quality_profile: z.enum(["draft", "standard", "chart_master"]).default("chart_master"),
   seed: optionalNumber,
   batch_size: z.number().int().min(1).max(8).default(1),
@@ -164,7 +169,7 @@ export const customSchema = simpleSchema.extend({
   save_to_library: optionalBoolean,
   use_tiled_decode: optionalBoolean,
   is_format_caption: optionalBoolean,
-  device: z.enum(["auto", "mps", "cuda", "cpu"]).optional(),
+  device: deviceField,
   dtype: z.enum(["auto", "float32", "float16", "bfloat16"]).optional(),
   use_flash_attention: z.enum(["auto", "true", "false"]).optional(),
   compile_model: optionalBoolean,
@@ -252,7 +257,7 @@ export const albumSchema = z.object({
   album_writer_mode: z.enum(["per_track_writer_loop"]).default("per_track_writer_loop"),
   language: z.string().default("en"),
   song_model: z.string().default("acestep-v15-xl-sft"),
-  audio_backend: z.enum(["mlx", "mps_torch"]).default(DEFAULT_AUDIO_BACKEND),
+  audio_backend: audioBackendField,
   song_model_strategy: z.enum(["single_model_album", "all_models_album"]).default(
     "single_model_album",
   ),

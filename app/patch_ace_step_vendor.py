@@ -467,6 +467,284 @@ def patch_mlx_single_seed_propagation() -> bool:
     return changed
 
 
+def patch_mlx_effective_lora_sync() -> bool:
+    """Teach native MLX DiT conversion to mirror active PyTorch/PEFT LoRA state."""
+    changed = False
+
+    convert_path = VENDOR_DIR / "acestep" / "models" / "mlx" / "dit_convert.py"
+    convert_text = convert_path.read_text(encoding="utf-8")
+    if "from typing import Any, Dict, List, Tuple" not in convert_text:
+        original = "from typing import Dict, List, Tuple\n"
+        if original not in convert_text:
+            raise RuntimeError(f"Could not find typing import anchor in {convert_path}")
+        convert_text = convert_text.replace(original, "from typing import Any, Dict, List, Tuple\n", 1)
+        changed = True
+    if "def _effective_decoder_state_dict(decoder: Any)" not in convert_text:
+        anchor = "logger = logging.getLogger(__name__)\n\n\n"
+        if anchor not in convert_text:
+            raise RuntimeError(f"Could not find MLX converter logger anchor in {convert_path}")
+        helper_block = '''logger = logging.getLogger(__name__)
+
+
+def _active_lora_adapters(module: Any) -> list[str]:
+    """Return the active PEFT LoRA adapters for a wrapped module."""
+    if bool(getattr(module, "disable_adapters", False)):
+        return []
+    active = getattr(module, "active_adapters", None)
+    if active is None:
+        active = getattr(module, "active_adapter", None)
+    if isinstance(active, str):
+        return [active]
+    if isinstance(active, (list, tuple, set)):
+        return [name for name in active if isinstance(name, str)]
+    return []
+
+
+def _effective_lora_layer_state(module: Any) -> dict[str, "torch.Tensor"] | None:
+    """Return base-layer state with active PEFT LoRA deltas merged in-memory.
+
+    This is intentionally non-destructive: it mirrors PEFT's forward/merge math
+    without calling ``merge_and_unload`` or mutating the PyTorch decoder. Native
+    MLX DiT consumes static weights, so any active adapter delta has to be baked
+    into the weights before ``load_weights``.
+    """
+    get_base_layer = getattr(module, "get_base_layer", None)
+    get_delta_weight = getattr(module, "get_delta_weight", None)
+    if not callable(get_base_layer) or not callable(get_delta_weight):
+        return None
+    if not hasattr(module, "lora_A") or not hasattr(module, "lora_B"):
+        return None
+
+    base_layer = get_base_layer()
+    if base_layer is None or not hasattr(base_layer, "state_dict"):
+        return None
+
+    state = {key: value.detach().clone() for key, value in base_layer.state_dict().items()}
+    active_adapters = _active_lora_adapters(module)
+    lora_A = getattr(module, "lora_A", {})
+    if "weight" not in state or not active_adapters:
+        return state
+
+    weight = state["weight"]
+    for adapter in active_adapters:
+        if adapter not in lora_A:
+            continue
+        delta = get_delta_weight(adapter).detach().to(device=weight.device, dtype=weight.dtype)
+        weight = weight + delta
+
+        lora_bias = getattr(module, "lora_bias", {})
+        lora_B = getattr(module, "lora_B", {})
+        if bool(lora_bias.get(adapter)) and "bias" in state and adapter in lora_B:
+            bias_module = lora_B[adapter]
+            bias = getattr(bias_module, "bias", None)
+            scaling = getattr(module, "scaling", {}).get(adapter, 1.0)
+            if bias is not None:
+                state["bias"] = state["bias"] + bias.detach().to(
+                    device=state["bias"].device,
+                    dtype=state["bias"].dtype,
+                ) * scaling
+
+    state["weight"] = weight
+    return state
+
+
+def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
+    """Return a decoder state dict with active PEFT LoRA deltas baked in."""
+    get_base_model = getattr(decoder, "get_base_model", None)
+    base_decoder = get_base_model() if callable(get_base_model) else decoder
+    raw_state = base_decoder.state_dict()
+    effective_state: dict[str, "torch.Tensor"] = {}
+    lora_wrapped_prefixes: set[str] = set()
+
+    for module_name, module in base_decoder.named_modules():
+        layer_state = _effective_lora_layer_state(module)
+        if layer_state is None:
+            continue
+        lora_wrapped_prefixes.add(module_name)
+        prefix = f"{module_name}." if module_name else ""
+        for key, value in layer_state.items():
+            effective_state[f"{prefix}{key}"] = value
+
+    for key, value in raw_state.items():
+        if ".lora_" in key or key.startswith("lora_"):
+            continue
+        if ".base_layer." in key or key.startswith("base_layer."):
+            prefix = key.split(".base_layer.", 1)[0] if ".base_layer." in key else ""
+            if prefix in lora_wrapped_prefixes:
+                continue
+            key = key.replace(".base_layer.", ".").replace("base_layer.", "")
+        effective_state.setdefault(key, value)
+
+    return effective_state
+
+
+'''
+        convert_text = convert_text.replace(anchor, helper_block, 1)
+        changed = True
+    original_state = "    state_dict = decoder.state_dict()\n"
+    patched_state = "    state_dict = _effective_decoder_state_dict(decoder)\n"
+    if patched_state not in convert_text:
+        if original_state not in convert_text:
+            raise RuntimeError(f"Could not find decoder state_dict anchor in {convert_path}")
+        convert_text = convert_text.replace(original_state, patched_state, 1)
+        changed = True
+    if changed:
+        convert_path.write_text(convert_text, encoding="utf-8")
+
+    init_path = VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "mlx_dit_init.py"
+    init_text = init_path.read_text(encoding="utf-8")
+    if "def _sync_mlx_dit_weights_from_torch" not in init_text:
+        anchor = 'class MlxDitInitMixin:\n    """Initialize native MLX DiT decoder state used by generation runtime."""\n'
+        if anchor not in init_text:
+            raise RuntimeError(f"Could not find MlxDitInitMixin class anchor in {init_path}")
+        helper_block = anchor + '''
+    def _mlx_dit_weight_sync_key(self) -> tuple:
+        """Return a compact key for the PyTorch decoder state mirrored to MLX."""
+        active_loras = getattr(self, "_active_loras", {}) or {}
+        return (
+            id(getattr(getattr(self, "model", None), "decoder", None)),
+            bool(getattr(self, "lora_loaded", False)),
+            bool(getattr(self, "use_lora", False)),
+            getattr(self, "_adapter_type", None),
+            getattr(self, "_lora_active_adapter", None),
+            tuple(sorted((str(name), float(scale)) for name, scale in active_loras.items())),
+        )
+
+    def _sync_mlx_dit_weights_from_torch(self, reason: str = "manual", force: bool = False) -> dict:
+        """Refresh native MLX DiT weights from the effective PyTorch decoder.
+
+        PEFT LoRA adapters are applied dynamically in PyTorch modules, while the
+        native MLX decoder is a static converted copy. Re-syncing here bakes any
+        active adapter delta and scale into the MLX weights without mutating the
+        PyTorch decoder.
+        """
+        if not bool(getattr(self, "use_mlx_dit", False)) or getattr(self, "mlx_decoder", None) is None:
+            return {"synced": False, "reason": "mlx_dit_inactive"}
+        if getattr(self, "model", None) is None or getattr(self.model, "decoder", None) is None:
+            return {"synced": False, "reason": "torch_decoder_unavailable"}
+
+        sync_key = self._mlx_dit_weight_sync_key()
+        if not force and getattr(self, "_mlx_dit_weight_sync_key_cache", None) == sync_key:
+            return {"synced": False, "reason": "unchanged", "sync_reason": reason}
+
+        try:
+            from acestep.models.mlx.dit_convert import convert_and_load
+
+            convert_and_load(self.model, self.mlx_decoder)
+            self.mlx_decoder.materialize_static_buffers()
+            self._mlx_dit_weight_sync_key_cache = sync_key
+            logger.info(f"[MLX-DiT] Synced effective PyTorch decoder weights to MLX (reason={reason}).")
+            return {"synced": True, "reason": reason}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[MLX-DiT] Failed to sync effective PyTorch decoder weights to MLX: {exc}")
+            return {"synced": False, "reason": "sync_failed", "error": str(exc), "sync_reason": reason}
+'''
+        init_text = init_text.replace(anchor, helper_block, 1)
+        changed = True
+    cache_line = "            self._mlx_dit_weight_sync_key_cache = self._mlx_dit_weight_sync_key()\n"
+    cache_anchor = "            self.mlx_dit_compiled = compile_model\n"
+    if cache_line not in init_text:
+        if cache_anchor not in init_text:
+            raise RuntimeError(f"Could not find MLX init sync key anchor in {init_path}")
+        init_text = init_text.replace(cache_anchor, cache_anchor + cache_line, 1)
+        changed = True
+    if changed:
+        init_path.write_text(init_text, encoding="utf-8")
+
+    lifecycle_path = VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "lora" / "lifecycle.py"
+    lifecycle_text = lifecycle_path.read_text(encoding="utf-8")
+    sync_loaded = (
+        '        sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+        "        if callable(sync_mlx):\n"
+        '            sync_mlx(reason="lora_loaded", force=True)\n'
+    )
+    if sync_loaded not in lifecycle_text:
+        anchor = '            prefix="lora",\n        )\n        return f"✅ LoRA \'{effective_name}\' loaded from {lora_path}"\n'
+        if anchor not in lifecycle_text:
+            raise RuntimeError(f"Could not find LoRA loaded return anchor in {lifecycle_path}")
+        lifecycle_text = lifecycle_text.replace(anchor, anchor.replace('        return', sync_loaded + '        return'), 1)
+        changed = True
+    lifecycle_sync_specs = [
+        (
+            "lora_removed_last_no_backup",
+            '                self._lora_scale_state = {}\n                return "✅ Last adapter removed; base decoder still wrapped (no backup). Restart or load a new LoRA."\n',
+            '                sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+            "                if callable(sync_mlx):\n"
+            '                    sync_mlx(reason="lora_removed_last_no_backup", force=True)\n',
+        ),
+        (
+            "lora_removed_last",
+            '            logger.info("LoRA unloaded, base decoder restored")\n            return "✅ LoRA unloaded, using base model"\n',
+            '            sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+            "            if callable(sync_mlx):\n"
+            '                sync_mlx(reason="lora_removed_last", force=True)\n',
+        ),
+        (
+            "lora_removed",
+            '        logger.info(f"Adapter \'{adapter_name}\' removed. Active: {next_active}")\n        return f"✅ Adapter \'{adapter_name}\' removed. Active: {next_active}"\n',
+            '        sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+            "        if callable(sync_mlx):\n"
+            '            sync_mlx(reason="lora_removed", force=True)\n',
+        ),
+        (
+            "lora_unloaded",
+            '        logger.info("LoRA unloaded, base decoder restored")\n        return "✅ LoRA unloaded, using base model"\n',
+            '        sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+            "        if callable(sync_mlx):\n"
+            '            sync_mlx(reason="lora_unloaded", force=True)\n',
+        ),
+    ]
+    for marker, anchor, snippet in lifecycle_sync_specs:
+        if f'sync_mlx(reason="{marker}", force=True)' in lifecycle_text:
+            continue
+        if anchor not in lifecycle_text:
+            raise RuntimeError(f"Could not find {marker} return anchor in {lifecycle_path}")
+        lifecycle_text = lifecycle_text.replace(anchor, anchor.replace("return", snippet + "return"), 1)
+        changed = True
+    if changed:
+        lifecycle_path.write_text(lifecycle_text, encoding="utf-8")
+
+    controls_path = VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "lora" / "controls.py"
+    controls_text = controls_path.read_text(encoding="utf-8")
+    sync_toggle = (
+        '    sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+        "    if callable(sync_mlx):\n"
+        '        sync_mlx(reason="lora_toggled", force=True)\n\n'
+    )
+    if sync_toggle not in controls_text:
+        anchor = '    adapter_label = "LoKr" if getattr(self, "_adapter_type", None) == "lokr" else "LoRA"\n'
+        if anchor not in controls_text:
+            raise RuntimeError(f"Could not find LoRA toggle status anchor in {controls_path}")
+        controls_text = controls_text.replace(anchor, sync_toggle + anchor, 1)
+        changed = True
+    sync_scale = (
+        '            sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+        "            if callable(sync_mlx):\n"
+        '                sync_mlx(reason="lora_scale_changed", force=True)\n'
+    )
+    if 'sync_mlx(reason="lora_scale_changed", force=True)' not in controls_text:
+        anchor = '            return (\n                f"✅ LoRA scale ({effective_name}): {scale_value:.2f}"\n'
+        if anchor not in controls_text:
+            raise RuntimeError(f"Could not find LoRA scale return anchor in {controls_path}")
+        controls_text = controls_text.replace(anchor, sync_scale + anchor, 1)
+        changed = True
+    sync_active = (
+        '    sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+        "    if callable(sync_mlx):\n"
+        '        sync_mlx(reason="lora_active_adapter_changed", force=True)\n'
+    )
+    if sync_active not in controls_text:
+        anchor = '    return f"✅ Active LoRA adapter: {adapter_name}"\n'
+        if anchor not in controls_text:
+            raise RuntimeError(f"Could not find active LoRA adapter return anchor in {controls_path}")
+        controls_text = controls_text.replace(anchor, sync_active + anchor, 1)
+        changed = True
+    if changed:
+        controls_path.write_text(controls_text, encoding="utf-8")
+
+    return changed
+
+
 def main() -> None:
     if not (VENDOR_DIR / "train.py").is_file():
         raise SystemExit(f"ACE-Step vendor checkout is missing: {VENDOR_DIR}")
@@ -478,6 +756,7 @@ def main() -> None:
         "mps_training_auto_precision" if patch_mps_training_auto_precision() else "",
         "bitsandbytes_non_cuda_warning" if patch_bitsandbytes_non_cuda_warning() else "",
         "mlx_single_seed_propagation" if patch_mlx_single_seed_propagation() else "",
+        "mlx_effective_lora_sync" if patch_mlx_effective_lora_sync() else "",
     ]
     applied = [item for item in changed if item]
     if applied:

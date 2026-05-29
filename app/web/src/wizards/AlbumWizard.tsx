@@ -41,7 +41,7 @@ import {
 } from "@/lib/api";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, emptyLoraSelection, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
-import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useSettingsStore } from "@/store/settings";
@@ -275,7 +275,7 @@ export function AlbumWizard() {
       album_writer_mode: "per_track_writer_loop",
       language: "en",
       song_model: "acestep-v15-xl-sft",
-      audio_backend: "mlx",
+      audio_backend: DEFAULT_AUDIO_BACKEND,
       song_model_strategy: "single_model_album",
       quality_profile: "chart_master",
       style_profile: "auto",

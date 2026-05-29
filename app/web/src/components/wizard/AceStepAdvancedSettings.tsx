@@ -68,7 +68,6 @@ const SELECTS = {
   ],
   device: [
     ["auto", "Auto"],
-    ["mps", "Apple MPS"],
     ["cuda", "CUDA"],
     ["cpu", "CPU"],
   ],

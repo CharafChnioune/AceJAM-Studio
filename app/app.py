@@ -799,6 +799,11 @@ def _default_audio_backend() -> str:
 
 
 ACE_AUDIO_BACKEND_DEFAULT = _default_audio_backend()
+ACEJAM_MLX_VOCAL_CLARITY_GUARD = _env_flag("ACEJAM_MLX_VOCAL_CLARITY_GUARD", default=False)
+
+
+def _legacy_mps_audio_backend_allowed() -> bool:
+    return parse_bool(os.environ.get("ACEJAM_ALLOW_MPS_AUDIO_BACKEND"), False)
 
 
 def _truthy_backend_flag(value: Any) -> bool | None:
@@ -818,19 +823,20 @@ def _normalize_audio_backend(value: Any = None, use_mlx_dit: Any = None) -> str:
     """Normalize the user-facing audio runtime choice.
 
     `lm_backend` controls ACE-Step's language model path. Audio DiT/VAE runtime
-    needs a separate switch so Apple Silicon can default to native MLX while
-    keeping PyTorch/MPS available as an explicit compatibility choice.
+    needs a separate switch. AceJAM is MLX-only in the UI; old PyTorch/MPS
+    payload values are treated as legacy aliases unless the hidden
+    ACEJAM_ALLOW_MPS_AUDIO_BACKEND compatibility flag is enabled.
     """
     raw = str(value or "").strip().lower().replace("-", "_")
     if raw in {"mlx", "native_mlx", "mlx_dit", "mlx_audio"}:
         return "mlx" if _IS_APPLE_SILICON else "mps_torch"
     if raw in {"mps", "mps_torch", "torch", "pytorch", "pt"}:
-        return "mps_torch"
+        return "mps_torch" if _legacy_mps_audio_backend_allowed() else _default_audio_backend()
     flag = _truthy_backend_flag(use_mlx_dit)
     if flag is True:
         return "mlx" if _IS_APPLE_SILICON else "mps_torch"
     if flag is False:
-        return "mps_torch"
+        return "mps_torch" if _legacy_mps_audio_backend_allowed() else _default_audio_backend()
     return _default_audio_backend()
 
 
@@ -840,9 +846,30 @@ def _audio_backend_uses_mlx(params: dict[str, Any] | None) -> bool:
     return _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit")) == "mlx"
 
 
+def _mlx_vocal_clarity_guard_required(params: dict[str, Any]) -> bool:
+    if not ACEJAM_MLX_VOCAL_CLARITY_GUARD:
+        return False
+    if not _IS_APPLE_SILICON:
+        return False
+    if normalize_task_type(params.get("task_type")) != "text2music":
+        return False
+    if parse_bool(params.get("instrumental"), False):
+        return False
+    if parse_bool(params.get("allow_mlx_vocal_experimental"), False):
+        return False
+    lyrics = str(params.get("lyrics") or "").strip()
+    if lyrics and lyrics.lower() != "[instrumental]":
+        return True
+    language = str(params.get("vocal_language") or params.get("language") or "").strip().lower()
+    return bool(language and language not in {"none", "instrumental", "no-vocal", "novocal"})
+
+
 def _apply_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dict[str, Any]:
     backend = _normalize_audio_backend(params.get("audio_backend"), params.get("use_mlx_dit"))
     changed: list[str] = []
+    warnings = list(params.get("payload_warnings") or [])
+    params["allow_mlx_lora_experimental"] = True
+    params["allow_mlx_vocal_experimental"] = True
     if params.get("audio_backend") != backend:
         params["audio_backend"] = backend
         changed.append(f"audio_backend={backend}")
@@ -857,10 +884,10 @@ def _apply_audio_backend_defaults(params: dict[str, Any], *, source: str) -> dic
         params["dtype"] = "float32"
         changed.append("dtype=float32")
     if changed:
-        warnings = list(params.get("payload_warnings") or [])
         warning = f"audio_backend_defaults:{source}:{','.join(changed)}"
         if warning not in warnings:
             warnings.append(warning)
+    if warnings:
         params["payload_warnings"] = warnings
     return params
 
@@ -1231,8 +1258,8 @@ def _apply_mac_mlx_xl_repetition_guard(params: dict[str, Any], *, source: str) -
 
     ACE-Step issue #1191 reports severe Mac XL Turbo/SFT artifacts when DCW and
     LM-code conditioning strength are both active. Keep this as an app-side guard
-    until upstream lands a real model/runtime fix. MPS/Torch is the default
-    quality backend; this only protects explicit MLX selections.
+    until upstream lands a real model/runtime fix. MLX is now the verified
+    quality backend; this protects MLX renders when the guard is enabled.
     """
     if not parse_bool(os.environ.get("ACEJAM_MAC_MLX_XL_REPETITION_GUARD"), True):
         return params
@@ -3463,8 +3490,8 @@ def _apply_verified_vocal_audio_backend_defaults(params: dict[str, Any], *, sour
     """Backwards-compatible wrapper for old callers.
 
     Earlier builds forced vocal SFT/Base renders onto PyTorch/MPS here. The UI
-    now exposes the audio runtime explicitly, with MLX as default and MPS/Torch
-    as the fallback.
+    now uses MLX-only audio renders; legacy MPS/Torch is internal compatibility
+    only behind ACEJAM_ALLOW_MPS_AUDIO_BACKEND.
     """
     return _apply_audio_backend_defaults(params, source=source)
 
@@ -8781,6 +8808,8 @@ def _parse_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "dtype": str(payload.get("dtype") or "auto").strip() or "auto",
         "vae_checkpoint": str(payload.get("vae_checkpoint") or "official").strip() or "official",
         "audio_backend": _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit")),
+        "allow_mlx_lora_experimental": parse_bool(payload.get("allow_mlx_lora_experimental"), False),
+        "allow_mlx_vocal_experimental": parse_bool(payload.get("allow_mlx_vocal_experimental"), False),
         "use_flash_attention": payload.get("use_flash_attention", "auto"),
         "use_mlx_dit": payload.get("use_mlx_dit", "auto"),
         "compile_model": parse_bool(payload.get("compile_model"), False),
@@ -9420,6 +9449,8 @@ def _official_request_payload(params: dict[str, Any], save_dir: Path) -> dict[st
         "lora_trigger_candidates": _jsonable(params.get("lora_trigger_candidates") or []),
         "lora_scale": params.get("lora_scale", DEFAULT_LORA_GENERATION_SCALE),
         "adapter_model_variant": params.get("adapter_model_variant", ""),
+        "allow_mlx_lora_experimental": params.get("allow_mlx_lora_experimental", False),
+        "allow_mlx_vocal_experimental": params.get("allow_mlx_vocal_experimental", False),
         "requested_take_count": params.get("requested_take_count", params.get("batch_size", 1)),
         "actual_runner_batch_size": params.get("actual_runner_batch_size", params.get("batch_size", 1)),
         "memory_policy": _jsonable(params.get("memory_policy") or {}),
@@ -18335,6 +18366,21 @@ def _task_ids_from_payload(body: dict[str, Any]) -> list[str]:
     return []
 
 
+def _audio_backend_runtime_status() -> dict[str, Any]:
+    """Expose the current audio backend safety policy to UI/API consumers."""
+    return {
+        "default_audio_backend": ACE_AUDIO_BACKEND_DEFAULT,
+        "quality_default": "mlx",
+        "mlx_available_on_host": _IS_APPLE_SILICON,
+        "mlx_verified_quality_default": True,
+        "mlx_lora_effective_weight_sync": True,
+        "mlx_lora_default_enabled": True,
+        "mlx_lora_experimental_flag": "",
+        "mlx_vocal_default_enabled": True,
+        "mlx_vocal_experimental_flag": "",
+    }
+
+
 def _runtime_status(request: Request | None = None) -> dict[str, Any]:
     installed_models = _installed_acestep_models()
     installed_lms = _installed_lm_models()
@@ -18388,6 +18434,7 @@ def _runtime_status(request: Request | None = None) -> dict[str, Any]:
         "default_album_planner_ollama_model": DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL,
         "default_album_embedding_model": DEFAULT_ALBUM_EMBEDDING_MODEL,
         "official_runner": _official_runner_status(),
+        "audio_backend": _audio_backend_runtime_status(),
         "pro_quality_policy": pro_quality_policy(),
         "ace_lm": _ace_lm_status_payload(),
         "trainer": training_manager.status(),

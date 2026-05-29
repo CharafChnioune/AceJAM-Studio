@@ -1,11 +1,4 @@
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { DEFAULT_AUDIO_BACKEND, normalizeAudioBackend, type AudioBackend } from "@/lib/audioBackend";
 
 export function AudioBackendSelector({
@@ -16,20 +9,15 @@ export function AudioBackendSelector({
   onChange: (value: AudioBackend) => void;
 }) {
   const normalized = normalizeAudioBackend(value || DEFAULT_AUDIO_BACKEND);
+  if (normalized !== DEFAULT_AUDIO_BACKEND) onChange(DEFAULT_AUDIO_BACKEND);
   return (
     <div className="space-y-1.5">
       <Label>Audio backend</Label>
-      <Select value={normalized} onValueChange={(next) => onChange(normalizeAudioBackend(next))}>
-        <SelectTrigger>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="mps_torch">MPS/Torch (aanbevolen kwaliteit)</SelectItem>
-          <SelectItem value="mlx">MLX (sneller / experimenteel)</SelectItem>
-        </SelectContent>
-      </Select>
+      <div className="flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm font-medium">
+        MLX
+      </div>
       <p className="text-xs text-muted-foreground">
-        MPS/Torch is standaard voor betere audio; MLX blijft beschikbaar als snelle test-backend.
+        MLX is de enige audio-runtime in deze UI en wordt voor alle ACE-Step renders gebruikt.
       </p>
     </div>
   );
