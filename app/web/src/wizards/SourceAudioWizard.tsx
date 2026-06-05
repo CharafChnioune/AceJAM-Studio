@@ -102,7 +102,9 @@ interface BaseSourceForm {
   lora_adapter_name: string;
   use_lora_trigger: boolean;
   lora_trigger_tag: string;
+  lora_trigger_tags: string[];
   lora_scale: number;
+  lora_adapters: LoraSelection["lora_adapters"];
   adapter_model_variant: string;
   adapter_song_model: string;
 }
@@ -152,7 +154,9 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       lora_adapter_name: "",
       use_lora_trigger: false,
       lora_trigger_tag: "",
+      lora_trigger_tags: [],
       lora_scale: DEFAULT_LORA_SCALE,
+      lora_adapters: [],
       adapter_model_variant: "",
       adapter_song_model: "",
     }),
@@ -234,7 +238,9 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     form.setValue("lora_adapter_name", selection.lora_adapter_name, { shouldValidate: true });
     form.setValue("use_lora_trigger", selection.use_lora_trigger, { shouldValidate: true });
     form.setValue("lora_trigger_tag", selection.lora_trigger_tag, { shouldValidate: true });
+    form.setValue("lora_trigger_tags", selection.lora_trigger_tags, { shouldValidate: true });
     form.setValue("lora_scale", selection.lora_scale, { shouldValidate: true });
+    form.setValue("lora_adapters", selection.lora_adapters, { shouldValidate: true });
     form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
     form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
     if (selection.use_lora && selection.adapter_song_model) {

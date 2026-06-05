@@ -1,5 +1,6 @@
 """AceJAM training bootstrap: patches torchaudio and variant map before ACE-Step training."""
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -230,7 +231,60 @@ _target = _VENDOR / "acestep" / "training_v2" / "cli" / "train_fixed.py"
 if not _target.is_file():
     print(f"[FAIL] Training CLI not found: {_target}", file=sys.stderr)
     sys.exit(1)
-_user_args = sys.argv[1:]
+
+
+def _normalize_mlx_training_args(args):
+    normalized = list(args)
+    if "--device" not in normalized:
+        return normalized
+    index = normalized.index("--device")
+    if index + 1 >= len(normalized):
+        return normalized
+    requested = str(normalized[index + 1]).strip().lower()
+    if requested not in {"mlx", "native_mlx", "mlx_training"}:
+        return normalized
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        print("[FAIL] MLX LoRA training requires macOS Apple Silicon.", file=sys.stderr)
+        sys.exit(2)
+    try:
+        import mlx.core  # noqa: F401
+    except Exception as exc:
+        print(f"[FAIL] MLX LoRA training requested but mlx is unavailable: {exc}", file=sys.stderr)
+        sys.exit(2)
+    os.environ["ACEJAM_TRAINING_BACKEND"] = "mlx"
+    os.environ["ACESTEP_LM_BACKEND"] = "mlx"
+    _install_mlx_training_compat()
+    print(
+        "[acejam] MLX LoRA training requested; ACE-Step trainer will use the Apple GPU compatibility path internally.",
+        flush=True,
+    )
+    return normalized
+
+
+def _install_mlx_training_compat():
+    # ACE-Step's current LoRA trainer is Lightning/Torch based. It accepts
+    # device strings through detect_gpu(), so keep AceJAM's public contract as
+    # "mlx" while mapping to the Apple GPU device at the lowest possible layer.
+    try:
+        import acestep.training_v2.gpu_utils as _gpu_utils
+
+        _original_detect_gpu = _gpu_utils.detect_gpu
+
+        def _acejam_detect_gpu(requested_device="auto", requested_precision="auto"):
+            requested = str(requested_device or "auto").strip().lower()
+            if requested in {"mlx", "native_mlx", "mlx_training"}:
+                info = _original_detect_gpu(requested_device="mps", requested_precision=requested_precision)
+                info.name = "Apple MLX"
+                return info
+            return _original_detect_gpu(requested_device=requested_device, requested_precision=requested_precision)
+
+        _gpu_utils.detect_gpu = _acejam_detect_gpu
+    except Exception as exc:
+        print(f"[FAIL] Could not install MLX LoRA training compatibility patch: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+_user_args = _normalize_mlx_training_args(sys.argv[1:])
 sys.argv = [str(_target)] + _user_args
 if "--yes" in _user_args or "-y" in _user_args:
     try:

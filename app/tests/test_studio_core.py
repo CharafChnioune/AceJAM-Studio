@@ -286,7 +286,7 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(
             official_fields_used(
                 {
-                    "dcw_enabled": True,
+                    "dcw_enabled": False,
                     "dcw_mode": "double",
                     "dcw_scaler": 0.05,
                     "dcw_high_scaler": 0.02,
@@ -306,7 +306,7 @@ class StudioCoreTest(unittest.TestCase):
         self.assertIn("lm_temperature", official_fields_used({"lm_temperature": 1.1}))
         self.assertIn("lm_repetition_penalty", official_fields_used({"lm_repetition_penalty": 1.2}))
         self.assertIn("offload_to_cpu", official_fields_used({"offload_to_cpu": True}))
-        self.assertIn("dcw_enabled", official_fields_used({"dcw_enabled": False}))
+        self.assertIn("dcw_enabled", official_fields_used({"dcw_enabled": True}))
         self.assertIn("retake_variance", official_fields_used({"retake_variance": 0.2}))
         self.assertIn("flow_edit_morph", official_fields_used({"flow_edit_morph": True}))
 

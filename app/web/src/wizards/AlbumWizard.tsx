@@ -105,10 +105,12 @@ interface AlbumTrack {
   use_lora_trigger?: boolean;
   lora_scale?: number;
   lora_trigger_tag?: string;
+  lora_trigger_tags?: string[];
   lora_trigger_source?: string;
   lora_trigger_aliases?: string[];
   lora_trigger_candidates?: string[];
   lora_trigger_applied?: boolean;
+  lora_adapters?: LoraSelection["lora_adapters"];
   adapter_model_variant?: string;
   adapter_song_model?: string;
   lora_ignored_reason?: string;
@@ -197,7 +199,9 @@ const ALBUM_LEVEL_LORA_KEYS = [
   "lora_adapter_name",
   "use_lora_trigger",
   "lora_trigger_tag",
+  "lora_trigger_tags",
   "lora_scale",
+  "lora_adapters",
   "adapter_model_variant",
   "adapter_song_model",
 ] as const;
@@ -208,6 +212,7 @@ function trackHasExplicitLoraChoice(track: AlbumTrack): boolean {
     track.lora_adapter_path ||
       track.lora_adapter_name ||
       track.lora_trigger_tag ||
+      (Array.isArray(track.lora_adapters) && track.lora_adapters.length > 0) ||
       track.adapter_model_variant ||
       track.adapter_song_model ||
       typeof track.lora_scale === "number",
@@ -236,9 +241,12 @@ function albumTrackLoraLabel(track: AlbumTrack): string {
     return `LoRA genegeerd · ${track.ignored_lora_adapter_name || track.lora_adapter_name || "adapter"}`;
   }
   if (!track.use_lora || !track.lora_adapter_path) return "";
+  const count = Array.isArray(track.lora_adapters) ? track.lora_adapters.length : 0;
   return [
-    track.lora_adapter_name || "LoRA",
-    track.lora_trigger_tag,
+    count > 1 ? `${count} LoRAs` : track.lora_adapter_name || "LoRA",
+    Array.isArray(track.lora_trigger_tags) && track.lora_trigger_tags.length
+      ? track.lora_trigger_tags.join(" + ")
+      : track.lora_trigger_tag,
     typeof track.lora_scale === "number" ? `${Math.round(track.lora_scale * 100)}%` : "",
   ].filter(Boolean).join(" · ");
 }
@@ -286,7 +294,9 @@ export function AlbumWizard() {
       lora_adapter_name: "",
       use_lora_trigger: false,
       lora_trigger_tag: "",
+      lora_trigger_tags: [],
       lora_scale: DEFAULT_LORA_SCALE,
+      lora_adapters: [],
       adapter_model_variant: "",
       adapter_song_model: "",
       auto_song_art: false,
@@ -453,7 +463,7 @@ export function AlbumWizard() {
     const migratedTracks = migrateLegacyLoraToTracks(currentTracks, legacyLora);
     const empty = emptyLoraSelection();
     for (const key of ALBUM_LEVEL_LORA_KEYS) {
-      form.setValue(key, empty[key], { shouldDirty: true, shouldValidate: true });
+      form.setValue(key as keyof AlbumFormValues, empty[key] as never, { shouldDirty: true, shouldValidate: true });
     }
     updatePlanTracks(migratedTracks);
     draftState.saveNow({
@@ -905,7 +915,12 @@ export function AlbumWizard() {
                           value={t.duration ?? values.track_duration}
                           onChange={(e) => {
                             const next = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
-                            next[idx] = { ...next[idx], duration: Number(e.target.value) || values.track_duration };
+                            next[idx] = {
+                              ...next[idx],
+                              duration: Number(e.target.value) || values.track_duration,
+                              duration_locked: true,
+                              duration_source: "manual_track",
+                            };
                             updatePlanTracks(next);
                           }}
                         />

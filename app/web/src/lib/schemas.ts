@@ -57,6 +57,18 @@ const optionalStringArray = z
     return undefined;
   });
 
+const loraAdapterSelectionSchema = z.object({
+  path: z.string().default(""),
+  name: z.string().default(""),
+  lora_adapter_path: z.string().default(""),
+  lora_adapter_name: z.string().default(""),
+  use_lora_trigger: z.boolean().default(false),
+  lora_trigger_tag: z.string().default(""),
+  lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
+  adapter_model_variant: z.string().default(""),
+  adapter_song_model: z.string().default(""),
+}).passthrough();
+
 // ---- Simple ----
 
 export const simpleSchema = z.object({
@@ -84,7 +96,9 @@ export const simpleSchema = z.object({
   lora_adapter_name: z.string().default(""),
   use_lora_trigger: z.boolean().default(false),
   lora_trigger_tag: z.string().default(""),
+  lora_trigger_tags: z.array(z.string()).default([]),
   lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
+  lora_adapters: z.array(loraAdapterSelectionSchema).default([]),
   adapter_model_variant: z.string().default(""),
   adapter_song_model: z.string().default(""),
   auto_song_art: z.boolean().default(false),
@@ -121,7 +135,9 @@ export const simpleDefaults: SimpleFormValues = {
   lora_adapter_name: "",
   use_lora_trigger: false,
   lora_trigger_tag: "",
+  lora_trigger_tags: [],
   lora_scale: DEFAULT_LORA_SCALE,
+  lora_adapters: [],
   adapter_model_variant: "",
   adapter_song_model: "",
   auto_song_art: false,
@@ -210,6 +226,8 @@ export const albumTrackSchema = z.object({
   artist_name: optionalString,
   role: optionalString,
   duration: optionalNumber,
+  duration_locked: z.boolean().optional(),
+  duration_source: optionalString,
   caption: optionalString,
   tags: tagsField,
   lyrics: optionalString,
@@ -237,7 +255,9 @@ export const albumTrackSchema = z.object({
   lora_trigger_source: optionalString,
   lora_trigger_aliases: z.array(z.string()).optional(),
   lora_trigger_candidates: z.array(z.string()).optional(),
+  lora_trigger_tags: z.array(z.string()).optional(),
   lora_trigger_applied: z.boolean().optional(),
+  lora_adapters: z.array(loraAdapterSelectionSchema).optional(),
   adapter_model_variant: optionalString,
   adapter_song_model: optionalString,
   lora_ignored_reason: optionalString,
@@ -273,7 +293,9 @@ export const albumSchema = z.object({
   lora_adapter_name: z.string().default(""),
   use_lora_trigger: z.boolean().default(false),
   lora_trigger_tag: z.string().default(""),
+  lora_trigger_tags: z.array(z.string()).default([]),
   lora_scale: z.number().min(0).max(1).default(DEFAULT_LORA_SCALE),
+  lora_adapters: z.array(loraAdapterSelectionSchema).default([]),
   adapter_model_variant: z.string().default(""),
   adapter_song_model: z.string().default(""),
   auto_song_art: z.boolean().default(false),

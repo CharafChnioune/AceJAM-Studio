@@ -2215,13 +2215,16 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("adapter.generation_loadable === true || adapter.is_loadable === true", lora_lib)
         for label_source in ["adapter.display_name", "adapter.trigger_tag", "adapter.label", "adapter.name"]:
             self.assertIn(label_source, lora_lib)
-        self.assertIn('value={NONE}>Geen LoRA', selector)
+        self.assertIn("MAX_MULTI_LORA_ADAPTERS", selector)
+        self.assertIn("LoRA adapters", selector)
+        self.assertIn("lora_adapters", lora_lib)
+        self.assertIn("SelectedAudioLoraAdapter", lora_lib)
         self.assertIn("getLoraAdapters", selector)
         self.assertIn("isGenerationLoraAdapter", selector)
         self.assertIn("loraTriggerOptions", lora_lib)
         self.assertIn("adapter.generation_trigger_tag", lora_lib)
         self.assertIn("adapter.trigger_aliases", lora_lib)
-        self.assertIn("Trigger tag activeren", selector)
+        self.assertIn("Trigger tags activeren", selector)
         self.assertIn("Wordt opgeslagen/gebruikt als", (web_src / "wizards" / "TrainerWizard.tsx").read_text(encoding="utf-8"))
         self.assertIn("LoRA trigger source", (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8"))
         self.assertIn("songModelFromLoraVariant", lora_lib)
@@ -2244,6 +2247,8 @@ class AppParityTest(unittest.TestCase):
             self.assertIn("lora_adapter_path", text, path.name)
             self.assertIn("use_lora_trigger", text, path.name)
             self.assertIn("lora_trigger_tag", text, path.name)
+            self.assertIn("lora_adapters", text, path.name)
+            self.assertIn("lora_trigger_tags", text, path.name)
             self.assertIn("lora_scale", text, path.name)
             self.assertIn("adapter_model_variant", text, path.name)
             self.assertIn("adapter_song_model", text, path.name)
@@ -2267,6 +2272,8 @@ class AppParityTest(unittest.TestCase):
             "lora_adapter_name",
             "use_lora_trigger",
             "lora_trigger_tag",
+            "lora_trigger_tags",
+            "lora_adapters",
             "lora_scale",
             "adapter_model_variant",
             "adapter_song_model",
@@ -2382,7 +2389,7 @@ class AppParityTest(unittest.TestCase):
 
         class StubTrainingManager:
             def status(self):
-                return {"ready": True, "trainer_device_policy": {"default": "mps", "cpu_blocked": True}}
+                return {"ready": True, "trainer_device_policy": {"default": "mlx", "mlx_only": True, "cpu_blocked": True}}
 
             def list_adapters(self):
                 return [
@@ -2471,7 +2478,7 @@ class AppParityTest(unittest.TestCase):
 
         class StubTrainingManager:
             def resume_job(self, job_id):
-                return {"id": job_id, "state": "queued", "params": {"device": "mps"}}
+                return {"id": job_id, "state": "queued", "params": {"device": "mlx"}}
 
         with patch.object(acejam_app, "training_manager", StubTrainingManager()):
             response = client.post("/api/lora/jobs/resumejob/resume")
@@ -2479,7 +2486,7 @@ class AppParityTest(unittest.TestCase):
         payload = response.json()
         self.assertTrue(payload["success"])
         self.assertEqual(payload["job"]["id"], "resumejob")
-        self.assertEqual(payload["job"]["params"]["device"], "mps")
+        self.assertEqual(payload["job"]["params"]["device"], "mlx")
 
     def test_lora_payload_reaches_generation_and_official_runner(self):
         adapter_path = "/tmp/unit-adapter"
@@ -2522,6 +2529,54 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(request["lora_scale"], 0.65)
         self.assertEqual(request["params"]["seed"], 314)
         self.assertEqual(request["config"]["seeds"], "314")
+
+    def test_multi_lora_payload_is_capped_and_all_triggers_condition_caption(self):
+        adapters = [
+            {
+                "path": f"/tmp/unit-adapter-{index}",
+                "name": name,
+                "lora_trigger_tag": trigger,
+                "adapter_model_variant": "xl_sft",
+                "adapter_song_model": "acestep-v15-xl-sft",
+            }
+            for index, (name, trigger) in enumerate(
+                [
+                    ("2Pac", "2pac"),
+                    ("Dre", "drdre"),
+                    ("Stoupe", "stoupe"),
+                    ("Timbaland", "timbaland"),
+                    ("Overflow", "overflow"),
+                ],
+                start=1,
+            )
+        ]
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            params = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "west coast rap, crisp drums",
+                    "lyrics": "[Verse]\nLine one\n\n[Chorus]\nHook line",
+                    "duration": 30,
+                    "audio_format": "wav32",
+                    "use_lora": True,
+                    "use_lora_trigger": True,
+                    "lora_scale": 1.0,
+                    "lora_adapters": adapters,
+                }
+            )
+
+        self.assertTrue(params["use_lora"])
+        self.assertEqual(params["lora_adapter_count"], acejam_app.MAX_AUDIO_LORA_ADAPTERS)
+        self.assertEqual(params["multi_lora_count"], acejam_app.MAX_AUDIO_LORA_ADAPTERS)
+        self.assertEqual(params["multi_lora_overflow_count"], 1)
+        self.assertEqual(params["lora_adapter_path"], "/tmp/unit-adapter-1")
+        self.assertEqual(params["lora_trigger_tags"], ["pac", "drdre", "stoupe", "timbaland"])
+        for trigger in params["lora_trigger_tags"]:
+            self.assertRegex(params["caption"], rf"(?i)(?<![a-z0-9]){trigger}(?![a-z0-9])")
+        self.assertNotIn("overflow", params["caption"])
+        self.assertIn("multi_lora_capped_to_4_adapters", params["payload_warnings"])
 
     def test_lora_metadata_trigger_is_auto_applied_without_ui_trigger_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3161,6 +3216,25 @@ class AppParityTest(unittest.TestCase):
             any(str(item).startswith("mac_mlx_xl_repetition_guard:parse") for item in normalized["payload_warnings"])
         )
 
+    def test_mlx_text2music_defaults_keep_dcw_disabled(self):
+        with patch.object(acejam_app, "_IS_APPLE_SILICON", True), \
+            patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-sft"}), \
+            patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", acejam_app.ACE_LM_PREFERRED_MODEL}):
+            normalized = acejam_app._parse_generation_payload(
+                {
+                    "task_type": "text2music",
+                    "song_model": "acestep-v15-xl-sft",
+                    "caption": "West Coast hip-hop, crisp English rap vocal, dry upfront vocal",
+                    "lyrics": "[Verse]\nEvery word lands clean in the pocket\n\n[Chorus]\nKeep the vocal clear",
+                    "duration": 30,
+                    "audio_backend": "mlx",
+                    "use_mlx_dit": True,
+                    "lm_backend": "mlx",
+                }
+            )
+
+        self.assertFalse(normalized["dcw_enabled"])
+
     def test_mps_long_lora_memory_guard_uses_docs_guidance_and_disables_dcw(self):
         with tempfile.TemporaryDirectory() as tmp, \
             patch.dict(os.environ, {"ACEJAM_MPS_LONG_LORA_MEMORY_GUARD": "1", "ACEJAM_ALLOW_MPS_AUDIO_BACKEND": "1"}), \
@@ -3788,6 +3862,62 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(data["tracks"][0]["model_results"][0]["generated"])
         self.assertNotIn("payload_gate_non_blocking", data["tracks"][0]["model_results"][0])
         self.assertIn("no album agents will run", " ".join(data["logs"]).lower())
+
+    def test_album_existing_ui_tracks_recover_stale_all_30s_duration(self):
+        logs: list[str] = []
+        tracks = [
+            {"track_number": 1, "title": "Draft One", "duration": 30},
+            {"track_number": 2, "title": "Draft Two", "duration": 30},
+        ]
+
+        repaired = acejam_app._repair_album_ui_track_durations_for_render(
+            tracks,
+            fallback_duration=180,
+            duration_mode="ai_per_track",
+            logs=logs,
+        )
+
+        self.assertEqual([track["duration"] for track in repaired], [180, 180])
+        self.assertEqual(
+            [track["duration_source"] for track in repaired],
+            ["album_fallback_recovered_from_stale_30s_ui", "album_fallback_recovered_from_stale_30s_ui"],
+        )
+        self.assertTrue(any("30s minimum" in line for line in logs))
+
+    def test_album_existing_ui_tracks_respect_locked_30s_duration(self):
+        logs: list[str] = []
+        tracks = [
+            {"track_number": 1, "title": "Locked Intro", "duration": 30, "duration_locked": True},
+            {"track_number": 2, "title": "Short Outro", "duration": 30},
+        ]
+
+        repaired = acejam_app._repair_album_ui_track_durations_for_render(
+            tracks,
+            fallback_duration=180,
+            duration_mode="ai_per_track",
+            logs=logs,
+        )
+
+        self.assertEqual([track["duration"] for track in repaired], [30, 30])
+        self.assertFalse(logs)
+
+    def test_album_existing_ui_tracks_fixed_duration_forces_fallback(self):
+        logs: list[str] = []
+        tracks = [
+            {"track_number": 1, "title": "Intro", "duration": 90},
+            {"track_number": 2, "title": "Single", "duration": 210},
+        ]
+
+        repaired = acejam_app._repair_album_ui_track_durations_for_render(
+            tracks,
+            fallback_duration=180,
+            duration_mode="fixed",
+            logs=logs,
+        )
+
+        self.assertEqual([track["duration"] for track in repaired], [180, 180])
+        self.assertEqual([track["duration_source"] for track in repaired], ["fixed_duration_mode", "fixed_duration_mode"])
+        self.assertTrue(any("forcing all UI tracks" in line for line in logs))
 
     def test_album_lora_model_mismatch_is_ignored_per_track(self):
         calls = []

@@ -117,7 +117,9 @@ type GlobalDefaults = Pick<
   | "lora_adapter_name"
   | "use_lora_trigger"
   | "lora_trigger_tag"
+  | "lora_trigger_tags"
   | "lora_scale"
+  | "lora_adapters"
   | "adapter_model_variant"
   | "adapter_song_model"
 >;
@@ -343,7 +345,9 @@ export function BatchSongsWizard() {
       lora_adapter_name: selection.lora_adapter_name,
       use_lora_trigger: selection.use_lora_trigger,
       lora_trigger_tag: selection.lora_trigger_tag,
+      lora_trigger_tags: selection.lora_trigger_tags,
       lora_scale: selection.lora_scale,
+      lora_adapters: selection.lora_adapters,
       adapter_model_variant: selection.adapter_model_variant,
       adapter_song_model: selection.adapter_song_model,
     };
@@ -404,7 +408,9 @@ export function BatchSongsWizard() {
       lora_adapter_name: selectedSong.lora_adapter_name,
       use_lora_trigger: selectedSong.use_lora_trigger,
       lora_trigger_tag: selectedSong.lora_trigger_tag,
+      lora_trigger_tags: selectedSong.lora_trigger_tags,
       lora_scale: selectedSong.lora_scale,
+      lora_adapters: selectedSong.lora_adapters,
       adapter_model_variant: selectedSong.adapter_model_variant,
       adapter_song_model: selectedSong.adapter_song_model,
     };

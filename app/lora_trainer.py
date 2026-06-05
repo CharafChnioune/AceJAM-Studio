@@ -1602,6 +1602,21 @@ def _apple_silicon_mps_available() -> bool:
     return sys.platform == "darwin" and platform.machine() == "arm64" and _torch_mps_available()
 
 
+def _apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def _mlx_available() -> bool:
+    if not _apple_silicon():
+        return False
+    try:
+        import mlx.core  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 def _allow_cpu_training_on_apple_silicon() -> bool:
     return parse_bool(os.environ.get("ACEJAM_ALLOW_CPU_TRAINING"), False)
 
@@ -1612,8 +1627,13 @@ def _allow_mps_fp16_training() -> bool:
 
 def default_training_device(requested: Any = None) -> str:
     device = str(requested or "auto").strip().lower()
-    if device == "metal":
-        device = "mps"
+    if _apple_silicon():
+        if device in {"", "auto", "metal", "mps", "mlx", "native_mlx", "mlx_training", "cpu", "cuda", "xpu"}:
+            if not _mlx_available():
+                raise RuntimeError(
+                    "MLX LoRA training requires macOS Apple Silicon with the mlx package installed."
+                )
+            return "mlx"
     if device and device != "auto":
         if device == "cpu" and _apple_silicon_mps_available() and not _allow_cpu_training_on_apple_silicon():
             raise RuntimeError(
@@ -1642,6 +1662,8 @@ def training_precision_for_device(device: Any, requested: Any = None) -> str:
     }
     precision = aliases.get(precision, precision or "auto")
     device_type = str(device or "").split(":", 1)[0].lower()
+    if device_type == "mlx":
+        return "fp32"
     if device_type == "mps" and not _allow_mps_fp16_training():
         return "fp32"
     return precision
@@ -1649,10 +1671,13 @@ def training_precision_for_device(device: Any, requested: Any = None) -> str:
 
 def training_device_policy() -> dict[str, Any]:
     apple_mps = _apple_silicon_mps_available()
-    cpu_allowed = (not apple_mps) or _allow_cpu_training_on_apple_silicon()
+    apple_mlx = _mlx_available()
+    cpu_allowed = (not _apple_silicon()) or _allow_cpu_training_on_apple_silicon()
     return {
         "default": default_training_device("auto"),
-        "apple_silicon": sys.platform == "darwin" and platform.machine() == "arm64",
+        "apple_silicon": _apple_silicon(),
+        "mlx_only": _apple_silicon(),
+        "mlx_available": apple_mlx,
         "mps_available": apple_mps,
         "cuda_available": _torch_cuda_available(),
         "cpu_allowed": cpu_allowed,

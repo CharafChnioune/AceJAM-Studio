@@ -1,7 +1,12 @@
 import type { LoraAdapter } from "@/lib/api";
 
-export interface LoraSelection {
-  use_lora: boolean;
+export const MAX_MULTI_LORA_ADAPTERS = 4;
+export const DEFAULT_LORA_SCALE = 1.0;
+
+export interface SelectedAudioLoraAdapter {
+  [key: string]: unknown;
+  path: string;
+  name: string;
   lora_adapter_path: string;
   lora_adapter_name: string;
   use_lora_trigger: boolean;
@@ -11,7 +16,18 @@ export interface LoraSelection {
   adapter_song_model: string;
 }
 
-export const DEFAULT_LORA_SCALE = 1.0;
+export interface LoraSelection {
+  use_lora: boolean;
+  lora_adapter_path: string;
+  lora_adapter_name: string;
+  use_lora_trigger: boolean;
+  lora_trigger_tag: string;
+  lora_trigger_tags: string[];
+  lora_scale: number;
+  lora_adapters: SelectedAudioLoraAdapter[];
+  adapter_model_variant: string;
+  adapter_song_model: string;
+}
 
 export function emptyLoraSelection(): LoraSelection {
   return {
@@ -20,7 +36,9 @@ export function emptyLoraSelection(): LoraSelection {
     lora_adapter_name: "",
     use_lora_trigger: false,
     lora_trigger_tag: "",
+    lora_trigger_tags: [],
     lora_scale: DEFAULT_LORA_SCALE,
+    lora_adapters: [],
     adapter_model_variant: "",
     adapter_song_model: "",
   };
@@ -99,10 +117,29 @@ export function loraSelectionFromAdapter(
   adapter: LoraAdapter,
   scale = DEFAULT_LORA_SCALE,
 ): LoraSelection {
+  const entry = loraAdapterEntryFromAdapter(adapter, scale);
+  return normalizeLoraSelection({
+    use_lora: true,
+    lora_adapter_path: entry.lora_adapter_path,
+    lora_adapter_name: entry.lora_adapter_name,
+    use_lora_trigger: entry.use_lora_trigger,
+    lora_trigger_tag: entry.lora_trigger_tag,
+    lora_scale: Number.isFinite(scale) ? scale : DEFAULT_LORA_SCALE,
+    adapter_model_variant: entry.adapter_model_variant,
+    adapter_song_model: entry.adapter_song_model,
+    lora_adapters: [entry],
+  });
+}
+
+export function loraAdapterEntryFromAdapter(
+  adapter: LoraAdapter,
+  scale = DEFAULT_LORA_SCALE,
+): SelectedAudioLoraAdapter {
   const trigger = loraTriggerOptions(adapter)[0] || "";
   return {
-    use_lora: true,
+    path: adapter.path,
     lora_adapter_path: adapter.path,
+    name: loraAdapterLabel(adapter),
     lora_adapter_name: loraAdapterLabel(adapter),
     use_lora_trigger: Boolean(trigger),
     lora_trigger_tag: trigger,
@@ -112,26 +149,81 @@ export function loraSelectionFromAdapter(
   };
 }
 
+function normalizeAdapterEntry(
+  entry: Partial<SelectedAudioLoraAdapter> | undefined,
+  fallbackScale: number,
+): SelectedAudioLoraAdapter | null {
+  const path = String(entry?.path || entry?.lora_adapter_path || "").trim();
+  if (!path) return null;
+  const trigger = String(entry?.lora_trigger_tag || "").trim();
+  const scale = Number(entry?.lora_scale ?? fallbackScale);
+  return {
+    path,
+    lora_adapter_path: path,
+    name: String(entry?.name || entry?.lora_adapter_name || "").trim(),
+    lora_adapter_name: String(entry?.lora_adapter_name || entry?.name || "").trim(),
+    use_lora_trigger: Boolean(trigger && entry?.use_lora_trigger !== false),
+    lora_trigger_tag: trigger,
+    lora_scale: Number.isFinite(scale) ? scale : fallbackScale,
+    adapter_model_variant: String(entry?.adapter_model_variant || "").trim(),
+    adapter_song_model: String(entry?.adapter_song_model || "").trim(),
+  };
+}
+
 export function normalizeLoraSelection(
   selection: Partial<LoraSelection> | undefined,
 ): LoraSelection {
-  const path = String(selection?.lora_adapter_path || "").trim();
-  const use = Boolean(selection?.use_lora && path);
   const rawScale = Number(selection?.lora_scale ?? DEFAULT_LORA_SCALE);
+  const scale = Number.isFinite(rawScale) ? rawScale : DEFAULT_LORA_SCALE;
+  const adapterEntries = Array.isArray(selection?.lora_adapters)
+    ? selection.lora_adapters
+        .map((entry) => normalizeAdapterEntry(entry, scale))
+        .filter((entry): entry is SelectedAudioLoraAdapter => Boolean(entry))
+        .slice(0, MAX_MULTI_LORA_ADAPTERS)
+    : [];
+  const legacyPath = String(selection?.lora_adapter_path || "").trim();
+  if (legacyPath && !adapterEntries.some((entry) => entry.path === legacyPath)) {
+    const legacy = normalizeAdapterEntry(
+      {
+        path: legacyPath,
+        lora_adapter_name: selection?.lora_adapter_name,
+        use_lora_trigger: selection?.use_lora_trigger,
+        lora_trigger_tag: selection?.lora_trigger_tag,
+        lora_scale: scale,
+        adapter_model_variant: selection?.adapter_model_variant,
+        adapter_song_model: selection?.adapter_song_model,
+      },
+      scale,
+    );
+    if (legacy) adapterEntries.unshift(legacy);
+  }
+  const first = adapterEntries[0];
+  const use = Boolean(selection?.use_lora && first);
   const trigger = String(selection?.lora_trigger_tag || "").trim();
-  const useTrigger = Boolean(use && trigger && selection?.use_lora_trigger !== false);
+  const triggerTags = adapterEntries
+    .map((entry) => String(entry.lora_trigger_tag || "").trim())
+    .filter(Boolean)
+    .filter((tag, index, all) => all.findIndex((item) => item.toLowerCase() === tag.toLowerCase()) === index);
+  const primaryTrigger = trigger || first?.lora_trigger_tag || "";
+  const useTrigger = Boolean(use && triggerTags.length > 0 && selection?.use_lora_trigger !== false);
   return {
     use_lora: use,
-    lora_adapter_path: use ? path : "",
-    lora_adapter_name: use ? String(selection?.lora_adapter_name || "").trim() : "",
+    lora_adapter_path: use ? first.path : "",
+    lora_adapter_name: use
+      ? adapterEntries.length > 1
+        ? `${adapterEntries.length} LoRAs`
+        : String(first.lora_adapter_name || first.name || "").trim()
+      : "",
     use_lora_trigger: useTrigger,
-    lora_trigger_tag: use ? trigger : "",
-    lora_scale: use && Number.isFinite(rawScale) ? rawScale : DEFAULT_LORA_SCALE,
+    lora_trigger_tag: use ? primaryTrigger : "",
+    lora_trigger_tags: use ? triggerTags : [],
+    lora_scale: use ? scale : DEFAULT_LORA_SCALE,
+    lora_adapters: use ? adapterEntries : [],
     adapter_model_variant: use
-      ? String(selection?.adapter_model_variant || "").trim()
+      ? String(first.adapter_model_variant || selection?.adapter_model_variant || "").trim()
       : "",
     adapter_song_model: use
-      ? String(selection?.adapter_song_model || "").trim()
+      ? String(first.adapter_song_model || selection?.adapter_song_model || "").trim()
       : "",
   };
 }

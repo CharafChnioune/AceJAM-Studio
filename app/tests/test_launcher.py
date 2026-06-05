@@ -42,6 +42,11 @@ class LauncherScriptTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         bootstrap = (root / "app" / "_acejam_train_bootstrap.py").read_text(encoding="utf-8")
 
+        self.assertIn("def _normalize_mlx_training_args", bootstrap)
+        self.assertIn('requested not in {"mlx", "native_mlx", "mlx_training"}', bootstrap)
+        self.assertIn('os.environ["ACEJAM_TRAINING_BACKEND"] = "mlx"', bootstrap)
+        self.assertIn("def _install_mlx_training_compat", bootstrap)
+        self.assertIn('info.name = "Apple MLX"', bootstrap)
         self.assertIn("sys.argv = [str(_target)] + _user_args", bootstrap)
         self.assertIn("_config_panel.confirm_start = lambda skip=False: True", bootstrap)
 

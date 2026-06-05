@@ -168,7 +168,7 @@ export const ACE_STEP_ADVANCED_DEFAULTS: Partial<Record<AceStepAdvancedField, un
   cfg_interval_start: 0,
   cfg_interval_end: 1,
   timesteps: "",
-  dcw_enabled: true,
+  dcw_enabled: false,
   dcw_mode: "double",
   dcw_scaler: 0.05,
   dcw_high_scaler: 0.02,

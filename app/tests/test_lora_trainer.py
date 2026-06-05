@@ -140,30 +140,35 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertEqual(model_from_variant("turbo"), "acestep-v15-turbo")
         self.assertEqual(model_from_variant("xl_sft"), "acestep-v15-xl-sft")
 
-    def test_default_training_device_prefers_mps_on_darwin_auto(self):
+    def test_default_training_device_prefers_mlx_on_darwin_auto(self):
         with patch("lora_trainer.sys.platform", "darwin"), \
             patch("lora_trainer.platform.machine", return_value="arm64"), \
+            patch("lora_trainer._mlx_available", return_value=True), \
             patch("lora_trainer._torch_mps_available", return_value=True), \
             patch("lora_trainer._torch_cuda_available", return_value=True):
-            self.assertEqual(default_training_device("auto"), "mps")
+            self.assertEqual(default_training_device("auto"), "mlx")
+            self.assertEqual(default_training_device("mps"), "mlx")
+            self.assertEqual(default_training_device("metal"), "mlx")
 
-    def test_default_training_device_blocks_cpu_on_apple_silicon_mps(self):
+    def test_default_training_device_normalizes_cpu_to_mlx_on_apple_silicon(self):
         with patch("lora_trainer.sys.platform", "darwin"), \
             patch("lora_trainer.platform.machine", return_value="arm64"), \
+            patch("lora_trainer._mlx_available", return_value=True), \
             patch("lora_trainer._torch_mps_available", return_value=True), \
             patch.dict("lora_trainer.os.environ", {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "CPU LoRA training is blocked"):
-                default_training_device("cpu")
+            self.assertEqual(default_training_device("cpu"), "mlx")
             policy = training_device_policy()
             self.assertTrue(policy["cpu_blocked"])
-            self.assertEqual(policy["default"], "mps")
+            self.assertTrue(policy["mlx_only"])
+            self.assertEqual(policy["default"], "mlx")
 
-    def test_default_training_device_allows_cpu_with_debug_override(self):
+    def test_default_training_device_keeps_mlx_even_with_cpu_debug_override(self):
         with patch("lora_trainer.sys.platform", "darwin"), \
             patch("lora_trainer.platform.machine", return_value="arm64"), \
+            patch("lora_trainer._mlx_available", return_value=True), \
             patch("lora_trainer._torch_mps_available", return_value=True), \
             patch.dict("lora_trainer.os.environ", {"ACEJAM_ALLOW_CPU_TRAINING": "1"}, clear=True):
-            self.assertEqual(default_training_device("cpu"), "cpu")
+            self.assertEqual(default_training_device("cpu"), "mlx")
 
     def test_default_training_device_uses_cuda_then_cpu_for_auto(self):
         with patch("lora_trainer.sys.platform", "linux"), \
@@ -176,8 +181,10 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(default_training_device("auto"), "cpu")
             self.assertEqual(default_training_device("cpu"), "cpu")
 
-    def test_training_precision_for_mps_forces_fp32_by_default(self):
+    def test_training_precision_for_mlx_forces_fp32_by_default(self):
         with patch.dict("lora_trainer.os.environ", {}, clear=True):
+            self.assertEqual(training_precision_for_device("mlx", "auto"), "fp32")
+            self.assertEqual(training_precision_for_device("mlx", "fp16"), "fp32")
             self.assertEqual(training_precision_for_device("mps", "auto"), "fp32")
             self.assertEqual(training_precision_for_device("mps", "fp16"), "fp32")
             self.assertEqual(training_precision_for_device("mps", "16-mixed"), "fp32")
@@ -488,7 +495,7 @@ class LoraTrainerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
-            with patch("lora_trainer.default_training_device", return_value="mps"):
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
                 params = manager._one_click_params(
                     {
                         "dataset_id": "unit",
@@ -522,18 +529,19 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["model_variant"], "xl_sft")
             self.assertTrue(params["epoch_audition"]["enabled"])
             self.assertEqual(params["epoch_audition"]["scale"], 1.0)
-            self.assertEqual(params["device"], "mps")
+            self.assertEqual(params["device"], "mlx")
             self.assertEqual(params["precision"], "fp32")
             self.assertEqual(manager.auto_epochs(20), 800)
             self.assertEqual(manager.auto_epochs(21), 500)
             self.assertEqual(manager.auto_epochs(101), 300)
 
-    def test_one_click_explicit_cpu_device_is_preserved_when_debug_override_is_set(self):
+    def test_one_click_explicit_cpu_device_normalizes_to_mlx_on_apple_silicon(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
             with patch("lora_trainer.sys.platform", "darwin"), \
                 patch("lora_trainer.platform.machine", return_value="arm64"), \
+                patch("lora_trainer._mlx_available", return_value=True), \
                 patch("lora_trainer._torch_mps_available", return_value=True), \
                 patch.dict("lora_trainer.os.environ", {"ACEJAM_ALLOW_CPU_TRAINING": "1"}, clear=True):
                 params = manager._one_click_params(
@@ -548,14 +556,14 @@ class LoraTrainerTest(unittest.TestCase):
                     import_root=root,
                 )
 
-            self.assertEqual(params["device"], "cpu")
-            self.assertEqual(params["precision"], "auto")
+            self.assertEqual(params["device"], "mlx")
+            self.assertEqual(params["precision"], "fp32")
 
     def test_one_click_auto_song_model_uses_xl_sft(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
-            with patch("lora_trainer.default_training_device", return_value="mps"):
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
                 params = manager._one_click_params(
                     {
                         "dataset_id": "unit",
@@ -574,7 +582,7 @@ class LoraTrainerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = self.make_manager(root)
-            with patch("lora_trainer.default_training_device", return_value="mps"):
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
                 params = manager._one_click_params(
                     {
                         "dataset_id": "unit",
@@ -668,7 +676,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "song_model": "acestep-v15-turbo",
                     "adapter_type": "lokr",
                     "train_epochs": 3,
-                    "device": "mps",
+                    "device": "mlx",
                 }
             )
             command = job["command"]
@@ -677,7 +685,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertIn("lokr", command)
             self.assertIn("--lokr-weight-decompose", command)
             self.assertEqual(command[command.index("--save-every") + 1], "1")
-            self.assertEqual(command[command.index("--device") + 1], "mps")
+            self.assertEqual(command[command.index("--device") + 1], "mlx")
             self.assertEqual(command[command.index("--precision") + 1], "fp32")
             self.assertEqual(command[command.index("--num-workers") + 1], "0")
             self.assertEqual(job["params"]["precision"], "fp32")
@@ -695,7 +703,7 @@ class LoraTrainerTest(unittest.TestCase):
                     "trigger_tag": "charaf hook",
                     "adapter_type": "lora",
                     "train_epochs": 3,
-                    "device": "mps",
+                    "device": "mlx",
                 }
             )
 
@@ -703,9 +711,9 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(job["params"]["trigger_tag"], "charaf hook")
             self.assertEqual(job["params"]["display_name"], "charaf hook")
             self.assertEqual(job["params"]["save_every_n_epochs"], 1)
-            self.assertEqual(job["params"]["device"], "mps")
+            self.assertEqual(job["params"]["device"], "mlx")
             self.assertEqual(command[command.index("--save-every") + 1], "1")
-            self.assertEqual(command[command.index("--device") + 1], "mps")
+            self.assertEqual(command[command.index("--device") + 1], "mlx")
             self.assertEqual(command[command.index("--precision") + 1], "fp32")
             self.assertEqual(job["params"]["precision"], "fp32")
             self.assertTrue(Path(job["paths"]["output_dir"]).name.startswith("charaf-hook-"))
@@ -1489,7 +1497,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(audition["status"], "failed")
             self.assertEqual(audition["error"], "Interrupted by app restart")
 
-    def test_resume_job_forces_mps_and_retries_failed_latest_audition(self):
+    def test_resume_job_forces_mlx_and_retries_failed_latest_audition(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manager = ResumeTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
@@ -1556,11 +1564,11 @@ class LoraTrainerTest(unittest.TestCase):
             with manager._lock:
                 manager._write_job_unlocked(job)
 
-            with patch("lora_trainer.default_training_device", return_value="mps"), \
+            with patch("lora_trainer.default_training_device", return_value="mlx"), \
                 patch("lora_trainer.threading.Thread", ImmediateThread):
                 resumed = manager.resume_job("resumejob")
 
-            self.assertEqual(resumed["params"]["device"], "mps")
+            self.assertEqual(resumed["params"]["device"], "mlx")
             self.assertEqual(resumed["params"]["precision"], "fp32")
             self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 1, 2, 3])
             self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora", "lora"])
@@ -1568,7 +1576,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(manager.audition_requests[1]["lora_adapter_name"], "epoch_1_epoch_1_loss_0_9130")
             self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 2/3", "train epoch 3/3"])
             first_command = manager.commands[0][1]
-            self.assertEqual(first_command[first_command.index("--device") + 1], "mps")
+            self.assertEqual(first_command[first_command.index("--device") + 1], "mlx")
             self.assertEqual(first_command[first_command.index("--precision") + 1], "fp32")
             self.assertEqual(first_command[first_command.index("--resume-from") + 1], str(checkpoint))
             self.assertEqual(first_command[first_command.index("--scheduler-epochs") + 1], "3")
@@ -1683,11 +1691,11 @@ class LoraTrainerTest(unittest.TestCase):
             with manager._lock:
                 manager._write_job_unlocked(job)
 
-            with patch("lora_trainer.default_training_device", return_value="mps"), \
+            with patch("lora_trainer.default_training_device", return_value="mlx"), \
                 patch("lora_trainer.threading.Thread", ImmediateThread):
                 resumed = manager.resume_job("resumeepoch2")
 
-            self.assertEqual(resumed["params"]["device"], "mps")
+            self.assertEqual(resumed["params"]["device"], "mlx")
             self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 2, 3])
             self.assertEqual([item["attempt_role"] for item in manager.audition_requests], ["baseline", "lora", "lora"])
             self.assertEqual(manager.audition_requests[1]["checkpoint_path"], str(checkpoint_2))
@@ -1695,7 +1703,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 3/3"])
             command = manager.commands[0][1]
             self.assertEqual(command[command.index("--resume-from") + 1], str(checkpoint_2))
-            self.assertEqual(command[command.index("--device") + 1], "mps")
+            self.assertEqual(command[command.index("--device") + 1], "mlx")
             self.assertEqual(command[command.index("--precision") + 1], "fp32")
 
     def test_lokr_epoch_auditions_are_skipped_but_save_every_epoch_stays(self):
