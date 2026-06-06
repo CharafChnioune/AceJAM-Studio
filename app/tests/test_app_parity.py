@@ -6274,6 +6274,108 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(items[0]["variants"][0]["state"], "queued")
         self.assertEqual(items[0]["variants"][0]["variant_seed"], items[0]["variant_seeds"][0])
 
+    def test_lora_sweep_body_accepts_ace_step_prompt_kit_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            adapter_dir = root / "ye-final"
+            adapter_dir.mkdir()
+
+            class StubTrainingManager:
+                def list_adapters(self):
+                    return [
+                        {
+                            "path": str(adapter_dir),
+                            "display_name": "Ye Epoch",
+                            "adapter_type": "lora",
+                            "source": "exports",
+                            "generation_loadable": True,
+                            "quality_status": "manual_testing",
+                            "metadata": {
+                                "generation_trigger_tag": "ye",
+                                "song_model": "acestep-v15-xl-sft",
+                                "model_variant": "xl_sft",
+                            },
+                        }
+                    ]
+
+            prompt_kit_payload = {
+                "concept_summary": "Dutch rap benchmark song",
+                "target_language": "Dutch",
+                "vocal_language": "nl",
+                "ace_caption": "Dutch hip hop, west coast bounce, dry upfront rap vocal, punchy drums",
+                "lyrics": "[Verse 1]\nIk kom binnen met de nacht op mijn jas\n\n[Chorus]\nAlles draait als de bassline lacht",
+                "metadata": {
+                    "bpm": 92,
+                    "keyscale": "A minor",
+                    "timesignature": "4/4",
+                    "duration": 240,
+                },
+                "generation_settings": {
+                    "model": "xl_sft",
+                    "batch_size": 2,
+                    "inference_steps": 64,
+                    "guidance_scale": 7.5,
+                    "shift": 3,
+                },
+                "advanced_generation_settings": {
+                    "dcw_enabled": True,
+                    "dcw_mode": "double",
+                    "retake_variance": 0.25,
+                },
+                "negative_control": ["mumbled vocals", "muddy mix"],
+                "copy_paste_block": {
+                    "caption": "Dutch hip hop, west coast bounce, dry upfront rap vocal, punchy drums",
+                    "lyrics": "[Verse 1]\nIk kom binnen met de nacht op mijn jas\n\n[Chorus]\nAlles draait als de bassline lacht",
+                    "metadata": {
+                        "bpm": 92,
+                        "keyscale": "A minor",
+                        "timesignature": "4/4",
+                        "duration": 240,
+                        "vocal_language": "nl",
+                    },
+                    "generation": {
+                        "model": "acestep-v15-xl-sft",
+                        "batch_size": 2,
+                    },
+                    "advanced_generation": {
+                        "audio_cover_strength": 0.4,
+                    },
+                },
+            }
+
+            with patch.object(acejam_app, "training_manager", StubTrainingManager()), \
+                patch.object(acejam_app, "LORA_EXPORTS_DIR", root), \
+                patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):
+                payload, items = acejam_app._normalise_lora_sweep_body(
+                    {
+                        "sweep_title": "Prompt Kit Sweep",
+                        "render_payload": prompt_kit_payload,
+                        "lora_scale": 0.2,
+                    }
+                )
+
+        self.assertEqual(payload["variant_count"], 2)
+        item_payload = items[0]["payload"]
+        self.assertEqual(item_payload["caption"], prompt_kit_payload["ace_caption"])
+        self.assertEqual(item_payload["tags"], prompt_kit_payload["ace_caption"])
+        self.assertEqual(item_payload["lyrics"], prompt_kit_payload["lyrics"])
+        self.assertEqual(item_payload["duration"], 240)
+        self.assertEqual(item_payload["audio_duration"], 240)
+        self.assertEqual(item_payload["bpm"], 92)
+        self.assertEqual(item_payload["key_scale"], "A minor")
+        self.assertEqual(item_payload["time_signature"], "4")
+        self.assertEqual(item_payload["vocal_language"], "nl")
+        self.assertEqual(item_payload["song_model"], "acestep-v15-xl-sft")
+        self.assertEqual(item_payload["inference_steps"], 64)
+        self.assertEqual(item_payload["guidance_scale"], 7.5)
+        self.assertEqual(item_payload["dcw_enabled"], True)
+        self.assertEqual(item_payload["dcw_mode"], "double")
+        self.assertEqual(item_payload["retake_variance"], 0.25)
+        self.assertEqual(item_payload["audio_cover_strength"], 0.4)
+        self.assertEqual(item_payload["negative_tags"], "mumbled vocals, muddy mix")
+        self.assertEqual(item_payload["lora_trigger_tag"], "ye")
+        self.assertEqual(item_payload["lora_scale"], 0.2)
+
     def test_lora_sweep_worker_runs_groups_and_annotates_variant_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

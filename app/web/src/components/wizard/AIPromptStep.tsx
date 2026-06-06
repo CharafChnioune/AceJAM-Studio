@@ -75,6 +75,41 @@ function stripJsonFence(value: string): string {
   return text;
 }
 
+function balancedJsonText(value: string): string {
+  const text = value.trim();
+  const start = text.search(/[\[{]/);
+  if (start < 0) return text;
+  const opener = text[start];
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === opener) {
+      depth += 1;
+    } else if (char === closer) {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+  return text.slice(start);
+}
+
 function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, unknown> {
   let text = stripJsonFence(raw);
   if (!text) return {};
@@ -82,8 +117,7 @@ function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, 
   if (markerIndex >= 0) {
     text = text.slice(markerIndex + "ACEJAM_PAYLOAD_JSON".length).trim();
   }
-  const jsonStart = text.search(/[\[{]/);
-  if (jsonStart > 0) text = text.slice(jsonStart);
+  text = balancedJsonText(text);
   const parsed = JSON.parse(text) as unknown;
   let payload: unknown = parsed;
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {

@@ -91,6 +91,198 @@ function docsCorrectRenderDefaults(songModel: string) {
   return { inference_steps: 64, shift: 3 };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function firstPresent(...values: unknown[]) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    return value;
+  }
+  return undefined;
+}
+
+function asString(value: unknown): string {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
+  if (isRecord(value)) return Object.values(value).map((item) => String(item || "").trim()).filter(Boolean).join(", ");
+  return value === undefined || value === null ? "" : String(value).trim();
+}
+
+function asNumberOrUndefined(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "string" && value.trim().toLowerCase() === "auto") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function asBooleanOrUndefined(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function normalizeLanguageCode(value: unknown): string | undefined {
+  const text = asString(value).toLowerCase();
+  if (!text) return undefined;
+  const map: Record<string, string> = {
+    english: "en",
+    dutch: "nl",
+    nederlands: "nl",
+    french: "fr",
+    francais: "fr",
+    spanish: "es",
+    espanol: "es",
+    portuguese: "pt",
+    german: "de",
+    deutsch: "de",
+    arabic: "ar",
+    japanese: "ja",
+    korean: "ko",
+    mandarin: "zh",
+    chinese: "zh",
+    cantonese: "yue",
+    hindi: "hi",
+    urdu: "ur",
+    punjabi: "pa",
+    italian: "it",
+    polish: "pl",
+    russian: "ru",
+    hebrew: "he",
+    instrumental: "instrumental",
+  };
+  if (map[text]) return map[text];
+  if (/^[a-z]{2,3}(?:-[a-z]{2,4})?$/.test(text)) return text;
+  return undefined;
+}
+
+function normalizeTimeSignature(value: unknown): string | undefined {
+  const text = asString(value);
+  if (!text || text.toLowerCase() === "auto") return undefined;
+  const compact = text.replace(/\s+/g, "");
+  if (compact === "4/4") return "4";
+  if (compact === "3/4") return "3";
+  if (compact === "2/4") return "2";
+  if (compact === "6/8") return "6";
+  return compact;
+}
+
+function normalizeSongModel(value: unknown): string | undefined {
+  const text = asString(value);
+  if (!text) return undefined;
+  const normalized = text.toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-");
+  if (normalized.includes("xl-turbo")) return "acestep-v15-xl-turbo";
+  if (normalized.includes("xl-sft")) return "acestep-v15-xl-sft";
+  if (normalized.includes("xl-base")) return "acestep-v15-xl-base";
+  if (normalized.includes("turbo-shift1")) return "acestep-v15-turbo-shift1";
+  if (normalized.includes("turbo-shift3")) return "acestep-v15-turbo-shift3";
+  if (normalized.includes("turbo")) return "acestep-v15-turbo";
+  if (normalized.includes("sft")) return "acestep-v15-sft";
+  if (normalized.includes("base")) return "acestep-v15-base";
+  if (normalized.startsWith("acestep-")) return text;
+  return undefined;
+}
+
+function assignIfPresent<T extends keyof CustomFormValues>(
+  target: Partial<CustomFormValues>,
+  key: T,
+  value: CustomFormValues[T] | undefined,
+) {
+  if (value !== undefined && value !== "") target[key] = value;
+}
+
+function normalizeLoraSweepHydrationPayload(payload: Record<string, unknown>): Partial<CustomFormValues> {
+  const copyPaste = isRecord(payload.copy_paste_block) ? payload.copy_paste_block : {};
+  const metadata = isRecord(payload.metadata) ? payload.metadata : {};
+  const copyMetadata = isRecord(copyPaste.metadata) ? copyPaste.metadata : {};
+  const generation = isRecord(payload.generation_settings)
+    ? payload.generation_settings
+    : isRecord(payload.generation)
+      ? payload.generation
+      : {};
+  const copyGeneration = isRecord(copyPaste.generation) ? copyPaste.generation : {};
+  const advanced = isRecord(payload.advanced_generation_settings)
+    ? payload.advanced_generation_settings
+    : isRecord(payload.advanced_generation)
+      ? payload.advanced_generation
+      : {};
+  const copyAdvanced = isRecord(copyPaste.advanced_generation) ? copyPaste.advanced_generation : {};
+  const workflow = isRecord(copyPaste.workflow) ? copyPaste.workflow : {};
+
+  const normalized: Partial<CustomFormValues> = {};
+  const caption = asString(firstPresent(payload.ace_caption, payload.caption, copyPaste.caption, payload.tags));
+  const tags = asString(firstPresent(payload.tags, payload.caption, payload.ace_caption, copyPaste.caption));
+  const lyrics = asString(firstPresent(payload.lyrics, copyPaste.lyrics));
+  const negativeTags = asString(firstPresent(payload.negative_tags, payload.negative_control));
+  const taskType = asString(firstPresent(payload.task_type, payload.workflow_mode, workflow.workflow_mode, workflow.mode));
+  const songModel = normalizeSongModel(firstPresent(payload.song_model, generation.model, copyGeneration.model));
+  const duration = asNumberOrUndefined(firstPresent(payload.duration, payload.audio_duration, metadata.duration, copyMetadata.duration));
+  const bpm = asNumberOrUndefined(firstPresent(payload.bpm, metadata.bpm, copyMetadata.bpm));
+  const keyScale = asString(firstPresent(payload.key_scale, payload.keyscale, metadata.key_scale, metadata.keyscale, copyMetadata.key_scale, copyMetadata.keyscale));
+  const timeSignature = normalizeTimeSignature(firstPresent(payload.time_signature, payload.timesignature, metadata.time_signature, metadata.timesignature, copyMetadata.time_signature, copyMetadata.timesignature));
+  const vocalLanguage = normalizeLanguageCode(firstPresent(payload.vocal_language, metadata.vocal_language, copyMetadata.vocal_language, payload.target_language));
+
+  assignIfPresent(normalized, "title", asString(firstPresent(payload.title, payload.track_name)) || undefined);
+  assignIfPresent(normalized, "artist_name", asString(firstPresent(payload.artist_name, payload.artist)) || undefined);
+  assignIfPresent(normalized, "caption", caption || undefined);
+  assignIfPresent(normalized, "tags", tags || caption || undefined);
+  assignIfPresent(normalized, "negative_tags", negativeTags || undefined);
+  assignIfPresent(normalized, "lyrics", lyrics || undefined);
+  assignIfPresent(normalized, "instrumental", asBooleanOrUndefined(payload.instrumental) ?? (lyrics.trim() === "[Instrumental]" ? true : undefined));
+  assignIfPresent(normalized, "duration", duration);
+  assignIfPresent(normalized, "bpm", bpm);
+  assignIfPresent(normalized, "key_scale", keyScale && keyScale.toLowerCase() !== "auto" ? keyScale : undefined);
+  assignIfPresent(normalized, "time_signature", timeSignature);
+  assignIfPresent(normalized, "vocal_language", vocalLanguage);
+  assignIfPresent(normalized, "song_model", songModel);
+  assignIfPresent(normalized, "batch_size", asNumberOrUndefined(firstPresent(payload.batch_size, payload.variant_count, generation.batch_size, copyGeneration.batch_size)) as CustomFormValues["batch_size"] | undefined);
+  assignIfPresent(normalized, "seed", asNumberOrUndefined(firstPresent(payload.seed, generation.seed, copyGeneration.seed)));
+  assignIfPresent(normalized, "inference_steps", asNumberOrUndefined(firstPresent(payload.inference_steps, generation.inference_steps, copyGeneration.inference_steps)) as CustomFormValues["inference_steps"] | undefined);
+  assignIfPresent(normalized, "guidance_scale", asNumberOrUndefined(firstPresent(payload.guidance_scale, generation.guidance_scale, copyGeneration.guidance_scale)));
+  assignIfPresent(normalized, "shift", asNumberOrUndefined(firstPresent(payload.shift, generation.shift, copyGeneration.shift)));
+  assignIfPresent(normalized, "audio_format", asString(firstPresent(payload.audio_format, generation.audio_format, copyGeneration.audio_format)) as CustomFormValues["audio_format"] | undefined);
+  if (["text2music", "cover", "repaint", "extract", "lego", "complete"].includes(taskType)) {
+    assignIfPresent(normalized, "task_type", taskType as CustomFormValues["task_type"]);
+  }
+
+  const advancedSource = { ...advanced, ...copyAdvanced };
+  for (const key of ACE_STEP_ADVANCED_PAYLOAD_FIELDS) {
+    const value = advancedSource[key] ?? payload[key];
+    if (value === undefined || value === null || value === "") continue;
+    // @ts-expect-error dynamic ACE-Step advanced payload hydration
+    normalized[key] = value;
+  }
+  return normalized;
+}
+
+const LORA_SWEEP_NORMALIZED_FORM_FIELDS = new Set([
+  "title",
+  "artist_name",
+  "caption",
+  "tags",
+  "negative_tags",
+  "lyrics",
+  "instrumental",
+  "duration",
+  "bpm",
+  "key_scale",
+  "time_signature",
+  "vocal_language",
+  "song_model",
+  "batch_size",
+  "seed",
+  "inference_steps",
+  "guidance_scale",
+  "shift",
+  "audio_format",
+  "task_type",
+  ...ACE_STEP_ADVANCED_PAYLOAD_FIELDS,
+]);
+
 function isExportedGenerationLora(adapter: LoraAdapter) {
   const source = String(adapter.source || "").toLowerCase();
   const path = String(adapter.path || "");
@@ -194,11 +386,12 @@ export function LoraSweepWizard() {
   };
 
   const hydrate = (payload: Record<string, unknown>) => {
-    const next: Partial<CustomFormValues> = {};
+    const next: Partial<CustomFormValues> = normalizeLoraSweepHydrationPayload(payload);
     for (const [k, v] of Object.entries(payload)) {
       if (k in form.getValues() || k === "simple_description") {
+        if (LORA_SWEEP_NORMALIZED_FORM_FIELDS.has(k)) continue;
         // @ts-expect-error dynamic AI payload hydration
-        next[k] = v;
+        next[k] = next[k as keyof CustomFormValues] ?? v;
       }
     }
     next.use_lora = false;

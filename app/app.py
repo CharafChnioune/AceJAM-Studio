@@ -17965,9 +17965,172 @@ def _lora_sweep_generation_adapters() -> list[dict[str, Any]]:
     return adapters
 
 
+def _prompt_kit_record(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _prompt_kit_first(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _prompt_kit_text(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return ", ".join(str(item).strip() for item in value.values() if str(item).strip())
+    return str(value or "").strip()
+
+
+def _prompt_kit_model(value: Any) -> str:
+    text = _prompt_kit_text(value)
+    if not text:
+        return ""
+    normalized = re.sub(r"\s+", "-", text.lower().replace("_", "-"))
+    if "xl-turbo" in normalized:
+        return "acestep-v15-xl-turbo"
+    if "xl-sft" in normalized:
+        return "acestep-v15-xl-sft"
+    if "xl-base" in normalized:
+        return "acestep-v15-xl-base"
+    if "turbo-shift1" in normalized:
+        return "acestep-v15-turbo-shift1"
+    if "turbo-shift3" in normalized:
+        return "acestep-v15-turbo-shift3"
+    if "turbo" in normalized:
+        return "acestep-v15-turbo"
+    if "sft" in normalized:
+        return "acestep-v15-sft"
+    if "base" in normalized:
+        return "acestep-v15-base"
+    return text if normalized.startswith("acestep-") else ""
+
+
+def _prompt_kit_language(value: Any) -> str:
+    text = _prompt_kit_text(value).lower()
+    if not text:
+        return ""
+    language_map = {
+        "english": "en",
+        "dutch": "nl",
+        "nederlands": "nl",
+        "french": "fr",
+        "francais": "fr",
+        "spanish": "es",
+        "espanol": "es",
+        "portuguese": "pt",
+        "german": "de",
+        "deutsch": "de",
+        "arabic": "ar",
+        "japanese": "ja",
+        "korean": "ko",
+        "mandarin": "zh",
+        "chinese": "zh",
+        "cantonese": "yue",
+        "hindi": "hi",
+        "urdu": "ur",
+        "punjabi": "pa",
+        "italian": "it",
+        "polish": "pl",
+        "russian": "ru",
+        "hebrew": "he",
+        "instrumental": "instrumental",
+    }
+    if text in language_map:
+        return language_map[text]
+    return text if re.match(r"^[a-z]{2,3}(?:-[a-z]{2,4})?$", text) else ""
+
+
+def _prompt_kit_time_signature(value: Any) -> str:
+    text = _prompt_kit_text(value)
+    if not text or text.lower() == "auto":
+        return ""
+    compact = re.sub(r"\s+", "", text)
+    return {"4/4": "4", "3/4": "3", "2/4": "2", "6/8": "6"}.get(compact, compact)
+
+
+def _set_prompt_kit_value(payload: dict[str, Any], key: str, value: Any) -> None:
+    if payload.get(key) not in (None, ""):
+        return
+    if value is None:
+        return
+    if isinstance(value, str) and not value.strip():
+        return
+    payload[key] = value
+
+
+def _normalise_lora_sweep_prompt_kit_payload(source: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(source or {})
+    copy_paste = _prompt_kit_record(payload.get("copy_paste_block"))
+    metadata = _prompt_kit_record(payload.get("metadata"))
+    copy_metadata = _prompt_kit_record(copy_paste.get("metadata"))
+    generation = _prompt_kit_record(payload.get("generation_settings") or payload.get("generation"))
+    copy_generation = _prompt_kit_record(copy_paste.get("generation"))
+    advanced = _prompt_kit_record(payload.get("advanced_generation_settings") or payload.get("advanced_generation"))
+    copy_advanced = _prompt_kit_record(copy_paste.get("advanced_generation"))
+    workflow = _prompt_kit_record(copy_paste.get("workflow"))
+
+    caption = _prompt_kit_text(_prompt_kit_first(payload.get("ace_caption"), payload.get("caption"), copy_paste.get("caption"), payload.get("tags")))
+    if caption:
+        _set_prompt_kit_value(payload, "caption", caption)
+        _set_prompt_kit_value(payload, "tags", _prompt_kit_text(_prompt_kit_first(payload.get("tags"), caption)))
+    _set_prompt_kit_value(payload, "lyrics", _prompt_kit_text(_prompt_kit_first(payload.get("lyrics"), copy_paste.get("lyrics"))))
+    _set_prompt_kit_value(payload, "negative_tags", _prompt_kit_text(_prompt_kit_first(payload.get("negative_tags"), payload.get("negative_control"))))
+    _set_prompt_kit_value(payload, "duration", _prompt_kit_first(payload.get("duration"), payload.get("audio_duration"), metadata.get("duration"), copy_metadata.get("duration")))
+    _set_prompt_kit_value(payload, "audio_duration", _prompt_kit_first(payload.get("audio_duration"), payload.get("duration")))
+    _set_prompt_kit_value(payload, "bpm", _prompt_kit_first(payload.get("bpm"), metadata.get("bpm"), copy_metadata.get("bpm")))
+    _set_prompt_kit_value(
+        payload,
+        "key_scale",
+        _prompt_kit_text(
+            _prompt_kit_first(
+                payload.get("key_scale"),
+                payload.get("keyscale"),
+                metadata.get("key_scale"),
+                metadata.get("keyscale"),
+                copy_metadata.get("key_scale"),
+                copy_metadata.get("keyscale"),
+            )
+        ),
+    )
+    _set_prompt_kit_value(
+        payload,
+        "time_signature",
+        _prompt_kit_time_signature(
+            _prompt_kit_first(
+                payload.get("time_signature"),
+                payload.get("timesignature"),
+                metadata.get("time_signature"),
+                metadata.get("timesignature"),
+                copy_metadata.get("time_signature"),
+                copy_metadata.get("timesignature"),
+            )
+        ),
+    )
+    _set_prompt_kit_value(
+        payload,
+        "vocal_language",
+        _prompt_kit_language(_prompt_kit_first(payload.get("vocal_language"), metadata.get("vocal_language"), copy_metadata.get("vocal_language"), payload.get("target_language"))),
+    )
+    _set_prompt_kit_value(payload, "song_model", _prompt_kit_model(_prompt_kit_first(payload.get("song_model"), generation.get("model"), copy_generation.get("model"))))
+    for key in ("batch_size", "seed", "inference_steps", "guidance_scale", "shift", "audio_format"):
+        _set_prompt_kit_value(payload, key, _prompt_kit_first(payload.get(key), generation.get(key), copy_generation.get(key)))
+    task_type = _prompt_kit_text(_prompt_kit_first(payload.get("task_type"), payload.get("workflow_mode"), workflow.get("workflow_mode"), workflow.get("mode"))).lower()
+    if task_type in {"text2music", "cover", "repaint", "extract", "lego", "complete"}:
+        _set_prompt_kit_value(payload, "task_type", task_type)
+    for key, value in {**advanced, **copy_advanced}.items():
+        _set_prompt_kit_value(payload, str(key), value)
+    return payload
+
+
 def _lora_sweep_base_payload(body: dict[str, Any]) -> dict[str, Any]:
     source = body.get("render_payload") if isinstance(body.get("render_payload"), dict) else body
-    payload = dict(source or {})
+    payload = _normalise_lora_sweep_prompt_kit_payload(dict(source or {}))
     payload["task_type"] = str(payload.get("task_type") or "text2music").strip() or "text2music"
     payload["title"] = str(payload.get("title") or body.get("title") or "LoRA Sweep").strip() or "LoRA Sweep"
     payload["artist_name"] = str(payload.get("artist_name") or "").strip()
