@@ -6271,10 +6271,15 @@ class AppParityTest(unittest.TestCase):
             with acejam_app._lora_benchmark_jobs_lock:
                 acejam_app._lora_benchmark_jobs.clear()
             with patch.object(acejam_app, "LORA_BENCHMARKS_DIR", root):
-                response = TestClient(acejam_app.app).get("/api/lora/benchmarks/jobs")
+                client = TestClient(acejam_app.app)
+                default_response = client.get("/api/lora/benchmarks/jobs")
+                response = client.get("/api/lora/benchmarks/jobs?include_archived=true")
+                detail_response = client.get("/api/lora/benchmarks/jobs/heavybench")
             with acejam_app._lora_benchmark_jobs_lock:
                 acejam_app._lora_benchmark_jobs.clear()
 
+        self.assertEqual(default_response.status_code, 200)
+        self.assertEqual(default_response.json()["jobs"], [])
         self.assertEqual(response.status_code, 200)
         self.assertLess(len(response.content), 20_000)
         listed = response.json()["jobs"][0]
@@ -6284,6 +6289,12 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("attempts", listed)
         self.assertNotIn("results", listed)
         self.assertNotIn("result", listed["attempt_preview"][0])
+        self.assertEqual(detail_response.status_code, 200)
+        detail = detail_response.json()["job"]
+        self.assertTrue(detail["archived"])
+        self.assertNotIn("attempts", detail)
+        self.assertNotIn("results", detail)
+        self.assertNotIn("result", detail["attempt_preview"][0])
 
     def test_lora_sweep_body_uses_exported_adapters_variants_and_model_match(self):
         with tempfile.TemporaryDirectory() as tmp:

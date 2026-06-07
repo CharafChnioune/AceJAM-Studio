@@ -17719,6 +17719,12 @@ def _preview_lora_benchmark_entries(job: dict[str, Any], *, limit: int = 4) -> l
     return [_lora_benchmark_attempt_summary(item) for item in selected[:limit]]
 
 
+def _lora_history_job_active(job: dict[str, Any]) -> bool:
+    state = str(job.get("state") or "").strip().lower()
+    stage = str(job.get("stage") or "").strip().lower()
+    return state in {"queued", "running"} or stage in {"queued", "running", "rendering"}
+
+
 def _lora_benchmark_job_view(job: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
     if not compact:
         return _jsonable(dict(job))
@@ -17758,12 +17764,13 @@ def _lora_benchmark_job_view(job: dict[str, Any], *, compact: bool = False) -> d
             "finished_at": job.get("finished_at"),
             "updated_at": job.get("updated_at"),
             "stop_requested": parse_bool(job.get("stop_requested"), False),
+            "archived": not _lora_history_job_active(job),
             "error": job.get("error"),
         }
     )
 
 
-def _lora_benchmark_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+def _lora_benchmark_snapshot(job_id: str | None = None, *, include_archived: bool = True) -> dict[str, Any] | list[dict[str, Any]]:
     with _lora_benchmark_jobs_lock:
         if job_id:
             job = dict(_lora_benchmark_jobs.get(job_id) or {})
@@ -17789,6 +17796,8 @@ def _lora_benchmark_snapshot(job_id: str | None = None) -> dict[str, Any] | list
         with _lora_benchmark_jobs_lock:
             _lora_benchmark_jobs[job_id_from_disk] = dict(job)
         jobs.append(dict(job))
+    if not include_archived:
+        jobs = [job for job in jobs if _lora_history_job_active(job)]
     return [
         _lora_benchmark_job_view(job, compact=True)
         for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
@@ -21427,8 +21436,8 @@ async def api_song_batch_job_log(job_id: str):
 
 
 @app.get("/api/lora/benchmarks/jobs")
-async def api_lora_benchmark_jobs_list():
-    jobs = _lora_benchmark_snapshot()
+async def api_lora_benchmark_jobs_list(include_archived: bool = False):
+    jobs = _lora_benchmark_snapshot(include_archived=include_archived)
     return JSONResponse({"success": True, "jobs": jobs})
 
 
@@ -21445,10 +21454,14 @@ async def api_lora_benchmark_jobs_start(request: Request):
 
 
 @app.get("/api/lora/benchmarks/jobs/{job_id}")
-async def api_lora_benchmark_job_detail(job_id: str):
+async def api_lora_benchmark_job_detail(job_id: str, include_archived: bool = False):
     job = _lora_benchmark_snapshot(safe_id(job_id))
     if not job:
         raise HTTPException(status_code=404, detail="LoRA benchmark job not found")
+    if not include_archived and not _lora_history_job_active(job):
+        compact = _lora_benchmark_job_view(job, compact=True)
+        compact["archived_reason"] = "Deprecated LoRA Benchmark result media is archived; use LoRA Sweep for new listening runs."
+        return JSONResponse({"success": True, "job": compact})
     return JSONResponse({"success": True, "job": job})
 
 

@@ -1209,7 +1209,8 @@ function LoraBenchmarkDetails({
   const payload = asRecord(job.payload);
   const results = asArray(job.results).map(asRecord);
   const attempts = asArray(job.attempts).map(asRecord);
-  const rows = results.length ? results : attempts;
+  const preview = asArray(job.attempt_preview).map(asRecord);
+  const rows = results.length ? results : attempts.length ? attempts : preview;
   const logs = log ? log.split("\n") : asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
   const bestId = text(job.best_manual_result_id || job.best_auto_result_id || job.best_result_id, "");
   const best = rows.find((row) => text(row.attempt_id, "") === bestId);
@@ -1836,6 +1837,12 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
         const albumJobs = albumResult.status === "fulfilled" ? albumResult.value.jobs || [] : [];
         const ollamaPullJobs = ollamaResult.status === "fulfilled" ? ollamaResult.value.pull_jobs || [] : [];
+        const remoteBenchmarkIds = new Set(loraBenchmarkJobs.map((job) => text(job.id, "")).filter(Boolean));
+        for (const [id, job] of Object.entries(current)) {
+          if (job.kind === "lora-benchmark" && !isActiveJob(asRecord(job.metadata)) && !remoteBenchmarkIds.has(id)) {
+            removeJob(id);
+          }
+        }
         for (const rawJob of loraJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
@@ -1900,7 +1907,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [addJob]);
+  }, [addJob, removeJob]);
 
   React.useEffect(() => {
     if (selectedId && !jobs[selectedId]) closeJob();
