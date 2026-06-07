@@ -79,7 +79,7 @@ const cards: ModeCard[] = [
   {
     to: "/wizard/lora-benchmark",
     title: "LoRA Sweep",
-    blurb: "Maak één volledige song en render hem automatisch met elke audio-LoRA in de LoRA-map.",
+    blurb: "Maak één volledige song en render hem met gekozen audio-LoRAs in de LoRA-map.",
     icon: BarChart3,
     badge: "Sweep",
     enabled: true,

@@ -289,6 +289,19 @@ function isExportedGenerationLora(adapter: LoraAdapter) {
   return isGenerationLoraAdapter(adapter) && (source === "exports" || path.includes("/data/loras/"));
 }
 
+function adapterUpdatedScore(adapter: LoraAdapter) {
+  const raw = adapter.updated_at || adapter.metadata?.updated_at || "";
+  const parsed = Date.parse(String(raw));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function latestAdapterPath(adapters: LoraAdapter[]) {
+  return [...adapters].sort((a, b) => {
+    const byUpdated = adapterUpdatedScore(b) - adapterUpdatedScore(a);
+    return byUpdated || loraAdapterLabel(a).localeCompare(loraAdapterLabel(b));
+  })[0]?.path || "";
+}
+
 function sweepJobPatch(job: LoraSweepJob) {
   return {
     id: job.id,
@@ -344,6 +357,8 @@ export function LoraSweepWizard() {
   const [isStarting, setIsStarting] = React.useState(false);
   const [includeBaseline, setIncludeBaseline] = React.useState(false);
   const [loraScale, setLoraScale] = React.useState(1);
+  const [selectedAdapterPaths, setSelectedAdapterPaths] = React.useState<string[]>([]);
+  const [adapterSelectionTouched, setAdapterSelectionTouched] = React.useState(false);
   const [activeJob, setActiveJob] = React.useState<LoraSweepJob | null>(null);
   const values = form.watch();
   const draftState = useWizardDraft(MODE, form);
@@ -357,7 +372,47 @@ export function LoraSweepWizard() {
     () => (adaptersQuery.data?.adapters || []).filter(isExportedGenerationLora),
     [adaptersQuery.data?.adapters],
   );
-  const totalRenders = adapters.length * values.batch_size + (includeBaseline ? values.batch_size : 0);
+  const selectedAdapterPathSet = React.useMemo(() => new Set(selectedAdapterPaths), [selectedAdapterPaths]);
+  const selectedAdapters = React.useMemo(
+    () => adapters.filter((adapter) => selectedAdapterPathSet.has(adapter.path)),
+    [adapters, selectedAdapterPathSet],
+  );
+  const selectedAdapterNames = React.useMemo(() => selectedAdapters.map(loraAdapterLabel), [selectedAdapters]);
+  const totalRenders = selectedAdapters.length * values.batch_size + (includeBaseline ? values.batch_size : 0);
+
+  React.useEffect(() => {
+    setSelectedAdapterPaths((current) => {
+      const available = new Set(adapters.map((adapter) => adapter.path));
+      const kept = current.filter((path) => available.has(path));
+      if (kept.length || adapterSelectionTouched || !adapters.length) return kept;
+      const latest = latestAdapterPath(adapters);
+      return latest ? [latest] : [];
+    });
+  }, [adapters, adapterSelectionTouched]);
+
+  const toggleAdapterPath = React.useCallback((path: string, checked: boolean) => {
+    setAdapterSelectionTouched(true);
+    setSelectedAdapterPaths((current) => {
+      if (checked) return Array.from(new Set([...current, path]));
+      return current.filter((item) => item !== path);
+    });
+  }, []);
+
+  const selectAllAdapters = React.useCallback(() => {
+    setAdapterSelectionTouched(true);
+    setSelectedAdapterPaths(adapters.map((adapter) => adapter.path));
+  }, [adapters]);
+
+  const selectLatestAdapter = React.useCallback(() => {
+    setAdapterSelectionTouched(true);
+    const latest = latestAdapterPath(adapters);
+    setSelectedAdapterPaths(latest ? [latest] : []);
+  }, [adapters]);
+
+  const clearSelectedAdapters = React.useCallback(() => {
+    setAdapterSelectionTouched(true);
+    setSelectedAdapterPaths([]);
+  }, []);
 
   React.useEffect(() => {
     if (!activeJob?.id || TERMINAL_STATES.has(String(activeJob.state || "").toLowerCase())) return;
@@ -456,9 +511,18 @@ export function LoraSweepWizard() {
   const handleFinish = async () => {
     setIsStarting(true);
     try {
+      if (!selectedAdapters.length && !includeBaseline) {
+        toast.error("Kies minstens één LoRA of zet de baseline aan.");
+        return;
+      }
       const payload = buildPayload();
       const resp = await startLoraSweepJob({
         sweep_title: values.title || "LoRA Sweep",
+        adapter_paths: selectedAdapters.map((adapter) => adapter.path),
+        selected_adapters: selectedAdapters.map((adapter) => ({
+          path: adapter.path,
+          name: loraAdapterLabel(adapter),
+        })),
         render_payload: payload,
         variant_count: values.batch_size,
         include_baseline: includeBaseline,
@@ -484,7 +548,7 @@ export function LoraSweepWizard() {
     {
       key: "ai",
       title: "AI song fill",
-      description: "Laat AI één complete song-payload maken; de sweep rendert daarna elke LoRA met exact die song.",
+      description: "Laat AI één complete song-payload maken; de sweep rendert daarna de gekozen LoRAs met exact die song.",
       isValid: true,
       render: () => (
         <AIPromptStep
@@ -591,11 +655,11 @@ export function LoraSweepWizard() {
       isValid: true,
       render: () => (
         <div className="space-y-4">
-          <FieldGroup title="LoRA Sweep" description="De selector is weg: AceJAM rendert automatisch elke audio-LoRA in app/data/loras.">
+          <FieldGroup title="LoRA Sweep" description="Render dezelfde song met de gekozen audio-LoRAs uit app/data/loras.">
             <div className="grid gap-3 sm:grid-cols-4">
               <div className="rounded-md border bg-background/35 p-3">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Audio-LoRAs</p>
-                <p className="mt-1 font-mono text-lg">{adapters.length}</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Gekozen LoRAs</p>
+                <p className="mt-1 font-mono text-lg">{selectedAdapters.length} / {adapters.length}</p>
               </div>
               <div className="rounded-md border bg-background/35 p-3">
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Variaties</p>
@@ -773,31 +837,48 @@ export function LoraSweepWizard() {
     {
       key: "adapters",
       title: "Adapters",
-      isValid: adapters.length > 0 || includeBaseline,
+      isValid: selectedAdapters.length > 0 || includeBaseline,
       render: () => (
-        <FieldGroup title="Gevonden audio-LoRAs" description="Alleen LoRA adapters die fysiek in app/data/loras staan en generation-loadable zijn.">
-          <div className="flex items-center justify-between gap-3">
+        <FieldGroup title="Selecteer audio-LoRAs" description="Alleen adapters die fysiek in app/data/loras staan en generation-loadable zijn.">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              {adapters.length} LoRA{adapters.length === 1 ? "" : "s"} klaar voor sweep.
+              {selectedAdapters.length} van {adapters.length} LoRA{adapters.length === 1 ? "" : "s"} geselecteerd.
             </p>
-            <Button type="button" variant="outline" size="sm" onClick={() => void adaptersQuery.refetch()} className="gap-2">
-              <RefreshCw className="size-4" />
-              Ververs
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={selectLatestAdapter} disabled={!adapters.length}>
+                Nieuwste
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={selectAllAdapters} disabled={!adapters.length}>
+                Alles
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={clearSelectedAdapters} disabled={!selectedAdapters.length}>
+                Geen
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => void adaptersQuery.refetch()} className="gap-2">
+                <RefreshCw className="size-4" />
+                Ververs
+              </Button>
+            </div>
           </div>
           <div className="mt-3 max-h-96 space-y-2 overflow-auto pr-1">
             {adapters.map((adapter) => {
               const triggers = loraTriggerOptions(adapter);
+              const selected = selectedAdapterPathSet.has(adapter.path);
               return (
-                <div key={adapter.path} className="rounded-md border bg-background/35 p-3">
+                <div key={adapter.path} className={`rounded-md border p-3 ${selected ? "border-primary/60 bg-primary/5" : "bg-background/35"}`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{loraAdapterLabel(adapter)}</p>
                       <p className="truncate text-xs text-muted-foreground">{adapter.path}</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
                       <Badge variant="outline">{adapter.song_model || adapter.model_variant || "auto model"}</Badge>
                       <Badge variant="secondary">{triggers[0] || "no trigger"}</Badge>
+                      <Switch
+                        checked={selected}
+                        onCheckedChange={(checked) => toggleAdapterPath(adapter.path, checked)}
+                        aria-label={`Selecteer ${loraAdapterLabel(adapter)}`}
+                      />
                     </div>
                   </div>
                 </div>
@@ -824,6 +905,8 @@ export function LoraSweepWizard() {
               variant_count: values.batch_size,
               include_baseline: includeBaseline,
               lora_scale: loraScale,
+              selected_lora_count: selectedAdapters.length,
+              selected_loras: selectedAdapterNames,
               total_renders: totalRenders,
               render_payload: buildPayload(),
             }}
@@ -833,6 +916,7 @@ export function LoraSweepWizard() {
               { key: "variant_count", label: "Variaties per LoRA" },
               { key: "include_baseline", label: "Baseline" },
               { key: "lora_scale", label: "LoRA scale" },
+              { key: "selected_lora_count", label: "Gekozen LoRAs" },
               { key: "total_renders", label: "Totaal renders" },
               { key: "render_payload.song_model", label: "Fallback model" },
               { key: "render_payload.audio_backend", label: "Backend", format: audioBackendLabel },
@@ -945,7 +1029,7 @@ export function LoraSweepWizard() {
   return (
     <WizardShell
       title="LoRA Sweep"
-      subtitle="Custom-style song bouwen, daarna automatisch renderen met elke audio-LoRA in de LoRA-map."
+      subtitle="Custom-style song bouwen, daarna renderen met de geselecteerde audio-LoRAs in de LoRA-map."
       steps={steps}
       step={step}
       onStepChange={setStep}

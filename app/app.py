@@ -18151,6 +18151,87 @@ def _lora_sweep_generation_adapters() -> list[dict[str, Any]]:
     return adapters
 
 
+def _lora_sweep_normalize_adapter_key(value: Any) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    keys = {text.lower()}
+    try:
+        keys.add(str(Path(text).expanduser().resolve()).lower())
+    except Exception:
+        pass
+    return keys
+
+
+def _lora_sweep_requested_adapters(body: dict[str, Any]) -> tuple[list[tuple[str, set[str]]], bool]:
+    requested: list[tuple[str, set[str]]] = []
+    explicit = False
+    for key in ("adapter_paths", "selected_adapter_paths", "lora_adapter_paths", "selected_adapters"):
+        if key not in body:
+            continue
+        explicit = True
+        value = body.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, dict):
+                raw = item.get("path") or item.get("adapter_path") or item.get("lora_adapter_path") or item.get("name") or item.get("adapter_name")
+            else:
+                raw = item
+            keys = _lora_sweep_normalize_adapter_key(raw)
+            if keys:
+                requested.append((str(raw).strip(), keys))
+    return requested, explicit
+
+
+def _lora_sweep_adapter_match_keys(adapter: dict[str, Any]) -> set[str]:
+    metadata = adapter.get("metadata") if isinstance(adapter.get("metadata"), dict) else {}
+    candidates = [
+        adapter.get("path"),
+        adapter.get("lora_adapter_path"),
+        adapter.get("name"),
+        adapter.get("display_name"),
+        adapter.get("label"),
+        adapter.get("trigger_tag"),
+        adapter.get("generation_trigger_tag"),
+        metadata.get("name"),
+        metadata.get("display_name"),
+        metadata.get("label"),
+        metadata.get("trigger_tag"),
+        metadata.get("generation_trigger_tag"),
+        _lora_benchmark_adapter_label(adapter),
+    ]
+    keys: set[str] = set()
+    for value in candidates:
+        keys.update(_lora_sweep_normalize_adapter_key(value))
+    return keys
+
+
+def _lora_sweep_filter_selected_adapters(
+    adapters: list[dict[str, Any]],
+    body: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    requested, explicit = _lora_sweep_requested_adapters(body)
+    if not explicit:
+        return adapters, [], False
+    if not requested:
+        return [], [], True
+    selected: list[dict[str, Any]] = []
+    selected_paths: set[str] = set()
+    matched_indexes: set[int] = set()
+    for adapter in adapters:
+        adapter_keys = _lora_sweep_adapter_match_keys(adapter)
+        matched = [index for index, (_, requested_keys) in enumerate(requested) if adapter_keys.intersection(requested_keys)]
+        if not matched:
+            continue
+        path = str(adapter.get("path") or "")
+        if path not in selected_paths:
+            selected_paths.add(path)
+            selected.append(adapter)
+        matched_indexes.update(matched)
+    missing = [raw for index, (raw, _) in enumerate(requested) if index not in matched_indexes]
+    return selected, missing, True
+
+
 def _prompt_kit_record(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -18479,9 +18560,13 @@ def _lora_sweep_annotate_result(
 def _normalise_lora_sweep_body(body: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not isinstance(body, dict):
         raise ValueError("Sweep payload must be an object.")
-    adapters = _lora_sweep_generation_adapters()
+    all_adapters = _lora_sweep_generation_adapters()
+    adapters, missing_selected_adapters, explicit_adapter_selection = _lora_sweep_filter_selected_adapters(all_adapters, body)
     include_baseline = parse_bool(body.get("include_baseline"), False)
     if not adapters and not include_baseline:
+        if explicit_adapter_selection:
+            missing_note = f" Missing: {', '.join(missing_selected_adapters[:8])}." if missing_selected_adapters else ""
+            raise ValueError("No selected audio LoRA adapters are renderable." + missing_note)
         raise ValueError("No audio LoRA adapters found in app/data/loras.")
     if len(adapters) > 160:
         raise ValueError("LoRA Sweep supports maximaal 160 adapters per run.")
@@ -18496,7 +18581,7 @@ def _normalise_lora_sweep_body(body: dict[str, Any]) -> tuple[dict[str, Any], li
     raw_seed_value = body.get("seeds") or body.get("seed") or base_payload.get("seeds") or base_payload.get("seed") or "-1"
 
     items: list[dict[str, Any]] = []
-    validation_errors: list[str] = []
+    validation_errors: list[str] = [f"Selected adapter not found: {value}" for value in missing_selected_adapters]
 
     if include_baseline:
         baseline_payload = {
@@ -18602,6 +18687,9 @@ def _normalise_lora_sweep_body(body: dict[str, Any]) -> tuple[dict[str, Any], li
         "lora_scale": scale,
         "variant_count": variant_count,
         "base_payload": _jsonable(base_payload),
+        "selected_adapter_paths": [str(adapter.get("path") or "") for adapter in adapters],
+        "requested_adapter_count": len(adapters) if explicit_adapter_selection else len(all_adapters),
+        "available_adapter_count": len(all_adapters),
         "adapters": adapters,
         "items": items,
         "validation_warnings": validation_errors,

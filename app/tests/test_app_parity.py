@@ -6354,6 +6354,62 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(items[0]["variants"][0]["state"], "queued")
         self.assertEqual(items[0]["variants"][0]["variant_seed"], items[0]["variant_seeds"][0])
 
+    def test_lora_sweep_body_filters_selected_adapter_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dre_dir = root / "dre-final"
+            ye_dir = root / "ye-final"
+            dre_dir.mkdir()
+            ye_dir.mkdir()
+
+            class StubTrainingManager:
+                def list_adapters(self):
+                    return [
+                        {
+                            "path": str(dre_dir),
+                            "display_name": "Dre Final",
+                            "adapter_type": "lora",
+                            "source": "exports",
+                            "generation_loadable": True,
+                            "quality_status": "ready",
+                            "metadata": {"generation_trigger_tag": "dre"},
+                        },
+                        {
+                            "path": str(ye_dir),
+                            "display_name": "Ye Final",
+                            "adapter_type": "lora",
+                            "source": "exports",
+                            "generation_loadable": True,
+                            "quality_status": "ready",
+                            "metadata": {"generation_trigger_tag": "ye"},
+                        },
+                    ]
+
+            with patch.object(acejam_app, "training_manager", StubTrainingManager()), \
+                patch.object(acejam_app, "LORA_EXPORTS_DIR", root), \
+                patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):
+                payload, items = acejam_app._normalise_lora_sweep_body(
+                    {
+                        "sweep_title": "Selected Sweep",
+                        "adapter_paths": [str(ye_dir)],
+                        "variant_count": 1,
+                        "include_baseline": False,
+                        "render_payload": {
+                            "title": "Sweep Song",
+                            "caption": "rap, hard drums",
+                            "lyrics": "[Verse]\nunit line",
+                            "song_model": "acestep-v15-xl-sft",
+                            "audio_backend": "mlx",
+                        },
+                    }
+                )
+
+        self.assertEqual(payload["available_adapter_count"], 2)
+        self.assertEqual(payload["selected_adapter_paths"], [str(ye_dir)])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["adapter_name"], "Ye Final")
+        self.assertEqual(items[0]["adapter_path"], str(ye_dir))
+
     def test_lora_sweep_body_accepts_ace_step_prompt_kit_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
