@@ -49,7 +49,7 @@ import {
 } from "@/lib/aceStepSettings";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { isGenerationLoraAdapter, loraAdapterLabel, loraTriggerOptions } from "@/lib/lora";
-import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useJobsStore } from "@/store/jobs";
@@ -90,9 +90,49 @@ const loraSweepSchema = customSchema.extend({
   simple_description: z.string().optional().default(""),
 });
 
-function docsCorrectRenderDefaults(songModel: string) {
-  if (songModel.includes("turbo")) return { inference_steps: 8, shift: 3 };
-  return { inference_steps: 64, shift: 3 };
+function isBaseSongModel(songModel: string) {
+  return songModel.endsWith("-base");
+}
+
+function normalizeLoraSweepQualityProfile(value: unknown): CustomFormValues["quality_profile"] {
+  const normalized = String(value || "chart_master").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (["draft", "low", "laag", "fast", "preview", "preview_fast"].includes(normalized)) return "draft";
+  if (["standard", "medium", "middle", "middel", "balanced", "balanced_pro"].includes(normalized)) return "standard";
+  return "chart_master";
+}
+
+function loraSweepMlxRenderDefaults(songModel: string, qualityProfile = "chart_master") {
+  const normalizedQuality = normalizeLoraSweepQualityProfile(qualityProfile);
+  const turbo = songModel.includes("turbo");
+  return {
+    audio_backend: DEFAULT_AUDIO_BACKEND,
+    quality_profile: normalizedQuality,
+    inference_steps: turbo ? 8 : normalizedQuality === "chart_master" ? 64 : 50,
+    guidance_scale: turbo ? 7 : 8,
+    shift: 3,
+    audio_format: normalizedQuality === "draft" ? "wav" : "wav32",
+    infer_method: "ode" as const,
+    sampler_mode: "heun" as const,
+    use_adg: !turbo && normalizedQuality === "chart_master" && isBaseSongModel(songModel),
+  };
+}
+
+function applyLoraSweepMlxDefaults<T extends Partial<CustomFormValues>>(values: T): T {
+  const songModel = String(values.song_model || "acestep-v15-xl-sft");
+  const qualityProfile = String(values.quality_profile || "chart_master");
+  const renderDefaults = loraSweepMlxRenderDefaults(songModel, qualityProfile);
+  return {
+    ...values,
+    audio_backend: DEFAULT_AUDIO_BACKEND,
+    quality_profile: renderDefaults.quality_profile,
+    inference_steps: renderDefaults.inference_steps,
+    guidance_scale: renderDefaults.guidance_scale,
+    shift: renderDefaults.shift,
+    audio_format: renderDefaults.audio_format as CustomFormValues["audio_format"],
+    infer_method: renderDefaults.infer_method,
+    sampler_mode: renderDefaults.sampler_mode,
+    use_adg: renderDefaults.use_adg,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -336,24 +376,33 @@ export function LoraSweepWizard() {
   const defaults = React.useMemo<CustomFormValues>(
     () => ({
       ...simpleDefaults,
+      ...(ACE_STEP_ADVANCED_DEFAULTS as Partial<CustomFormValues>),
       task_type: "text2music",
       title: "LoRA Sweep",
+      audio_backend: DEFAULT_AUDIO_BACKEND,
+      quality_profile: "chart_master",
       inference_steps: 64,
       guidance_scale: 8,
       shift: 3,
       audio_format: "wav32",
+      infer_method: "ode",
+      sampler_mode: "heun",
+      use_adg: false,
       batch_size: 1,
       use_lora: false,
       lora_adapter_path: "",
       lora_adapter_name: "",
-      ...(ACE_STEP_ADVANCED_DEFAULTS as Partial<CustomFormValues>),
     }),
     [],
+  );
+  const initialValues = React.useMemo(
+    () => applyLoraSweepMlxDefaults(mergeWizardDraft<CustomFormValues>(defaults, draft)),
+    [defaults, draft],
   );
 
   const form = useForm<CustomFormValues>({
     resolver: zodResolver(loraSweepSchema),
-    defaultValues: mergeWizardDraft<CustomFormValues>(defaults, draft),
+    defaultValues: initialValues,
     mode: "onChange",
   });
 
@@ -470,7 +519,7 @@ export function LoraSweepWizard() {
     next.use_lora = false;
     next.lora_adapter_path = "";
     next.lora_adapter_name = "";
-    const merged = { ...form.getValues(), ...next };
+    const merged = applyLoraSweepMlxDefaults({ ...form.getValues(), ...next });
     form.reset(merged);
     draftState.saveNow(merged);
     return merged;
@@ -501,8 +550,8 @@ export function LoraSweepWizard() {
       time_signature: v.time_signature,
       vocal_language: v.vocal_language,
       song_model: v.song_model,
-      audio_backend: v.audio_backend,
-      use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
+      audio_backend: DEFAULT_AUDIO_BACKEND,
+      use_mlx_dit: useMlxDitForAudioBackend(DEFAULT_AUDIO_BACKEND),
       quality_profile: v.quality_profile,
       seed: v.seed,
       inference_steps: v.inference_steps,
@@ -713,9 +762,14 @@ export function LoraSweepWizard() {
                       value={field.value}
                       onValueChange={(nextModel) => {
                         field.onChange(nextModel);
-                        const next = docsCorrectRenderDefaults(nextModel);
+                        const next = loraSweepMlxRenderDefaults(nextModel, values.quality_profile);
                         form.setValue("inference_steps", next.inference_steps);
+                        form.setValue("guidance_scale", next.guidance_scale);
                         form.setValue("shift", next.shift);
+                        form.setValue("audio_format", next.audio_format as CustomFormValues["audio_format"]);
+                        form.setValue("infer_method", next.infer_method);
+                        form.setValue("sampler_mode", next.sampler_mode);
+                        form.setValue("use_adg", next.use_adg);
                       }}
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -732,7 +786,20 @@ export function LoraSweepWizard() {
                   control={form.control}
                   name="quality_profile"
                   render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
+                    <Select
+                      value={field.value}
+                      onValueChange={(nextQuality) => {
+                        field.onChange(nextQuality);
+                        const next = loraSweepMlxRenderDefaults(values.song_model, nextQuality);
+                        form.setValue("inference_steps", next.inference_steps);
+                        form.setValue("guidance_scale", next.guidance_scale);
+                        form.setValue("shift", next.shift);
+                        form.setValue("audio_format", next.audio_format as CustomFormValues["audio_format"]);
+                        form.setValue("infer_method", next.infer_method);
+                        form.setValue("sampler_mode", next.sampler_mode);
+                        form.setValue("use_adg", next.use_adg);
+                      }}
+                    >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {QUALITY_PROFILES.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}
@@ -742,8 +809,8 @@ export function LoraSweepWizard() {
                 />
               </div>
               <AudioBackendSelector
-                value={values.audio_backend}
-                onChange={(value) => form.setValue("audio_backend", value, { shouldValidate: true })}
+                value={DEFAULT_AUDIO_BACKEND}
+                onChange={() => form.setValue("audio_backend", DEFAULT_AUDIO_BACKEND, { shouldValidate: true })}
               />
             </div>
           </FieldGroup>

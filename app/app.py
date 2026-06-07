@@ -18420,12 +18420,29 @@ def _lora_sweep_base_payload(body: dict[str, Any]) -> dict[str, Any]:
     backend = _normalize_audio_backend(payload.get("audio_backend"), payload.get("use_mlx_dit"))
     payload["audio_backend"] = backend
     payload["use_mlx_dit"] = backend == "mlx"
-    payload["quality_profile"] = str(payload.get("quality_profile") or "max_quality").strip() or "max_quality"
+    payload["quality_profile"] = normalize_quality_profile(payload.get("quality_profile") or DEFAULT_QUALITY_PROFILE)
     defaults = quality_profile_model_settings(payload["song_model"], payload["quality_profile"])
     payload["inference_steps"] = clamp_int(payload.get("inference_steps"), int(defaults.get("inference_steps") or 64), 1, 200)
     payload["guidance_scale"] = clamp_float(payload.get("guidance_scale"), float(defaults.get("guidance_scale") or 8), 1.0, 15.0)
     payload["shift"] = clamp_float(payload.get("shift"), float(defaults.get("shift") or 3), 0.0, 10.0)
-    payload["audio_format"] = str(payload.get("audio_format") or "wav32").strip() or "wav32"
+    payload["infer_method"] = str(payload.get("infer_method") or defaults.get("infer_method") or "ode").strip().lower()
+    if payload["infer_method"] not in {"ode", "sde"}:
+        payload["infer_method"] = "ode"
+    payload["sampler_mode"] = str(payload.get("sampler_mode") or defaults.get("sampler_mode") or "heun").strip().lower()
+    if payload["sampler_mode"] not in {"euler", "heun"}:
+        payload["sampler_mode"] = "heun"
+    payload["use_adg"] = parse_bool(payload.get("use_adg"), bool(defaults.get("use_adg", False)))
+    payload["audio_format"] = str(payload.get("audio_format") or defaults.get("audio_format") or "wav32").strip() or "wav32"
+    payload["device"] = str(payload.get("device") or "auto").strip() or "auto"
+    payload["dtype"] = str(payload.get("dtype") or "auto").strip() or "auto"
+    payload["use_flash_attention"] = str(payload.get("use_flash_attention") or "auto").strip() or "auto"
+    payload["compile_model"] = parse_bool(payload.get("compile_model"), False)
+    payload["offload_to_cpu"] = parse_bool(payload.get("offload_to_cpu"), False)
+    payload["offload_dit_to_cpu"] = parse_bool(payload.get("offload_dit_to_cpu"), False)
+    payload["use_tiled_decode"] = parse_bool(payload.get("use_tiled_decode"), True)
+    payload["enable_normalization"] = parse_bool(payload.get("enable_normalization"), True)
+    payload["normalization_db"] = clamp_float(payload.get("normalization_db"), -1.0, -24.0, 0.0)
+    payload["vae_checkpoint"] = str(payload.get("vae_checkpoint") or "official").strip() or "official"
     payload["seed"] = str(payload.get("seed") or payload.get("seeds") or "-1").strip() or "-1"
     payload["use_lora"] = False
     payload["lora_adapter_path"] = ""
