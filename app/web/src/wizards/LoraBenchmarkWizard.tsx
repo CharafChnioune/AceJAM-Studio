@@ -5,6 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { BarChart3, ListMusic, Music4, RefreshCw } from "lucide-react";
+import { z } from "zod";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
@@ -85,6 +86,9 @@ const NEG_SUGGESTIONS = [
 ];
 
 const TERMINAL_STATES = new Set(["succeeded", "success", "complete", "completed", "failed", "error", "stopped"]);
+const loraSweepSchema = customSchema.extend({
+  simple_description: z.string().optional().default(""),
+});
 
 function docsCorrectRenderDefaults(songModel: string) {
   if (songModel.includes("turbo")) return { inference_steps: 8, shift: 3 };
@@ -348,7 +352,7 @@ export function LoraSweepWizard() {
   );
 
   const form = useForm<CustomFormValues>({
-    resolver: zodResolver(customSchema),
+    resolver: zodResolver(loraSweepSchema),
     defaultValues: mergeWizardDraft<CustomFormValues>(defaults, draft),
     mode: "onChange",
   });
@@ -379,6 +383,20 @@ export function LoraSweepWizard() {
   );
   const selectedAdapterNames = React.useMemo(() => selectedAdapters.map(loraAdapterLabel), [selectedAdapters]);
   const totalRenders = selectedAdapters.length * values.batch_size + (includeBaseline ? values.batch_size : 0);
+  const formValidation = React.useMemo(() => loraSweepSchema.safeParse(values), [values]);
+  const formIssueMessages = React.useMemo(() => {
+    if (formValidation.success) return [];
+    return formValidation.error.issues.slice(0, 6).map((issue) => {
+      const path = issue.path.join(".") || "formulier";
+      return `${path}: ${issue.message}`;
+    });
+  }, [formValidation]);
+  const reviewBlockers = React.useMemo(() => {
+    const blockers = [...formIssueMessages];
+    if (!selectedAdapters.length && !includeBaseline) blockers.push("Kies minstens één LoRA of zet de baseline aan.");
+    return blockers;
+  }, [formIssueMessages, includeBaseline, selectedAdapters.length]);
+  const canStartSweep = reviewBlockers.length === 0;
 
   React.useEffect(() => {
     setSelectedAdapterPaths((current) => {
@@ -896,7 +914,7 @@ export function LoraSweepWizard() {
     {
       key: "review",
       title: "Review & start",
-      isValid: form.formState.isValid && (adapters.length > 0 || includeBaseline),
+      isValid: canStartSweep,
       render: () => (
         <div className="space-y-4">
           <ReviewStep
@@ -922,6 +940,15 @@ export function LoraSweepWizard() {
               { key: "render_payload.audio_backend", label: "Backend", format: audioBackendLabel },
             ]}
           />
+          {reviewBlockers.length > 0 && (
+            <FieldGroup title="Start blokkades">
+              <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                {reviewBlockers.map((blocker) => (
+                  <li key={blocker}>{blocker}</li>
+                ))}
+              </ul>
+            </FieldGroup>
+          )}
           <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
         </div>
       ),

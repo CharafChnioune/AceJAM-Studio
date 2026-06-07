@@ -15,8 +15,10 @@ export const optionalString = z
   .transform((v) => (v ?? "").trim() || undefined);
 
 export const optionalNumber = z
-  .union([z.number(), z.string()])
-  .optional()
+  .preprocess(
+    (v) => (v === null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.union([z.number(), z.string()]).optional(),
+  )
   .transform((v) => {
     if (v === undefined || v === null || v === "") return undefined;
     const n = typeof v === "number" ? v : Number(v);
