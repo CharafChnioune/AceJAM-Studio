@@ -17582,8 +17582,185 @@ def _set_lora_benchmark_job(job_id: str, **updates: Any) -> dict[str, Any]:
     return snapshot
 
 
-def _lora_benchmark_job_view(job: dict[str, Any]) -> dict[str, Any]:
-    return _jsonable(dict(job))
+def _tail_strings(value: Any, *, limit: int = 40, max_chars: int = 1000) -> list[str]:
+    items = []
+    for item in value or []:
+        text = str(item)
+        if not text:
+            continue
+        if max_chars > 0 and len(text) > max_chars:
+            text = f"{text[:max_chars]}..."
+        items.append(text)
+    return items[-limit:]
+
+
+def _compact_generation_result_summary(value: Any) -> dict[str, Any]:
+    summary = value if isinstance(value, dict) else {}
+    return _jsonable(
+        {
+            "success": summary.get("success"),
+            "result_id": summary.get("result_id"),
+            "audio_url": summary.get("audio_url"),
+            "title": summary.get("title"),
+            "duration": summary.get("duration"),
+            "bpm": summary.get("bpm"),
+            "key_scale": summary.get("key_scale"),
+            "payload_warnings": list(summary.get("payload_warnings") or [])[:12],
+            "vocal_gate_status": summary.get("vocal_gate_status"),
+            "failure_reason": summary.get("failure_reason"),
+            "needs_review": summary.get("needs_review"),
+            "error": summary.get("error"),
+            "audio_count": summary.get("audio_count"),
+            "with_lora": summary.get("with_lora"),
+            "lora_scale": summary.get("lora_scale"),
+            "lora_adapter_name": summary.get("lora_adapter_name"),
+            "lora_quality_status": summary.get("lora_quality_status"),
+            "use_lora_trigger": summary.get("use_lora_trigger"),
+            "lora_trigger_tag": summary.get("lora_trigger_tag"),
+        }
+    )
+
+
+def _compact_generation_payload_summary(value: Any) -> dict[str, Any]:
+    summary = value if isinstance(value, dict) else {}
+    return _jsonable(
+        {
+            "task_type": summary.get("task_type"),
+            "title": summary.get("title"),
+            "duration": summary.get("duration"),
+            "song_model": summary.get("song_model"),
+            "quality_profile": summary.get("quality_profile"),
+            "style_profile": summary.get("style_profile"),
+            "seed": summary.get("seed"),
+            "bpm": summary.get("bpm"),
+            "key_scale": summary.get("key_scale"),
+            "time_signature": summary.get("time_signature"),
+            "vocal_language": summary.get("vocal_language"),
+            "instrumental": summary.get("instrumental"),
+            "with_lora": summary.get("with_lora"),
+            "lora_adapter_name": summary.get("lora_adapter_name"),
+            "lora_scale": summary.get("lora_scale"),
+            "use_lora_trigger": summary.get("use_lora_trigger"),
+            "lora_trigger_tag": summary.get("lora_trigger_tag"),
+        }
+    )
+
+
+def _lora_benchmark_attempt_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    result_summary = entry.get("result_summary") if isinstance(entry.get("result_summary"), dict) else {}
+    if not result_summary and isinstance(entry.get("result"), dict):
+        result_summary = _generation_result_summary(entry.get("result"))
+    payload_summary = entry.get("payload_summary") if isinstance(entry.get("payload_summary"), dict) else {}
+    return _jsonable(
+        {
+            "attempt_id": entry.get("attempt_id"),
+            "attempt_number": entry.get("attempt_number"),
+            "attempt_role": entry.get("attempt_role"),
+            "state": entry.get("state"),
+            "status": entry.get("status"),
+            "progress": entry.get("progress"),
+            "generation_job_id": entry.get("generation_job_id"),
+            "adapter_name": entry.get("adapter_name"),
+            "adapter_path": entry.get("adapter_path"),
+            "adapter_epoch": entry.get("adapter_epoch"),
+            "adapter_loss": entry.get("adapter_loss"),
+            "quality_status": entry.get("quality_status"),
+            "lora_scale": entry.get("lora_scale"),
+            "trigger_tag": entry.get("trigger_tag"),
+            "payload_summary": _compact_generation_payload_summary(payload_summary),
+            "result_summary": _compact_generation_result_summary(result_summary),
+            "score": entry.get("score"),
+            "score_breakdown": entry.get("score_breakdown") if isinstance(entry.get("score_breakdown"), dict) else {},
+            "audio_urls": list(entry.get("audio_urls") or [])[:12],
+            "gate_status": entry.get("gate_status"),
+            "transcript_preview": entry.get("transcript_preview"),
+            "user_rating": entry.get("user_rating"),
+            "user_scores": entry.get("user_scores") if isinstance(entry.get("user_scores"), dict) else {},
+            "user_verdict": entry.get("user_verdict"),
+            "user_notes": entry.get("user_notes"),
+            "error": entry.get("error"),
+            "started_at": entry.get("started_at"),
+            "finished_at": entry.get("finished_at"),
+        }
+    )
+
+
+def _preview_lora_benchmark_entries(job: dict[str, Any], *, limit: int = 4) -> list[dict[str, Any]]:
+    entries = [item for item in list(job.get("results") or []) if isinstance(item, dict)]
+    if not entries:
+        entries = [item for item in list(job.get("attempts") or []) if isinstance(item, dict)]
+    if len(entries) <= limit:
+        return [_lora_benchmark_attempt_summary(item) for item in entries]
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(item: dict[str, Any]) -> None:
+        key = str(item.get("attempt_id") or item.get("index") or len(selected))
+        if key in seen:
+            return
+        seen.add(key)
+        selected.append(item)
+
+    best_id = str(job.get("best_result_id") or job.get("best_manual_result_id") or job.get("best_auto_result_id") or "")
+    if best_id:
+        for item in entries:
+            if str(item.get("attempt_id") or "") == best_id:
+                add(item)
+                break
+    current = clamp_int(job.get("current_attempt"), 0, 0, max(0, len(entries)))
+    for index in [0, max(0, current - 1), max(0, current), len(entries) - 1]:
+        if 0 <= index < len(entries):
+            add(entries[index])
+    for item in reversed(entries):
+        if len(selected) >= limit:
+            break
+        add(item)
+    return [_lora_benchmark_attempt_summary(item) for item in selected[:limit]]
+
+
+def _lora_benchmark_job_view(job: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
+    if not compact:
+        return _jsonable(dict(job))
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    payload_summary = job.get("payload_summary") if isinstance(job.get("payload_summary"), dict) else {}
+    if not payload_summary and payload:
+        payload_summary = _lora_benchmark_payload_summary(payload)
+    attempts = [item for item in list(job.get("attempts") or []) if isinstance(item, dict)]
+    results = [item for item in list(job.get("results") or []) if isinstance(item, dict)]
+    return _jsonable(
+        {
+            "id": job.get("id"),
+            "kind": job.get("kind") or "lora_benchmark",
+            "state": job.get("state"),
+            "status": job.get("status"),
+            "stage": job.get("stage"),
+            "progress": job.get("progress"),
+            "benchmark_title": job.get("benchmark_title") or payload_summary.get("benchmark_title") or payload.get("benchmark_title"),
+            "payload_summary": payload_summary,
+            "attempt_preview": _preview_lora_benchmark_entries(job),
+            "attempt_count": len(attempts),
+            "result_count": len(results),
+            "current_attempt": job.get("current_attempt"),
+            "total_attempts": job.get("total_attempts") if job.get("total_attempts") is not None else len(attempts),
+            "completed_attempts": job.get("completed_attempts"),
+            "failed_attempts": job.get("failed_attempts"),
+            "remaining_attempts": job.get("remaining_attempts"),
+            "child_generation_job_id": job.get("child_generation_job_id"),
+            "best_auto_result_id": job.get("best_auto_result_id"),
+            "best_manual_result_id": job.get("best_manual_result_id"),
+            "best_result_id": job.get("best_result_id"),
+            "review_summary": job.get("review_summary") if isinstance(job.get("review_summary"), dict) else {},
+            "logs": _tail_strings(job.get("logs"), limit=30),
+            "errors": _tail_strings(job.get("errors"), limit=30),
+            "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+            "updated_at": job.get("updated_at"),
+            "stop_requested": parse_bool(job.get("stop_requested"), False),
+            "error": job.get("error"),
+        }
+    )
 
 
 def _lora_benchmark_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
@@ -17613,7 +17790,7 @@ def _lora_benchmark_snapshot(job_id: str | None = None) -> dict[str, Any] | list
             _lora_benchmark_jobs[job_id_from_disk] = dict(job)
         jobs.append(dict(job))
     return [
-        _lora_benchmark_job_view(job)
+        _lora_benchmark_job_view(job, compact=True)
         for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
     ]
 
@@ -18510,8 +18687,135 @@ def _set_lora_sweep_job(job_id: str, **updates: Any) -> dict[str, Any]:
     return snapshot
 
 
-def _lora_sweep_job_view(job: dict[str, Any]) -> dict[str, Any]:
-    return _jsonable(dict(job))
+def _lora_sweep_variant_summary(variant: dict[str, Any]) -> dict[str, Any]:
+    result_summary = variant.get("result_summary") if isinstance(variant.get("result_summary"), dict) else {}
+    return _jsonable(
+        {
+            "variant_index": variant.get("variant_index"),
+            "variant_number": variant.get("variant_number"),
+            "variant_count": variant.get("variant_count"),
+            "variant_seed": variant.get("variant_seed") or variant.get("seed"),
+            "seed": variant.get("seed") or variant.get("variant_seed"),
+            "state": variant.get("state"),
+            "status": variant.get("status"),
+            "progress": variant.get("progress"),
+            "generation_job_id": variant.get("generation_job_id"),
+            "result_summary": _compact_generation_result_summary(result_summary),
+            "audio_urls": list(variant.get("audio_urls") or [])[:12],
+            "error": variant.get("error"),
+            "started_at": variant.get("started_at"),
+            "finished_at": variant.get("finished_at"),
+        }
+    )
+
+
+def _lora_sweep_item_summary(item: dict[str, Any]) -> dict[str, Any]:
+    result_summary = item.get("result_summary") if isinstance(item.get("result_summary"), dict) else {}
+    if not result_summary and isinstance(item.get("result"), dict):
+        result_summary = _generation_result_summary(item.get("result"))
+    payload_summary = item.get("payload_summary") if isinstance(item.get("payload_summary"), dict) else {}
+    variants = [variant for variant in list(item.get("variants") or []) if isinstance(variant, dict)]
+    return _jsonable(
+        {
+            "item_id": item.get("item_id"),
+            "item_number": item.get("item_number"),
+            "role": item.get("role"),
+            "state": item.get("state"),
+            "status": item.get("status"),
+            "progress": item.get("progress"),
+            "generation_job_id": item.get("generation_job_id"),
+            "adapter_name": item.get("adapter_name"),
+            "adapter_path": item.get("adapter_path"),
+            "adapter_epoch": item.get("adapter_epoch"),
+            "adapter_loss": item.get("adapter_loss"),
+            "quality_status": item.get("quality_status"),
+            "song_model": item.get("song_model"),
+            "lora_scale": item.get("lora_scale"),
+            "trigger_tag": item.get("trigger_tag"),
+            "variant_count": item.get("variant_count"),
+            "variant_seeds": list(item.get("variant_seeds") or [])[:12],
+            "variants": [_lora_sweep_variant_summary(variant) for variant in variants[:12]],
+            "payload_summary": _compact_generation_payload_summary(payload_summary),
+            "result_summary": _compact_generation_result_summary(result_summary),
+            "audio_urls": list(item.get("audio_urls") or [])[:12],
+            "warnings": list(item.get("warnings") or [])[:20],
+            "error": item.get("error"),
+            "started_at": item.get("started_at"),
+            "finished_at": item.get("finished_at"),
+        }
+    )
+
+
+def _preview_lora_sweep_items(job: dict[str, Any], *, limit: int = 4) -> list[dict[str, Any]]:
+    items = [item for item in list(job.get("items") or []) if isinstance(item, dict)]
+    if not items:
+        items = [item for item in list(job.get("results") or []) if isinstance(item, dict)]
+    if len(items) <= limit:
+        return [_lora_sweep_item_summary(item) for item in items]
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(item: dict[str, Any]) -> None:
+        key = str(item.get("item_id") or item.get("index") or len(selected))
+        if key in seen:
+            return
+        seen.add(key)
+        selected.append(item)
+
+    current = clamp_int(job.get("current_item"), 0, 0, max(0, len(items)))
+    for index in [0, max(0, current - 1), max(0, current), len(items) - 1]:
+        if 0 <= index < len(items):
+            add(items[index])
+    for item in reversed(items):
+        if len(selected) >= limit:
+            break
+        add(item)
+    return [_lora_sweep_item_summary(item) for item in selected[:limit]]
+
+
+def _lora_sweep_job_view(job: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
+    if not compact:
+        return _jsonable(dict(job))
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    payload_summary = job.get("payload_summary") if isinstance(job.get("payload_summary"), dict) else {}
+    if not payload_summary and payload:
+        payload_summary = _lora_sweep_payload_summary(payload)
+    items = [item for item in list(job.get("items") or []) if isinstance(item, dict)]
+    results = [item for item in list(job.get("results") or []) if isinstance(item, dict)]
+    return _jsonable(
+        {
+            "id": job.get("id"),
+            "kind": job.get("kind") or "lora_sweep",
+            "state": job.get("state"),
+            "status": job.get("status"),
+            "stage": job.get("stage"),
+            "progress": job.get("progress"),
+            "sweep_title": job.get("sweep_title") or payload_summary.get("sweep_title") or payload.get("sweep_title"),
+            "payload_summary": payload_summary,
+            "item_preview": _preview_lora_sweep_items(job),
+            "item_count": len(items),
+            "result_count": len(results),
+            "current_item": job.get("current_item"),
+            "total_items": job.get("total_items") if job.get("total_items") is not None else len(items),
+            "completed_items": job.get("completed_items"),
+            "failed_items": job.get("failed_items"),
+            "skipped_items": job.get("skipped_items"),
+            "remaining_items": job.get("remaining_items"),
+            "generated_audio_count": job.get("generated_audio_count"),
+            "expected_audio_count": job.get("expected_audio_count") or payload_summary.get("expected_audio_count"),
+            "child_generation_job_id": job.get("child_generation_job_id"),
+            "validation_warnings": list(job.get("validation_warnings") or [])[:30],
+            "logs": _tail_strings(job.get("logs"), limit=30),
+            "errors": _tail_strings(job.get("errors"), limit=30),
+            "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+            "updated_at": job.get("updated_at"),
+            "stop_requested": parse_bool(job.get("stop_requested"), False),
+            "error": job.get("error"),
+        }
+    )
 
 
 def _lora_sweep_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
@@ -18541,7 +18845,7 @@ def _lora_sweep_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
             _lora_sweep_jobs[job_id_from_disk] = dict(job)
         jobs.append(dict(job))
     return [
-        _lora_sweep_job_view(job)
+        _lora_sweep_job_view(job, compact=True)
         for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
     ]
 

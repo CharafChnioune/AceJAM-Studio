@@ -6216,6 +6216,75 @@ class AppParityTest(unittest.TestCase):
         self.assertTrue(rated["results"][0]["played_at"])
         self.assertEqual(rated["review_summary"]["keep"], 1)
 
+    def test_lora_benchmark_list_endpoint_returns_compact_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            heavy = "x" * 100_000
+            job_dir = root / "heavybench"
+            job_dir.mkdir()
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": "heavybench",
+                        "kind": "lora_benchmark",
+                        "state": "succeeded",
+                        "status": "Benchmark completed",
+                        "stage": "complete",
+                        "progress": 100,
+                        "benchmark_title": "Heavy Benchmark",
+                        "payload": {"benchmark_title": "Heavy Benchmark", "render_payload": {"lyrics": heavy}},
+                        "payload_summary": {"benchmark_title": "Heavy Benchmark", "attempt_count": 1},
+                        "attempts": [
+                            {
+                                "attempt_id": "attempt_001",
+                                "attempt_number": 1,
+                                "state": "succeeded",
+                                "status": "Complete",
+                                "adapter_name": "Adapter A",
+                                "payload": {"lyrics": heavy},
+                                "payload_summary": {"song_model": "acestep-v15-xl-sft"},
+                                "result": {"lyrics": heavy, "audios": [{"audio_url": "/media/results/heavy/take.wav"}]},
+                                "result_summary": {"lyrics": heavy, "audio_url": "/media/results/heavy/take.wav"},
+                            }
+                        ],
+                        "results": [
+                            {
+                                "attempt_id": "attempt_001",
+                                "attempt_number": 1,
+                                "state": "succeeded",
+                                "status": "Complete",
+                                "adapter_name": "Adapter A",
+                                "payload": {"lyrics": heavy},
+                                "payload_summary": {"song_model": "acestep-v15-xl-sft"},
+                                "result": {"lyrics": heavy, "audios": [{"audio_url": "/media/results/heavy/take.wav"}]},
+                                "result_summary": {"lyrics": heavy, "audio_url": "/media/results/heavy/take.wav"},
+                            }
+                        ],
+                        "logs": [heavy, "done"],
+                        "errors": [heavy],
+                        "created_at": "2026-06-07T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with acejam_app._lora_benchmark_jobs_lock:
+                acejam_app._lora_benchmark_jobs.clear()
+            with patch.object(acejam_app, "LORA_BENCHMARKS_DIR", root):
+                response = TestClient(acejam_app.app).get("/api/lora/benchmarks/jobs")
+            with acejam_app._lora_benchmark_jobs_lock:
+                acejam_app._lora_benchmark_jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(len(response.content), 20_000)
+        listed = response.json()["jobs"][0]
+        self.assertEqual(listed["id"], "heavybench")
+        self.assertIn("attempt_preview", listed)
+        self.assertNotIn("payload", listed)
+        self.assertNotIn("attempts", listed)
+        self.assertNotIn("results", listed)
+        self.assertNotIn("result", listed["attempt_preview"][0])
+
     def test_lora_sweep_body_uses_exported_adapters_variants_and_model_match(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6557,6 +6626,81 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(job["results"][0]["variants"][0]["state"], "succeeded")
         self.assertEqual(job["results"][0]["variants"][1]["state"], "failed")
         self.assertEqual(job["results"][0]["variants"][1]["error"], "boom")
+
+    def test_lora_sweep_list_endpoint_returns_compact_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            heavy = "x" * 100_000
+            job_dir = root / "heavysweep"
+            job_dir.mkdir()
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": "heavysweep",
+                        "kind": "lora_sweep",
+                        "state": "succeeded",
+                        "status": "LoRA Sweep completed",
+                        "stage": "complete",
+                        "progress": 100,
+                        "sweep_title": "Heavy Sweep",
+                        "payload": {"sweep_title": "Heavy Sweep", "base_payload": {"lyrics": heavy}},
+                        "payload_summary": {"sweep_title": "Heavy Sweep", "expected_audio_count": 1},
+                        "items": [
+                            {
+                                "item_id": "sweep_001",
+                                "item_number": 1,
+                                "state": "succeeded",
+                                "status": "Complete",
+                                "adapter_name": "Adapter A",
+                                "payload": {"lyrics": heavy},
+                                "payload_summary": {"song_model": "acestep-v15-xl-sft"},
+                                "result": {"lyrics": heavy, "audios": [{"audio_url": "/media/results/heavy/take.wav"}]},
+                                "result_summary": {"lyrics": heavy, "audio_url": "/media/results/heavy/take.wav"},
+                                "variants": [
+                                    {
+                                        "variant_index": 1,
+                                        "variant_seed": "111",
+                                        "state": "succeeded",
+                                        "status": "Complete",
+                                        "result": {"lyrics": heavy},
+                                        "result_summary": {"lyrics": heavy, "audio_url": "/media/results/heavy/take.wav"},
+                                    }
+                                ],
+                            }
+                        ],
+                        "results": [
+                            {
+                                "item_id": "sweep_001",
+                                "state": "succeeded",
+                                "adapter_name": "Adapter A",
+                                "result": {"lyrics": heavy},
+                                "result_summary": {"lyrics": heavy, "audio_url": "/media/results/heavy/take.wav"},
+                            }
+                        ],
+                        "logs": [heavy, "done"],
+                        "errors": [heavy],
+                        "created_at": "2026-06-07T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with acejam_app._lora_sweep_jobs_lock:
+                acejam_app._lora_sweep_jobs.clear()
+            with patch.object(acejam_app, "LORA_SWEEPS_DIR", root):
+                response = TestClient(acejam_app.app).get("/api/lora/sweeps/jobs")
+            with acejam_app._lora_sweep_jobs_lock:
+                acejam_app._lora_sweep_jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(len(response.content), 20_000)
+        listed = response.json()["jobs"][0]
+        self.assertEqual(listed["id"], "heavysweep")
+        self.assertIn("item_preview", listed)
+        self.assertNotIn("payload", listed)
+        self.assertNotIn("items", listed)
+        self.assertNotIn("results", listed)
+        self.assertNotIn("result", listed["item_preview"][0])
 
     def test_mlx_video_upload_endpoint_accepts_image_audio_and_rejects_text(self):
         client = TestClient(acejam_app.app)
