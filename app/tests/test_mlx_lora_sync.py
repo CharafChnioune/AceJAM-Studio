@@ -1,4 +1,6 @@
 import importlib.util
+import py_compile
+import re
 import sys
 import types
 import unittest
@@ -132,6 +134,22 @@ class MlxLoraSyncTests(unittest.TestCase):
         self.assertIn("patch_mlx_effective_lora_sync", patcher)
         self.assertIn("_effective_decoder_state_dict", patcher)
         self.assertIn("_sync_mlx_dit_weights_from_torch", patcher)
+        self.assertIn("verify_vendor_python_syntax", patcher)
+        self.assertNotIn('anchor.replace("return", snippet + "return")', patcher)
+
+    def test_patched_lora_lifecycle_compiles(self):
+        lifecycle_path = VENDOR / "acestep" / "core" / "generation" / "handler" / "lora" / "lifecycle.py"
+        py_compile.compile(str(lifecycle_path), doraise=True)
+        text = lifecycle_path.read_text(encoding="utf-8")
+        bad_sync_block = re.search(
+            r'^\s+sync_mlx = getattr\(self, "_sync_mlx_dit_weights_from_torch", None\)\n'
+            r'\s+if callable\(sync_mlx\):\n'
+            r'\s+sync_mlx\(reason="lora_[a-z_]+", force=True\)\n'
+            r'return ',
+            text,
+            flags=re.MULTILINE,
+        )
+        self.assertIsNone(bad_sync_block)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import py_compile
+import re
 from pathlib import Path
 
 
@@ -653,6 +655,23 @@ def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
 
     lifecycle_path = VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "lora" / "lifecycle.py"
     lifecycle_text = lifecycle_path.read_text(encoding="utf-8")
+    repaired_lifecycle_text = re.sub(
+        r'^(?P<indent>[ \t]+)[ \t]+sync_mlx = getattr\(self, "_sync_mlx_dit_weights_from_torch", None\)\n'
+        r'(?P=indent)if callable\(sync_mlx\):\n'
+        r'(?P=indent)    sync_mlx\(reason="(?P<reason>lora_[a-z_]+)", force=True\)\n'
+        r'return (?P<return_value>[^\n]+)\n',
+        lambda match: (
+            f'{match.group("indent")}sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
+            f'{match.group("indent")}if callable(sync_mlx):\n'
+            f'{match.group("indent")}    sync_mlx(reason="{match.group("reason")}", force=True)\n'
+            f'{match.group("indent")}return {match.group("return_value")}\n'
+        ),
+        lifecycle_text,
+        flags=re.MULTILINE,
+    )
+    if repaired_lifecycle_text != lifecycle_text:
+        lifecycle_text = repaired_lifecycle_text
+        changed = True
     sync_loaded = (
         '        sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
         "        if callable(sync_mlx):\n"
@@ -668,6 +687,7 @@ def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
         (
             "lora_removed_last_no_backup",
             '                self._lora_scale_state = {}\n                return "✅ Last adapter removed; base decoder still wrapped (no backup). Restart or load a new LoRA."\n',
+            '                return "✅ Last adapter removed; base decoder still wrapped (no backup). Restart or load a new LoRA."\n',
             '                sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
             "                if callable(sync_mlx):\n"
             '                    sync_mlx(reason="lora_removed_last_no_backup", force=True)\n',
@@ -675,6 +695,7 @@ def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
         (
             "lora_removed_last",
             '            logger.info("LoRA unloaded, base decoder restored")\n            return "✅ LoRA unloaded, using base model"\n',
+            '            return "✅ LoRA unloaded, using base model"\n',
             '            sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
             "            if callable(sync_mlx):\n"
             '                sync_mlx(reason="lora_removed_last", force=True)\n',
@@ -682,6 +703,7 @@ def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
         (
             "lora_removed",
             '        logger.info(f"Adapter \'{adapter_name}\' removed. Active: {next_active}")\n        return f"✅ Adapter \'{adapter_name}\' removed. Active: {next_active}"\n',
+            '        return f"✅ Adapter \'{adapter_name}\' removed. Active: {next_active}"\n',
             '        sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
             "        if callable(sync_mlx):\n"
             '            sync_mlx(reason="lora_removed", force=True)\n',
@@ -689,17 +711,18 @@ def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
         (
             "lora_unloaded",
             '        logger.info("LoRA unloaded, base decoder restored")\n        return "✅ LoRA unloaded, using base model"\n',
+            '        return "✅ LoRA unloaded, using base model"\n',
             '        sync_mlx = getattr(self, "_sync_mlx_dit_weights_from_torch", None)\n'
             "        if callable(sync_mlx):\n"
             '            sync_mlx(reason="lora_unloaded", force=True)\n',
         ),
     ]
-    for marker, anchor, snippet in lifecycle_sync_specs:
+    for marker, anchor, return_line, snippet in lifecycle_sync_specs:
         if f'sync_mlx(reason="{marker}", force=True)' in lifecycle_text:
             continue
         if anchor not in lifecycle_text:
             raise RuntimeError(f"Could not find {marker} return anchor in {lifecycle_path}")
-        lifecycle_text = lifecycle_text.replace(anchor, anchor.replace("return", snippet + "return"), 1)
+        lifecycle_text = lifecycle_text.replace(anchor, anchor.replace(return_line, snippet + return_line, 1), 1)
         changed = True
     if changed:
         lifecycle_path.write_text(lifecycle_text, encoding="utf-8")
@@ -745,6 +768,17 @@ def _effective_decoder_state_dict(decoder: Any) -> dict[str, "torch.Tensor"]:
     return changed
 
 
+def verify_vendor_python_syntax() -> None:
+    paths = [
+        VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "lora" / "lifecycle.py",
+        VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "lora" / "controls.py",
+        VENDOR_DIR / "acestep" / "core" / "generation" / "handler" / "mlx_dit_init.py",
+        VENDOR_DIR / "acestep" / "models" / "mlx" / "dit_convert.py",
+    ]
+    for path in paths:
+        py_compile.compile(str(path), doraise=True)
+
+
 def main() -> None:
     if not (VENDOR_DIR / "train.py").is_file():
         raise SystemExit(f"ACE-Step vendor checkout is missing: {VENDOR_DIR}")
@@ -763,6 +797,7 @@ def main() -> None:
         print("Applied ACE-Step vendor patches: " + ", ".join(applied))
     else:
         print("ACE-Step vendor patches already applied")
+    verify_vendor_python_syntax()
 
 
 if __name__ == "__main__":
