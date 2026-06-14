@@ -1436,6 +1436,40 @@ class AppParityTest(unittest.TestCase):
         self.assertFalse(result_dir_exists)
         self.assertFalse(job_exists)
 
+    def test_delete_completed_generation_job_removes_memory_entry(self):
+        client = TestClient(acejam_app.app)
+        with acejam_app._api_generation_tasks_lock:
+            acejam_app._api_generation_tasks["donejob"] = {
+                "id": "donejob",
+                "state": "succeeded",
+                "status": "Complete",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+
+        response = client.delete("/api/generation/jobs/donejob")
+
+        self.assertEqual(response.status_code, 200)
+        with acejam_app._api_generation_tasks_lock:
+            self.assertNotIn("donejob", acejam_app._api_generation_tasks)
+
+    def test_delete_completed_song_batch_job_removes_job_dir(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs_dir = root / "song_batches"
+            job_dir = jobs_dir / "batchdone"
+            job_dir.mkdir(parents=True)
+            (job_dir / "job.json").write_text(
+                json.dumps({"id": "batchdone", "state": "succeeded", "status": "Complete"}),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "SONG_BATCHES_DIR", jobs_dir):
+                response = client.delete("/api/song-batches/jobs/batchdone")
+            exists_after = job_dir.exists()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(exists_after)
+
     def test_library_bulk_delete_removes_audio_image_and_video(self):
         client = TestClient(acejam_app.app)
         with tempfile.TemporaryDirectory() as tmp:
@@ -2225,6 +2259,8 @@ class AppParityTest(unittest.TestCase):
         self.assertIn("adapter.generation_trigger_tag", lora_lib)
         self.assertIn("adapter.trigger_aliases", lora_lib)
         self.assertIn("Trigger tags activeren", selector)
+        self.assertIn("LoRA adapters konden niet worden geladen.", selector)
+        self.assertIn("adaptersQuery.error instanceof Error", selector)
         self.assertIn("Wordt opgeslagen/gebruikt als", (web_src / "wizards" / "TrainerWizard.tsx").read_text(encoding="utf-8"))
         self.assertIn("LoRA trigger source", (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8"))
         self.assertIn("songModelFromLoraVariant", lora_lib)
@@ -2384,6 +2420,53 @@ class AppParityTest(unittest.TestCase):
         self.assertNotIn("pasteBlocks.length > 0 &&", ai_step)
         self.assertNotIn("<pre", ai_step)
 
+    def test_source_audio_wizard_accepts_hydrated_json_on_ai_step(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        wizard = (web_src / "wizards" / "SourceAudioWizard.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("const hydratedPayload = useWizardStore((s) => s.payloads[config.mode]);", wizard)
+        self.assertIn("const hasHydratedPayload = Boolean(hydratedPayload && Object.keys(hydratedPayload).length > 0);", wizard)
+        self.assertIn("(aiDescription.trim().length >= 4 || !!source || hasHydratedPayload) && !aiPromptPending", wizard)
+        self.assertIn("onManualApply={() => {", wizard)
+        self.assertIn("setStep(1);", wizard)
+
+    def test_manual_json_apply_advances_other_wizards(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        wizard_files = [
+            "wizards/SimpleWizard.tsx",
+            "wizards/CustomWizard.tsx",
+            "wizards/ImageWizard.tsx",
+            "wizards/VideoWizard.tsx",
+            "wizards/NewsWizard.tsx",
+            "wizards/AlbumWizard.tsx",
+            "wizards/LoraBenchmarkWizard.tsx",
+        ]
+
+        for relative_path in wizard_files:
+            source = (web_src / relative_path).read_text(encoding="utf-8")
+            self.assertIn("onManualApply={() => {", source, relative_path)
+            self.assertIn("setStep(1);", source, relative_path)
+
+    def test_welcome_dialog_only_opens_on_home_route(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        dialog = (web_src / "components" / "WelcomeDialog.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('import { Link, useLocation } from "react-router-dom";', dialog)
+        self.assertIn("const isHomeRoute = location.pathname === \"/\";", dialog)
+        self.assertIn("if (!isHomeRoute) {", dialog)
+        self.assertIn("setOpen(false);", dialog)
+
+    def test_ai_prompt_step_normalizes_terminal_payload_json(self):
+        web_src = Path(__file__).resolve().parents[1] / "web" / "src"
+        ai_step = (web_src / "components" / "wizard" / "AIPromptStep.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("const aceStepRequest = asRecord(record.ace_step_request ?? record.official_request);", ai_step)
+        self.assertIn("const aceStepParams = asRecord(aceStepRequest.params);", ai_step)
+        self.assertIn("song_model: asText(aceStepRequest.song_model)", ai_step)
+        self.assertIn("key_scale: asText(aceStepParams.key_scale) || asText(aceStepParams.keyscale)", ai_step)
+        self.assertIn("onManualApply?: (payload: Record<string, unknown>) => void;", ai_step)
+        self.assertIn("onManualApply?.(manualPayload);", ai_step)
+
     def test_lora_status_and_adapters_expose_display_name_and_trigger(self):
         client = TestClient(acejam_app.app)
 
@@ -2411,6 +2494,46 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(status["adapters"][0]["display_name"], "charaf hook")
         self.assertEqual(status["adapters"][0]["trigger_tag"], "charaf hook")
         self.assertEqual(adapters["adapters"][0]["display_name"], "charaf hook")
+
+    def test_lora_adapter_api_compacts_heavy_metadata(self):
+        client = TestClient(acejam_app.app)
+
+        class StubTrainingManager:
+            def status(self):
+                return {"ready": True}
+
+            def list_adapters(self):
+                return [
+                    {
+                        "name": "charaf-hook",
+                        "display_name": "charaf hook",
+                        "trigger_tag": "charaf hook",
+                        "adapter_type": "lora",
+                        "path": "/tmp/charaf-hook",
+                        "is_loadable": True,
+                        "metadata": {
+                            "trigger_tag": "charaf hook",
+                            "generation_trigger_tag": "charaf hook",
+                            "trigger_aliases": ["charaf hook"],
+                            "song_model": "acestep-v15-xl-sft",
+                            "epoch_auditions": [{"huge": True}],
+                            "loss_history": [1, 2, 3],
+                        },
+                    }
+                ]
+
+        with patch.object(acejam_app, "training_manager", StubTrainingManager()), \
+            patch.object(acejam_app.handler, "get_lora_status", return_value={"loaded": False}):
+            adapters = client.get("/api/lora/adapters").json()
+            status = client.get("/api/lora/status").json()
+
+        for payload in [adapters["adapters"][0], status["adapters"][0]]:
+            metadata = payload["metadata"]
+            self.assertEqual(metadata["trigger_tag"], "charaf hook")
+            self.assertEqual(metadata["generation_trigger_tag"], "charaf hook")
+            self.assertEqual(metadata["song_model"], "acestep-v15-xl-sft")
+            self.assertNotIn("epoch_auditions", metadata)
+            self.assertNotIn("loss_history", metadata)
 
     def test_official_runner_uses_safe_lora_adapter_name_for_decimal_checkpoints(self):
         official_runner = importlib.import_module("official_runner")
@@ -5049,7 +5172,7 @@ class AppParityTest(unittest.TestCase):
             self.assertNotIn("recommended_take", saved)
             self.assertFalse(saved["audios"][0]["is_recommended_take"])
 
-    def test_vocal_intelligibility_gate_treats_unavailable_as_error(self):
+    def test_vocal_intelligibility_gate_treats_unavailable_as_manual_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = Path(tmp)
             result_dir = results / "asrunavailable"
@@ -5089,7 +5212,7 @@ class AppParityTest(unittest.TestCase):
             self.assertEqual(gate["status"], "needs_review")
             self.assertFalse(gate["passed"])
             self.assertFalse(gate["blocking"])
-            self.assertFalse(result["success"])
+            self.assertTrue(result["success"])
             self.assertTrue(result["needs_review"])
             self.assertIn("vocal_intelligibility_verifier_error", result["payload_warnings"])
 
@@ -5625,7 +5748,7 @@ class AppParityTest(unittest.TestCase):
                 result = acejam_app._run_advanced_generation({"title": "ignored"})
 
             self.assertEqual(calls, ["asrerr"])
-            self.assertFalse(result["success"])
+            self.assertTrue(result["success"])
             self.assertEqual(result["vocal_intelligibility_gate"]["status"], "needs_review")
             self.assertFalse(result["vocal_intelligibility_gate"]["blocking"])
             self.assertNotIn("recommended_take", result)

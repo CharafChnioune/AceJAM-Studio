@@ -30,7 +30,7 @@ for _path in (MFLUX_RESULTS_DIR, MFLUX_JOBS_DIR, MFLUX_LORAS_DIR, MFLUX_DATASETS
     _path.mkdir(parents=True, exist_ok=True)
 
 
-MFLUX_VERSION_RANGE = ">=0.17.5,<0.18"
+MFLUX_VERSION_RANGE = ">=0.18,<0.19"
 MFLUX_RESULT_KEEP_LIMIT = 100
 MFLUX_ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
@@ -113,6 +113,14 @@ def _python_import_status(python: Path, module: str) -> dict[str, Any]:
     }
 
 
+def _python_version_status(python: Path) -> dict[str, Any]:
+    if not python.is_file():
+        return {"available": False, "version": "", "ok": False, "reason": "mflux-env python is missing"}
+    ok, out = _run_probe([str(python), "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"], timeout=4)
+    version = out.strip().splitlines()[-1] if ok and out.strip() else ""
+    return {"available": ok, "version": version, "ok": ok, "reason": "" if ok else out}
+
+
 def _runtime_env() -> dict[str, str]:
     env = os.environ.copy()
     bin_dir = _env_bin("python").parent
@@ -166,6 +174,24 @@ MFLUX_MODELS: list[dict[str, Any]] = [
         "description": "High quality trainable preset for artwork LoRAs and final covers.",
     },
     {
+        "id": "flux2-klein-9b-kv",
+        "label": "FLUX.2 Klein 9B KV-cache",
+        "preset": "multi_reference_edit",
+        "family": "flux2",
+        "family_label": "FLUX.2",
+        "size": "9B",
+        "quantization_default": 8,
+        "default_steps": 20,
+        "default_width": 1024,
+        "default_height": 1024,
+        "command": "mflux-generate-flux2",
+        "edit_command": "mflux-generate-flux2-edit",
+        "capabilities": ["generate", "edit", "inpaint", "lora", "train_lora"],
+        "trainable": True,
+        "model_arg": "flux2-klein-9b-kv",
+        "description": "KV-cache tuned FLUX.2 Klein 9B preset for faster multi-reference edit workloads.",
+    },
+    {
         "id": "flux2-klein-4b",
         "label": "FLUX.2 Klein 4B",
         "preset": "balanced",
@@ -181,6 +207,40 @@ MFLUX_MODELS: list[dict[str, Any]] = [
         "capabilities": ["generate", "edit", "inpaint", "lora", "train_lora"],
         "trainable": True,
         "description": "Smaller FLUX.2 preset for good local quality with lower memory pressure.",
+    },
+    {
+        "id": "ernie-image",
+        "label": "ERNIE-Image",
+        "preset": "max_quality",
+        "family": "ernie-image",
+        "family_label": "ERNIE-Image",
+        "size": "N/A",
+        "quantization_default": 8,
+        "default_steps": 50,
+        "default_width": 1024,
+        "default_height": 1024,
+        "command": "mflux-generate-ernie-image",
+        "edit_command": "mflux-generate-ernie-image",
+        "capabilities": ["generate", "edit", "img2img", "lora", "train_lora"],
+        "trainable": True,
+        "description": "High quality ERNIE-Image generation with LoRA inference and training support.",
+    },
+    {
+        "id": "ernie-image-turbo",
+        "label": "ERNIE-Image Turbo",
+        "preset": "fast_draft",
+        "family": "ernie-image",
+        "family_label": "ERNIE-Image",
+        "size": "N/A",
+        "quantization_default": 8,
+        "default_steps": 8,
+        "default_width": 1024,
+        "default_height": 1024,
+        "command": "mflux-generate-ernie-image-turbo",
+        "edit_command": "mflux-generate-ernie-image-turbo",
+        "capabilities": ["generate", "edit", "img2img", "lora", "train_lora"],
+        "trainable": True,
+        "description": "Distilled ERNIE-Image Turbo preset for fast local drafts and edits.",
     },
     {
         "id": "z-image",
@@ -230,6 +290,22 @@ MFLUX_MODELS: list[dict[str, Any]] = [
         "capabilities": ["generate", "edit", "vlm_refine"],
         "trainable": False,
         "description": "Strong JSON and edit prompt understanding.",
+    },
+    {
+        "id": "ideogram4",
+        "label": "Ideogram 4 FP8",
+        "preset": "json_caption",
+        "family": "ideogram4",
+        "family_label": "Ideogram 4",
+        "size": "N/A",
+        "quantization_default": 8,
+        "default_steps": 20,
+        "default_width": 1024,
+        "default_height": 1024,
+        "command": "mflux-generate-ideogram4",
+        "capabilities": ["generate", "lora"],
+        "trainable": False,
+        "description": "Ideogram 4 FP8 text-to-image preset with JSON caption understanding and LoRA inference.",
     },
     {
         "id": "seedvr2",
@@ -358,6 +434,10 @@ def _command_name_for_action(model: dict[str, Any], action: str) -> str:
     return command
 
 
+def _model_runtime_arg(model: dict[str, Any]) -> str:
+    return str(model.get("model_arg") or model.get("id") or "").strip()
+
+
 def _all_commands() -> list[str]:
     commands: set[str] = {"mflux-train"}
     for model in MFLUX_MODELS:
@@ -419,8 +499,10 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
     current_mlx_spec = importlib.util.find_spec("mlx")
     current_mflux_spec = importlib.util.find_spec("mflux")
     env_python = _env_python()
+    env_python_status = _python_version_status(env_python)
     env_mlx_status = _python_import_status(env_python, "mlx")
     env_mflux_status = _python_import_status(env_python, "mflux")
+    env_transformers_status = _python_import_status(env_python, "transformers")
     mlx_available = bool(env_mlx_status.get("available") or current_mlx_spec)
     mflux_available = bool(env_mflux_status.get("available") or current_mflux_spec)
     command_paths = {cmd: _command_path(cmd) for cmd in _all_commands()}
@@ -457,8 +539,10 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
         "current_env_mflux_available": bool(current_mflux_spec),
         "mflux_env_dir": str(MFLUX_ENV_DIR),
         "mflux_env_python": str(env_python),
+        "mflux_env_python_status": env_python_status,
         "mflux_env_mlx": env_mlx_status,
         "mflux_env_mflux": env_mflux_status,
+        "mflux_env_transformers": env_transformers_status,
         "cli_available": cli_available,
         "commands": command_paths,
         "command_help": command_help,
@@ -471,6 +555,8 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
         "cache_home": os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE") or "",
         "hf_transfer": os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") or "",
         "version_range": MFLUX_VERSION_RANGE,
+        "model_count": len(MFLUX_MODELS),
+        "models": [model["id"] for model in MFLUX_MODELS],
         "blocking_reason": "" if ready else _mflux_blocking_reason(is_apple_mlx_platform, mlx_available, bool(mflux_available or cli_available)),
     }
 
@@ -652,6 +738,7 @@ def _build_mflux_command(payload: dict[str, Any], output: Path) -> list[str]:
     steps = str(int(payload.get("steps") or model.get("default_steps") or 20))
     seed = str(payload.get("seed") if payload.get("seed") not in {None, ""} else -1)
     quantize = str(int(payload.get("quantize") or model.get("quantization_default") or 8))
+    model_arg = _model_runtime_arg(model)
 
     args = [cmd_path]
     if action in {"upscale", "depth"}:
@@ -661,6 +748,8 @@ def _build_mflux_command(payload: dict[str, Any], output: Path) -> list[str]:
         return args
 
     args.extend(["--prompt", prompt, "--width", width, "--height", height, "--seed", seed, "--steps", steps, "-q", quantize, "--output", str(output)])
+    if model_arg:
+        args.extend(["--model", model_arg])
     if image_path:
         args.extend(["--image-path", str(image_path)])
     if mask_path:

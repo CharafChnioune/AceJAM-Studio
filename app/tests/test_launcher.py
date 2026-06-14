@@ -20,7 +20,7 @@ class LauncherScriptTest(unittest.TestCase):
         manager = (root / "app" / "mflux_manager.py").read_text(encoding="utf-8")
 
         self.assertNotIn("mflux>=", core_requirements)
-        self.assertIn("mflux>=0.17.5,<0.18", mflux_requirements)
+        self.assertIn("mflux>=0.18,<0.19", mflux_requirements)
         self.assertIn("MFLUX_ENV_DIR", manager)
         self.assertIn("_command_path", manager)
 

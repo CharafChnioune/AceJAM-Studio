@@ -40,11 +40,12 @@ The MFLUX API surface is:
 - `POST /api/mflux/uploads`: import a PNG/JPG/WEBP/BMP/TIFF source or mask image for edit, inpaint, upscale and depth jobs.
 - `POST /api/mflux/jobs`: create a generation/edit/upscale/depth job.
 - `GET /api/mflux/jobs/{id}`: inspect progress, logs and result image URLs.
+- `DELETE /api/mflux/jobs/{id}`: remove a finished or failed MFLUX job record. Active jobs are rejected with HTTP 409.
 - `POST /api/mflux/lora/train`: start MFLUX image-LoRA training.
 - `GET /api/mflux/lora/adapters`: list loadable image-LoRA adapters.
 - `POST /api/mflux/art/attach`: attach an MFLUX result to a song, generation result, album or album family.
 
-MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`.
+MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`.
 
 ## MLX Video Studio
 
@@ -57,11 +58,12 @@ The MLX-video API surface is:
 - `POST /api/mlx-video/uploads`: import source images/audio/video for image-to-video, audio-to-video, or song-to-video.
 - `POST /api/mlx-video/jobs`: create text-to-video, image-to-video, audio-to-video, song-to-video, or Final/HQ rerender jobs.
 - `GET /api/mlx-video/jobs` and `GET /api/mlx-video/jobs/{id}`: inspect progress, logs, MP4 URL, poster frame, and metadata.
+- `DELETE /api/mlx-video/jobs/{id}`: remove a finished or failed video job record. Active jobs are rejected with HTTP 409.
 - `GET /api/mlx-video/loras`: list loadable video-LoRAs under `app/data/mlx_video/loras`.
 - `POST /api/mlx-video/model-dirs`: register local converted Wan MLX model directories.
 - `POST /api/mlx-video/attach`: attach an MP4 result to song/album/library metadata.
 
-Wan models are not downloaded silently. Register converted model folders in Settings → Video. The installer vendors `mlx-video` under `app/vendor/mlx-video` and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable.
+Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, reports JSON runtime status with `python install_mlx_video.py --status-only --json`, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable.
 
 ## ACE-Step Model Advice
 

@@ -120,6 +120,20 @@ function isActiveJob(job: JsonRecord): boolean {
   return ACTIVE_STATES.has(String(job.state || "").toLowerCase());
 }
 
+function deletePathForJob(job: JobEntry): string {
+  if (job.deletePath) return job.deletePath;
+  const encoded = encodeURIComponent(job.id);
+  if (job.kind === "generation") return `/api/generation/jobs/${encoded}`;
+  if (job.kind === "song-batch") return `/api/song-batches/jobs/${encoded}`;
+  if (job.kind === "album") return `/api/album/jobs/${encoded}`;
+  if (job.kind === "mflux") return `/api/mflux/jobs/${encoded}`;
+  if (job.kind === "mlx-video") return `/api/mlx-video/jobs/${encoded}`;
+  if (job.kind === "lora") return `/api/lora/jobs/${encoded}`;
+  if (job.kind === "lora-benchmark") return `/api/lora/benchmarks/jobs/${encoded}`;
+  if (job.kind === "lora-sweep") return `/api/lora/sweeps/jobs/${encoded}`;
+  return "";
+}
+
 function errorText(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return String(error || "Onbekende fout");
@@ -214,6 +228,7 @@ function jobPatchFromLora(job: JsonRecord): JobEntry {
     metadata: job,
     error: text(job.error, ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    deletePath: `/api/lora/jobs/${encodeURIComponent(text(job.id))}`,
   };
 }
 
@@ -236,6 +251,7 @@ function jobPatchFromGeneration(job: JsonRecord): JobEntry {
     metadata: job,
     error: text(job.error, ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    deletePath: `/api/generation/jobs/${encodeURIComponent(text(job.id || job.task_id))}`,
   };
 }
 
@@ -279,6 +295,7 @@ function jobPatchFromMflux(job: JsonRecord): JobEntry {
     error: text(job.error, ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/mflux/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -302,6 +319,7 @@ function jobPatchFromMlxVideo(job: JsonRecord): JobEntry {
     error: text(job.error, ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/mlx-video/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -324,6 +342,7 @@ function jobPatchFromAlbum(job: JsonRecord): JobEntry {
     error: text(job.error, ""),
     startedAt: job.started_at ? new Date(String(job.started_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.last_update_at || job.finished_at, ""),
+    deletePath: `/api/album/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -346,6 +365,7 @@ function jobPatchFromSongBatch(job: JsonRecord): JobEntry {
     error: text(job.error || asArray(job.errors)[0], ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/song-batches/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -368,6 +388,7 @@ function jobPatchFromLoraBenchmark(job: JsonRecord): JobEntry {
     error: text(job.error || asArray(job.errors)[0], ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/lora/benchmarks/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -390,6 +411,7 @@ function jobPatchFromLoraSweep(job: JsonRecord): JobEntry {
     error: text(job.error || asArray(job.errors)[0], ""),
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/lora/sweeps/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -1805,11 +1827,35 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
   const jobs = useJobsStore((s) => s.jobs);
   const addJob = useJobsStore((s) => s.addJob);
   const removeJob = useJobsStore((s) => s.removeJob);
+  const dismissJob = useJobsStore((s) => s.dismissJob);
+  const resetJobs = useJobsStore((s) => s.resetJobs);
   const selectedId = useJobsStore((s) => s.selectedJobId);
   const openJob = useJobsStore((s) => s.openJob);
   const closeJob = useJobsStore((s) => s.closeJob);
   const list = Object.values(jobs).sort((a, b) => b.startedAt - a.startedAt);
   const selected = selectedId ? jobs[selectedId] ?? null : null;
+
+  const handleDeleteJob = React.useCallback(async (job: JobEntry) => {
+    const path = deletePathForJob(job);
+    try {
+      if (path) {
+        await api.delete(path);
+        removeJob(job.id);
+      } else {
+        dismissJob(job.id);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.toLowerCase().includes("not found")) {
+        removeJob(job.id);
+        return;
+      }
+      toast.error(userFacingFetchError(error));
+    }
+  }, [dismissJob, removeJob]);
+
+  React.useEffect(() => {
+    resetJobs();
+  }, [resetJobs]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1827,7 +1873,20 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           api.get<{ success: boolean; pull_jobs?: JsonRecord[] }>("/api/ollama/status"),
         ]);
         if (cancelled) return;
-        const current = useJobsStore.getState().jobs;
+        const store = useJobsStore.getState();
+        const current = store.jobs;
+        const dismissed = store.dismissedJobIds;
+        const shouldSkipRemoteJob = (rawJob: JsonRecord, id: string) => {
+          const active = isActiveJob(rawJob);
+          if (dismissed[id] && !active) return true;
+          if (!active && !current[id]) return true;
+          return false;
+        };
+        const reviveDismissedIfActive = (rawJob: JsonRecord, id: string) => {
+          if (dismissed[id] && isActiveJob(rawJob)) {
+            useJobsStore.getState().restoreDismissedJob(id);
+          }
+        };
         const loraJobs = loraResult.status === "fulfilled" ? loraResult.value.jobs || [] : [];
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
         const songBatchJobs = songBatchResult.status === "fulfilled" ? songBatchResult.value.jobs || [] : [];
@@ -1846,54 +1905,65 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         for (const rawJob of loraJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (dismissed[id] && !isActiveJob(rawJob)) continue;
           if (!isActiveJob(rawJob) && !current[id]) continue;
           addJob(jobPatchFromLora(rawJob));
         }
-        for (const [index, rawJob] of generationJobs.entries()) {
+        for (const rawJob of generationJobs) {
           const id = text(rawJob.id || rawJob.task_id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromGeneration(rawJob));
         }
-        for (const [index, rawJob] of songBatchJobs.entries()) {
+        for (const rawJob of songBatchJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromSongBatch(rawJob));
         }
-        for (const [index, rawJob] of loraBenchmarkJobs.entries()) {
+        for (const rawJob of loraBenchmarkJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromLoraBenchmark(rawJob));
         }
-        for (const [index, rawJob] of loraSweepJobs.entries()) {
+        for (const rawJob of loraSweepJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromLoraSweep(rawJob));
         }
-        for (const [index, rawJob] of mfluxJobs.entries()) {
+        for (const rawJob of mfluxJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromMflux(rawJob));
         }
-        for (const [index, rawJob] of mlxVideoJobs.entries()) {
+        for (const rawJob of mlxVideoJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromMlxVideo(rawJob));
         }
-        for (const [index, rawJob] of albumJobs.entries()) {
+        for (const rawJob of albumJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
-          if (!isActiveJob(rawJob) && !current[id] && index >= 8) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromAlbum(rawJob));
         }
         for (const rawJob of ollamaPullJobs) {
           const id = text(rawJob.id || rawJob.model, "");
           if (!id) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (dismissed[id] && !isActiveJob(rawJob)) continue;
           if (!isActiveJob(rawJob) && !current[id]) continue;
           addJob(jobPatchFromOllamaPull(rawJob));
         }
@@ -1966,7 +2036,7 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
                     className="size-5 opacity-0 transition-opacity group-hover:opacity-100"
                     onClick={(event) => {
                       event.stopPropagation();
-                      removeJob(job.id);
+                      void handleDeleteJob(job);
                     }}
                     aria-label="Sluit"
                   >
