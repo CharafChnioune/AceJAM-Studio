@@ -10,7 +10,17 @@ MLX Media is a native Pinokio app for ACE-Step 1.5 music generation, MFLUX image
 
 Generated data lives under `app/data/` and model files under `app/model_cache/`. These folders are ignored by git.
 
-Do not open `app/index.html` directly with a `file://` URL for real work. The UI now shows a warning in that case because browser file views cannot call the local `/api` backend. Use Pinokio's **Open Web UI** HTTP link.
+Do not open the built frontend bundle directly with a `file://` URL for real work, for example `app/web/dist/index.html`. The UI now shows a warning in that case because browser file views cannot call the local `/api` backend. Use Pinokio's **Open Web UI** HTTP link.
+
+## Upstream Baseline
+
+As of June 15, 2026 this repo tracks these upstream-safe media baselines:
+
+- ACE-Step 1.5 vendor: `v0.1.8` / commit `dce621408bee8c31b4fcf4811682eb9359e1bc94`.
+- MFLUX image runtime: `0.18.x`, aligned with the upstream `v.0.18.0` release.
+- MLX-video vendor: pinned to commit `87db56a51758fefb748a359b90a5283bb8ba4837` so Pinokio installs stay reproducible instead of following a moving `main`.
+
+Pinokio update flows now stay non-destructive for live runtimes: `update.js` pulls with `--ff-only`, ACE-Step vendor sync refuses unknown local drift instead of force-resetting, and MLX-video sync refuses to overwrite unmanaged changes while still reusing the managed PR #24/#27 patch set.
 
 ## Studio Modes
 
@@ -45,7 +55,7 @@ The MFLUX API surface is:
 - `GET /api/mflux/lora/adapters`: list loadable image-LoRA adapters.
 - `POST /api/mflux/art/attach`: attach an MFLUX result to a song, generation result, album or album family.
 
-MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`.
+MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`. That covers the current upstream `0.18.0` additions: ERNIE-Image, ERNIE-Image-Turbo, Ideogram 4 FP8, and the `flux2-klein-9b-kv` multi-reference edit path.
 
 ## MLX Video Studio
 
@@ -63,7 +73,14 @@ The MLX-video API surface is:
 - `POST /api/mlx-video/model-dirs`: register local converted Wan MLX model directories.
 - `POST /api/mlx-video/attach`: attach an MP4 result to song/album/library metadata.
 
-Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, reports JSON runtime status with `python install_mlx_video.py --status-only --json`, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable.
+Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, pins it to upstream commit `87db56a` (the latest mainline commit as of May 13, 2026 with PR #23 merged), reports JSON runtime status with `python install_mlx_video.py --status-only --json`, surfaces the pinned ref/current commit/drift in Settings, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable.
+
+## MLX Ecosystem Watchlist
+
+Two nearby local-only MLX projects are worth watching but are not enabled as default runtime dependencies in MLX Media yet:
+
+- [`Blaizzy/mlx-audio`](https://github.com/Blaizzy/mlx-audio) for STT/TTS/STS tooling on Apple Silicon.
+- [`Blaizzy/mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) for multimodal prompt/vision helpers and omni audio/video-capable models.
 
 ## ACE-Step Model Advice
 

@@ -867,6 +867,9 @@ function MLXVideoTab() {
   const models = useQuery({ queryKey: ["mlx-video", "models"], queryFn: getMlxVideoModels, staleTime: 60_000 });
   const loras = useQuery({ queryKey: ["mlx-video", "loras"], queryFn: getMlxVideoLoras, staleTime: 20_000 });
   const statusData = status.data;
+  const patchStatus = (statusData?.patch_status ?? {}) as Record<string, unknown>;
+  const knownPatchCount = Array.isArray(patchStatus.known_patch_files) ? patchStatus.known_patch_files.length : 0;
+  const unknownDriftCount = Array.isArray(patchStatus.unknown_drift_files) ? patchStatus.unknown_drift_files.length : 0;
   const grouped = React.useMemo(() => {
     const map = new Map<string, NonNullable<typeof models.data>["models"]>();
     for (const model of models.data?.models ?? []) {
@@ -978,6 +981,28 @@ function MLXVideoTab() {
                 <Badge className="mt-1" variant={value ? "default" : "outline"}>{value ? "on" : "off"}</Badge>
               </div>
             ))}
+          </div>
+          <div className="grid gap-2 md:grid-cols-4">
+            <div className="rounded-md border bg-background/35 p-3">
+              <p className="text-xs text-muted-foreground">Pinned upstream</p>
+              <p className="mt-1 font-mono text-[10px]">{String(patchStatus.target_ref_short || "87db56a")}</p>
+            </div>
+            <div className="rounded-md border bg-background/35 p-3">
+              <p className="text-xs text-muted-foreground">Vendor commit</p>
+              <Badge className="mt-1" variant={patchStatus.matches_target_ref ? "default" : "outline"}>
+                {String(patchStatus.commit_short || "missing")}
+              </Badge>
+            </div>
+            <div className="rounded-md border bg-background/35 p-3">
+              <p className="text-xs text-muted-foreground">Managed patch files</p>
+              <Badge className="mt-1" variant="outline">{knownPatchCount}</Badge>
+            </div>
+            <div className="rounded-md border bg-background/35 p-3">
+              <p className="text-xs text-muted-foreground">Unknown drift</p>
+              <Badge className="mt-1" variant={unknownDriftCount === 0 ? "outline" : "destructive"}>
+                {unknownDriftCount}
+              </Badge>
+            </div>
           </div>
           <div className="rounded-md border bg-background/35 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">

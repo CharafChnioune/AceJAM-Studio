@@ -5,7 +5,7 @@ This folder contains the self-contained MLX Media web app runtime. Pinokio launc
 ## Runtime Layout
 
 - `app.py`: FastAPI/Gradio server and public API routes.
-- `index.html`: Studio UI.
+- `web/`: React/Vite Studio UI source plus build output.
 - `studio_core.py`: shared validation, task/model compatibility, and request helpers.
 - `songwriting_toolkit.py`: album agent toolbelt for model advice, tags, lyric length, rhyme/flow, hooks, metaphors, cliche checks, and fallback album planning.
 - `official_runner.py`: isolated official ACE-Step 1.5 inference bridge for LM/CoT, output formats, and post-processing controls.
@@ -22,9 +22,13 @@ This folder contains the self-contained MLX Media web app runtime. Pinokio launc
 
 ## MFLUX Image Runtime
 
-Image generation is handled by MFLUX only; Ollama is intentionally limited to text/AI-fill and album planning. MFLUX runs in the isolated `mflux-env` because MFLUX 0.17.x uses the newer Transformers 5 stack while ACE-Step uses Transformers 4.x. The runtime exposes `/api/mflux/status`, `/api/mflux/models`, `/api/mflux/uploads`, `/api/mflux/jobs`, `/api/mflux/lora/train`, `/api/mflux/lora/adapters`, and `/api/mflux/art/attach`.
+Image generation is handled by MFLUX only; Ollama is intentionally limited to text/AI-fill and album planning. MFLUX runs in the isolated `mflux-env` because MFLUX 0.18.x uses the newer Transformers 5 stack while ACE-Step uses Transformers 4.x. The runtime exposes `/api/mflux/status`, `/api/mflux/models`, `/api/mflux/uploads`, `/api/mflux/jobs`, `/api/mflux/lora/train`, `/api/mflux/lora/adapters`, and `/api/mflux/art/attach`.
 
-The manager blocks image work unless the app runs on Apple Silicon with MLX available. When MFLUX is installed, jobs call the matching action CLI (`mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-fibo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, or `mflux-train`) and write result metadata to `data/mflux/results/<result_id>/mflux_result.json`. Source/mask uploads are stored in `data/mflux/uploads`, and image-LoRA adapters are discovered from `data/mflux/loras`.
+The manager blocks image work unless the app runs on Apple Silicon with MLX available. When MFLUX is installed, jobs call the matching action CLI (`mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-fibo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, or `mflux-train`) and write result metadata to `data/mflux/results/<result_id>/mflux_result.json`. Source/mask uploads are stored in `data/mflux/uploads`, and image-LoRA adapters are discovered from `data/mflux/loras`.
+
+## MLX Video Runtime
+
+`install_mlx_video.py` vendors upstream `mlx-video` into `vendor/mlx-video`, but now pins that checkout to commit `87db56a51758fefb748a359b90a5283bb8ba4837` instead of following a moving branch. The runtime status exposes the pinned ref, current vendor commit, managed patch-file count, and unknown drift count so Settings can show whether the local vendor still matches the tested baseline before applying the PR #24/#27 LTX fixes.
 
 ## Model Advice Runtime
 
@@ -52,7 +56,7 @@ The official bridge runs in a subprocess with `PYTHONPATH` pointed at `vendor/AC
 
 `official_runner.py` also handles official ACE-Step LM helper actions for `create_sample`, `format_sample`, and `understand_music` without loading the DiT model first. `/api/create_sample` and `/api/format_sample` keep the Ollama songwriter flow by default, while official-compatible endpoints and explicit API requests can use the 5Hz LM.
 
-If the UI is opened as `file://.../app/index.html`, it shows a runtime warning and disables generation actions. The working entrypoint is the Pinokio-served HTTP URL.
+If the UI is opened as `file://.../app/web/dist/index.html`, it shows a runtime warning and disables generation actions. The working entrypoint is the Pinokio-served HTTP URL.
 
 ## Album Agent Runtime
 

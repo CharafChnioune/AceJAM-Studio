@@ -8,8 +8,23 @@
       "title": "ACE-Step Model",
       "value": "https://huggingface.co/ACE-Step/Ace-Step1.5"
     }, {
+      "title": "ACE-Step v0.1.8",
+      "value": "https://github.com/ace-step/ACE-Step-1.5/releases/tag/v0.1.8"
+    }, {
       "title": "MFLUX",
       "value": "https://github.com/filipstrand/mflux"
+    }, {
+      "title": "MFLUX 0.18.0",
+      "value": "https://github.com/filipstrand/mflux/releases/tag/v.0.18.0"
+    }, {
+      "title": "MLX-Video Pin",
+      "value": "https://github.com/Blaizzy/mlx-video/commit/87db56a51758fefb748a359b90a5283bb8ba4837"
+    }, {
+      "title": "MLX-Audio",
+      "value": "https://github.com/Blaizzy/mlx-audio"
+    }, {
+      "title": "MLX-VLM",
+      "value": "https://github.com/Blaizzy/mlx-vlm"
     }, {
       "title": "Qwen 4B Abliterated GGUF",
       "value": "https://huggingface.co/mradermacher/Qwen3-4B-abliterated-GGUF"
