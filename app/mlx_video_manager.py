@@ -35,7 +35,12 @@ MLX_VIDEO_ATTACHMENTS_PATH = MLX_VIDEO_DIR / "attachments.json"
 MLX_VIDEO_ENV_DIR = BASE_DIR / "video-env"
 MLX_VIDEO_VENDOR_DIR = BASE_DIR / "vendor" / "mlx-video"
 MLX_VIDEO_REPO_URL = "https://github.com/Blaizzy/mlx-video.git"
-MLX_VIDEO_TARGET_REF = "main"
+MLX_VIDEO_TARGET_REF = "87db56a51758fefb748a359b90a5283bb8ba4837"
+MLX_VIDEO_KNOWN_PATCH_FILES = {
+    "mlx_video/models/ltx_2/generate.py",
+    "mlx_video/models/ltx_2/video_vae/sampling.py",
+    "mlx_video/models/ltx_2/video_vae/video_vae.py",
+}
 
 MLX_VIDEO_ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 MLX_VIDEO_ALLOWED_AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"}
@@ -258,6 +263,9 @@ def _help_status(engine: str) -> dict[str, Any]:
 
 
 def _patch_status() -> dict[str, Any]:
+    commit = _current_vendor_commit()
+    dirty_files = _current_vendor_dirty_files()
+    normalized_dirty = _normalize_dirty_paths(dirty_files)
     video_vae = MLX_VIDEO_VENDOR_DIR / "mlx_video" / "models" / "ltx_2" / "video_vae" / "video_vae.py"
     sampling = MLX_VIDEO_VENDOR_DIR / "mlx_video" / "models" / "ltx_2" / "video_vae" / "sampling.py"
     ltx_generate = MLX_VIDEO_VENDOR_DIR / "mlx_video" / "models" / "ltx_2" / "generate.py"
@@ -269,7 +277,14 @@ def _patch_status() -> dict[str, Any]:
     pr23 = "--end-image" in ltx_text and "end_image_strength" in ltx_text
     return {
         "vendor_dir": str(MLX_VIDEO_VENDOR_DIR),
-        "commit": _current_vendor_commit(),
+        "target_ref": MLX_VIDEO_TARGET_REF,
+        "target_ref_short": MLX_VIDEO_TARGET_REF[:7],
+        "commit": commit,
+        "commit_short": commit[:7] if commit else "",
+        "matches_target_ref": bool(commit and commit == MLX_VIDEO_TARGET_REF),
+        "dirty_files": dirty_files,
+        "known_patch_files": sorted(path for path in normalized_dirty if path in MLX_VIDEO_KNOWN_PATCH_FILES),
+        "unknown_drift_files": sorted(path for path in normalized_dirty if path not in MLX_VIDEO_KNOWN_PATCH_FILES),
         "pr27_ltx23_vae_channel_cap": pr27,
         "pr24_ltx23_sampling_fallback": pr24,
         "vae_fix_active": bool(pr27 or pr24),
@@ -495,8 +510,25 @@ def mlx_video_register_model_dir(payload: dict[str, Any]) -> dict[str, Any]:
 def _current_vendor_commit() -> str:
     if not (MLX_VIDEO_VENDOR_DIR / ".git").is_dir():
         return ""
-    ok, out = _run_probe(["git", "-C", str(MLX_VIDEO_VENDOR_DIR), "rev-parse", "--short", "HEAD"], timeout=5)
+    ok, out = _run_probe(["git", "-C", str(MLX_VIDEO_VENDOR_DIR), "rev-parse", "HEAD"], timeout=5)
     return out.strip() if ok else ""
+
+
+def _current_vendor_dirty_files() -> list[str]:
+    if not (MLX_VIDEO_VENDOR_DIR / ".git").is_dir():
+        return []
+    ok, out = _run_probe(["git", "-C", str(MLX_VIDEO_VENDOR_DIR), "status", "--short"], timeout=5)
+    if not ok:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _normalize_dirty_paths(dirty_lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for line in dirty_lines:
+        parts = line.split(maxsplit=1)
+        normalized.append(parts[1] if len(parts) == 2 else line)
+    return normalized
 
 
 def mlx_video_status(check_help: bool = True) -> dict[str, Any]:

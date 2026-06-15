@@ -14,6 +14,12 @@ BASE_DIR = Path(__file__).resolve().parent
 VENDOR_DIR = BASE_DIR / "vendor" / "mlx-video"
 VIDEO_ENV_DIR = BASE_DIR / "video-env"
 REPO_URL = "https://github.com/Blaizzy/mlx-video.git"
+MLX_VIDEO_TARGET_REF = "87db56a51758fefb748a359b90a5283bb8ba4837"
+KNOWN_PATCH_FILES = {
+    "mlx_video/models/ltx_2/generate.py",
+    "mlx_video/models/ltx_2/video_vae/sampling.py",
+    "mlx_video/models/ltx_2/video_vae/video_vae.py",
+}
 VAE_PATCH_URLS = [
     ("PR #27 LTX-2.3 VAE channel cap", "https://github.com/Blaizzy/mlx-video/pull/27.patch"),
     ("PR #24 LTX-2.3 sampling fallback", "https://github.com/Blaizzy/mlx-video/pull/24.patch"),
@@ -57,14 +63,38 @@ def _git_output(args: list[str]) -> str:
         return ""
 
 
+def _normalize_dirty_paths(dirty_lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for line in dirty_lines:
+        parts = line.split(maxsplit=1)
+        normalized.append(parts[1] if len(parts) == 2 else line)
+    return normalized
+
+
 def _sync_vendor() -> None:
     VENDOR_DIR.parent.mkdir(parents=True, exist_ok=True)
-    if (VENDOR_DIR / ".git").is_dir():
-        _run(["git", "-C", str(VENDOR_DIR), "fetch", "--depth", "1", "origin", "main"])
-        _run(["git", "-C", str(VENDOR_DIR), "checkout", "main"])
-        _run(["git", "-C", str(VENDOR_DIR), "pull", "--ff-only"])
+    if not (VENDOR_DIR / ".git").is_dir():
+        if VENDOR_DIR.exists() and any(VENDOR_DIR.iterdir()):
+            raise RuntimeError(f"mlx-video vendor directory exists but is not a git checkout: {VENDOR_DIR}")
+        _run(["git", "clone", REPO_URL, str(VENDOR_DIR)])
+    _run(["git", "-C", str(VENDOR_DIR), "remote", "set-url", "origin", REPO_URL])
+    _run(["git", "-C", str(VENDOR_DIR), "fetch", "origin", "--tags", "--prune"])
+    _run(["git", "-C", str(VENDOR_DIR), "cat-file", "-e", f"{MLX_VIDEO_TARGET_REF}^{{commit}}"])
+    status = _vendor_status()
+    if status.get("matches_target_ref") and not status.get("unknown_drift_files"):
+        print(f"[mlx-video] vendor already pinned to {status.get('target_ref_short')}")
         return
-    _run(["git", "clone", "--depth", "1", REPO_URL, str(VENDOR_DIR)])
+    if status.get("unknown_drift_files"):
+        raise RuntimeError(
+            "mlx-video vendor has local drift outside the managed patch set; "
+            f"refusing to overwrite {status.get('unknown_drift_files')}"
+        )
+    if status.get("dirty_files") and not status.get("matches_target_ref"):
+        raise RuntimeError(
+            "mlx-video vendor has managed patch drift while not on the pinned commit; "
+            "refusing to move HEAD without a clean checkout."
+        )
+    _run(["git", "-C", str(VENDOR_DIR), "switch", "--detach", MLX_VIDEO_TARGET_REF])
 
 
 def _vae_patch_already_present() -> bool:
@@ -92,13 +122,23 @@ def _end_image_patch_already_present() -> bool:
 
 
 def _vendor_status() -> dict[str, object]:
+    is_git = (VENDOR_DIR / ".git").is_dir()
+    dirty_files = _git_output(["git", "status", "--short"]).splitlines() if is_git else []
+    normalized_dirty = _normalize_dirty_paths([line.strip() for line in dirty_files if line.strip()])
+    commit_full = _git_output(["git", "rev-parse", "HEAD"]) if is_git else ""
     return {
         "exists": VENDOR_DIR.exists(),
-        "is_git": (VENDOR_DIR / ".git").is_dir(),
-        "commit": _git_output(["git", "rev-parse", "--short", "HEAD"]) if (VENDOR_DIR / ".git").is_dir() else "",
-        "branch": _git_output(["git", "branch", "--show-current"]) if (VENDOR_DIR / ".git").is_dir() else "",
-        "remote": _git_output(["git", "remote", "get-url", "origin"]) if (VENDOR_DIR / ".git").is_dir() else "",
-        "dirty_files": _git_output(["git", "status", "--short"]) .splitlines() if (VENDOR_DIR / ".git").is_dir() else [],
+        "is_git": is_git,
+        "target_ref": MLX_VIDEO_TARGET_REF,
+        "target_ref_short": MLX_VIDEO_TARGET_REF[:7],
+        "matches_target_ref": bool(commit_full and commit_full == MLX_VIDEO_TARGET_REF),
+        "commit": _git_output(["git", "rev-parse", "--short", "HEAD"]) if is_git else "",
+        "commit_full": commit_full,
+        "branch": _git_output(["git", "branch", "--show-current"]) if is_git else "",
+        "remote": _git_output(["git", "remote", "get-url", "origin"]) if is_git else "",
+        "dirty_files": [line.strip() for line in dirty_files if line.strip()],
+        "known_patch_files": sorted(path for path in normalized_dirty if path in KNOWN_PATCH_FILES),
+        "unknown_drift_files": sorted(path for path in normalized_dirty if path not in KNOWN_PATCH_FILES),
     }
 
 
@@ -156,6 +196,8 @@ def runtime_status() -> dict[str, object]:
             "hf_transfer": _package_status(python, "hf_transfer"),
         },
         "patch_status": {
+            "target_ref": MLX_VIDEO_TARGET_REF,
+            "target_ref_short": MLX_VIDEO_TARGET_REF[:7],
             "vae_fix_active": _vae_patch_already_present(),
             "sampling_fix_active": _sampling_patch_already_present(),
             "pr23_ltx_i2v_end_frame": _end_image_patch_already_present(),
