@@ -14,7 +14,7 @@ Do not open the built frontend bundle directly with a `file://` URL for real wor
 
 ## Upstream Baseline
 
-As of June 15, 2026 this repo tracks these upstream-safe media baselines:
+As of June 17, 2026 this repo tracks these upstream-safe media baselines:
 
 - ACE-Step 1.5 vendor: `v0.1.8` / commit `dce621408bee8c31b4fcf4811682eb9359e1bc94`.
 - MFLUX image runtime: `0.18.x`, aligned with the upstream `v.0.18.0` release.
@@ -59,7 +59,7 @@ MFLUX results live under `app/data/mflux/results`, source/mask uploads under `ap
 
 ## MLX Video Studio
 
-Video Studio uses [`Blaizzy/mlx-video`](https://github.com/Blaizzy/mlx-video) in an isolated `app/video-env` because upstream requires Python 3.11 while the music runtime stays on Python 3.10. The default workflow is draft-first: make a small LTX-2 preview (`512x320`, `33` frames), then render the same prompt/source/seed as a Final/HQ pass if the motion and composition are worth the time.
+Video Studio uses [`Blaizzy/mlx-video`](https://github.com/Blaizzy/mlx-video) in an isolated `app/video-env` because upstream requires Python 3.11 while the music runtime stays on Python 3.10. The default workflow is draft-first: make a small LTX-2.3 preview (`512x320`, `33` frames), then render the same prompt/source/seed as a Final/HQ pass if the motion and composition are worth the time. Legacy LTX-2 presets remain available, but the default draft/final presets now target upstream LTX-2.3.
 
 The MLX-video API surface is:
 
@@ -73,7 +73,7 @@ The MLX-video API surface is:
 - `POST /api/mlx-video/model-dirs`: register local converted Wan MLX model directories.
 - `POST /api/mlx-video/attach`: attach an MP4 result to song/album/library metadata.
 
-Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, pins it to upstream commit `87db56a` (the latest mainline commit as of May 13, 2026 with PR #23 merged), reports JSON runtime status with `python install_mlx_video.py --status-only --json`, surfaces the pinned ref/current commit/drift in Settings, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable.
+Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, pins it to upstream commit `87db56a` (still the latest mainline commit as checked on June 17, 2026), reports JSON runtime status with `python install_mlx_video.py --status-only --json`, surfaces the pinned ref/current commit/drift in Settings, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable. The Video wizard now passes upstream-native tiling modes (`auto`, `none`, `default`, `aggressive`, `conservative`, `spatial`, `temporal`) and exposes the documented LTX-2.3 spatial upscaler variants (`x2 v1.0`, `x2 v1.1`, `x1.5 v1.0`) instead of legacy placeholder toggles.
 
 ## MLX Ecosystem Watchlist
 

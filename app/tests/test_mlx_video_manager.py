@@ -15,11 +15,13 @@ class MlxVideoManagerTests(unittest.TestCase):
         ids = {item["id"] for item in catalog["models"]}
 
         self.assertIn("ltx2-fast-draft", ids)
+        self.assertIn("ltx23-fast-draft", ids)
         self.assertIn("ltx2-final-hq", ids)
+        self.assertIn("ltx23-final-hq", ids)
         self.assertIn("wan21-reality-480p", ids)
         self.assertIn("wan22-lightning-draft", ids)
-        self.assertEqual(catalog["defaults"]["t2v"], "ltx2-fast-draft")
-        self.assertEqual(catalog["defaults"]["final"], "ltx2-final-hq")
+        self.assertEqual(catalog["defaults"]["t2v"], "ltx23-fast-draft")
+        self.assertEqual(catalog["defaults"]["final"], "ltx23-final-hq")
         self.assertIn("song_video", catalog["by_action"])
 
     def test_status_blocks_non_apple_mlx(self):
@@ -88,6 +90,50 @@ class MlxVideoManagerTests(unittest.TestCase):
         self.assertEqual(command[command.index("--num-frames") + 1], "33")
         self.assertIn("--audio-file", command)
         self.assertIn("--lora-path", command)
+        self.assertEqual(warnings, [])
+
+    def test_ltx23_command_passes_string_tiling_and_real_upscaler_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uploads = root / "uploads"
+            uploads.mkdir()
+            source = uploads / "source.png"
+            source.write_bytes(b"png")
+
+            caps = {
+                "output_path": True,
+                "image": True,
+                "audio_file": True,
+                "enhance_prompt": True,
+                "spatial_upscaler": True,
+                "tiling": True,
+                "ltx_lora": True,
+                "end_image": True,
+            }
+            with patch.object(mlx_video_manager, "DATA_DIR", root), \
+                 patch.object(mlx_video_manager, "MLX_VIDEO_UPLOADS_DIR", uploads), \
+                 patch.object(mlx_video_manager, "_engine_command", return_value=["mlx_video.ltx_2.generate"]), \
+                 patch.object(mlx_video_manager, "_engine_capabilities", return_value=caps):
+                command, model, warnings = mlx_video_manager._build_mlx_video_command(  # noqa: SLF001
+                    {
+                        "action": "i2v",
+                        "prompt": "camera moves gently",
+                        "model_id": "ltx23-fast-draft",
+                        "image_path": str(source),
+                        "tiling": "aggressive",
+                        "spatial_upscaler": "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors",
+                    },
+                    root / "out.mp4",
+                )
+
+        self.assertEqual(model["id"], "ltx23-fast-draft")
+        self.assertIn("--tiling", command)
+        self.assertEqual(command[command.index("--tiling") + 1], "aggressive")
+        self.assertIn("--spatial-upscaler", command)
+        self.assertEqual(
+            command[command.index("--spatial-upscaler") + 1],
+            "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors",
+        )
         self.assertEqual(warnings, [])
 
     def test_ltx_end_frame_requires_pr23_capability(self):
@@ -167,6 +213,7 @@ class MlxVideoManagerTests(unittest.TestCase):
                         "width": 832,
                         "height": 480,
                         "num_frames": 82,
+                        "tiling": "conservative",
                         "lora_adapters": [{"path": str(lora), "scale": 1.0, "role": "high"}],
                     },
                     root / "out.mp4",
@@ -176,6 +223,8 @@ class MlxVideoManagerTests(unittest.TestCase):
         self.assertEqual(command[command.index("--width") + 1], "832")
         self.assertEqual(command[command.index("--height") + 1], "480")
         self.assertEqual(command[command.index("--num-frames") + 1], "81")
+        self.assertIn("--tiling", command)
+        self.assertEqual(command[command.index("--tiling") + 1], "conservative")
         self.assertIn("--lora-high", command)
 
     def test_tokenizer_issue_26_guard_blocks_mismatch(self):

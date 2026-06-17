@@ -28,7 +28,12 @@ The manager blocks image work unless the app runs on Apple Silicon with MLX avai
 
 ## MLX Video Runtime
 
-`install_mlx_video.py` vendors upstream `mlx-video` into `vendor/mlx-video`, but now pins that checkout to commit `87db56a51758fefb748a359b90a5283bb8ba4837` instead of following a moving branch. The runtime status exposes the pinned ref, current vendor commit, managed patch-file count, and unknown drift count so Settings can show whether the local vendor still matches the tested baseline before applying the PR #24/#27 LTX fixes.
+`install_mlx_video.py` vendors upstream `mlx-video` into `vendor/mlx-video`, but now pins that checkout to commit `87db56a51758fefb748a359b90a5283bb8ba4837` instead of following a moving branch. The runtime status exposes the pinned ref, current vendor commit, managed patch-file count, and unknown drift count so Settings can show whether the local vendor still matches the tested baseline before applying the PR #24/#27 LTX fixes. The model catalog now exposes both legacy LTX-2 and newer LTX-2.3 draft/final presets, with LTX-2.3 as the default draft-first path.
+
+The video payload now maps upstream `mlx-video` CLI options more directly:
+
+- `tiling` stores a mode string (`auto`, `none`, `default`, `aggressive`, `conservative`, `spatial`, `temporal`) instead of a boolean toggle.
+- `spatial_upscaler` passes through the documented LTX-2.3 upscaler filenames (`ltx-2.3-spatial-upscaler-x2-1.0.safetensors`, `...x2-1.1...`, `...x1.5-1.0...`) for true upstream parity.
 
 ## Model Advice Runtime
 
