@@ -52,6 +52,10 @@ export const api = {
       method: "POST",
       body: body instanceof FormData ? body : JSON.stringify(body ?? {}),
     }),
+  delete: <T = unknown>(path: string) =>
+    http<T>(path, {
+      method: "DELETE",
+    }),
 };
 
 // ---- Endpoint shortcuts ----

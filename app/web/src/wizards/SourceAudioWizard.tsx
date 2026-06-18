@@ -123,6 +123,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const navigate = useNavigate();
   const setResult = useWizardStore((s) => s.setResult);
   const lastResult = useWizardStore((s) => s.lastResult[config.mode]);
+  const hydratedPayload = useWizardStore((s) => s.payloads[config.mode]);
   const warnings = useWizardStore((s) => s.warnings[config.mode]) ?? [];
   const draft = useWizardStore((s) => s.drafts[config.mode]);
   const sourceDefaults = React.useMemo<BaseSourceForm>(
@@ -176,6 +177,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const aiDescription = storePrompt ?? "";
   const values = form.watch();
   const draftState = useWizardDraft(config.mode, form);
+  const hasHydratedPayload = Boolean(hydratedPayload && Object.keys(hydratedPayload).length > 0);
   const baseOnlyModelError =
     BASE_ONLY_VARIANTS.has(config.variant) && !String(values.song_model || "").includes("-base")
       ? "Extract, Lego en Complete zijn ACE-Step Base-only taken. Kies ACE-Step v1.5 XL Base voordat je genereert."
@@ -460,7 +462,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       title: "AI prompt",
       description:
         "Beschrijf wat je met de bron-audio wilt doen. AI vult tags, lyrics en parameters in.",
-      isValid: (aiDescription.trim().length >= 4 || !!source) && !aiPromptPending,
+      isValid: (aiDescription.trim().length >= 4 || !!source || hasHydratedPayload) && !aiPromptPending,
       render: () => (
         <AIPromptStep
           mode={config.mode}
@@ -470,6 +472,10 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
           onHydrated={(payload) => {
             hydrate(payload);
             draftState.saveNow(form.getValues());
+          }}
+          onManualApply={() => {
+            draftState.saveNow(form.getValues());
+            setStep(1);
           }}
         />
       ),

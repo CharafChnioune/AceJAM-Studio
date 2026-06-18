@@ -53,6 +53,11 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
     () => (adaptersQuery.data?.adapters ?? []).filter(isGenerationLoraAdapter),
     [adaptersQuery.data?.adapters],
   );
+  const adaptersError = React.useMemo(() => {
+    if (!adaptersQuery.error) return "";
+    if (adaptersQuery.error instanceof Error) return adaptersQuery.error.message;
+    return "LoRA adapters laden mislukte.";
+  }, [adaptersQuery.error]);
   const selectedPaths = React.useMemo(
     () => new Set(selection.lora_adapters.map((adapter) => adapter.path)),
     [selection.lora_adapters],
@@ -181,6 +186,15 @@ export function LoraSelector({ value, onChange, className }: LoraSelectorProps) 
         <div className="grid max-h-64 gap-2 overflow-auto rounded-md border border-border/70 p-2 sm:grid-cols-2">
           {adaptersQuery.isLoading ? (
             <p className="px-2 py-3 text-sm text-muted-foreground">LoRA's laden...</p>
+          ) : adaptersError ? (
+            <div className="space-y-2 px-2 py-3 text-sm">
+              <p className="text-amber-500">
+                LoRA adapters konden niet worden geladen.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {adaptersError}
+              </p>
+            </div>
           ) : adapters.length === 0 ? (
             <p className="px-2 py-3 text-sm text-muted-foreground">
               Geen generation-loadable PEFT LoRA adapters gevonden.

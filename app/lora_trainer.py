@@ -2162,6 +2162,7 @@ class AceTrainingManager:
             "bpm": parse_int(payload.get("epoch_audition_bpm"), profile_metadata["bpm"], 0, 300) or None,
             "keyscale": str(payload.get("epoch_audition_keyscale") or profile_metadata["keyscale"] or "").strip(),
             "timesignature": str(payload.get("epoch_audition_timesignature") or profile_metadata["timesignature"] or "").strip(),
+            "every_n_epochs": parse_int(payload.get("epoch_audition_every_n_epochs"), 1, 1, 10000),
             "scale": parse_float(
                 payload.get("epoch_audition_scale"),
                 parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
@@ -2383,6 +2384,7 @@ class AceTrainingManager:
         loss_stop_params = self._loss_stop_params(payload, epochs)
         training_seed = parse_int(payload.get("training_seed", payload.get("seed")), 42, 0, 2**31 - 1)
         epoch_audition = self._epoch_audition_config(payload, trigger_tag=trigger_tag, training_seed=training_seed)
+        save_every_n_epochs = parse_int(payload.get("save_every_n_epochs"), 1, 1, 10000)
         device = default_training_device(payload.get("device"))
         precision = training_precision_for_device(device, payload.get("precision"))
         output_name = slug(trigger_tag or adapter_type, "adapter")
@@ -2410,7 +2412,7 @@ class AceTrainingManager:
             "--epochs",
             str(epochs),
             "--save-every",
-            "1",
+            str(save_every_n_epochs),
             "--lr",
             str(parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0)),
             "--shift",
@@ -2500,7 +2502,7 @@ class AceTrainingManager:
                 "display_name": trigger_tag_raw or trigger_tag,
                 "epochs": epochs,
                 "train_epochs": epochs,
-                "save_every_n_epochs": 1,
+                "save_every_n_epochs": save_every_n_epochs,
                 **loss_stop_params,
                 "epoch_audition": epoch_audition,
                 "training_shift": inference_defaults["training_shift"],
@@ -2649,7 +2651,7 @@ class AceTrainingManager:
         command = self._resume_train_command(job, params, dataset_dir, output_dir, log_dir, total_epochs)
         command = self._command_with_arg(command, "--device", params["device"])
         command = self._command_with_arg(command, "--precision", params["precision"])
-        command = self._command_with_arg(command, "--save-every", "1")
+        command = self._command_with_arg(command, "--save-every", str(self._save_every_n_epochs(params)))
         command = self._command_with_arg(command, "--scheduler-epochs", str(total_epochs))
         command = self._command_without_arg(command, "--resume-from")
 
@@ -2954,6 +2956,7 @@ class AceTrainingManager:
         inference_defaults = training_inference_defaults(variant)
         parsed_epochs = parse_int(epochs, self.auto_epochs(sample_count), 1, 10000) if epochs not in [None, "", "auto"] else None
         loss_stop_params = self._loss_stop_params(payload, parsed_epochs or self.auto_epochs(sample_count))
+        save_every_n_epochs = parse_int(payload.get("save_every_n_epochs"), 1, 1, 10000)
         return {
             "dataset_id": dataset_id,
             "import_root": str(import_root),
@@ -2983,7 +2986,7 @@ class AceTrainingManager:
             "instrumental_training": parse_bool(payload.get("instrumental_training"), False),
             "training_seed": training_seed,
             "train_epochs": parsed_epochs,
-            "save_every_n_epochs": 1,
+            "save_every_n_epochs": save_every_n_epochs,
             **loss_stop_params,
             "learning_rate": parse_float(payload.get("learning_rate"), 1e-4, 1e-7, 1.0),
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
@@ -3331,7 +3334,7 @@ class AceTrainingManager:
                 "--epochs",
                 str(epochs),
                 "--save-every",
-                "1",
+                str(self._save_every_n_epochs(params)),
                 "--lr",
                 str(params["learning_rate"]),
                 "--shift",
@@ -3658,6 +3661,15 @@ class AceTrainingManager:
             return parse_bool(config.get("stop_on_failure"), False)
         return False
 
+    def _save_every_n_epochs(self, params: dict[str, Any]) -> int:
+        return parse_int(params.get("save_every_n_epochs"), 1, 1, 10000)
+
+    def _epoch_audition_every_n_epochs(self, params: dict[str, Any]) -> int:
+        config = params.get("epoch_audition")
+        if not isinstance(config, dict):
+            return 1
+        return parse_int(config.get("every_n_epochs"), 1, 1, 10000)
+
     def _command_with_arg(self, command: list[str], flag: str, value: Any) -> list[str]:
         updated = list(command)
         if flag in updated:
@@ -3732,9 +3744,10 @@ class AceTrainingManager:
     def _audition_role(self, item: dict[str, Any]) -> str:
         return str(item.get("attempt_role") or item.get("role") or "lora").strip().lower() or "lora"
 
-    def _lora_audition_epochs(self, total_epochs: int) -> set[int]:
+    def _lora_audition_epochs(self, total_epochs: int, *, every_n_epochs: int = 1) -> set[int]:
         total = max(1, int(total_epochs or 1))
-        return set(range(1, total + 1))
+        interval = max(1, int(every_n_epochs or 1))
+        return set(range(interval, total + 1, interval))
 
     def _prune_epoch_auditions(self, auditions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Keep the permanent baseline plus the latest listenable LoRA test window."""
@@ -3900,7 +3913,7 @@ class AceTrainingManager:
             "--epochs",
             str(total_epochs),
             "--save-every",
-            "1",
+            str(self._save_every_n_epochs(params)),
             "--lr",
             str(parse_float(params.get("learning_rate"), 1e-4, 1e-7, 1.0)),
 	            "--shift",
@@ -4203,7 +4216,9 @@ class AceTrainingManager:
             )
             current.updated_at = utc_now()
             self._write_job_unlocked(current)
-        command = self._command_with_arg(train_command, "--save-every", "1")
+        save_every_n_epochs = self._save_every_n_epochs(params)
+        audition_every_n_epochs = self._epoch_audition_every_n_epochs(params)
+        command = self._command_with_arg(train_command, "--save-every", str(save_every_n_epochs))
         command = self._command_with_arg(command, "--device", str(params.get("device") or "auto"))
         command = self._command_with_arg(
             command,
@@ -4225,13 +4240,16 @@ class AceTrainingManager:
         first_epoch = max(1, int(start_epoch or 1))
         last_checkpoint: Path | None = initial_checkpoint
         stopped_for_plateau = False
-        lora_audition_epochs = self._lora_audition_epochs(total_epochs)
+        lora_audition_epochs = self._lora_audition_epochs(total_epochs, every_n_epochs=audition_every_n_epochs)
+        checkpoint_epochs = sorted({*range(save_every_n_epochs, total_epochs + 1, save_every_n_epochs), total_epochs})
         self._set_job_state(
             job_id,
             result={
                 "epoch_auditions_policy": {
                     "baseline": "one no-LoRA baseline audition",
-                    "lora_epoch_mode": "every_epoch_checkpoint",
+                    "lora_epoch_mode": "checkpoint_interval",
+                    "checkpoint_every_n_epochs": save_every_n_epochs,
+                    "audition_every_n_epochs": audition_every_n_epochs,
                     "lora_epochs": sorted(lora_audition_epochs),
                     "retained_lora_test_count": EPOCH_AUDITION_LORA_TEST_COUNT,
                     "lora_test_count": EPOCH_AUDITION_LORA_TEST_COUNT,
@@ -4252,30 +4270,34 @@ class AceTrainingManager:
                 attempt_role="baseline",
                 use_lora=False,
             )
-        for epoch in range(first_epoch, total_epochs + 1):
+        for epoch in checkpoint_epochs:
+            if epoch < first_epoch:
+                continue
             before_progress = progress_start + ((epoch - 1) / total_epochs) * (progress_end - progress_start)
-            self._set_job_state(job_id, stage=f"train epoch {epoch}/{total_epochs}", progress=before_progress)
+            stage_label = f"train epoch {epoch}/{total_epochs}"
+            self._set_job_state(job_id, stage=stage_label, progress=before_progress)
             chunk_command = self._command_with_arg(command, "--epochs", str(epoch))
             chunk_command = self._command_with_arg(chunk_command, "--scheduler-epochs", str(total_epochs))
             if last_checkpoint is not None:
                 chunk_command = self._command_with_arg(chunk_command, "--resume-from", str(last_checkpoint))
             else:
                 chunk_command = self._command_without_arg(chunk_command, "--resume-from")
-            command_result = self._run_command_step(job_id, chunk_command, log_path, stage=f"train epoch {epoch}/{total_epochs}") or {}
+            command_result = self._run_command_step(job_id, chunk_command, log_path, stage=stage_label) or {}
             checkpoint = self._latest_checkpoint_for_epoch(output_dir, epoch)
-            if checkpoint is None:
+            if checkpoint is not None:
+                last_checkpoint = checkpoint
+            elif epoch != total_epochs:
                 raise FileNotFoundError(f"Epoch {epoch} finished but no checkpoint was found in {output_dir / 'checkpoints'}")
-            last_checkpoint = checkpoint
             plateau = self._record_epoch_loss(
                 job_id,
                 epoch=epoch,
                 total_epochs=total_epochs,
-                checkpoint=checkpoint,
+                checkpoint=checkpoint or last_checkpoint or output_dir,
                 command_result=command_result,
                 params=params,
             )
             audition_progress = progress_start + (epoch / total_epochs) * (progress_end - progress_start)
-            if epoch in lora_audition_epochs:
+            if epoch in lora_audition_epochs and checkpoint is not None:
                 self._set_job_state(job_id, stage=f"audition epoch {epoch}/{total_epochs}", progress=audition_progress)
                 self._run_epoch_audition(job_id, params, checkpoint, epoch, log_path, attempt_role="lora", use_lora=True)
             if plateau.get("should_stop"):
@@ -4319,7 +4341,10 @@ class AceTrainingManager:
                     )
                     with self._lock:
                         job = self._read_job_unlocked(job_id)
-                lora_audition_epochs = self._lora_audition_epochs(total_epochs)
+                lora_audition_epochs = self._lora_audition_epochs(
+                    total_epochs,
+                    every_n_epochs=self._epoch_audition_every_n_epochs(params),
+                )
                 if latest_epoch in lora_audition_epochs and self._audition_needs_resume_for_epoch(job, latest_epoch, attempt_role="lora"):
                     self._append_log(log_path, f"[resume] retrying incomplete LoRA audition for epoch {latest_epoch}\n")
                     self._set_job_state(job_id, stage=f"audition epoch {latest_epoch}/{total_epochs}", progress=0.0)
@@ -4761,6 +4786,18 @@ class AceTrainingManager:
         job_dir = self.jobs_dir / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
         (job_dir / "job.json").write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
+
+    def delete_job(self, job_id: str) -> dict[str, Any]:
+        job_id = slug(job_id, "job")
+        with self._lock:
+            job = self._read_job_unlocked(job_id)
+            if job.state in JOB_ACTIVE_STATES:
+                raise RuntimeError(f"Cannot delete active training job {job.id}. Stop it first.")
+            self._processes.pop(job.id, None)
+            job_dir = self.jobs_dir / job.id
+        if job_dir.exists():
+            shutil.rmtree(job_dir)
+        return {"job_id": job.id, "deleted": True}
 
     def _resolve_dataset_json(self, payload: dict[str, Any]) -> str:
         if payload.get("dataset_json"):

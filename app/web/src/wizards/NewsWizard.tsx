@@ -260,6 +260,9 @@ export function NewsWizard() {
               draftState.saveNow(withPrompt);
             }
           }}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

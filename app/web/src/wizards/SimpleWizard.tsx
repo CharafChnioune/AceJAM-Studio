@@ -195,6 +195,9 @@ export function SimpleWizard() {
               draftState.saveNow(withDesc);
             }
           }}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

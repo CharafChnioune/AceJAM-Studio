@@ -350,6 +350,9 @@ export function ImageWizard() {
           ]}
           onPendingChange={setAiPromptPending}
           onHydrated={hydrateFromAi}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

@@ -71,6 +71,35 @@ def _env_float(name: str, default: float = 0.0) -> float:
         return default
 
 
+def _compact_lora_adapter_payload(adapter: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(adapter or {})
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    compact_metadata: dict[str, Any] = {}
+    for key in [
+        "trigger_tag",
+        "trigger_tag_raw",
+        "generation_trigger_tag",
+        "trigger_aliases",
+        "trigger_candidates",
+        "trigger_source",
+        "adapter_type",
+        "model_variant",
+        "song_model",
+        "language",
+        "quality_status",
+        "quality_reasons",
+        "audition_passed",
+    ]:
+        if key in metadata:
+            compact_metadata[key] = metadata[key]
+    payload["metadata"] = compact_metadata
+    return payload
+
+
+def _compact_lora_adapters_payload(adapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_compact_lora_adapter_payload(item) for item in adapters]
+
+
 def _album_plan_llm_hard_timeout_from_policy(planner_timeout_seconds: float) -> float:
     raw = os.environ.get("ACEJAM_ALBUM_PLAN_LLM_HARD_TIMEOUT_SECONDS")
     if raw is None or str(raw).strip() == "":
@@ -4594,6 +4623,35 @@ training_manager = AceTrainingManager(
 )
 
 
+def _clear_directory_children(path: Path) -> None:
+    if not path.exists():
+        return
+    for child in list(path.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def _clear_background_job_history_on_startup() -> None:
+    with _api_generation_tasks_lock:
+        _api_generation_tasks.clear()
+    with _song_batch_jobs_lock:
+        _song_batch_jobs.clear()
+    with _lora_benchmark_jobs_lock:
+        _lora_benchmark_jobs.clear()
+    with _lora_sweep_jobs_lock:
+        _lora_sweep_jobs.clear()
+    with _album_jobs_lock:
+        _album_jobs.clear()
+    _clear_directory_children(DATA_DIR / "lora_jobs")
+    _clear_directory_children(SONG_BATCHES_DIR)
+    _clear_directory_children(LORA_BENCHMARKS_DIR)
+    _clear_directory_children(LORA_SWEEPS_DIR)
+    _clear_directory_children(MFLUX_RESULTS_DIR.parent / "jobs")
+    _clear_directory_children(MLX_VIDEO_JOBS_DIR)
+
+
 def _ensure_training_idle() -> None:
     active_job = training_manager.active_job()
     if active_job:
@@ -5953,6 +6011,8 @@ _lora_sweep_jobs: dict[str, dict[str, Any]] = {}
 _lora_sweep_jobs_lock = threading.Lock()
 _lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
 _lora_autolabel_jobs_lock = threading.Lock()
+
+_clear_background_job_history_on_startup()
 
 
 def _set_lora_autolabel_job(job_id: str, **updates: Any) -> dict[str, Any]:
@@ -10971,9 +11031,8 @@ def _apply_vocal_intelligibility_gate_to_result(
         result["payload_warnings"] = warnings
         result.pop("error", None)
     elif verifier_error and not passed_ids:
-        result["success"] = False
+        result["success"] = True
         result["needs_review"] = True
-        result["error"] = "Vocal intelligibility verifier could not complete."
         suggestions = list(result.get("rerender_suggestions") or [])
         suggestions.extend(
             [
@@ -10986,6 +11045,7 @@ def _apply_vocal_intelligibility_gate_to_result(
         if "vocal_intelligibility_verifier_error" not in warnings:
             warnings.append("vocal_intelligibility_verifier_error")
         result["payload_warnings"] = warnings
+        result.pop("error", None)
     elif not passed_ids:
         result["success"] = False
         result["error"] = "Vocal intelligibility gate rejected every take."
@@ -16317,6 +16377,26 @@ def _generation_job_snapshot(job_id: str | None = None) -> dict[str, Any] | list
     ]
 
 
+def _background_job_is_active(job: dict[str, Any] | None) -> bool:
+    if not isinstance(job, dict):
+        return False
+    state = str(job.get("state") or "").strip().lower()
+    stage = str(job.get("stage") or "").strip().lower()
+    return state in {"queued", "running", "stopping"} or stage in {"queued", "running", "stopping", "rendering"}
+
+
+def _delete_generation_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    with _api_generation_tasks_lock:
+        job = dict(_api_generation_tasks.get(job_id) or {})
+        if not job:
+            raise KeyError("Generation job not found")
+        if _background_job_is_active(job):
+            raise RuntimeError("Cannot delete an active generation job.")
+        _api_generation_tasks.pop(job_id, None)
+    return {"job_id": job_id, "deleted": True}
+
+
 def _generation_job_log(job_id: str, line: str, **updates: Any) -> None:
     if not job_id:
         return
@@ -16816,6 +16896,21 @@ def _song_batch_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
         _song_batch_job_view(job)
         for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
     ]
+
+
+def _delete_song_batch_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    job = _song_batch_snapshot(job_id)
+    if not job:
+        raise KeyError("Song batch job not found")
+    if _background_job_is_active(job):
+        raise RuntimeError("Cannot delete an active song batch job.")
+    with _song_batch_jobs_lock:
+        _song_batch_jobs.pop(job_id, None)
+    job_dir = SONG_BATCHES_DIR / job_id
+    if job_dir.exists():
+        shutil.rmtree(job_dir)
+    return {"job_id": job_id, "deleted": True}
 
 
 def _song_batch_worker(job_id: str, payload: dict[str, Any]) -> None:
@@ -17802,6 +17897,21 @@ def _lora_benchmark_snapshot(job_id: str | None = None, *, include_archived: boo
         _lora_benchmark_job_view(job, compact=True)
         for job in sorted(jobs, key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
     ]
+
+
+def _delete_lora_benchmark_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    job = _lora_benchmark_snapshot(job_id, include_archived=True)
+    if not job:
+        raise KeyError("LoRA benchmark job not found")
+    if _background_job_is_active(job):
+        raise RuntimeError("Cannot delete an active LoRA benchmark job.")
+    with _lora_benchmark_jobs_lock:
+        _lora_benchmark_jobs.pop(job_id, None)
+    job_dir = LORA_BENCHMARKS_DIR / job_id
+    if job_dir.exists():
+        shutil.rmtree(job_dir)
+    return {"job_id": job_id, "deleted": True}
 
 
 def _lora_benchmark_worker(job_id: str, payload: dict[str, Any]) -> None:
@@ -18964,6 +19074,21 @@ def _lora_sweep_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
     ]
 
 
+def _delete_lora_sweep_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    job = _lora_sweep_snapshot(job_id)
+    if not job:
+        raise KeyError("LoRA sweep job not found")
+    if _background_job_is_active(job):
+        raise RuntimeError("Cannot delete an active LoRA sweep job.")
+    with _lora_sweep_jobs_lock:
+        _lora_sweep_jobs.pop(job_id, None)
+    job_dir = LORA_SWEEPS_DIR / job_id
+    if job_dir.exists():
+        shutil.rmtree(job_dir)
+    return {"job_id": job_id, "deleted": True}
+
+
 def _lora_sweep_worker(job_id: str, payload: dict[str, Any]) -> None:
     items = list(payload.get("items") or [])
     existing = _lora_sweep_snapshot(job_id)
@@ -19540,6 +19665,18 @@ def _album_job_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict
             job = _album_jobs.get(job_id)
             return _jsonable(dict(job)) if job else {}
         return [_jsonable(dict(job)) for job in _album_jobs.values()]
+
+
+def _delete_album_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    with _album_jobs_lock:
+        job = dict(_album_jobs.get(job_id) or {})
+        if not job:
+            raise KeyError("Album job not found")
+        if _background_job_is_active(job):
+            raise RuntimeError("Cannot delete an active album job.")
+        _album_jobs.pop(job_id, None)
+    return {"job_id": job_id, "deleted": True}
 
 
 def _set_album_job(job_id: str, **updates: Any) -> dict[str, Any]:
@@ -20830,6 +20967,21 @@ async def api_mflux_jobs():
     return JSONResponse({"success": True, "jobs": mflux_list_jobs()})
 
 
+@app.delete("/api/mflux/jobs/{job_id}")
+async def api_mflux_job_delete(job_id: str):
+    path = MFLUX_RESULTS_DIR.parent / "jobs" / f"{safe_id(job_id)}.json"
+    if not path.is_file():
+        return JSONResponse({"success": False, "error": "MFLUX job not found."}, status_code=404)
+    try:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        job = {"id": safe_id(job_id)}
+    if _background_job_is_active(job):
+        return JSONResponse({"success": False, "error": "Cannot delete an active MFLUX job."}, status_code=409)
+    path.unlink(missing_ok=True)
+    return JSONResponse({"success": True, "deleted": True, "job_id": safe_id(job_id)})
+
+
 @app.post("/api/mflux/jobs")
 async def api_mflux_jobs_create(request: Request):
     try:
@@ -20948,6 +21100,21 @@ async def api_mlx_video_models():
 @app.get("/api/mlx-video/jobs")
 async def api_mlx_video_jobs():
     return JSONResponse({"success": True, "jobs": mlx_video_list_jobs()})
+
+
+@app.delete("/api/mlx-video/jobs/{job_id}")
+async def api_mlx_video_job_delete(job_id: str):
+    path = MLX_VIDEO_JOBS_DIR / f"{safe_id(job_id)}.json"
+    if not path.is_file():
+        return JSONResponse({"success": False, "error": "MLX video job not found."}, status_code=404)
+    try:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        job = {"id": safe_id(job_id)}
+    if _background_job_is_active(job):
+        return JSONResponse({"success": False, "error": "Cannot delete an active MLX video job."}, status_code=409)
+    path.unlink(missing_ok=True)
+    return JSONResponse({"success": True, "deleted": True, "job_id": safe_id(job_id)})
 
 
 @app.post("/api/mlx-video/jobs")
@@ -21505,6 +21672,17 @@ async def api_generation_job_log(job_id: str):
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
 
 
+@app.delete("/api/generation/jobs/{job_id}")
+async def api_generation_job_delete(job_id: str):
+    try:
+        deleted = _delete_generation_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
+
+
 @app.get("/api/song-batches/jobs")
 async def api_song_batch_jobs_list():
     jobs = _song_batch_snapshot()
@@ -21538,6 +21716,17 @@ async def api_song_batch_job_log(job_id: str):
         raise HTTPException(status_code=404, detail="Song batch job not found")
     logs = [str(item) for item in (job.get("logs") or []) if str(item)]
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.delete("/api/song-batches/jobs/{job_id}")
+async def api_song_batch_job_delete(job_id: str):
+    try:
+        deleted = _delete_song_batch_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
 
 
 @app.get("/api/lora/benchmarks/jobs")
@@ -21577,6 +21766,17 @@ async def api_lora_benchmark_job_log(job_id: str):
         raise HTTPException(status_code=404, detail="LoRA benchmark job not found")
     logs = [str(item) for item in (job.get("logs") or []) if str(item)]
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.delete("/api/lora/benchmarks/jobs/{job_id}")
+async def api_lora_benchmark_job_delete(job_id: str):
+    try:
+        deleted = _delete_lora_benchmark_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
 
 
 @app.post("/api/lora/benchmarks/jobs/{job_id}/stop")
@@ -21635,6 +21835,17 @@ async def api_lora_sweep_job_log(job_id: str):
         raise HTTPException(status_code=404, detail="LoRA sweep job not found")
     logs = [str(item) for item in (job.get("logs") or []) if str(item)]
     return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.delete("/api/lora/sweeps/jobs/{job_id}")
+async def api_lora_sweep_job_delete(job_id: str):
+    try:
+        deleted = _delete_lora_sweep_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
 
 
 @app.post("/api/lora/sweeps/jobs/{job_id}/stop")
@@ -21823,12 +22034,13 @@ async def api_score(request: Request):
 
 @app.get("/api/lora/status")
 async def api_lora_status():
+    adapters = _compact_lora_adapters_payload(training_manager.list_adapters())
     return JSONResponse(
         {
             "success": True,
             **handler.get_lora_status(),
             "trainer": training_manager.status(),
-            "adapters": training_manager.list_adapters(),
+            "adapters": adapters,
             "pro_audition_policy": _lora_dataset_health([])["audition_plan"],
         }
     )
@@ -22828,6 +23040,18 @@ async def api_lora_job(job_id: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
 
 
+@app.delete("/api/lora/jobs/{job_id}")
+async def api_lora_job_delete(job_id: str):
+    try:
+        return JSONResponse({"success": True, **training_manager.delete_job(job_id)})
+    except FileNotFoundError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
 @app.post("/api/lora/jobs/{job_id}/stop")
 async def api_lora_job_stop(job_id: str):
     try:
@@ -22846,7 +23070,7 @@ async def api_lora_job_resume(job_id: str):
 
 @app.get("/api/lora/adapters")
 async def api_lora_adapters():
-    return JSONResponse({"success": True, "adapters": training_manager.list_adapters()})
+    return JSONResponse({"success": True, "adapters": _compact_lora_adapters_payload(training_manager.list_adapters())})
 
 
 @app.post("/api/lora/export")
@@ -23031,6 +23255,17 @@ async def api_album_job_status(job_id: str):
     if not job:
         return JSONResponse({"success": False, "error": "Album job not found"}, status_code=404)
     return JSONResponse({"success": True, "job": job})
+
+
+@app.delete("/api/album/jobs/{job_id}")
+async def api_album_job_delete(job_id: str):
+    try:
+        deleted = _delete_album_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
 
 
 @app.post("/api/album/jobs/{job_id}/stop")

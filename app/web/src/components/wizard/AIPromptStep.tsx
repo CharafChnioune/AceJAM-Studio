@@ -39,6 +39,7 @@ interface AIPromptStepProps {
   examples?: string[];
   currentPayload?: Record<string, unknown>;
   onHydrated?: (payload: Record<string, unknown>) => void;
+  onManualApply?: (payload: Record<string, unknown>) => void;
   onPendingChange?: (pending: boolean) => void;
 }
 
@@ -142,7 +143,32 @@ function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, 
   if (!payload || typeof payload !== "object") {
     throw new Error("JSON root must be an object.");
   }
-  return payload as Record<string, unknown>;
+  const record = payload as Record<string, unknown>;
+  const summary = asRecord(record.summary);
+  const aceStepRequest = asRecord(record.ace_step_request ?? record.official_request);
+  const aceStepParams = asRecord(aceStepRequest.params);
+  if (Object.keys(aceStepParams).length > 0) {
+    const normalized: Record<string, unknown> = {
+      ...aceStepParams,
+      song_model: asText(aceStepRequest.song_model) || asText(record.song_model) || asText(summary.song_model),
+      title: asText(aceStepParams.title) || asText(summary.title),
+      task_type: asText(aceStepParams.task_type) || asText(summary.task_type),
+      lora_adapter_name: asText(aceStepRequest.lora_adapter_name),
+      lora_adapter_path: asText(aceStepRequest.lora_adapter_path),
+      lora_scale: aceStepRequest.lora_scale,
+      adapter_model_variant: asText(aceStepRequest.adapter_model_variant),
+      key_scale: asText(aceStepParams.key_scale) || asText(aceStepParams.keyscale),
+      duration: asNumber(aceStepParams.duration, asNumber(aceStepParams.audio_duration, 0)) || undefined,
+      audio_duration:
+        asNumber(aceStepParams.audio_duration, asNumber(aceStepParams.duration, 0)) || undefined,
+    };
+    if (aceStepRequest.use_lora != null) normalized.use_lora = aceStepRequest.use_lora;
+    if (mode === "complete" || mode === "lego" || mode === "extract") {
+      normalized.track_names = Array.isArray(aceStepParams.track_names) ? aceStepParams.track_names : [];
+    }
+    return normalized;
+  }
+  return record;
 }
 
 const ALBUM_CONTRACT_NEGATIVE_TAGS =
@@ -229,6 +255,7 @@ export function AIPromptStep({
   examples,
   currentPayload,
   onHydrated,
+  onManualApply,
   onPendingChange,
 }: AIPromptStepProps) {
   const prompt = useWizardStore((s) => s.prompts[mode]) ?? "";
@@ -591,6 +618,7 @@ export function AIPromptStep({
         paste_blocks: editablePasteBlocks,
       });
       onHydrated?.(manualPayload);
+      onManualApply?.(manualPayload);
       toast.success("JSON toegepast op de wizard.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "JSON kon niet worden gelezen.");

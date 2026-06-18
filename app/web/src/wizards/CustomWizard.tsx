@@ -252,6 +252,9 @@ export function CustomWizard() {
               draftState.saveNow(withDesc);
             }
           }}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

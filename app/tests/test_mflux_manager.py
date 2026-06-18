@@ -15,6 +15,10 @@ class MfluxManagerTests(unittest.TestCase):
 
         self.assertIn("qwen-image", ids)
         self.assertIn("flux2-klein-9b", ids)
+        self.assertIn("flux2-klein-9b-kv", ids)
+        self.assertIn("ernie-image", ids)
+        self.assertIn("ernie-image-turbo", ids)
+        self.assertIn("ideogram4", ids)
         self.assertIn("z-image-turbo", ids)
         self.assertIn("z-image", ids)
         self.assertIn("seedvr2", ids)
@@ -22,6 +26,8 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertEqual(catalog["defaults"]["train_lora"], "flux2-klein-9b")
         commands = {item["id"]: item["command"] for item in catalog["models"]}
         self.assertEqual(commands["flux2-klein-9b"], "mflux-generate-flux2")
+        self.assertEqual(commands["ernie-image"], "mflux-generate-ernie-image")
+        self.assertEqual(commands["ideogram4"], "mflux-generate-ideogram4")
         self.assertEqual(commands["z-image-turbo"], "mflux-generate-z-image-turbo")
         self.assertEqual(commands["seedvr2"], "mflux-upscale-seedvr2")
         self.assertEqual(commands["depth-pro"], "mflux-save-depth")
@@ -47,6 +53,8 @@ class MfluxManagerTests(unittest.TestCase):
             status = mflux_manager.mflux_status()
 
         self.assertTrue(status["action_readiness"]["generate"]["ready"])
+        self.assertIn("ernie-image", status["models"])
+        self.assertEqual(status["version_range"], ">=0.18,<0.19")
         self.assertIn("mflux-generate-flux2-edit", status["action_readiness"]["edit"]["missing_commands"])
         self.assertIn("mflux-upscale-seedvr2", status["action_readiness"]["upscale"]["missing_commands"])
 
@@ -79,9 +87,46 @@ class MfluxManagerTests(unittest.TestCase):
                 )
 
         self.assertEqual(command[0], "/usr/bin/mflux-generate-flux2-edit")
+        self.assertIn("--model", command)
+        self.assertIn("flux2-klein-9b", command)
         self.assertIn("--image-path", command)
         self.assertIn("--lora-paths", command)
         self.assertIn("--lora-scales", command)
+
+    def test_new_mflux_018_models_build_expected_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uploads = root / "uploads"
+            uploads.mkdir()
+            source = uploads / "source.png"
+            source.write_bytes(b"png")
+
+            with patch.object(mflux_manager, "DATA_DIR", root), \
+                 patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
+                 patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"):
+                ernie = mflux_manager._build_mflux_command(  # noqa: SLF001
+                    {
+                        "action": "edit",
+                        "prompt": "make it cinematic",
+                        "model_id": "ernie-image",
+                        "image_path": str(source),
+                    },
+                    root / "ernie.png",
+                )
+                ideogram = mflux_manager._build_mflux_command(  # noqa: SLF001
+                    {
+                        "action": "generate",
+                        "prompt": "{\"text\":\"poster\"}",
+                        "model_id": "ideogram4",
+                    },
+                    root / "ideogram.png",
+                )
+
+        self.assertEqual(ernie[0], "/usr/bin/mflux-generate-ernie-image")
+        self.assertIn("ernie-image", ernie)
+        self.assertEqual(ideogram[0], "/usr/bin/mflux-generate-ideogram4")
+        self.assertIn("ideogram4", ideogram)
 
     def test_inpaint_requires_mask_and_lora_family_must_match(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -724,6 +724,9 @@ export function AlbumWizard() {
               draftState.saveNow(withConcept);
             }
           }}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

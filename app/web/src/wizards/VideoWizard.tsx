@@ -481,6 +481,9 @@ export function VideoWizard() {
           ]}
           onPendingChange={setAiPromptPending}
           onHydrated={hydrateFromAi}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

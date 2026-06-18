@@ -623,6 +623,9 @@ export function LoraSweepWizard() {
           placeholder="Maak een volledige rap/pop/club song met caption, tags, lyrics en metadata voor een LoRA sweep..."
           currentPayload={buildPayload()}
           onHydrated={hydrate}
+          onManualApply={() => {
+            setStep(1);
+          }}
         />
       ),
     },

@@ -529,6 +529,7 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(params["model_variant"], "xl_sft")
             self.assertTrue(params["epoch_audition"]["enabled"])
             self.assertEqual(params["epoch_audition"]["scale"], 1.0)
+            self.assertEqual(params["epoch_audition"]["every_n_epochs"], 1)
             self.assertEqual(params["device"], "mlx")
             self.assertEqual(params["precision"], "fp32")
             self.assertEqual(manager.auto_epochs(20), 800)
@@ -604,7 +605,8 @@ class LoraTrainerTest(unittest.TestCase):
             manager = self.make_manager(root)
             dataset_json = root / "dataset.json"
             dataset_json.write_text('{"samples":[]}', encoding="utf-8")
-            job = manager.start_preprocess({"dataset_json": str(dataset_json), "song_model": "acestep-v15-xl-turbo"})
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
+                job = manager.start_preprocess({"dataset_json": str(dataset_json), "song_model": "acestep-v15-xl-turbo", "device": "mlx"})
             command = job["command"]
             self.assertIn("-m", command)
             self.assertIn("acestep.training_v2.cli.train_fixed", command)
@@ -670,15 +672,16 @@ class LoraTrainerTest(unittest.TestCase):
             tensor_dir = root / "tensors"
             tensor_dir.mkdir()
             manager = self.make_manager(root)
-            job = manager.start_train(
-                {
-                    "tensor_dir": str(tensor_dir),
-                    "song_model": "acestep-v15-turbo",
-                    "adapter_type": "lokr",
-                    "train_epochs": 3,
-                    "device": "mlx",
-                }
-            )
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
+                job = manager.start_train(
+                    {
+                        "tensor_dir": str(tensor_dir),
+                        "song_model": "acestep-v15-turbo",
+                        "adapter_type": "lokr",
+                        "train_epochs": 3,
+                        "device": "mlx",
+                    }
+                )
             command = job["command"]
             self.assertIn("_acejam_train_bootstrap.py", command[1])
             self.assertIn("--adapter-type", command)
@@ -696,16 +699,17 @@ class LoraTrainerTest(unittest.TestCase):
             tensor_dir = root / "tensors"
             tensor_dir.mkdir()
             manager = self.make_manager(root)
-            job = manager.start_train(
-                {
-                    "tensor_dir": str(tensor_dir),
-                    "song_model": "acestep-v15-xl-sft",
-                    "trigger_tag": "charaf hook",
-                    "adapter_type": "lora",
-                    "train_epochs": 3,
-                    "device": "mlx",
-                }
-            )
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
+                job = manager.start_train(
+                    {
+                        "tensor_dir": str(tensor_dir),
+                        "song_model": "acestep-v15-xl-sft",
+                        "trigger_tag": "charaf hook",
+                        "adapter_type": "lora",
+                        "train_epochs": 3,
+                        "device": "mlx",
+                    }
+                )
 
             command = job["command"]
             self.assertEqual(job["params"]["trigger_tag"], "charaf hook")
@@ -724,21 +728,23 @@ class LoraTrainerTest(unittest.TestCase):
             tensor_dir = root / "tensors"
             tensor_dir.mkdir()
             manager = self.make_manager(root)
-            job = manager.start_train(
-                {
-                    "tensor_dir": str(tensor_dir),
-                    "song_model": "acestep-v15-turbo",
-                    "trigger_tag": "charaf hook",
-                    "language": "en",
-                    "train_epochs": 2,
-                    "epoch_audition_enabled": True,
-                    "epoch_audition_genre": "rap",
-                    "epoch_audition_caption": "bright pop",
-                    "epoch_audition_lyrics": "[Verse]\nUser draft line should feed the generated test",
-                    "epoch_audition_seed": 123,
-                    "epoch_audition_scale": 0.75,
-                }
-            )
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
+                job = manager.start_train(
+                    {
+                        "tensor_dir": str(tensor_dir),
+                        "song_model": "acestep-v15-turbo",
+                        "trigger_tag": "charaf hook",
+                        "language": "en",
+                        "train_epochs": 2,
+                        "device": "mlx",
+                        "epoch_audition_enabled": True,
+                        "epoch_audition_genre": "rap",
+                        "epoch_audition_caption": "bright pop",
+                        "epoch_audition_lyrics": "[Verse]\nUser draft line should feed the generated test",
+                        "epoch_audition_seed": 123,
+                        "epoch_audition_scale": 0.75,
+                    }
+                )
 
             audition = job["params"]["epoch_audition"]
             self.assertTrue(audition["enabled"])
@@ -756,8 +762,34 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(audition["bpm"], 95)
             self.assertEqual(audition["keyscale"], "A minor")
             self.assertEqual(audition["timesignature"], "4")
+            self.assertEqual(audition["every_n_epochs"], 1)
             self.assertEqual(audition["scale"], 0.75)
             self.assertEqual(audition["vocal_language"], "en")
+
+    def test_train_command_accepts_checkpoint_and_audition_intervals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tensor_dir = root / "tensors"
+            tensor_dir.mkdir()
+            manager = self.make_manager(root)
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
+                job = manager.start_train(
+                    {
+                        "tensor_dir": str(tensor_dir),
+                        "song_model": "acestep-v15-xl-sft",
+                        "trigger_tag": "batch voice",
+                        "language": "en",
+                        "train_epochs": 20,
+                        "save_every_n_epochs": 10,
+                        "epoch_audition_every_n_epochs": 10,
+                        "device": "mlx",
+                    }
+                )
+
+            command = job["command"]
+            self.assertEqual(job["params"]["save_every_n_epochs"], 10)
+            self.assertEqual(job["params"]["epoch_audition"]["every_n_epochs"], 10)
+            self.assertEqual(command[command.index("--save-every") + 1], "10")
 
     def test_epoch_audition_defaults_do_not_require_user_lyrics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -765,18 +797,20 @@ class LoraTrainerTest(unittest.TestCase):
             tensor_dir = root / "tensors"
             tensor_dir.mkdir()
             manager = self.make_manager(root)
-            job = manager.start_train(
-                {
-                    "tensor_dir": str(tensor_dir),
-                    "song_model": "acestep-v15-turbo",
-                    "trigger_tag": "Pac",
-                    "language": "en",
-                    "train_epochs": 2,
-                    "epoch_audition_enabled": True,
-                    "epoch_audition_genre": "rap",
-                    "epoch_audition_caption": "west coast rap, hip hop",
-                }
-            )
+            with patch("lora_trainer.default_training_device", return_value="mlx"):
+                job = manager.start_train(
+                    {
+                        "tensor_dir": str(tensor_dir),
+                        "song_model": "acestep-v15-turbo",
+                        "trigger_tag": "Pac",
+                        "language": "en",
+                        "train_epochs": 2,
+                        "device": "mlx",
+                        "epoch_audition_enabled": True,
+                        "epoch_audition_genre": "rap",
+                        "epoch_audition_caption": "west coast rap, hip hop",
+                    }
+                )
 
             audition = job["params"]["epoch_audition"]
             self.assertTrue(audition["enabled"])
@@ -1177,7 +1211,9 @@ class LoraTrainerTest(unittest.TestCase):
             stored = manager.get_job("auditionjob")
             self.assertEqual([item["status"] for item in stored["result"]["epoch_auditions"]], ["succeeded", "succeeded", "succeeded"])
             self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epochs"], [1, 2])
-            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epoch_mode"], "every_epoch_checkpoint")
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epoch_mode"], "checkpoint_interval")
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["checkpoint_every_n_epochs"], 1)
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["audition_every_n_epochs"], 1)
             self.assertEqual(stored["result"]["epoch_auditions_policy"]["retained_lora_test_count"], 3)
 
     def test_epoch_auditions_render_each_epoch_but_keep_latest_three_lora_results(self):
@@ -1216,9 +1252,55 @@ class LoraTrainerTest(unittest.TestCase):
             stored = manager.get_job("lastthree")
             self.assertEqual([item["epoch"] for item in stored["result"]["epoch_auditions"]], [0, 3, 4, 5])
             self.assertEqual([item["attempt_role"] for item in stored["result"]["epoch_auditions"]], ["baseline", "lora", "lora", "lora"])
-            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epoch_mode"], "every_epoch_checkpoint")
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epoch_mode"], "checkpoint_interval")
             self.assertEqual(stored["result"]["epoch_auditions_policy"]["retained_lora_test_count"], 3)
             self.assertNotIn("LoRA auditions are limited to the final 3 epochs", Path(job.log_path).read_text(encoding="utf-8"))
+
+    def test_epoch_auditions_follow_ten_epoch_checkpoint_interval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = AuditionTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="batchaudit",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            manager._run_train_command_with_epoch_auditions(
+                "batchaudit",
+                ["python", "train.py", "--output-dir", str(output_dir), "--epochs", "20", "--save-every", "99"],
+                output_dir,
+                Path(job.log_path),
+                epochs=20,
+                params={
+                    "adapter_type": "lora",
+                    "save_every_n_epochs": 10,
+                    "epoch_audition": {
+                        "enabled": True,
+                        "caption": "test",
+                        "lyrics": "[Verse]\nLine",
+                        "duration": 20,
+                        "every_n_epochs": 10,
+                    },
+                },
+            )
+
+            self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 10/20", "train epoch 20/20"])
+            self.assertTrue(all(cmd[cmd.index("--save-every") + 1] == "10" for _, cmd in manager.commands))
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 10, 20])
+            stored = manager.get_job("batchaudit")
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["lora_epochs"], [10, 20])
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["checkpoint_every_n_epochs"], 10)
+            self.assertEqual(stored["result"]["epoch_auditions_policy"]["audition_every_n_epochs"], 10)
 
     def test_epoch_audition_runner_failure_does_not_stop_training_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1705,6 +1787,61 @@ class LoraTrainerTest(unittest.TestCase):
             self.assertEqual(command[command.index("--resume-from") + 1], str(checkpoint_2))
             self.assertEqual(command[command.index("--device") + 1], "mlx")
             self.assertEqual(command[command.index("--precision") + 1], "fp32")
+
+    def test_resume_job_preserves_ten_epoch_checkpoint_interval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ResumeTrainingManager(base_dir=root, data_dir=root / "data", model_cache_dir=root / "model_cache")
+            tensor_dir = root / "data" / "lora_tensors" / "resume"
+            output_dir = root / "data" / "lora_training" / "resume"
+            checkpoint = output_dir / "checkpoints" / "epoch_10_loss_0.9130"
+            tensor_dir.mkdir(parents=True)
+            checkpoint.mkdir(parents=True)
+            job = TrainingJob(
+                id="resume10",
+                kind="one_click_train",
+                state="failed",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["acejam-one-click-lora", "--epochs", "20", "--save-every", "10"],
+                params={
+                    "adapter_type": "lora",
+                    "trigger_tag": "charaf hook",
+                    "song_model": "acestep-v15-turbo",
+                    "model_variant": "turbo",
+                    "train_epochs": 20,
+                    "training_seed": 42,
+                    "device": "cpu",
+                    "save_every_n_epochs": 10,
+                    "epoch_audition": {
+                        "enabled": True,
+                        "caption": "charaf hook",
+                        "lyrics": "[Verse]\nLine",
+                        "duration": 20,
+                        "every_n_epochs": 10,
+                    },
+                },
+                paths={
+                    "tensor_output": str(tensor_dir),
+                    "output_dir": str(output_dir),
+                    "final_adapter": str(output_dir / "final"),
+                    "log_dir": str(output_dir / "runs"),
+                },
+                log_path=str(root / "data" / "lora_jobs" / "resume10" / "job.log"),
+                result={"epochs": 20},
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            with patch("lora_trainer.default_training_device", return_value="mlx"), \
+                patch("lora_trainer.threading.Thread", ImmediateThread):
+                resumed = manager.resume_job("resume10")
+
+            self.assertEqual(resumed["params"]["save_every_n_epochs"], 10)
+            self.assertEqual([stage for stage, _ in manager.commands], ["train epoch 20/20"])
+            command = manager.commands[0][1]
+            self.assertEqual(command[command.index("--save-every") + 1], "10")
+            self.assertEqual([item["epoch"] for item in manager.audition_requests], [0, 10, 20])
 
     def test_lokr_epoch_auditions_are_skipped_but_save_every_epoch_stays(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Sparkles, Disc3, Music2, ArrowRight, Image as ImageIcon } from "lucide-react";
 import {
@@ -41,14 +41,20 @@ const QUICK_PATHS = [
 ];
 
 export function WelcomeDialog() {
+  const location = useLocation();
   const [open, setOpen] = React.useState(false);
+  const isHomeRoute = location.pathname === "/";
 
   React.useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!isHomeRoute) {
+      setOpen(false);
+      return;
+    }
     if (!window.localStorage.getItem(STORAGE_KEY)) {
       setOpen(true);
     }
-  }, []);
+  }, [isHomeRoute]);
 
   const dismiss = () => {
     window.localStorage.setItem(STORAGE_KEY, String(Date.now()));
