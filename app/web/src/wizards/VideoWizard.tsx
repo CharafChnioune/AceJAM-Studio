@@ -62,6 +62,23 @@ const ACTIONS: Array<{ id: VideoAction; label: string; hint: string }> = [
   { id: "final", label: "Final/HQ", hint: "Zelfde seed/source groter renderen" },
 ];
 
+const TILING_OPTIONS = [
+  { value: "auto", label: "Auto", hint: "Laat mlx-video zelf kiezen" },
+  { value: "none", label: "None", hint: "Geen tiled decode" },
+  { value: "default", label: "Default", hint: "Standaard tiled preset" },
+  { value: "aggressive", label: "Aggressive", hint: "Max memory saving" },
+  { value: "conservative", label: "Conservative", hint: "Milder tiled decode" },
+  { value: "spatial", label: "Spatial only", hint: "Alleen ruimtelijk tilen" },
+  { value: "temporal", label: "Temporal only", hint: "Alleen temporeel tilen" },
+] as const;
+
+const LTX23_SPATIAL_UPSCALERS = [
+  { value: "", label: "Auto / default x2", hint: "Laat upstream de x2-default kiezen" },
+  { value: "ltx-2.3-spatial-upscaler-x2-1.0.safetensors", label: "x2 v1.0", hint: "Standaard 2x output" },
+  { value: "ltx-2.3-spatial-upscaler-x2-1.1.safetensors", label: "x2 v1.1", hint: "Nieuwere 2x weights" },
+  { value: "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors", label: "x1.5 v1.0", hint: "Kleinere en snellere final output" },
+] as const;
+
 const MODE = "video" as const;
 
 function videoAction(value: unknown): VideoAction {
@@ -238,7 +255,7 @@ export function VideoWizard() {
       ? `${routePrompt}, cinematic real-life music video, natural motion, professional camera, no text, no watermark`
       : "Cinematic real-life music video, handheld camera, natural motion, moody lighting, no text, no watermark")
   );
-  const [modelId, setModelId] = React.useState(() => String(draft.model_id || "ltx2-fast-draft"));
+  const [modelId, setModelId] = React.useState(() => String(draft.model_id || "ltx23-fast-draft"));
   const [modelDir, setModelDir] = React.useState(() => String(draft.model_dir || ""));
   const [width, setWidth] = React.useState(() => numberValue(draft.width, 512));
   const [height, setHeight] = React.useState(() => numberValue(draft.height, 320));
@@ -253,7 +270,7 @@ export function VideoWizard() {
   const [sourceAudio, setSourceAudio] = React.useState<MediaSource | null>(initial.audio || (draft.source_audio as MediaSource | null) || null);
   const [enhancePrompt, setEnhancePrompt] = React.useState(() => Boolean(draft.enhance_prompt));
   const [spatialUpscaler, setSpatialUpscaler] = React.useState(() => String(draft.spatial_upscaler || ""));
-  const [tiling, setTiling] = React.useState(() => Boolean(draft.tiling));
+  const [tiling, setTiling] = React.useState(() => String(draft.tiling || "auto"));
   const [targetType] = React.useState(initial.targetType || "");
   const [targetId] = React.useState(initial.targetId || "");
   const [finalSourceJobId] = React.useState(initial.sourceJobId || "");
@@ -278,6 +295,9 @@ export function VideoWizard() {
   const sourceJobId = String(job?.id || "");
   const ltxCaps = status?.command_help?.ltx?.capabilities ?? {};
   const ltxEndFrameSupported = Boolean(ltxCaps.end_image || status?.patch_status?.pr23_ltx_i2v_end_frame);
+  const ltx23Selected = Boolean(
+    selectedModel?.engine === "ltx" && String(selectedModel?.model_repo || "").toLowerCase().includes("ltx-2.3"),
+  );
 
   React.useEffect(() => {
     const defaultModel = modelsQ.data?.defaults?.[action] || actionModels[0]?.id;
@@ -302,6 +322,12 @@ export function VideoWizard() {
       setModelDir("");
     }
   }, [selectedModel?.id, modelDirs]);
+
+  React.useEffect(() => {
+    if (!ltx23Selected && spatialUpscaler) {
+      setSpatialUpscaler("");
+    }
+  }, [ltx23Selected, spatialUpscaler]);
 
   const needsImage = action === "i2v";
   const needsAudio = action === "a2v" || action === "song_video";
@@ -372,7 +398,7 @@ export function VideoWizard() {
     setShift(String(data.shift ?? shift ?? ""));
     setEnhancePrompt(Boolean(data.enhance_prompt));
     setSpatialUpscaler(String(data.spatial_upscaler || ""));
-    setTiling(Boolean(data.tiling));
+    setTiling(String(data.tiling || "auto"));
     if (Array.isArray(data.lora_adapters)) setLoras(data.lora_adapters as SelectedVideoLora[]);
     setDraft(MODE, { ...payload, ...data, action: nextAction });
   };
@@ -645,18 +671,27 @@ export function VideoWizard() {
                 <span>Prompt enhancer</span>
                 <Switch checked={enhancePrompt} onCheckedChange={setEnhancePrompt} disabled={selectedModel?.engine !== "ltx"} />
               </label>
-              <label className="flex items-center justify-between gap-3 rounded-md border bg-background/35 p-3 text-sm">
-                <span>Tiling</span>
-                <Switch checked={tiling} onCheckedChange={setTiling} />
-              </label>
               <div className="space-y-1.5">
-                <Label>Spatial upscaler</Label>
-                <Select value={spatialUpscaler || "__none"} onValueChange={(value) => setSpatialUpscaler(value === "__none" ? "" : value)} disabled={selectedModel?.engine !== "ltx"}>
+                <Label>Tiling mode</Label>
+                <Select value={tiling} onValueChange={setTiling}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__none">Off</SelectItem>
-                    <SelectItem value="latent">Latent 2x</SelectItem>
-                    <SelectItem value="pixel">Pixel 2x</SelectItem>
+                    {TILING_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label} · {option.hint}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Spatial upscaler (LTX-2.3)</Label>
+                <Select value={spatialUpscaler || "__auto"} onValueChange={(value) => setSpatialUpscaler(value === "__auto" ? "" : value)} disabled={!ltx23Selected}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {LTX23_SPATIAL_UPSCALERS.map((option) => (
+                      <SelectItem key={option.value || "__auto"} value={option.value || "__auto"}>
+                        {option.label} · {option.hint}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -664,6 +699,9 @@ export function VideoWizard() {
             <div className="flex flex-wrap gap-2">
               <Badge variant={ltxEndFrameSupported ? "default" : "outline"}>
                 LTX end frame {ltxEndFrameSupported ? "ready" : "needs PR #23"}
+              </Badge>
+              <Badge variant={ltx23Selected ? "default" : "outline"}>
+                LTX-2.3 upscaler {ltx23Selected ? "enabled" : "select LTX-2.3 preset"}
               </Badge>
               <Badge variant="outline">Output flag {status?.command_help?.[selectedModel?.engine || "ltx"]?.output_flag || "--output-path"}</Badge>
             </div>
@@ -736,6 +774,7 @@ export function VideoWizard() {
             ...(needsAudio && !sourceAudio ? ["Audio/song video heeft source audio nodig."] : []),
             ...(needsModelDir && !modelDir ? ["Wan preset heeft een geregistreerde model-dir nodig."] : []),
             ...(endImageBlocked ? ["End-frame conditioning vereist PR #23 / --end-image support."] : []),
+            ...(spatialUpscaler && !ltx23Selected ? ["Spatial upscaler varianten horen bij LTX-2.3 presets."] : []),
             ...(frames > 81 ? ["Veel frames kan lang duren. Draft klein houden, daarna final maken."] : []),
           ]}
           primaryFields={[

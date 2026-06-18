@@ -2339,7 +2339,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             action = "t2v"
         normalized["action"] = action
         normalized.setdefault("prompt", normalized.get("description") or normalized.get("video_prompt") or "")
-        normalized.setdefault("model_id", "ltx2-fast-draft")
+        normalized.setdefault("model_id", "ltx23-fast-draft")
         normalized["width"] = clamp_int(normalized.get("width"), 512, 256, 1280)
         normalized["height"] = clamp_int(normalized.get("height"), 320, 192, 768)
         normalized["num_frames"] = clamp_int(normalized.get("num_frames") or normalized.get("frames"), 33, 9, 161)
@@ -2350,7 +2350,16 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized.setdefault("shift", "")
         normalized["enhance_prompt"] = parse_bool(normalized.get("enhance_prompt"), False)
         normalized["spatial_upscaler"] = str(normalized.get("spatial_upscaler") or "").strip()
-        normalized["tiling"] = parse_bool(normalized.get("tiling"), False)
+        tiling_value = normalized.get("tiling")
+        if isinstance(tiling_value, bool):
+            tiling = "auto"
+        else:
+            tiling = str(tiling_value or "auto").strip().lower()
+        allowed_tiling = {"auto", "none", "default", "aggressive", "conservative", "spatial", "temporal"}
+        if tiling not in allowed_tiling:
+            warnings.append(f"Unsupported video tiling mode '{tiling}' was changed to auto.")
+            tiling = "auto"
+        normalized["tiling"] = tiling
         normalized["audio_policy"] = "replace_with_source" if action == "song_video" else str(normalized.get("audio_policy") or "none")
         normalized["mux_audio"] = action == "song_video"
         if not isinstance(normalized.get("lora_adapters"), list):
@@ -6013,8 +6022,6 @@ _lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
 _lora_autolabel_jobs_lock = threading.Lock()
 
 _clear_background_job_history_on_startup()
-
-
 def _set_lora_autolabel_job(job_id: str, **updates: Any) -> dict[str, Any]:
     with _lora_autolabel_jobs_lock:
         job = _lora_autolabel_jobs.setdefault(

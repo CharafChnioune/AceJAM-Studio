@@ -63,6 +63,13 @@ class LauncherScriptTest(unittest.TestCase):
         self.assertIn('url: "{{input.event[1]}}"', start_js)
         self.assertIn('bind_url: "{{input.event[1]}}"', start_js)
 
+    def test_update_script_uses_ff_only_pull(self):
+        root = Path(__file__).resolve().parents[2]
+        update_js = (root / "update.js").read_text(encoding="utf-8")
+
+        self.assertIn('"git pull --ff-only"', update_js)
+        self.assertNotIn('"git pull"', update_js.replace('"git pull --ff-only"', ""))
+
     # Removed: test_song_intent_builder_is_schema_driven asserted on the
     # legacy Python SPA (app/index.html) that was deleted in v0.2 when the
     # React + shadcn wizard UI took over. Equivalent intent builder now lives

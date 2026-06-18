@@ -9,6 +9,7 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 VENDOR_DIR = APP_DIR / "vendor" / "ACE-Step-1.5"
 ACE_STEP_REPO = "https://github.com/ace-step/ACE-Step-1.5"
+ACE_STEP_VENDOR_RELEASE = "v0.1.8"
 ACE_STEP_VENDOR_COMMIT = "dce621408bee8c31b4fcf4811682eb9359e1bc94"
 KNOWN_PATCH_FILES = {
     "acestep/core/generation/handler/lora/controls.py",
@@ -37,6 +38,13 @@ def capture(args: list[str], *, cwd: Path | None = None) -> str:
     return subprocess.check_output(args, cwd=str(cwd) if cwd else None, text=True).strip()
 
 
+def _normalize_dirty_paths(dirty_lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for line in dirty_lines:
+        parts = line.split(maxsplit=1)
+        normalized.append(parts[1] if len(parts) == 2 else line)
+    return normalized
+
 def ensure_vendor_checkout() -> None:
     VENDOR_DIR.parent.mkdir(parents=True, exist_ok=True)
     if not (VENDOR_DIR / ".git").is_dir():
@@ -47,8 +55,21 @@ def ensure_vendor_checkout() -> None:
     run(["git", "remote", "set-url", "origin", ACE_STEP_REPO], cwd=VENDOR_DIR)
     run(["git", "fetch", "origin", "--tags", "--prune"], cwd=VENDOR_DIR)
     run(["git", "cat-file", "-e", f"{ACE_STEP_VENDOR_COMMIT}^{{commit}}"], cwd=VENDOR_DIR)
-    run(["git", "checkout", "--force", ACE_STEP_VENDOR_COMMIT], cwd=VENDOR_DIR)
-    run(["git", "reset", "--hard", ACE_STEP_VENDOR_COMMIT], cwd=VENDOR_DIR)
+    status = vendor_status()
+    if status["vendor_matches_pin"] and not status["unknown_drift_files"]:
+        print(f"ACE-Step vendor already pinned to {ACE_STEP_VENDOR_RELEASE} ({ACE_STEP_VENDOR_COMMIT})")
+        return
+    if status["unknown_drift_files"]:
+        raise SystemExit(
+            "ACE-Step vendor has local drift outside the managed patch set; "
+            f"refusing to overwrite {status['unknown_drift_files']}"
+        )
+    if status["dirty_files"] and not status["vendor_matches_pin"]:
+        raise SystemExit(
+            "ACE-Step vendor has local patch drift while not on the pinned commit; "
+            "refusing to move HEAD without a clean checkout."
+        )
+    run(["git", "switch", "--detach", ACE_STEP_VENDOR_COMMIT], cwd=VENDOR_DIR)
 
 
 def vendor_status() -> dict[str, object]:
@@ -106,7 +127,7 @@ def main() -> None:
     if args.json:
         print(json.dumps(status, indent=2, sort_keys=True))
     else:
-        print(f"ACE-Step vendor pinned to {ACE_STEP_VENDOR_COMMIT}")
+        print(f"ACE-Step vendor pinned to {ACE_STEP_VENDOR_RELEASE} ({ACE_STEP_VENDOR_COMMIT})")
 
 
 if __name__ == "__main__":

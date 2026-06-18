@@ -10,7 +10,17 @@ MLX Media is a native Pinokio app for ACE-Step 1.5 music generation, MFLUX image
 
 Generated data lives under `app/data/` and model files under `app/model_cache/`. These folders are ignored by git.
 
-Do not open `app/index.html` directly with a `file://` URL for real work. The UI now shows a warning in that case because browser file views cannot call the local `/api` backend. Use Pinokio's **Open Web UI** HTTP link.
+Do not open the built frontend bundle directly with a `file://` URL for real work, for example `app/web/dist/index.html`. The UI now shows a warning in that case because browser file views cannot call the local `/api` backend. Use Pinokio's **Open Web UI** HTTP link.
+
+## Upstream Baseline
+
+As of June 17, 2026 this repo tracks these upstream-safe media baselines:
+
+- ACE-Step 1.5 vendor: `v0.1.8` / commit `dce621408bee8c31b4fcf4811682eb9359e1bc94`.
+- MFLUX image runtime: `0.18.x`, aligned with the upstream `v.0.18.0` release.
+- MLX-video vendor: pinned to commit `87db56a51758fefb748a359b90a5283bb8ba4837` so Pinokio installs stay reproducible instead of following a moving `main`.
+
+Pinokio update flows now stay non-destructive for live runtimes: `update.js` pulls with `--ff-only`, ACE-Step vendor sync refuses unknown local drift instead of force-resetting, and MLX-video sync refuses to overwrite unmanaged changes while still reusing the managed PR #24/#27 patch set.
 
 ## Studio Modes
 
@@ -40,15 +50,16 @@ The MFLUX API surface is:
 - `POST /api/mflux/uploads`: import a PNG/JPG/WEBP/BMP/TIFF source or mask image for edit, inpaint, upscale and depth jobs.
 - `POST /api/mflux/jobs`: create a generation/edit/upscale/depth job.
 - `GET /api/mflux/jobs/{id}`: inspect progress, logs and result image URLs.
+- `DELETE /api/mflux/jobs/{id}`: remove a finished or failed MFLUX job record. Active jobs are rejected with HTTP 409.
 - `POST /api/mflux/lora/train`: start MFLUX image-LoRA training.
 - `GET /api/mflux/lora/adapters`: list loadable image-LoRA adapters.
 - `POST /api/mflux/art/attach`: attach an MFLUX result to a song, generation result, album or album family.
 
-MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`.
+MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`. That covers the current upstream `0.18.0` additions: ERNIE-Image, ERNIE-Image-Turbo, Ideogram 4 FP8, and the `flux2-klein-9b-kv` multi-reference edit path.
 
 ## MLX Video Studio
 
-Video Studio uses [`Blaizzy/mlx-video`](https://github.com/Blaizzy/mlx-video) in an isolated `app/video-env` because upstream requires Python 3.11 while the music runtime stays on Python 3.10. The default workflow is draft-first: make a small LTX-2 preview (`512x320`, `33` frames), then render the same prompt/source/seed as a Final/HQ pass if the motion and composition are worth the time.
+Video Studio uses [`Blaizzy/mlx-video`](https://github.com/Blaizzy/mlx-video) in an isolated `app/video-env` because upstream requires Python 3.11 while the music runtime stays on Python 3.10. The default workflow is draft-first: make a small LTX-2.3 preview (`512x320`, `33` frames), then render the same prompt/source/seed as a Final/HQ pass if the motion and composition are worth the time. Legacy LTX-2 presets remain available, but the default draft/final presets now target upstream LTX-2.3.
 
 The MLX-video API surface is:
 
@@ -57,11 +68,19 @@ The MLX-video API surface is:
 - `POST /api/mlx-video/uploads`: import source images/audio/video for image-to-video, audio-to-video, or song-to-video.
 - `POST /api/mlx-video/jobs`: create text-to-video, image-to-video, audio-to-video, song-to-video, or Final/HQ rerender jobs.
 - `GET /api/mlx-video/jobs` and `GET /api/mlx-video/jobs/{id}`: inspect progress, logs, MP4 URL, poster frame, and metadata.
+- `DELETE /api/mlx-video/jobs/{id}`: remove a finished or failed video job record. Active jobs are rejected with HTTP 409.
 - `GET /api/mlx-video/loras`: list loadable video-LoRAs under `app/data/mlx_video/loras`.
 - `POST /api/mlx-video/model-dirs`: register local converted Wan MLX model directories.
 - `POST /api/mlx-video/attach`: attach an MP4 result to song/album/library metadata.
 
-Wan models are not downloaded silently. Register converted model folders in Settings → Video. The installer vendors `mlx-video` under `app/vendor/mlx-video` and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable.
+Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, pins it to upstream commit `87db56a` (still the latest mainline commit as checked on June 17, 2026), reports JSON runtime status with `python install_mlx_video.py --status-only --json`, surfaces the pinned ref/current commit/drift in Settings, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable. The Video wizard now passes upstream-native tiling modes (`auto`, `none`, `default`, `aggressive`, `conservative`, `spatial`, `temporal`) and exposes the documented LTX-2.3 spatial upscaler variants (`x2 v1.0`, `x2 v1.1`, `x1.5 v1.0`) instead of legacy placeholder toggles.
+
+## MLX Ecosystem Watchlist
+
+Two nearby local-only MLX projects are worth watching but are not enabled as default runtime dependencies in MLX Media yet:
+
+- [`Blaizzy/mlx-audio`](https://github.com/Blaizzy/mlx-audio) for STT/TTS/STS tooling on Apple Silicon.
+- [`Blaizzy/mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) for multimodal prompt/vision helpers and omni audio/video-capable models.
 
 ## ACE-Step Model Advice
 

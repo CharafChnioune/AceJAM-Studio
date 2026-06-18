@@ -38,7 +38,17 @@ class RuntimeInstallerTests(unittest.TestCase):
             python.write_text("", encoding="utf-8")
 
             with patch.object(install_mlx_video, "_video_python", return_value=python), \
-                 patch.object(install_mlx_video, "_vendor_status", return_value={"commit": "87db56a", "dirty_files": []}), \
+                 patch.object(
+                     install_mlx_video,
+                     "_vendor_status",
+                     return_value={
+                         "commit": "87db56a",
+                         "dirty_files": [],
+                         "target_ref": install_mlx_video.MLX_VIDEO_TARGET_REF,
+                         "target_ref_short": install_mlx_video.MLX_VIDEO_TARGET_REF[:7],
+                         "matches_target_ref": True,
+                     },
+                 ), \
                  patch.object(install_mlx_video, "_python_status", return_value={"exists": True, "version": "3.11.13", "ok": True, "reason": ""}), \
                  patch.object(install_mlx_video, "_package_status", side_effect=[
                      {"available": True, "version": "0.31.2", "reason": ""},
@@ -57,6 +67,7 @@ class RuntimeInstallerTests(unittest.TestCase):
 
         self.assertTrue(status["ready"])
         self.assertEqual(status["vendor"]["commit"], "87db56a")
+        self.assertEqual(status["vendor"]["target_ref"], install_mlx_video.MLX_VIDEO_TARGET_REF)
         self.assertTrue(status["patch_status"]["pr23_ltx_i2v_end_frame"])
 
     def test_sync_vendor_status_separates_known_patches_from_unknown_drift(self):
@@ -85,6 +96,17 @@ class RuntimeInstallerTests(unittest.TestCase):
         self.assertIn("acestep/training_v2/cli/args.py", status["known_patch_files"])
         self.assertIn("unexpected/file.py", status["unknown_drift_files"])
 
+    def test_vendor_sync_scripts_avoid_force_resets_and_track_pins(self):
+        root = Path(__file__).resolve().parents[2]
+        ace_sync = (root / "app" / "sync_ace_step_vendor.py").read_text(encoding="utf-8")
+        mlx_video_sync = (root / "app" / "install_mlx_video.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("reset --hard", ace_sync)
+        self.assertNotIn('"checkout", "--force"', ace_sync)
+        self.assertIn('ACE_STEP_VENDOR_RELEASE = "v0.1.8"', ace_sync)
+        self.assertIn(f'MLX_VIDEO_TARGET_REF = "{install_mlx_video.MLX_VIDEO_TARGET_REF}"', mlx_video_sync)
+        self.assertNotIn('"checkout", "main"', mlx_video_sync)
+        self.assertNotIn('"pull", "--ff-only"', mlx_video_sync)
 
 if __name__ == "__main__":
     unittest.main()

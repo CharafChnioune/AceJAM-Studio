@@ -35,7 +35,12 @@ MLX_VIDEO_ATTACHMENTS_PATH = MLX_VIDEO_DIR / "attachments.json"
 MLX_VIDEO_ENV_DIR = BASE_DIR / "video-env"
 MLX_VIDEO_VENDOR_DIR = BASE_DIR / "vendor" / "mlx-video"
 MLX_VIDEO_REPO_URL = "https://github.com/Blaizzy/mlx-video.git"
-MLX_VIDEO_TARGET_REF = "main"
+MLX_VIDEO_TARGET_REF = "87db56a51758fefb748a359b90a5283bb8ba4837"
+MLX_VIDEO_KNOWN_PATCH_FILES = {
+    "mlx_video/models/ltx_2/generate.py",
+    "mlx_video/models/ltx_2/video_vae/sampling.py",
+    "mlx_video/models/ltx_2/video_vae/video_vae.py",
+}
 
 MLX_VIDEO_ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 MLX_VIDEO_ALLOWED_AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"}
@@ -258,6 +263,9 @@ def _help_status(engine: str) -> dict[str, Any]:
 
 
 def _patch_status() -> dict[str, Any]:
+    commit = _current_vendor_commit()
+    dirty_files = _current_vendor_dirty_files()
+    normalized_dirty = _normalize_dirty_paths(dirty_files)
     video_vae = MLX_VIDEO_VENDOR_DIR / "mlx_video" / "models" / "ltx_2" / "video_vae" / "video_vae.py"
     sampling = MLX_VIDEO_VENDOR_DIR / "mlx_video" / "models" / "ltx_2" / "video_vae" / "sampling.py"
     ltx_generate = MLX_VIDEO_VENDOR_DIR / "mlx_video" / "models" / "ltx_2" / "generate.py"
@@ -269,7 +277,14 @@ def _patch_status() -> dict[str, Any]:
     pr23 = "--end-image" in ltx_text and "end_image_strength" in ltx_text
     return {
         "vendor_dir": str(MLX_VIDEO_VENDOR_DIR),
-        "commit": _current_vendor_commit(),
+        "target_ref": MLX_VIDEO_TARGET_REF,
+        "target_ref_short": MLX_VIDEO_TARGET_REF[:7],
+        "commit": commit,
+        "commit_short": commit[:7] if commit else "",
+        "matches_target_ref": bool(commit and commit == MLX_VIDEO_TARGET_REF),
+        "dirty_files": dirty_files,
+        "known_patch_files": sorted(path for path in normalized_dirty if path in MLX_VIDEO_KNOWN_PATCH_FILES),
+        "unknown_drift_files": sorted(path for path in normalized_dirty if path not in MLX_VIDEO_KNOWN_PATCH_FILES),
         "pr27_ltx23_vae_channel_cap": pr27,
         "pr24_ltx23_sampling_fallback": pr24,
         "vae_fix_active": bool(pr27 or pr24),
@@ -300,6 +315,23 @@ MLX_VIDEO_MODELS: list[dict[str, Any]] = [
         "description": "Snelle kleine preview op LTX-2 distilled. Goed voor veel proberen zonder minuten te wachten.",
     },
     {
+        "id": "ltx23-fast-draft",
+        "label": "LTX-2.3 Fast Draft",
+        "engine": "ltx",
+        "preset": "fast_draft",
+        "pipeline": "distilled",
+        "model_repo": "prince-canuma/LTX-2.3-distilled",
+        "text_encoder_repo": "prince-canuma/LTX-2.3-distilled",
+        "default_width": 512,
+        "default_height": 320,
+        "default_frames": 33,
+        "default_fps": 24,
+        "default_steps": 8,
+        "supports_lora": True,
+        "capabilities": ["t2v", "i2v", "a2v", "song_video", "final"],
+        "description": "Nieuwere LTX-2.3 distilled draft met audio-video support en expliciete spatial-upscaler varianten.",
+    },
+    {
         "id": "ltx2-final-hq",
         "label": "LTX-2 Final HQ",
         "engine": "ltx",
@@ -310,11 +342,29 @@ MLX_VIDEO_MODELS: list[dict[str, Any]] = [
         "default_height": 512,
         "default_frames": 97,
         "default_fps": 24,
-        "default_steps": 30,
+        "default_steps": 15,
         "cfg_scale": 3.0,
         "supports_lora": True,
         "capabilities": ["t2v", "i2v", "a2v", "song_video", "final"],
         "description": "Langzamere final pass met dev-two-stage-hq en dezelfde seed/source als je draft.",
+    },
+    {
+        "id": "ltx23-final-hq",
+        "label": "LTX-2.3 Final HQ",
+        "engine": "ltx",
+        "preset": "final_hq",
+        "pipeline": "dev-two-stage-hq",
+        "model_repo": "prince-canuma/LTX-2.3-dev",
+        "text_encoder_repo": "prince-canuma/LTX-2.3-dev",
+        "default_width": 768,
+        "default_height": 512,
+        "default_frames": 97,
+        "default_fps": 24,
+        "default_steps": 15,
+        "cfg_scale": 3.0,
+        "supports_lora": True,
+        "capabilities": ["t2v", "i2v", "a2v", "song_video", "final"],
+        "description": "Hogere LTX-2.3 final render met dezelfde seed/source, Gemma prompt-enhance en selectable upscaler varianten.",
     },
     {
         "id": "wan21-reality-480p",
@@ -495,8 +545,25 @@ def mlx_video_register_model_dir(payload: dict[str, Any]) -> dict[str, Any]:
 def _current_vendor_commit() -> str:
     if not (MLX_VIDEO_VENDOR_DIR / ".git").is_dir():
         return ""
-    ok, out = _run_probe(["git", "-C", str(MLX_VIDEO_VENDOR_DIR), "rev-parse", "--short", "HEAD"], timeout=5)
+    ok, out = _run_probe(["git", "-C", str(MLX_VIDEO_VENDOR_DIR), "rev-parse", "HEAD"], timeout=5)
     return out.strip() if ok else ""
+
+
+def _current_vendor_dirty_files() -> list[str]:
+    if not (MLX_VIDEO_VENDOR_DIR / ".git").is_dir():
+        return []
+    ok, out = _run_probe(["git", "-C", str(MLX_VIDEO_VENDOR_DIR), "status", "--short"], timeout=5)
+    if not ok:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _normalize_dirty_paths(dirty_lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for line in dirty_lines:
+        parts = line.split(maxsplit=1)
+        normalized.append(parts[1] if len(parts) == 2 else line)
+    return normalized
 
 
 def mlx_video_status(check_help: bool = True) -> dict[str, Any]:
@@ -558,11 +625,11 @@ def mlx_video_models() -> dict[str, Any]:
         "actions": MLX_VIDEO_ACTIONS,
         "by_action": by_action,
         "defaults": {
-            "t2v": "ltx2-fast-draft",
-            "i2v": "ltx2-fast-draft",
-            "a2v": "ltx2-fast-draft",
-            "song_video": "ltx2-fast-draft",
-            "final": "ltx2-final-hq",
+            "t2v": "ltx23-fast-draft",
+            "i2v": "ltx23-fast-draft",
+            "a2v": "ltx23-fast-draft",
+            "song_video": "ltx23-fast-draft",
+            "final": "ltx23-final-hq",
             "wan_480p": "wan21-reality-480p",
             "wan_lightning": "wan22-lightning-draft",
         },
@@ -832,10 +899,11 @@ def _build_ltx_command(payload: dict[str, Any], model: dict[str, Any], output: P
         if not capabilities.get("spatial_upscaler"):
             raise RuntimeError("Installed LTX command does not expose --spatial-upscaler. Re-run Install/Update.")
         args.extend(["--spatial-upscaler", str(payload.get("spatial_upscaler"))])
-    if payload.get("tiling"):
+    tiling = str(payload.get("tiling") or "").strip().lower()
+    if tiling:
         if not capabilities.get("tiling"):
             raise RuntimeError("Installed LTX command does not expose --tiling. Re-run Install/Update.")
-        args.append("--tiling")
+        args.extend(["--tiling", tiling])
     image_path = mlx_video_validate_media_path(
         payload.get("image_path") or payload.get("source_image_path") or payload.get("source_image_url"),
         "image",
@@ -899,8 +967,9 @@ def _build_wan_command(payload: dict[str, Any], model: dict[str, Any], output: P
         args.extend(["--negative-prompt", str(payload.get("negative_prompt")).strip()])
     if payload.get("no_negative_prompt"):
         args.append("--no-negative-prompt")
-    if payload.get("tiling"):
-        args.append("--tiling")
+    tiling = str(payload.get("tiling") or "").strip().lower()
+    if tiling:
+        args.extend(["--tiling", tiling])
     if str(payload.get("steps") or model.get("default_steps") or "").strip():
         args.extend(["--steps", str(int(payload.get("steps") or model.get("default_steps")))])
     if str(payload.get("guide_scale") or model.get("guide_scale") or "").strip():

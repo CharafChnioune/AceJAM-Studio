@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -147,7 +148,12 @@ def cleanup_entry_artifacts(entry: dict[str, Any], *, logger: logging.Logger) ->
 
 def configure_batch_runtime(scratch_root: Path, *, logger: logging.Logger) -> None:
     scratch = scratch_root.expanduser().resolve()
-    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        scratch = Path(tempfile.gettempdir()) / "acejam-lora-batch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        logger.warning("runtime scratch_root_unavailable=%s fallback=%s", scratch_root, scratch)
     os.environ["TMPDIR"] = str(scratch)
     os.environ["TMP"] = str(scratch)
     os.environ["TEMP"] = str(scratch)
