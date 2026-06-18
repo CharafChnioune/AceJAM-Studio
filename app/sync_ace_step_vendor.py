@@ -45,6 +45,7 @@ def _normalize_dirty_paths(dirty_lines: list[str]) -> list[str]:
         normalized.append(parts[1] if len(parts) == 2 else line)
     return normalized
 
+
 def ensure_vendor_checkout() -> None:
     VENDOR_DIR.parent.mkdir(parents=True, exist_ok=True)
     if not (VENDOR_DIR / ".git").is_dir():
@@ -87,17 +88,20 @@ def vendor_status() -> dict[str, object]:
             vendor_head = capture(["git", "rev-parse", "HEAD"], cwd=VENDOR_DIR)
             dirty_output = capture(["git", "status", "--short"], cwd=VENDOR_DIR)
             dirty_files = [line.strip() for line in dirty_output.splitlines() if line.strip()]
-            normalized_dirty = []
-            for line in dirty_files:
-                parts = line.split(maxsplit=1)
-                normalized_dirty.append(parts[1] if len(parts) == 2 else line)
+            normalized_dirty = _normalize_dirty_paths(dirty_files)
             known_patch_files = sorted(path for path in normalized_dirty if path in KNOWN_PATCH_FILES)
             unknown_drift_files = sorted(path for path in normalized_dirty if path not in KNOWN_PATCH_FILES)
         except Exception:
             pass
+    sync_blocked_reason = ""
+    if unknown_drift_files:
+        sync_blocked_reason = "local drift outside managed patch files"
+    elif dirty_files and vendor_head and vendor_head != ACE_STEP_VENDOR_COMMIT:
+        sync_blocked_reason = "dirty checkout is not on the pinned upstream commit"
     return {
         "vendor_dir": str(VENDOR_DIR),
         "repo": ACE_STEP_REPO,
+        "pinned_release": ACE_STEP_VENDOR_RELEASE,
         "pinned_commit": ACE_STEP_VENDOR_COMMIT,
         "vendor_exists": exists,
         "vendor_head": vendor_head,
@@ -107,6 +111,7 @@ def vendor_status() -> dict[str, object]:
         "dirty_files": dirty_files,
         "known_patch_files": known_patch_files,
         "unknown_drift_files": unknown_drift_files,
+        "sync_blocked_reason": sync_blocked_reason,
     }
 
 
