@@ -42,6 +42,7 @@ import {
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { collectValidationMessages } from "@/lib/formValidation";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
@@ -64,6 +65,31 @@ const QUALITY_PROFILES = [
   ["standard", "Middel (docs standaard)"],
   ["chart_master", "Hoog (beste standaardkwaliteit)"],
 ] as const;
+
+function firstNonEmptyText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function deriveSimpleDescription(payload: Record<string, unknown>): string {
+  const direct = firstNonEmptyText(
+    payload.simple_description,
+    payload.song_description,
+    payload.caption,
+    payload.tags,
+  );
+  if (direct.length >= 4) return direct;
+  return firstNonEmptyText(
+    [payload.title, payload.artist_name, payload.style_profile].filter(Boolean).join(" - "),
+    payload.title,
+    payload.artist_name,
+    payload.style_profile,
+    payload.vocal_language,
+  );
+}
 
 function docsCorrectRenderDefaults(songModel: string) {
   if (songModel.includes("turbo")) {
@@ -118,6 +144,10 @@ export function CustomWizard() {
   const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const values = form.watch();
   const draftState = useWizardDraft(MODE, form);
+  const reviewBlockingIssues = React.useMemo(
+    () => collectValidationMessages(form.formState.errors),
+    [form.formState.errors],
+  );
 
   usePromptMirror(form, "simple_description", storePrompt);
 
@@ -164,9 +194,13 @@ export function CustomWizard() {
         next[k] = v;
       }
     }
+    if (!(typeof next.simple_description === "string" && next.simple_description.trim().length >= 4)) {
+      next.simple_description = deriveSimpleDescription(payload);
+    }
     const merged = { ...form.getValues(), ...next };
     form.reset(merged);
     draftState.saveNow(merged);
+    void form.trigger();
     return merged;
   };
 
@@ -636,6 +670,7 @@ export function CustomWizard() {
           <ReviewStep
             payload={buildPayload()}
             warnings={warnings}
+            blockingIssues={reviewBlockingIssues}
             primaryFields={[
               { key: "title", label: "Titel" },
               { key: "artist_name", label: "Artiest" },

@@ -6,11 +6,18 @@ import { cn } from "@/lib/utils";
 interface ReviewStepProps {
   payload: Record<string, unknown>;
   warnings?: string[];
+  blockingIssues?: string[];
   primaryFields: Array<{ key: string; label: string; format?: (v: unknown) => string }>;
   className?: string;
 }
 
-export function ReviewStep({ payload, warnings = [], primaryFields, className }: ReviewStepProps) {
+export function ReviewStep({
+  payload,
+  warnings = [],
+  blockingIssues = [],
+  primaryFields,
+  className,
+}: ReviewStepProps) {
   const [showJson, setShowJson] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
 
@@ -41,6 +48,19 @@ export function ReviewStep({ payload, warnings = [], primaryFields, className }:
           );
         })}
       </div>
+
+      {blockingIssues.length > 0 && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-red-300">
+            Blokkerende velden
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5">
+            {blockingIssues.map((issue, i) => (
+              <li key={i}>{issue}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {warnings.length > 0 && (
         <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-sm text-yellow-100">

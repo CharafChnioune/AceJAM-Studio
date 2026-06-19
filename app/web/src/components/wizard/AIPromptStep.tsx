@@ -60,6 +60,122 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function firstPresent(...values: unknown[]) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeQualityProfile(value: unknown): string {
+  const normalized = asText(value).trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (["draft", "low", "laag", "fast", "preview", "preview_fast"].includes(normalized)) return "draft";
+  if (["standard", "medium", "middle", "middel", "balanced", "balanced_pro"].includes(normalized)) return "standard";
+  if (["max_quality", "max", "high", "hoog", "best", "best_quality", "chart_master"].includes(normalized)) return "chart_master";
+  return "chart_master";
+}
+
+function normalizeSongModel(value: unknown): string {
+  const text = asText(value).trim();
+  return text || "acestep-v15-xl-sft";
+}
+
+function normalizeTimeSignature(value: unknown): string | undefined {
+  const text = asText(value).trim();
+  if (!text) return undefined;
+  if (text.toLowerCase() === "auto") return undefined;
+  const match = text.match(/^([2346])(?:\/4|\/8)?$/);
+  return match?.[1];
+}
+
+function normalizeMusicHydrationPayload(
+  payload: Record<string, unknown>,
+  mode: WizardMode,
+): Record<string, unknown> {
+  if (!["simple", "custom", "song", "news", "cover", "repaint", "extract", "lego", "complete"].includes(mode)) {
+    return payload;
+  }
+
+  const visuals = asRecord(payload.visuals);
+  const metadata = asRecord(payload.metadata);
+  const generation = asRecord(payload.generation_settings ?? payload.generation);
+  const metadataLocks = asRecord(payload.metadata_locks);
+
+  const normalized: Record<string, unknown> = { ...payload };
+  const title = asText(firstPresent(payload.title, payload.track_name));
+  const artistName = asText(firstPresent(payload.artist_name, payload.artist));
+  const caption = asText(firstPresent(payload.caption, payload.ace_caption, payload.tags));
+  const tags = asText(firstPresent(payload.tags, payload.caption, payload.ace_caption));
+  const negativeTags = asText(firstPresent(payload.negative_tags, payload.negative_control));
+  const lyrics = asText(firstPresent(payload.lyrics));
+  const keyScale = asText(firstPresent(payload.key_scale, payload.keyscale, metadata.key_scale, metadata.keyscale));
+  const timeSignature = normalizeTimeSignature(firstPresent(payload.time_signature, payload.timesignature, metadata.time_signature, metadata.timesignature));
+  const duration = firstPresent(payload.duration, payload.audio_duration, metadata.duration);
+  const batchSize = firstPresent(payload.batch_size, payload.variant_count, generation.batch_size);
+  const guidance = firstPresent(payload.guidance_scale, generation.guidance_scale);
+  const inferenceSteps = firstPresent(payload.inference_steps, generation.inference_steps);
+  const shift = firstPresent(payload.shift, generation.shift);
+  const seed = firstPresent(payload.seed, generation.seed);
+  const qualityProfile = normalizeQualityProfile(firstPresent(payload.quality_profile, generation.quality_profile));
+  const loraPath = asText(firstPresent(payload.lora_adapter_path));
+  const loraName = asText(firstPresent(payload.lora_adapter_name, payload.lora_name));
+  const loraTrigger = asText(firstPresent(payload.lora_trigger_tag));
+  const taskType = asText(firstPresent(payload.task_type, payload.workflow_mode));
+
+  if (title) normalized.title = title;
+  if (artistName) normalized.artist_name = artistName;
+  if (caption) normalized.caption = caption;
+  if (tags) normalized.tags = tags;
+  if (negativeTags) normalized.negative_tags = negativeTags;
+  if (lyrics) normalized.lyrics = lyrics;
+  normalized.instrumental =
+    typeof payload.instrumental === "boolean"
+      ? payload.instrumental
+      : lyrics.trim() === "[Instrumental]";
+  normalized.song_model = normalizeSongModel(firstPresent(payload.song_model, generation.model));
+  normalized.quality_profile = qualityProfile;
+  if (keyScale && keyScale.toLowerCase() !== "auto") normalized.key_scale = keyScale;
+  if (timeSignature) normalized.time_signature = timeSignature;
+  if (duration !== undefined) normalized.duration = asNumber(duration, 0) || undefined;
+  if (batchSize !== undefined) normalized.batch_size = asNumber(batchSize, 1);
+  if (guidance !== undefined) normalized.guidance_scale = asNumber(guidance, 0) || undefined;
+  if (inferenceSteps !== undefined) normalized.inference_steps = asNumber(inferenceSteps, 0) || undefined;
+  if (shift !== undefined) normalized.shift = asNumber(shift, 0) || undefined;
+  if (seed !== undefined) normalized.seed = asNumber(seed, 0) || undefined;
+  if (taskType) normalized.task_type = taskType;
+  if (payload.audio_duration !== undefined && normalized.duration === undefined) {
+    normalized.duration = asNumber(payload.audio_duration, 0) || undefined;
+  }
+  if (metadataLocks.vocal_language === true && payload.vocal_language) {
+    normalized.vocal_language = payload.vocal_language;
+  }
+  if (payload.vocal_language) normalized.vocal_language = payload.vocal_language;
+  if (payload.bpm !== undefined && payload.bpm !== null && `${payload.bpm}`.trim().toLowerCase() !== "auto") {
+    normalized.bpm = asNumber(payload.bpm, 0) || undefined;
+  }
+  if (payload.audio_backend) normalized.audio_backend = payload.audio_backend;
+  if (payload.audio_format) normalized.audio_format = payload.audio_format;
+  if (payload.infer_method) normalized.infer_method = payload.infer_method;
+  if (payload.use_mlx_dit !== undefined) normalized.use_mlx_dit = payload.use_mlx_dit;
+  if (loraPath) normalized.lora_adapter_path = loraPath;
+  if (loraName) normalized.lora_adapter_name = loraName;
+  if (loraTrigger) normalized.lora_trigger_tag = loraTrigger;
+  if (payload.use_lora !== undefined) normalized.use_lora = payload.use_lora;
+  if (payload.use_lora_trigger !== undefined) normalized.use_lora_trigger = payload.use_lora_trigger;
+  if (payload.lora_scale !== undefined) normalized.lora_scale = payload.lora_scale;
+  if (payload.lora_trigger_tags !== undefined) normalized.lora_trigger_tags = payload.lora_trigger_tags;
+  if (payload.lora_adapters !== undefined) normalized.lora_adapters = payload.lora_adapters;
+  if (payload.adapter_model_variant !== undefined) normalized.adapter_model_variant = payload.adapter_model_variant;
+  if (payload.adapter_song_model !== undefined) normalized.adapter_song_model = payload.adapter_song_model;
+  if (visuals.single_art_prompt !== undefined) normalized.art_prompt = visuals.single_art_prompt;
+  if (visuals.video_prompt !== undefined) normalized.video_prompt = visuals.video_prompt;
+  if (payload.art_prompt !== undefined) normalized.art_prompt = payload.art_prompt;
+  if (payload.video_prompt !== undefined) normalized.video_prompt = payload.video_prompt;
+  return normalized;
+}
+
 function stableJson(value: unknown): string {
   try {
     return JSON.stringify(value && typeof value === "object" ? value : {}, null, 2);
@@ -166,9 +282,9 @@ function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, 
     if (mode === "complete" || mode === "lego" || mode === "extract") {
       normalized.track_names = Array.isArray(aceStepParams.track_names) ? aceStepParams.track_names : [];
     }
-    return normalized;
+    return normalizeMusicHydrationPayload(normalized, mode);
   }
-  return record;
+  return normalizeMusicHydrationPayload(record, mode);
 }
 
 const ALBUM_CONTRACT_NEGATIVE_TAGS =

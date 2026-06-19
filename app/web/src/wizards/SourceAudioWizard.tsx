@@ -33,6 +33,7 @@ import { type WizardMode, api } from "@/lib/api";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { collectValidationMessages } from "@/lib/formValidation";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
@@ -176,6 +177,10 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const storePrompt = useWizardStore((s) => s.prompts[config.mode]);
   const aiDescription = storePrompt ?? "";
   const values = form.watch();
+  const reviewBlockingIssues = React.useMemo(
+    () => collectValidationMessages(form.formState.errors),
+    [form.formState.errors],
+  );
   const draftState = useWizardDraft(config.mode, form);
   const hasHydratedPayload = Boolean(hydratedPayload && Object.keys(hydratedPayload).length > 0);
   const baseOnlyModelError =
@@ -664,6 +669,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
           <ReviewStep
             payload={buildPayload()}
             warnings={warnings}
+            blockingIssues={reviewBlockingIssues}
             primaryFields={[
               { key: "task_type", label: "Modus" },
               { key: "title", label: "Titel" },

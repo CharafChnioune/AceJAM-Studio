@@ -34,6 +34,7 @@ import { useWizardStore } from "@/store/wizard";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { collectValidationMessages } from "@/lib/formValidation";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "news" as const;
@@ -138,6 +139,10 @@ export function NewsWizard() {
   const [step, setStep] = React.useState(0);
   const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const values = form.watch();
+  const reviewBlockingIssues = React.useMemo(
+    () => collectValidationMessages(form.formState.errors),
+    [form.formState.errors],
+  );
   const draftState = useWizardDraft(MODE, form);
 
   usePromptMirror(form, "user_prompt", storePrompt);
@@ -457,6 +462,7 @@ export function NewsWizard() {
           <ReviewStep
             payload={buildPayload()}
             warnings={warnings}
+            blockingIssues={reviewBlockingIssues}
             primaryFields={[
               { key: "title", label: "Titel" },
               { key: "satire_mode", label: "Satire-modus" },

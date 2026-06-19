@@ -42,6 +42,7 @@ import {
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, emptyLoraSelection, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { collectValidationMessages } from "@/lib/formValidation";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useSettingsStore } from "@/store/settings";
@@ -331,6 +332,10 @@ export function AlbumWizard() {
   const [jobStatus, setJobStatus] = React.useState<string>("");
   const [jobDetail, setJobDetail] = React.useState<Record<string, unknown> | null>(null);
   const values = form.watch();
+  const reviewBlockingIssues = React.useMemo(
+    () => collectValidationMessages(form.formState.errors),
+    [form.formState.errors],
+  );
   const draftState = useWizardDraft(MODE, form);
 
   usePromptMirror(form, "concept", storePrompt);
@@ -1402,6 +1407,7 @@ export function AlbumWizard() {
               ...albumCurrentPayload,
             }}
             warnings={warnings}
+            blockingIssues={reviewBlockingIssues}
             primaryFields={[
               { key: "album_title", label: "Album titel" },
               { key: "artist_name", label: "Artiest" },
