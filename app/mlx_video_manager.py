@@ -963,10 +963,11 @@ def _build_wan_command(payload: dict[str, Any], model: dict[str, Any], output: P
     )
     if image_path:
         args.extend(["--image", str(image_path)])
-    if str(payload.get("negative_prompt") or "").strip():
-        args.extend(["--negative-prompt", str(payload.get("negative_prompt")).strip()])
+    negative_prompt = str(payload.get("negative_prompt") or "").strip()
     if payload.get("no_negative_prompt"):
         args.append("--no-negative-prompt")
+    elif negative_prompt:
+        args.extend(["--negative-prompt", negative_prompt])
     tiling = str(payload.get("tiling") or "").strip().lower()
     if tiling:
         args.extend(["--tiling", tiling])
@@ -1233,6 +1234,8 @@ def _run_cli_job(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         "action": action,
         "prompt": payload.get("prompt") or "",
         "seed": payload.get("seed"),
+        "guide_scale": payload.get("guide_scale") or model.get("guide_scale") or "",
+        "shift": payload.get("shift") or model.get("shift") or "",
         "width": payload.get("width") or model.get("default_width"),
         "height": payload.get("height") or model.get("default_height"),
         "num_frames": payload.get("num_frames") or payload.get("frames") or model.get("default_frames"),
@@ -1243,8 +1246,13 @@ def _run_cli_job(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         "source_job_id": payload.get("source_job_id") or payload.get("draft_job_id") or "",
         "lora_adapters": payload.get("lora_adapters") or [],
         "enhance_prompt": bool(payload.get("enhance_prompt")),
+        "negative_prompt": payload.get("negative_prompt") or "",
+        "no_negative_prompt": bool(payload.get("no_negative_prompt")),
         "spatial_upscaler": payload.get("spatial_upscaler") or "",
-        "tiling": bool(payload.get("tiling")),
+        "tiling": str(payload.get("tiling") or "").strip().lower() or "auto",
+        "end_image_strength": payload.get("end_image_strength") or "",
+        "audio_start_time": payload.get("audio_start_time") or "",
+        "trim_first_frames": payload.get("trim_first_frames") or model.get("trim_first_frames") or "",
         "target_type": payload.get("target_type") or "",
         "target_id": payload.get("target_id") or "",
         "command": command,

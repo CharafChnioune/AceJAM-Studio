@@ -227,6 +227,43 @@ class MlxVideoManagerTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tiling") + 1], "conservative")
         self.assertIn("--lora-high", command)
 
+    def test_wan_command_prefers_no_negative_prompt_and_supports_lightning_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "Wan2.2-T2V-MLX"
+            model_dir.mkdir()
+            (model_dir / "config.json").write_text('{"model":"wan2.2"}', encoding="utf-8")
+            high = root / "high.safetensors"
+            low = root / "low.safetensors"
+            high.write_bytes(b"high")
+            low.write_bytes(b"low")
+
+            with patch.object(mlx_video_manager, "_engine_command", return_value=["mlx_video.wan_2.generate"]):
+                command, model, _warnings = mlx_video_manager._build_mlx_video_command(  # noqa: SLF001
+                    {
+                        "action": "t2v",
+                        "prompt": "lightning clip",
+                        "model_id": "wan22-lightning-draft",
+                        "model_dir": str(model_dir),
+                        "negative_prompt": "blurry, low quality",
+                        "no_negative_prompt": True,
+                        "trim_first_frames": 2,
+                        "lora_adapters": [
+                            {"path": str(high), "scale": 1.0, "role": "high"},
+                            {"path": str(low), "scale": 0.9, "role": "low"},
+                        ],
+                    },
+                    root / "out.mp4",
+                )
+
+        self.assertEqual(model["id"], "wan22-lightning-draft")
+        self.assertIn("--no-negative-prompt", command)
+        self.assertNotIn("--negative-prompt", command)
+        self.assertIn("--trim-first-frames", command)
+        self.assertEqual(command[command.index("--trim-first-frames") + 1], "2")
+        self.assertIn("--lora-high", command)
+        self.assertIn("--lora-low", command)
+
     def test_tokenizer_issue_26_guard_blocks_mismatch(self):
         with self.assertRaisesRegex(RuntimeError, "LTX-2.3"):
             mlx_video_manager._build_mlx_video_command(  # noqa: SLF001
@@ -364,6 +401,58 @@ class MlxVideoManagerTests(unittest.TestCase):
         self.assertEqual(adapters[0]["family"], "wan22")
         self.assertEqual(adapters[0]["role"], "high")
         self.assertTrue(adapters[0]["generation_loadable"])
+
+    def test_cli_job_metadata_preserves_string_tiling_and_video_cli_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result_dir = root / "result"
+            result_dir.mkdir()
+            output = result_dir / "out.mp4"
+
+            def fake_run(command, **_kwargs):
+                output.write_bytes(b"video")
+                return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+            model = {
+                "id": "wan22-final-hq",
+                "label": "Wan2.2 Final HQ",
+                "engine": "wan",
+                "preset": "wan_final",
+                "default_width": 1280,
+                "default_height": 704,
+                "default_frames": 81,
+                "default_fps": 24,
+                "guide_scale": "3.0,4.0",
+                "shift": 12.0,
+                "trim_first_frames": 1,
+            }
+            with patch.object(mlx_video_manager, "_build_mlx_video_command", return_value=(["mlx_video.wan_2.generate", "--output-path", str(output)], model, [])), \
+                 patch.object(mlx_video_manager, "_engine_capabilities", return_value={"tiling": True}), \
+                 patch.object(mlx_video_manager, "_patch_status", return_value={"matches_target_ref": True}), \
+                 patch.object(mlx_video_manager, "_result_dir", return_value=result_dir), \
+                 patch.object(mlx_video_manager, "_set_job", return_value=None), \
+                 patch.object(mlx_video_manager.subprocess, "run", side_effect=fake_run), \
+                 patch.object(mlx_video_manager.shutil, "which", return_value=None):
+                metadata = mlx_video_manager._run_cli_job(  # noqa: SLF001
+                    "job-1",
+                    {
+                        "action": "t2v",
+                        "prompt": "final wan render",
+                        "tiling": "conservative",
+                        "negative_prompt": "blurry, low quality",
+                        "no_negative_prompt": False,
+                        "trim_first_frames": 2,
+                        "guide_scale": "2.0,3.0",
+                        "shift": 9,
+                    },
+                )
+
+        self.assertEqual(metadata["tiling"], "conservative")
+        self.assertEqual(metadata["negative_prompt"], "blurry, low quality")
+        self.assertFalse(metadata["no_negative_prompt"])
+        self.assertEqual(metadata["trim_first_frames"], 2)
+        self.assertEqual(metadata["guide_scale"], "2.0,3.0")
+        self.assertEqual(metadata["shift"], 9)
 
     def test_video_attachments_filter_by_target(self):
         with tempfile.TemporaryDirectory() as tmp:

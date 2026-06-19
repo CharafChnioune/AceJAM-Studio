@@ -966,6 +966,7 @@ export interface MlxVideoModel {
   default_steps?: number;
   guide_scale?: number | string;
   shift?: number | string;
+  trim_first_frames?: number | string;
   supports_lora?: boolean;
   capabilities?: string[];
   description?: string;

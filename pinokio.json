@@ -23,6 +23,12 @@
       "title": "MLX-Audio",
       "value": "https://github.com/Blaizzy/mlx-audio"
     }, {
+      "title": "mlx-taef",
+      "value": "https://github.com/IonDen/mlx-taef"
+    }, {
+      "title": "mlx-teacache",
+      "value": "https://github.com/IonDen/mlx-teacache"
+    }, {
       "title": "MLX-VLM",
       "value": "https://github.com/Blaizzy/mlx-vlm"
     }, {

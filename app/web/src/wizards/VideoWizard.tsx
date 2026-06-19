@@ -79,6 +79,12 @@ const LTX23_SPATIAL_UPSCALERS = [
   { value: "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors", label: "x1.5 v1.0", hint: "Kleinere en snellere final output" },
 ] as const;
 
+const LORA_ROLE_OPTIONS = [
+  { value: "shared", label: "Shared" },
+  { value: "high", label: "High noise" },
+  { value: "low", label: "Low noise" },
+] as const;
+
 const MODE = "video" as const;
 
 function videoAction(value: unknown): VideoAction {
@@ -102,6 +108,17 @@ function supportsAction(model: MlxVideoModel | undefined, action: VideoAction) {
 function compatibleLora(adapter: MlxVideoLoraAdapter, model?: MlxVideoModel) {
   if (!adapter.family || !model?.family) return true;
   return adapter.family === model.family;
+}
+
+function finalModelIdFor(model: MlxVideoModel | undefined) {
+  if (!model) return "ltx23-final-hq";
+  if (model.id === "ltx2-fast-draft") return "ltx2-final-hq";
+  if (model.id === "ltx23-fast-draft") return "ltx23-final-hq";
+  if (model.id === "wan22-lightning-draft") return "wan22-final-hq";
+  if (model.id === "wan22-final-hq" || model.id === "ltx2-final-hq" || model.id === "ltx23-final-hq") return model.id;
+  if (model.engine === "wan" && supportsAction(model, "final")) return model.id;
+  if (model.engine === "ltx") return String(model.id).includes("23") ? "ltx23-final-hq" : "ltx2-final-hq";
+  return model.id;
 }
 
 function isImageSource(source: MediaSource | null) {
@@ -269,8 +286,13 @@ export function VideoWizard() {
   const [endImage, setEndImage] = React.useState<MediaSource | null>((draft.end_image as MediaSource | null) || null);
   const [sourceAudio, setSourceAudio] = React.useState<MediaSource | null>(initial.audio || (draft.source_audio as MediaSource | null) || null);
   const [enhancePrompt, setEnhancePrompt] = React.useState(() => Boolean(draft.enhance_prompt));
+  const [negativePrompt, setNegativePrompt] = React.useState(() => String(draft.negative_prompt || ""));
+  const [disableNegativePrompt, setDisableNegativePrompt] = React.useState(() => Boolean(draft.no_negative_prompt));
   const [spatialUpscaler, setSpatialUpscaler] = React.useState(() => String(draft.spatial_upscaler || ""));
   const [tiling, setTiling] = React.useState(() => String(draft.tiling || "auto"));
+  const [endImageStrength, setEndImageStrength] = React.useState(() => String(draft.end_image_strength || ""));
+  const [audioStartTime, setAudioStartTime] = React.useState(() => String(draft.audio_start_time || ""));
+  const [trimFirstFrames, setTrimFirstFrames] = React.useState(() => String(draft.trim_first_frames || ""));
   const [targetType] = React.useState(initial.targetType || "");
   const [targetId] = React.useState(initial.targetId || "");
   const [finalSourceJobId] = React.useState(initial.sourceJobId || "");
@@ -298,6 +320,8 @@ export function VideoWizard() {
   const ltx23Selected = Boolean(
     selectedModel?.engine === "ltx" && String(selectedModel?.model_repo || "").toLowerCase().includes("ltx-2.3"),
   );
+  const wanSelected = selectedModel?.engine === "wan";
+  const ltxSelected = selectedModel?.engine === "ltx";
 
   React.useEffect(() => {
     const defaultModel = modelsQ.data?.defaults?.[action] || actionModels[0]?.id;
@@ -315,6 +339,7 @@ export function VideoWizard() {
     setSteps(selectedModel.default_steps || 8);
     setGuideScale(selectedModel.guide_scale === undefined ? "" : String(selectedModel.guide_scale));
     setShift(selectedModel.shift === undefined ? "" : String(selectedModel.shift));
+    setTrimFirstFrames(selectedModel.trim_first_frames === undefined ? "" : String(selectedModel.trim_first_frames));
     if (selectedModel.requires_model_dir) {
       const firstCompatible = modelDirs.find((dir) => !selectedModel.family || dir.family === selectedModel.family) ?? modelDirs[0];
       setModelDir((current) => current || firstCompatible?.path || "");
@@ -333,6 +358,8 @@ export function VideoWizard() {
   const needsAudio = action === "a2v" || action === "song_video";
   const needsModelDir = Boolean(selectedModel?.requires_model_dir);
   const endImageBlocked = Boolean(endImage) && selectedModel?.engine === "ltx" && !ltxEndFrameSupported;
+  const canTuneEndImageStrength = ltxSelected && ltxEndFrameSupported && Boolean(endImage);
+  const canTuneAudioStart = ltxSelected && needsAudio;
   const payload = {
     action,
     prompt,
@@ -354,8 +381,13 @@ export function VideoWizard() {
     audio_path: sourceAudio?.path || "",
     audio_url: sourceAudio?.url || "",
     enhance_prompt: enhancePrompt,
+    negative_prompt: wanSelected && disableNegativePrompt ? "" : negativePrompt,
+    no_negative_prompt: Boolean(wanSelected && disableNegativePrompt),
     spatial_upscaler: spatialUpscaler,
     tiling,
+    end_image_strength: canTuneEndImageStrength ? endImageStrength : "",
+    audio_start_time: canTuneAudioStart ? audioStartTime : "",
+    trim_first_frames: wanSelected ? trimFirstFrames : "",
     lora_adapters: loras,
     source_job_id: action === "final" ? (finalSourceJobId || sourceJobId) : "",
     target_type: targetType,
@@ -397,8 +429,13 @@ export function VideoWizard() {
     setGuideScale(String(data.guide_scale ?? guideScale ?? ""));
     setShift(String(data.shift ?? shift ?? ""));
     setEnhancePrompt(Boolean(data.enhance_prompt));
+    setNegativePrompt(String(data.negative_prompt ?? negativePrompt ?? ""));
+    setDisableNegativePrompt(Boolean(data.no_negative_prompt));
     setSpatialUpscaler(String(data.spatial_upscaler || ""));
     setTiling(String(data.tiling || "auto"));
+    setEndImageStrength(String(data.end_image_strength ?? endImageStrength ?? ""));
+    setAudioStartTime(String(data.audio_start_time ?? audioStartTime ?? ""));
+    setTrimFirstFrames(String(data.trim_first_frames ?? trimFirstFrames ?? ""));
     if (Array.isArray(data.lora_adapters)) setLoras(data.lora_adapters as SelectedVideoLora[]);
     setDraft(MODE, { ...payload, ...data, action: nextAction });
   };
@@ -706,6 +743,49 @@ export function VideoWizard() {
               <Badge variant="outline">Output flag {status?.command_help?.[selectedModel?.engine || "ltx"]?.output_flag || "--output-path"}</Badge>
             </div>
           </FieldGroup>
+          <FieldGroup title="Upstream controls">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label>Negative prompt</Label>
+                <Textarea
+                  value={negativePrompt}
+                  onChange={(event) => setNegativePrompt(event.target.value)}
+                  rows={3}
+                  disabled={wanSelected && disableNegativePrompt}
+                  placeholder={wanSelected ? "blurry, low quality, text overlay" : "text, watermark, low quality, overexposed"}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {wanSelected
+                    ? "Wan gebruikt classifier-free guidance; zet de switch aan als je upstream defaults volledig wilt uitschakelen."
+                    : "LTX stuurt ongewenste details weg als de geïnstalleerde mlx-video build `--negative-prompt` ondersteunt."}
+                </p>
+              </div>
+              {wanSelected && (
+                <label className="flex items-center justify-between gap-3 rounded-md border bg-background/35 p-3 text-sm">
+                  <span>Disable Wan default negative prompt</span>
+                  <Switch checked={disableNegativePrompt} onCheckedChange={setDisableNegativePrompt} />
+                </label>
+              )}
+              {canTuneEndImageStrength && (
+                <div className="space-y-1.5">
+                  <Label>End image strength</Label>
+                  <Input value={endImageStrength} onChange={(event) => setEndImageStrength(event.target.value)} placeholder="0.35" />
+                </div>
+              )}
+              {canTuneAudioStart && (
+                <div className="space-y-1.5">
+                  <Label>Audio start time (sec)</Label>
+                  <Input value={audioStartTime} onChange={(event) => setAudioStartTime(event.target.value)} placeholder="0.0" />
+                </div>
+              )}
+              {wanSelected && (
+                <div className="space-y-1.5">
+                  <Label>Trim first frames</Label>
+                  <Input value={trimFirstFrames} onChange={(event) => setTrimFirstFrames(event.target.value)} placeholder="1" />
+                </div>
+              )}
+            </div>
+          </FieldGroup>
         </div>
       ),
     },
@@ -716,6 +796,11 @@ export function VideoWizard() {
       isValid: true,
       render: () => (
         <FieldGroup title="LoRA stack">
+          {wanSelected && (
+            <p className="text-xs text-muted-foreground">
+              Wan2.2 Lightning gebruikt meestal een high-noise en low-noise LoRA-paar. Je kunt de rol per adapter hieronder wisselen.
+            </p>
+          )}
           <div className="flex gap-2">
             <Select value={selectedAdapter} onValueChange={setSelectedAdapter}>
               <SelectTrigger><SelectValue placeholder="Kies video-LoRA" /></SelectTrigger>
@@ -739,7 +824,26 @@ export function VideoWizard() {
                     <p className="truncate font-mono text-[10px] text-muted-foreground">{lora.path}</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant="outline">{lora.role || "shared"} · {lora.scale.toFixed(2)}</Badge>
+                    {wanSelected ? (
+                      <Select
+                        value={lora.role || "shared"}
+                        onValueChange={(value) => {
+                          setLoras((items) => items.map((item, i) => i === index ? { ...item, role: value } : item));
+                        }}
+                      >
+                        <SelectTrigger className="w-[150px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {LORA_ROLE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Badge variant="outline">{lora.role || "shared"}</Badge>
+                    )}
+                    <Badge variant="outline">{lora.scale.toFixed(2)}</Badge>
                     <Button type="button" size="icon" variant="ghost" onClick={() => setLoras((items) => items.filter((_, i) => i !== index))}>
                       <X className="size-4" />
                     </Button>
@@ -789,8 +893,13 @@ export function VideoWizard() {
             { key: "end_image_path", label: "End frame" },
             { key: "audio_path", label: "Audio" },
             { key: "enhance_prompt", label: "Enhance" },
+            { key: "negative_prompt", label: "Negative prompt" },
+            { key: "no_negative_prompt", label: "No negative prompt" },
             { key: "spatial_upscaler", label: "Upscaler" },
             { key: "tiling", label: "Tiling" },
+            { key: "end_image_strength", label: "End image strength" },
+            { key: "audio_start_time", label: "Audio start" },
+            { key: "trim_first_frames", label: "Trim first frames" },
           ]}
         />
       ),
@@ -810,7 +919,7 @@ export function VideoWizard() {
             {videoUrl && (
               <Button
                 variant="outline"
-                onClick={() => start.mutate({ action: "final", model_id: "ltx2-final-hq", source_job_id: sourceJobId, target_type: targetType, target_id: targetId })}
+                onClick={() => start.mutate({ action: "final", model_id: finalModelIdFor(selectedModel), source_job_id: sourceJobId, target_type: targetType, target_id: targetId })}
                 disabled={start.isPending}
               >
                 <Film className="size-4" />

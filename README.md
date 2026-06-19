@@ -57,6 +57,8 @@ The MFLUX API surface is:
 
 MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`. That covers the current upstream `0.18.0` additions: ERNIE-Image, ERNIE-Image-Turbo, Ideogram 4 FP8, and the `flux2-klein-9b-kv` multi-reference edit path.
 
+Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) for tiny-autoencoder live previews / lower-memory FLUX decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. They are not installed by default here, but they are the closest safe Apple-MLX add-ons to watch for future Image Studio speed work.
+
 ## MLX Video Studio
 
 Video Studio uses [`Blaizzy/mlx-video`](https://github.com/Blaizzy/mlx-video) in an isolated `app/video-env` because upstream requires Python 3.11 while the music runtime stays on Python 3.10. The default workflow is draft-first: make a small LTX-2.3 preview (`512x320`, `33` frames), then render the same prompt/source/seed as a Final/HQ pass if the motion and composition are worth the time. Legacy LTX-2 presets remain available, but the default draft/final presets now target upstream LTX-2.3.
@@ -73,7 +75,40 @@ The MLX-video API surface is:
 - `POST /api/mlx-video/model-dirs`: register local converted Wan MLX model directories.
 - `POST /api/mlx-video/attach`: attach an MP4 result to song/album/library metadata.
 
-Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, pins it to upstream commit `87db56a` (still the latest mainline commit as checked on June 17, 2026), reports JSON runtime status with `python install_mlx_video.py --status-only --json`, surfaces the pinned ref/current commit/drift in Settings, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable. The Video wizard now passes upstream-native tiling modes (`auto`, `none`, `default`, `aggressive`, `conservative`, `spatial`, `temporal`) and exposes the documented LTX-2.3 spatial upscaler variants (`x2 v1.0`, `x2 v1.1`, `x1.5 v1.0`) instead of legacy placeholder toggles.
+Wan models are not downloaded silently. Register converted model folders in Settings -> Video. The installer vendors `mlx-video` under `app/vendor/mlx-video`, pins it to upstream commit `87db56a` (still the latest mainline commit as checked on June 19, 2026), reports JSON runtime status with `python install_mlx_video.py --status-only --json`, surfaces the pinned ref/current commit/drift in Settings, and attempts upstream patch application for known LTX-2.3 fixes while keeping Helios disabled until upstream is stable. The Video wizard now passes upstream-native tiling modes (`auto`, `none`, `default`, `aggressive`, `conservative`, `spatial`, `temporal`), exposes the documented LTX-2.3 spatial upscaler variants (`x2 v1.0`, `x2 v1.1`, `x1.5 v1.0`), preserves those values in result metadata, and lets Wan renders use upstream negative-prompt / no-negative-prompt behavior plus explicit high-noise vs low-noise LoRA roles.
+
+Example `/api/mlx-video/jobs` payloads:
+
+```json
+{
+  "action": "i2v",
+  "model_id": "ltx23-fast-draft",
+  "prompt": "cinematic camera move over album art, subtle parallax, moody stage lights",
+  "image_path": "/media/mlx-video/uploads/abc123/cover.png",
+  "end_image_path": "/media/mlx-video/uploads/def456/final-frame.png",
+  "end_image_strength": 0.35,
+  "audio_path": "/media/mlx-video/uploads/ghi789/song.wav",
+  "audio_start_time": 4.0,
+  "tiling": "spatial",
+  "spatial_upscaler": "ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors"
+}
+```
+
+```json
+{
+  "action": "t2v",
+  "model_id": "wan22-lightning-draft",
+  "model_dir": "/Volumes/Media/Wan2.2-T2V-A14B-MLX",
+  "prompt": "stylized concert performance, punchy cuts, crowd energy",
+  "negative_prompt": "blurry, low quality, text overlay",
+  "trim_first_frames": 1,
+  "guide_scale": "1",
+  "lora_adapters": [
+    { "path": "/Volumes/Media/Wan2.2-Lightning/high_noise_model.safetensors", "role": "high", "scale": 1.0 },
+    { "path": "/Volumes/Media/Wan2.2-Lightning/low_noise_model.safetensors", "role": "low", "scale": 1.0 }
+  ]
+}
+```
 
 ## MLX Ecosystem Watchlist
 
