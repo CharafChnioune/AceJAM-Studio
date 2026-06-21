@@ -184,6 +184,7 @@ export function ImageWizard() {
   const [width, setWidth] = React.useState(() => numberValue(draft.width, 1024));
   const [height, setHeight] = React.useState(() => numberValue(draft.height, 1024));
   const [steps, setSteps] = React.useState(() => numberValue(draft.steps, 30));
+  const [guidance, setGuidance] = React.useState(() => String(draft.guidance || ""));
   const [seed, setSeed] = React.useState(() => String(draft.seed ?? "-1"));
   const [strength, setStrength] = React.useState(() => numberValue(draft.strength, 0.55));
   const [upscaleFactor, setUpscaleFactor] = React.useState(() => numberValue(draft.upscale_factor, 2));
@@ -216,19 +217,22 @@ export function ImageWizard() {
   React.useEffect(() => {
     if (!selectedModel) return;
     setSteps(selectedModel.default_steps || 20);
+    setGuidance(selectedModel.default_guidance === undefined ? "" : String(selectedModel.default_guidance));
     setWidth(selectedModel.default_width || 1024);
     setHeight(selectedModel.default_height || 1024);
   }, [selectedModel?.id]);
 
   const needsSource = action !== "generate";
   const needsMask = action === "inpaint";
+  const needsPrompt = action !== "upscale" && action !== "depth";
   const payload = {
     action,
-    prompt: action === "upscale" || action === "depth" ? "" : prompt,
+    prompt: needsPrompt ? prompt : "",
     model_id: modelId,
     width,
     height,
     steps,
+    guidance,
     seed: seed.trim() ? Number(seed) : -1,
     quantize: selectedModel?.quantization_default ?? 8,
     image_upload_id: sourceImage?.upload_id || "",
@@ -241,7 +245,12 @@ export function ImageWizard() {
     upscale_factor: upscaleFactor,
     lora_adapters: loras,
   };
-  const canRender = status?.ready !== false && Boolean(modelId) && (!needsSource || Boolean(sourceImage?.path)) && (!needsMask || Boolean(maskImage?.path));
+  const canRender =
+    status?.ready !== false &&
+    Boolean(modelId) &&
+    (!needsPrompt || prompt.trim().length > 6) &&
+    (!needsSource || Boolean(sourceImage?.path)) &&
+    (!needsMask || Boolean(maskImage?.path));
   const draftFingerprint = React.useRef("");
 
   React.useEffect(() => {
@@ -261,6 +270,7 @@ export function ImageWizard() {
     setWidth(numberValue(data.width, width));
     setHeight(numberValue(data.height, height));
     setSteps(numberValue(data.steps, steps));
+    setGuidance(String(data.guidance ?? guidance ?? ""));
     setSeed(String(data.seed ?? seed));
     setStrength(numberValue(data.strength, strength));
     setUpscaleFactor(numberValue(data.upscale_factor, upscaleFactor));
@@ -420,9 +430,15 @@ export function ImageWizard() {
             {selectedModel && (
               <p className="text-xs text-muted-foreground">{selectedModel.description}</p>
             )}
+            {selectedModel?.family === "fibo" && (
+              <p className="text-xs text-muted-foreground">
+                FIBO expands plain text into structured JSON prompts. Base FIBO follows the upstream edit CLI, while FIBO Lite keeps the
+                fast 8-step guidance-1.0 draft path.
+              </p>
+            )}
           </FieldGroup>
           <FieldGroup title="Canvas">
-            <div className="grid gap-3 sm:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-5">
               <div className="space-y-1.5">
                 <Label>Width</Label>
                 <Input type="number" value={width} onChange={(e) => setWidth(Number(e.target.value) || 1024)} disabled={action === "upscale" || action === "depth"} />
@@ -434,6 +450,10 @@ export function ImageWizard() {
               <div className="space-y-1.5">
                 <Label>Steps</Label>
                 <Input type="number" value={steps} onChange={(e) => setSteps(Number(e.target.value) || 20)} disabled={action === "upscale" || action === "depth"} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Guidance</Label>
+                <Input value={guidance} onChange={(e) => setGuidance(e.target.value)} disabled={action === "upscale" || action === "depth"} placeholder="auto" />
               </div>
               <div className="space-y-1.5">
                 <Label>Seed</Label>
@@ -554,6 +574,7 @@ export function ImageWizard() {
         <ReviewStep
           payload={payload}
           warnings={[
+            ...(needsPrompt && prompt.trim().length <= 6 ? ["Deze actie heeft eerst een duidelijke prompt nodig."] : []),
             ...(needsSource && !sourceImage ? ["Deze actie heeft eerst een source image nodig."] : []),
             ...(needsMask && !maskImage ? ["Inpaint heeft ook een mask image nodig."] : []),
           ]}
@@ -563,6 +584,7 @@ export function ImageWizard() {
             { key: "width", label: "Width" },
             { key: "height", label: "Height" },
             { key: "steps", label: "Steps" },
+            { key: "guidance", label: "Guidance" },
             { key: "seed", label: "Seed" },
             { key: "image_path", label: "Source" },
             { key: "mask_path", label: "Mask" },

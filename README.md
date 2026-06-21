@@ -46,7 +46,7 @@ MLX Media no longer exposes Ollama as an image generator. Ollama and LM Studio r
 The MFLUX API surface is:
 
 - `GET /api/mflux/status`: Apple Silicon, MLX and MFLUX readiness.
-- `GET /api/mflux/models`: model catalog and presets for Max Quality, LoRA/Training, Fast Draft, Edit, Upscale and Depth.
+- `GET /api/mflux/models`: model catalog and presets for Max Quality, LoRA/Training, Fast Draft, JSON-native FIBO control, Edit, Upscale and Depth.
 - `POST /api/mflux/uploads`: import a PNG/JPG/WEBP/BMP/TIFF source or mask image for edit, inpaint, upscale and depth jobs.
 - `POST /api/mflux/jobs`: create a generation/edit/upscale/depth job.
 - `GET /api/mflux/jobs/{id}`: inspect progress, logs and result image URLs.
@@ -55,7 +55,24 @@ The MFLUX API surface is:
 - `GET /api/mflux/lora/adapters`: list loadable image-LoRA adapters.
 - `POST /api/mflux/art/attach`: attach an MFLUX result to a song, generation result, album or album family.
 
-MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`. That covers the current upstream `0.18.0` additions: ERNIE-Image, ERNIE-Image-Turbo, Ideogram 4 FP8, and the `flux2-klein-9b-kv` multi-reference edit path.
+MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-fibo`, `mflux-generate-fibo-edit`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`. That covers the current upstream `0.18.0` additions: ERNIE-Image, ERNIE-Image-Turbo, Ideogram 4 FP8, FIBO/FIBO Lite structured prompting, and the `flux2-klein-9b-kv` multi-reference edit path.
+
+Image Studio now exposes `guidance` as a first-class payload field for prompt-based MFLUX jobs. That matters most for FIBO: base FIBO follows upstream `mflux-generate-fibo-edit` for source-image edits, while FIBO Lite keeps the documented fast path of `8` steps with `guidance=1.0` for quick structured-prompt drafts.
+
+Example `/api/mflux/jobs` payload for a fast FIBO Lite draft:
+
+```json
+{
+  "action": "generate",
+  "model_id": "fibo-lite",
+  "prompt": "art-directed luxury album cover, wet street reflections, 35mm camera, no typography",
+  "width": 1024,
+  "height": 1024,
+  "steps": 8,
+  "guidance": 1.0,
+  "seed": 42
+}
+```
 
 Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) for tiny-autoencoder live previews / lower-memory FLUX decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. They are not installed by default here, but they are the closest safe Apple-MLX add-ons to watch for future Image Studio speed work.
 

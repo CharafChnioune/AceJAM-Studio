@@ -838,6 +838,7 @@ export interface MfluxModel {
   model_arg?: string;
   quantization_default?: number;
   default_steps?: number;
+  default_guidance?: number | string;
   default_width?: number;
   default_height?: number;
   capabilities?: string[];

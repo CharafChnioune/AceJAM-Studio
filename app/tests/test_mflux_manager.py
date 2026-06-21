@@ -21,14 +21,19 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertIn("ideogram4", ids)
         self.assertIn("z-image-turbo", ids)
         self.assertIn("z-image", ids)
+        self.assertIn("fibo", ids)
+        self.assertIn("fibo-lite", ids)
         self.assertIn("seedvr2", ids)
         self.assertEqual(catalog["defaults"]["generate"], "qwen-image")
         self.assertEqual(catalog["defaults"]["train_lora"], "flux2-klein-9b")
         commands = {item["id"]: item["command"] for item in catalog["models"]}
+        edit_commands = {item["id"]: item.get("edit_command") for item in catalog["models"]}
         self.assertEqual(commands["flux2-klein-9b"], "mflux-generate-flux2")
         self.assertEqual(commands["ernie-image"], "mflux-generate-ernie-image")
         self.assertEqual(commands["ideogram4"], "mflux-generate-ideogram4")
         self.assertEqual(commands["z-image-turbo"], "mflux-generate-z-image-turbo")
+        self.assertEqual(commands["fibo-lite"], "mflux-generate-fibo")
+        self.assertEqual(edit_commands["fibo"], "mflux-generate-fibo-edit")
         self.assertEqual(commands["seedvr2"], "mflux-upscale-seedvr2")
         self.assertEqual(commands["depth-pro"], "mflux-save-depth")
 
@@ -56,6 +61,7 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertIn("ernie-image", status["models"])
         self.assertEqual(status["version_range"], ">=0.18,<0.19")
         self.assertIn("mflux-generate-flux2-edit", status["action_readiness"]["edit"]["missing_commands"])
+        self.assertIn("mflux-generate-fibo-edit", status["action_readiness"]["edit"]["missing_commands"])
         self.assertIn("mflux-upscale-seedvr2", status["action_readiness"]["upscale"]["missing_commands"])
 
     def test_action_command_builder_uses_uploads_and_multi_lora(self):
@@ -127,6 +133,47 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertIn("ernie-image", ernie)
         self.assertEqual(ideogram[0], "/usr/bin/mflux-generate-ideogram4")
         self.assertIn("ideogram4", ideogram)
+
+    def test_fibo_paths_cover_lite_generate_and_base_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uploads = root / "uploads"
+            uploads.mkdir()
+            source = uploads / "source.png"
+            source.write_bytes(b"png")
+
+            with patch.object(mflux_manager, "DATA_DIR", root), \
+                 patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
+                 patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"):
+                lite = mflux_manager._build_mflux_command(  # noqa: SLF001
+                    {
+                        "action": "generate",
+                        "prompt": "tiny watercolor robot",
+                        "model_id": "fibo-lite",
+                        "guidance": 1.0,
+                    },
+                    root / "fibo-lite.png",
+                )
+                edit = mflux_manager._build_mflux_command(  # noqa: SLF001
+                    {
+                        "action": "edit",
+                        "prompt": "make the hand fistbump the camera",
+                        "model_id": "fibo",
+                        "image_path": str(source),
+                        "guidance": 3.5,
+                    },
+                    root / "fibo-edit.png",
+                )
+
+        self.assertEqual(lite[0], "/usr/bin/mflux-generate-fibo")
+        self.assertIn("fibo-lite", lite)
+        self.assertIn("--guidance", lite)
+        self.assertEqual(lite[lite.index("--guidance") + 1], "1.0")
+        self.assertEqual(edit[0], "/usr/bin/mflux-generate-fibo-edit")
+        self.assertIn("--image-path", edit)
+        self.assertIn("--guidance", edit)
+        self.assertEqual(edit[edit.index("--guidance") + 1], "3.5")
 
     def test_inpaint_requires_mask_and_lora_family_must_match(self):
         with tempfile.TemporaryDirectory() as tmp:
