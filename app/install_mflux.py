@@ -12,6 +12,24 @@ BASE_DIR = Path(__file__).resolve().parent
 MFLUX_ENV_DIR = BASE_DIR / "mflux-env"
 REQUIREMENTS_PATH = BASE_DIR / "requirements-mflux.txt"
 MFLUX_VERSION_RANGE = ">=0.18,<0.19"
+MFLUX_OPTIONAL_INTEGRATIONS = {
+    "mlx-taef": {
+        "package_name": "mlx-taef",
+        "module_name": "mlx_taef",
+        "requires_python": ">=3.11",
+        "recommended_release": "v0.5.1",
+        "source_url": "https://github.com/IonDen/mlx-taef",
+        "summary": "Tiny-autoencoder live previews and lower-memory FLUX decode for mflux.",
+    },
+    "mlx-teacache": {
+        "package_name": "mlx-teacache",
+        "module_name": "mlx_teacache",
+        "requires_python": ">=3.11",
+        "recommended_release": "v0.9.1",
+        "source_url": "https://github.com/IonDen/mlx-teacache",
+        "summary": "TeaCache step-skipping acceleration for FLUX, Qwen Image and Z-Image.",
+    },
+}
 
 
 def _run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -75,8 +93,46 @@ def _python_status(python: Path) -> dict[str, object]:
     return {"exists": True, "version": version, "ok": ok, "reason": "" if ok else out[-400:]}
 
 
+def _python_at_least(version: object, major: int, minor: int) -> bool:
+    text = str(version or "").strip()
+    if not text:
+        return False
+    parts = text.split(".")
+    try:
+        current = tuple(int(part) for part in parts[:2])
+    except ValueError:
+        return False
+    return current >= (major, minor)
+
+
+def _optional_integrations_status(python: Path, python_status: dict[str, object]) -> dict[str, dict[str, object]]:
+    compatible_with_env = _python_at_least(python_status.get("version"), 3, 11)
+    integrations: dict[str, dict[str, object]] = {}
+    for integration_id, spec in MFLUX_OPTIONAL_INTEGRATIONS.items():
+        package_status = _package_status(python, str(spec["package_name"]), str(spec["module_name"]))
+        reason = str(package_status.get("reason") or "")
+        if not compatible_with_env:
+            version = str(python_status.get("version") or "")
+            base = f"Current mflux-env Python {version or 'unknown'} does not satisfy {spec['requires_python']}."
+            reason = base if not reason else f"{base} {reason}".strip()
+        integrations[integration_id] = {
+            "package_name": spec["package_name"],
+            "module_name": spec["module_name"],
+            "requires_python": spec["requires_python"],
+            "recommended_release": spec["recommended_release"],
+            "source_url": spec["source_url"],
+            "summary": spec["summary"],
+            "available": bool(package_status.get("available")),
+            "version": package_status.get("version") or "",
+            "compatible_with_env": compatible_with_env,
+            "reason": reason,
+        }
+    return integrations
+
+
 def runtime_status() -> dict[str, object]:
     python = _mflux_python()
+    python_status = _python_status(python)
     mflux_status = _package_status(python, "mflux")
     mlx_status = _package_status(python, "mlx")
     transformers_status = _package_status(python, "transformers")
@@ -88,12 +144,13 @@ def runtime_status() -> dict[str, object]:
         "requirements_exists": REQUIREMENTS_PATH.exists(),
         "version_range": MFLUX_VERSION_RANGE,
         "env_dir": str(MFLUX_ENV_DIR),
-        "python": _python_status(python),
+        "python": python_status,
         "packages": {
             "mflux": mflux_status,
             "mlx": mlx_status,
             "transformers": transformers_status,
         },
+        "optional_integrations": _optional_integrations_status(python, python_status),
         "ready": bool(mflux_status.get("available") and mlx_status.get("available")),
     }
 

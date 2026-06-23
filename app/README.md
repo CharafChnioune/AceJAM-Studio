@@ -28,6 +28,8 @@ The manager blocks image work unless the app runs on Apple Silicon with MLX avai
 
 The Image Studio wizard now forwards a generic `guidance` field for prompt-based MFLUX actions and exposes both base FIBO and FIBO Lite. Base FIBO uses the upstream dedicated edit command for source-image editing, while FIBO Lite keeps the documented fast `8`-step `guidance=1.0` draft path.
 
+`/api/mflux/status` now also reports optional MFLUX companion packages: `mlx-taef` `v0.5.1` and `mlx-teacache` `v0.9.1`. They remain opt-in because their current upstream releases require Python 3.11+, while this app keeps `mflux-env` on the existing non-destructive baseline unless the user explicitly chooses a migration path.
+
 ## MLX Video Runtime
 
 `install_mlx_video.py` vendors upstream `mlx-video` into `vendor/mlx-video`, but now pins that checkout to commit `87db56a51758fefb748a359b90a5283bb8ba4837` instead of following a moving branch. The runtime status exposes the pinned ref, current vendor commit, managed patch-file count, and unknown drift count so Settings can show whether the local vendor still matches the tested baseline before applying the PR #24/#27 LTX fixes. The model catalog now exposes both legacy LTX-2 and newer LTX-2.3 draft/final presets, with LTX-2.3 as the default draft-first path and final rerenders following the selected family instead of always falling back to old LTX-2.

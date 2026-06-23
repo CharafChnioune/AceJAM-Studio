@@ -14,7 +14,7 @@ Do not open the built frontend bundle directly with a `file://` URL for real wor
 
 ## Upstream Baseline
 
-As of June 17, 2026 this repo tracks these upstream-safe media baselines:
+As of June 23, 2026 this repo tracks these upstream-safe media baselines:
 
 - ACE-Step 1.5 vendor: `v0.1.8` / commit `dce621408bee8c31b4fcf4811682eb9359e1bc94`.
 - MFLUX image runtime: `0.18.x`, aligned with the upstream `v.0.18.0` release.
@@ -74,7 +74,7 @@ Example `/api/mflux/jobs` payload for a fast FIBO Lite draft:
 }
 ```
 
-Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) for tiny-autoencoder live previews / lower-memory FLUX decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. They are not installed by default here, but they are the closest safe Apple-MLX add-ons to watch for future Image Studio speed work.
+Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) `v0.5.1` for tiny-autoencoder live previews / lower-memory FLUX decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) `v0.9.1` for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. Both packages currently require Python 3.11+, so MLX Media surfaces their readiness in `/api/mflux/status` and Settings but does not auto-install them into the existing `mflux-env` baseline.
 
 ## MLX Video Studio
 

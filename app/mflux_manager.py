@@ -33,6 +33,24 @@ for _path in (MFLUX_RESULTS_DIR, MFLUX_JOBS_DIR, MFLUX_LORAS_DIR, MFLUX_DATASETS
 MFLUX_VERSION_RANGE = ">=0.18,<0.19"
 MFLUX_RESULT_KEEP_LIMIT = 100
 MFLUX_ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+MFLUX_OPTIONAL_INTEGRATIONS = {
+    "mlx-taef": {
+        "package_name": "mlx-taef",
+        "module_name": "mlx_taef",
+        "requires_python": ">=3.11",
+        "recommended_release": "v0.5.1",
+        "source_url": "https://github.com/IonDen/mlx-taef",
+        "summary": "Tiny-autoencoder live previews and lower-memory FLUX decode for mflux.",
+    },
+    "mlx-teacache": {
+        "package_name": "mlx-teacache",
+        "module_name": "mlx_teacache",
+        "requires_python": ">=3.11",
+        "recommended_release": "v0.9.1",
+        "source_url": "https://github.com/IonDen/mlx-teacache",
+        "summary": "TeaCache step-skipping acceleration for FLUX, Qwen Image and Z-Image.",
+    },
+}
 
 
 def _now() -> str:
@@ -136,6 +154,18 @@ def _resolve_child(root: Path, *parts: str) -> Path:
     if target != root_resolved and root_resolved not in target.parents:
         raise FileNotFoundError("Path escapes MFLUX data directory")
     return target
+
+
+def _python_at_least(version: str | None, major: int, minor: int) -> bool:
+    text = str(version or "").strip()
+    if not text:
+        return False
+    parts = text.split(".")
+    try:
+        current = tuple(int(part) for part in parts[:2])
+    except ValueError:
+        return False
+    return current >= (major, minor)
 
 
 MFLUX_MODELS: list[dict[str, Any]] = [
@@ -485,6 +515,31 @@ def _command_help_status(command: str, path: str | None) -> dict[str, Any]:
     return dict(result)
 
 
+def _optional_integrations_status(env_python: Path, env_python_status: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    compatible_with_env = _python_at_least(str(env_python_status.get("version") or ""), 3, 11)
+    integrations: dict[str, dict[str, Any]] = {}
+    for integration_id, spec in MFLUX_OPTIONAL_INTEGRATIONS.items():
+        package_status = _python_import_status(env_python, str(spec["module_name"]))
+        reason = str(package_status.get("reason") or "")
+        if not compatible_with_env:
+            version = str(env_python_status.get("version") or "")
+            base = f"Current mflux-env Python {version or 'unknown'} does not satisfy {spec['requires_python']}."
+            reason = base if not reason else f"{base} {reason}".strip()
+        integrations[integration_id] = {
+            "package_name": spec["package_name"],
+            "module_name": spec["module_name"],
+            "requires_python": spec["requires_python"],
+            "recommended_release": spec["recommended_release"],
+            "source_url": spec["source_url"],
+            "summary": spec["summary"],
+            "available": bool(package_status.get("available")),
+            "version": package_status.get("version") or "",
+            "compatible_with_env": compatible_with_env,
+            "reason": reason,
+        }
+    return integrations
+
+
 def mflux_models() -> dict[str, Any]:
     presets: dict[str, list[dict[str, Any]]] = {}
     by_action: dict[str, list[dict[str, Any]]] = {action: [] for action in MFLUX_ACTIONS if action != "train_lora"}
@@ -522,6 +577,7 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
     env_mlx_status = _python_import_status(env_python, "mlx")
     env_mflux_status = _python_import_status(env_python, "mflux")
     env_transformers_status = _python_import_status(env_python, "transformers")
+    optional_integrations = _optional_integrations_status(env_python, env_python_status)
     mlx_available = bool(env_mlx_status.get("available") or current_mlx_spec)
     mflux_available = bool(env_mflux_status.get("available") or current_mflux_spec)
     command_paths = {cmd: _command_path(cmd) for cmd in _all_commands()}
@@ -562,6 +618,7 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
         "mflux_env_mlx": env_mlx_status,
         "mflux_env_mflux": env_mflux_status,
         "mflux_env_transformers": env_transformers_status,
+        "optional_integrations": optional_integrations,
         "cli_available": cli_available,
         "commands": command_paths,
         "command_help": command_help,

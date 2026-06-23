@@ -60,6 +60,8 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertTrue(status["action_readiness"]["generate"]["ready"])
         self.assertIn("ernie-image", status["models"])
         self.assertEqual(status["version_range"], ">=0.18,<0.19")
+        self.assertIn("mlx-taef", status["optional_integrations"])
+        self.assertFalse(status["optional_integrations"]["mlx-taef"]["compatible_with_env"])
         self.assertIn("mflux-generate-flux2-edit", status["action_readiness"]["edit"]["missing_commands"])
         self.assertIn("mflux-generate-fibo-edit", status["action_readiness"]["edit"]["missing_commands"])
         self.assertIn("mflux-upscale-seedvr2", status["action_readiness"]["upscale"]["missing_commands"])

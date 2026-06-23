@@ -813,6 +813,18 @@ export interface MfluxStatus {
   uploads_dir?: string;
   datasets_dir?: string;
   lora_dir?: string;
+  optional_integrations?: Record<string, {
+    package_name?: string;
+    module_name?: string;
+    requires_python?: string;
+    recommended_release?: string;
+    source_url?: string;
+    summary?: string;
+    available?: boolean;
+    version?: string;
+    compatible_with_env?: boolean;
+    reason?: string;
+  }>;
   commands?: Record<string, string | null>;
   command_help?: Record<string, { available: boolean; help_ok: boolean; reason?: string }>;
   action_readiness?: Record<string, {

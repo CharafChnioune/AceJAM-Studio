@@ -799,6 +799,47 @@ function MFLUXTab() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Optional accelerators</CardTitle>
+          <CardDescription>
+            Upstream MFLUX companion packages for previews and step-skipping. MLX Media reports them, but does not auto-install them into incompatible envs.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {(Object.entries(statusData?.optional_integrations ?? {})).length === 0 ? (
+            <p className="text-sm text-muted-foreground">Geen optionele accelerators gedetecteerd.</p>
+          ) : (
+            <>
+              <div className="grid gap-2 md:grid-cols-2">
+                {Object.entries(statusData?.optional_integrations ?? {}).map(([integrationId, info]) => {
+                  const stateLabel = info.available ? "installed" : info.compatible_with_env ? "optional" : "python mismatch";
+                  const stateVariant = info.available ? "default" : info.compatible_with_env ? "secondary" : "destructive";
+                  return (
+                    <div key={integrationId} className="rounded-md border bg-card/35 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium">{integrationId}</p>
+                        <Badge variant={stateVariant}>{stateLabel}</Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{info.summary || "Optional MFLUX integration."}</p>
+                      <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                        {(info.version ? `${info.version} · ` : "")}{info.recommended_release || "latest checked"} · {info.requires_python || "Python req unknown"}
+                      </p>
+                      {info.reason && (
+                        <p className="mt-2 text-xs text-muted-foreground">{info.reason}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                `mlx-taef` v0.5.1 and `mlx-teacache` v0.9.1 currently target Python 3.11+, while this app keeps image tooling in the isolated `mflux-env`.
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Model presets</CardTitle>
           <CardDescription>Max Quality, LoRA/Training, Fast Draft, Edit/Upscale/Depth.</CardDescription>
         </CardHeader>

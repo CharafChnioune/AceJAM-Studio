@@ -23,12 +23,17 @@ class RuntimeInstallerTests(unittest.TestCase):
                      {"available": True, "version": "0.18.0", "reason": ""},
                      {"available": True, "version": "0.31.2", "reason": ""},
                      {"available": True, "version": "5.10.1", "reason": ""},
+                     {"available": False, "version": "", "reason": "not installed"},
+                     {"available": False, "version": "", "reason": "not installed"},
                  ]):
                 status = install_mflux.runtime_status()
 
         self.assertEqual(status["version_range"], ">=0.18,<0.19")
         self.assertTrue(status["ready"])
         self.assertEqual(status["packages"]["mflux"]["version"], "0.18.0")
+        self.assertIn("mlx-taef", status["optional_integrations"])
+        self.assertFalse(status["optional_integrations"]["mlx-taef"]["compatible_with_env"])
+        self.assertEqual(status["optional_integrations"]["mlx-teacache"]["recommended_release"], "v0.9.1")
 
     def test_mlx_video_runtime_status_reports_vendor_and_patch_state(self):
         with tempfile.TemporaryDirectory() as tmp:
