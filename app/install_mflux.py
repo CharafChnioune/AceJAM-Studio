@@ -12,14 +12,15 @@ BASE_DIR = Path(__file__).resolve().parent
 MFLUX_ENV_DIR = BASE_DIR / "mflux-env"
 REQUIREMENTS_PATH = BASE_DIR / "requirements-mflux.txt"
 MFLUX_VERSION_RANGE = ">=0.18,<0.19"
+MFLUX_ENV_PYTHON_VERSION = "3.11"
 MFLUX_OPTIONAL_INTEGRATIONS = {
     "mlx-taef": {
         "package_name": "mlx-taef",
         "module_name": "mlx_taef",
         "requires_python": ">=3.11",
-        "recommended_release": "v0.5.1",
+        "recommended_release": "v0.6.0",
         "source_url": "https://github.com/IonDen/mlx-taef",
-        "summary": "Tiny-autoencoder live previews and lower-memory FLUX decode for mflux.",
+        "summary": "Tiny-autoencoder live previews and lower-memory FLUX/Qwen decode for mflux.",
     },
     "mlx-teacache": {
         "package_name": "mlx-teacache",
@@ -106,12 +107,19 @@ def _python_at_least(version: object, major: int, minor: int) -> bool:
 
 
 def _optional_integrations_status(python: Path, python_status: dict[str, object]) -> dict[str, dict[str, object]]:
-    compatible_with_env = _python_at_least(python_status.get("version"), 3, 11)
+    env_exists = bool(python_status.get("exists"))
+    compatible_with_current_env = _python_at_least(python_status.get("version"), 3, 11)
+    compatible_with_env = compatible_with_current_env or not env_exists
     integrations: dict[str, dict[str, object]] = {}
     for integration_id, spec in MFLUX_OPTIONAL_INTEGRATIONS.items():
         package_status = _package_status(python, str(spec["package_name"]), str(spec["module_name"]))
         reason = str(package_status.get("reason") or "")
-        if not compatible_with_env:
+        if not env_exists:
+            reason = (
+                f"mflux-env is not installed yet. Install/Update will create Python {MFLUX_ENV_PYTHON_VERSION} "
+                f"so {integration_id} can be added later."
+            )
+        elif not compatible_with_current_env:
             version = str(python_status.get("version") or "")
             base = f"Current mflux-env Python {version or 'unknown'} does not satisfy {spec['requires_python']}."
             reason = base if not reason else f"{base} {reason}".strip()
@@ -160,7 +168,7 @@ def _ensure_mflux_env() -> None:
         raise RuntimeError(f"Missing {REQUIREMENTS_PATH.name}; cannot install MFLUX runtime.")
     python = _mflux_python()
     if not python.is_file():
-        _run(["uv", "venv", str(MFLUX_ENV_DIR), "--python", "3.10"])
+        _run(["uv", "venv", str(MFLUX_ENV_DIR), "--python", MFLUX_ENV_PYTHON_VERSION])
     if not python.is_file():
         raise RuntimeError(f"mflux-env python missing after uv venv: {python}")
     _run(["uv", "pip", "install", "--python", str(python), "-r", str(REQUIREMENTS_PATH)])

@@ -18,7 +18,7 @@ class RuntimeInstallerTests(unittest.TestCase):
 
             with patch.object(install_mflux, "MFLUX_ENV_DIR", root), \
                  patch.object(install_mflux, "_mflux_python", return_value=python), \
-                 patch.object(install_mflux, "_python_status", return_value={"exists": True, "version": "3.10.17", "ok": True, "reason": ""}), \
+                 patch.object(install_mflux, "_python_status", return_value={"exists": True, "version": "3.11.13", "ok": True, "reason": ""}), \
                  patch.object(install_mflux, "_package_status", side_effect=[
                      {"available": True, "version": "0.18.0", "reason": ""},
                      {"available": True, "version": "0.31.2", "reason": ""},
@@ -32,7 +32,8 @@ class RuntimeInstallerTests(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertEqual(status["packages"]["mflux"]["version"], "0.18.0")
         self.assertIn("mlx-taef", status["optional_integrations"])
-        self.assertFalse(status["optional_integrations"]["mlx-taef"]["compatible_with_env"])
+        self.assertTrue(status["optional_integrations"]["mlx-taef"]["compatible_with_env"])
+        self.assertEqual(status["optional_integrations"]["mlx-taef"]["recommended_release"], "v0.6.0")
         self.assertEqual(status["optional_integrations"]["mlx-teacache"]["recommended_release"], "v0.9.1")
 
     def test_mlx_video_runtime_status_reports_vendor_and_patch_state(self):

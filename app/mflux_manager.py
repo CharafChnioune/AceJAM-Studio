@@ -25,6 +25,7 @@ MFLUX_LORAS_DIR = MFLUX_DIR / "loras"
 MFLUX_DATASETS_DIR = MFLUX_DIR / "datasets"
 MFLUX_UPLOADS_DIR = MFLUX_DIR / "uploads"
 MFLUX_ENV_DIR = BASE_DIR / "mflux-env"
+MFLUX_ENV_PYTHON_VERSION = "3.11"
 
 for _path in (MFLUX_RESULTS_DIR, MFLUX_JOBS_DIR, MFLUX_LORAS_DIR, MFLUX_DATASETS_DIR, MFLUX_UPLOADS_DIR):
     _path.mkdir(parents=True, exist_ok=True)
@@ -38,9 +39,9 @@ MFLUX_OPTIONAL_INTEGRATIONS = {
         "package_name": "mlx-taef",
         "module_name": "mlx_taef",
         "requires_python": ">=3.11",
-        "recommended_release": "v0.5.1",
+        "recommended_release": "v0.6.0",
         "source_url": "https://github.com/IonDen/mlx-taef",
-        "summary": "Tiny-autoencoder live previews and lower-memory FLUX decode for mflux.",
+        "summary": "Tiny-autoencoder live previews and lower-memory FLUX/Qwen decode for mflux.",
     },
     "mlx-teacache": {
         "package_name": "mlx-teacache",
@@ -516,12 +517,19 @@ def _command_help_status(command: str, path: str | None) -> dict[str, Any]:
 
 
 def _optional_integrations_status(env_python: Path, env_python_status: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    compatible_with_env = _python_at_least(str(env_python_status.get("version") or ""), 3, 11)
+    env_available = bool(env_python_status.get("available"))
+    compatible_with_current_env = _python_at_least(str(env_python_status.get("version") or ""), 3, 11)
+    compatible_with_env = compatible_with_current_env or not env_available
     integrations: dict[str, dict[str, Any]] = {}
     for integration_id, spec in MFLUX_OPTIONAL_INTEGRATIONS.items():
         package_status = _python_import_status(env_python, str(spec["module_name"]))
         reason = str(package_status.get("reason") or "")
-        if not compatible_with_env:
+        if not env_available:
+            reason = (
+                f"mflux-env is not installed yet. Install/Update will create Python {MFLUX_ENV_PYTHON_VERSION} "
+                f"so {integration_id} can be added later."
+            )
+        elif not compatible_with_current_env:
             version = str(env_python_status.get("version") or "")
             base = f"Current mflux-env Python {version or 'unknown'} does not satisfy {spec['requires_python']}."
             reason = base if not reason else f"{base} {reason}".strip()

@@ -22,13 +22,13 @@ This folder contains the self-contained MLX Media web app runtime. Pinokio launc
 
 ## MFLUX Image Runtime
 
-Image generation is handled by MFLUX only; Ollama is intentionally limited to text/AI-fill and album planning. MFLUX runs in the isolated `mflux-env` because MFLUX 0.18.x uses the newer Transformers 5 stack while ACE-Step uses Transformers 4.x. The runtime exposes `/api/mflux/status`, `/api/mflux/models`, `/api/mflux/uploads`, `/api/mflux/jobs`, `/api/mflux/lora/train`, `/api/mflux/lora/adapters`, and `/api/mflux/art/attach`.
+Image generation is handled by MFLUX only; Ollama is intentionally limited to text/AI-fill and album planning. MFLUX runs in the isolated `mflux-env` because MFLUX 0.18.x uses the newer Transformers 5 stack while ACE-Step uses Transformers 4.x. New installs now target Python 3.11 in that env so current MFLUX companion packages stay compatible without changing the music runtime. The runtime exposes `/api/mflux/status`, `/api/mflux/models`, `/api/mflux/uploads`, `/api/mflux/jobs`, `/api/mflux/lora/train`, `/api/mflux/lora/adapters`, and `/api/mflux/art/attach`.
 
 The manager blocks image work unless the app runs on Apple Silicon with MLX available. When MFLUX is installed, jobs call the matching action CLI (`mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-fibo`, `mflux-generate-fibo-edit`, `mflux-upscale-seedvr2`, `mflux-save-depth`, or `mflux-train`) and write result metadata to `data/mflux/results/<result_id>/mflux_result.json`. Source/mask uploads are stored in `data/mflux/uploads`, and image-LoRA adapters are discovered from `data/mflux/loras`.
 
 The Image Studio wizard now forwards a generic `guidance` field for prompt-based MFLUX actions and exposes both base FIBO and FIBO Lite. Base FIBO uses the upstream dedicated edit command for source-image editing, while FIBO Lite keeps the documented fast `8`-step `guidance=1.0` draft path.
 
-`/api/mflux/status` now also reports optional MFLUX companion packages: `mlx-taef` `v0.5.1` and `mlx-teacache` `v0.9.1`. They remain opt-in because their current upstream releases require Python 3.11+, while this app keeps `mflux-env` on the existing non-destructive baseline unless the user explicitly chooses a migration path.
+`/api/mflux/status` now also reports optional MFLUX companion packages: `mlx-taef` `v0.6.0` and `mlx-teacache` `v0.9.1`. They remain opt-in, but new installs create `mflux-env` with Python 3.11 so these companions are installable without broadening the app beyond Apple Silicon. Existing older envs stay untouched until the user deliberately recreates them.
 
 ## MLX Video Runtime
 

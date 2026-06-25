@@ -5,7 +5,7 @@ MLX Media is a native Pinokio app for ACE-Step 1.5 music generation, MFLUX image
 ## Install And Run
 
 1. In Pinokio, open MLX Media and run **Install**.
-2. Install creates/uses `app/env`, installs `app/requirements.txt` with `uv pip install -r requirements.txt`, syncs the official ACE-Step 1.5 trainer into `app/vendor/ACE-Step-1.5`, creates `app/mflux-env` for MFLUX image tools, and creates `app/video-env` with Python 3.11 for `mlx-video`.
+2. Install creates/uses `app/env`, installs `app/requirements.txt` with `uv pip install -r requirements.txt`, syncs the official ACE-Step 1.5 trainer into `app/vendor/ACE-Step-1.5`, creates `app/mflux-env` with Python 3.11 for MFLUX image tools, and creates `app/video-env` with Python 3.11 for `mlx-video`.
 3. Run **Start**. The Web UI URL is captured by `start.js` and shown by Pinokio.
 
 Generated data lives under `app/data/` and model files under `app/model_cache/`. These folders are ignored by git.
@@ -41,7 +41,7 @@ MLX Media uses a Clean Studio layout by default: the everyday controls stay visi
 
 ## MFLUX Image Studio
 
-MLX Media no longer exposes Ollama as an image generator. Ollama and LM Studio remain text/planner providers only. Image generation, editing, album art, song art, image-LoRA selection, and image-LoRA training now use [MFLUX](https://github.com/filipstrand/mflux) in an isolated `app/mflux-env`. MFLUX requires `transformers>=5`, while ACE-Step currently needs the 4.x stack, so the environments stay separated on purpose.
+MLX Media no longer exposes Ollama as an image generator. Ollama and LM Studio remain text/planner providers only. Image generation, editing, album art, song art, image-LoRA selection, and image-LoRA training now use [MFLUX](https://github.com/filipstrand/mflux) in an isolated `app/mflux-env`. MFLUX requires `transformers>=5`, while ACE-Step currently needs the 4.x stack, so the environments stay separated on purpose. New installs now target Python 3.11 there so the current MFLUX companion packages remain compatible without touching the music runtime.
 
 The MFLUX API surface is:
 
@@ -74,7 +74,7 @@ Example `/api/mflux/jobs` payload for a fast FIBO Lite draft:
 }
 ```
 
-Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) `v0.5.1` for tiny-autoencoder live previews / lower-memory FLUX decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) `v0.9.1` for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. Both packages currently require Python 3.11+, so MLX Media surfaces their readiness in `/api/mflux/status` and Settings but does not auto-install them into the existing `mflux-env` baseline.
+Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) `v0.6.0` for tiny-autoencoder live previews / lower-memory FLUX and Qwen Image decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) `v0.9.1` for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. Both packages target Python 3.11+, so MLX Media surfaces their readiness in `/api/mflux/status` and Settings; fresh installs create a Python 3.11 `mflux-env`, while existing older envs stay untouched until a deliberate Reset/Install recreates them.
 
 ## MLX Video Studio
 

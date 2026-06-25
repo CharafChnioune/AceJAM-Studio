@@ -831,7 +831,7 @@ function MFLUXTab() {
                 })}
               </div>
               <p className="text-xs text-muted-foreground">
-                `mlx-taef` v0.5.1 and `mlx-teacache` v0.9.1 currently target Python 3.11+, while this app keeps image tooling in the isolated `mflux-env`.
+                `mlx-taef` and `mlx-teacache` target Python 3.11+. Nieuwe installs maken `app/mflux-env` op Python 3.11 aan; oudere envs blijven ongemoeid tot een bewuste Reset/Install.
               </p>
             </>
           )}
