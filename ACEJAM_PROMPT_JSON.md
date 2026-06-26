@@ -10,6 +10,8 @@ This version is intentionally strict. It requires:
 - explicit LoRA selection or explicit no-LoRA choice
 - research-driven writing when browsing is available
 - original lyrics informed by research, never copied
+- deliberate ad-libs, doubles, backing vocals, harmony ideas, and cadence
+  planning where the genre needs them
 
 ACE-Step source anchors:
 
@@ -20,16 +22,16 @@ ACE-Step source anchors:
 
 Sources:
 
-- https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md
-- https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md
-- https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md
+- `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
+- `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
+- `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
 
 ---
 
 ## Available LoRAs
 
-Use only this currently available local catalog. If none is a strong fit, leave
-LoRA off.
+Use only this currently available local catalog of 30 finals. If none is a
+strong fit, leave LoRA off.
 
 - `2pac-648a91425b47-epoch-60` | trigger: `pac` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: 2Pac-inspired West Coast rap
 - `afro_caribbean` | trigger: `afro_caribbean` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: Afro-Caribbean rhythmic fusion
@@ -40,18 +42,26 @@ LoRA off.
 - `classic_rock_production-3` | trigger: `classic_rock_production` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: classic rock studio production
 - `classic_rock_production_pre_1990_75_90bpm` | trigger: `classic_rock_production_pre_1990_75_90bpm` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slower pre-1990 classic rock
 - `country_classic` | trigger: `country_classic` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: classic country songwriting
-- `drdre-42b9e125ec60-final` | trigger: `drdre` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: polished Dr. Dre-style West Coast production
+- `drdre-42b9e125ec60-final` | trigger: `drdre` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: polished Dre-style West Coast production
 - `eastcoast_boom_bap` | trigger: `eastcoast_boom_bap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: East Coast boom bap
 - `eastcoast_boom_bap_1990s_60_75bpm_male_rap` | trigger: `eastcoast_boom_bap_1990s_60_75bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slow 1990s boom bap rap
 - `eastcoast_boom_bap_1990s_90_110bpm_male_rap` | trigger: `eastcoast_boom_bap_1990s_90_110bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: midtempo 1990s boom bap rap
 - `eastcoast_boom_bap_60_75bpm_male_rap` | trigger: `eastcoast_boom_bap_60_75bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slow boom bap rap
 - `eastcoast_boom_bap_90_110bpm_male_rap` | trigger: `eastcoast_boom_bap_90_110bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: midtempo boom bap rap
-- `jdila` | trigger: unknown | model: unknown | style hint: sample-heavy soulful beat craft
+- `eastcoast_soul_rap` | trigger: `eastcoast_soul_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: soulful East Coast sample rap
+- `jdila` | trigger: `jdila` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: dusty soulful beat craft
 - `scottstorch` | trigger: `scottstorch` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: big melodic hit production
 - `stoupe-8167016f0cfa-final` | trigger: `stoupe` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: dense underground boom bap textures
-- `theneptunes` | trigger: unknown | model: unknown | style hint: minimalist Neptunes-style funk futurism
-- `timbaland epoch_50_loss_1.0480` | trigger: unknown | model: unknown | style hint: syncopated Timbaland-style rhythm design
-- `westcoast_gfunk_2000s_90_110bpm_male_rap-d43f0c80c16b` | trigger: unknown | model: unknown | style hint: 2000s West Coast G-funk rap
+- `theneptunes` | trigger: `theneptunes` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: minimalist Neptunes-style funk futurism
+- `timbaland epoch_50_loss_1.0480` | trigger: `unknown` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: syncopated Timbaland-style rhythm design
+- `westcoast_gangsta` | trigger: `westcoast_gangsta` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: classic West Coast gangsta rap
+- `westcoast_gangsta_2000s` | trigger: `westcoast_gangsta_2000s` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: polished 2000s gangsta rap
+- `westcoast_gfunk_2000s_90_110bpm_male_rap-d43f0c80c16b` | trigger: `westcoast gfunk 2000s 90 110bpm male rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: 2000s G-funk rap
+- `westcoast_gfunk_2010s_90_110bpm_male_rap` | trigger: `westcoast_gfunk_2010s_90_110bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: modernized 2010s G-funk rap
+- `westcoast_modern` | trigger: `westcoast_modern` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: cinematic modern West Coast rap
+- `westcoast_modern_2010s_60_75bpm_male_rap` | trigger: `westcoast_modern_2010s_60_75bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slow moody 2010s West Coast rap
+- `westcoast_modern_2020s` | trigger: `westcoast_modern_2020s` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: widescreen 2020s West Coast villain rap
+- `westcoast_ratchet` | trigger: `westcoast_ratchet` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: ratchet club bounce
 - `ye` | trigger: `ye` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: soul-flip rap maximalism
 
 ---
@@ -73,23 +83,19 @@ RESEARCH-FIRST WORKFLOW
    - inspect recent genre conventions
    - analyze successful songs in the exact lane
    - read lyrics from major artists in the same genre to understand density,
-     cadence, section design, and hook writing
-   - study interviews from producers, artists, and songwriters about hit-making,
-     arrangement, replay value, hook architecture, tension/release, and vocal
-     framing
+     cadence, section design, hook writing, imagery, ad-lib usage, and
+     emotional framing
+   - study interviews from producers, artists, and songwriters about
+     hit-making, arrangement, replay value, hook architecture, tension/release,
+     ad-lib strategy, and vocal framing
    - extract musical and writing patterns, then build an original song
-3. If browsing is truly unavailable, silently use your strongest prior
-   knowledge and still follow the same logic.
+3. If browsing is unavailable, silently use your strongest prior knowledge and
+   still follow the same logic.
 4. Never copy lyrics, melodies, or copyrighted lines. Research informs pattern
    recognition only. Final output must be original.
 
-The user will give a song idea. Write the complete song and return exactly one
-valid JSON object. No markdown fences. No prose. No comments. No trailing comma.
-
-JSON SCHEMA
-
-Replace every placeholder with real values. The final response must be valid
-JSON.
+Return exactly one valid JSON object. No markdown fences. No prose. No comments.
+No trailing commas.
 
 {
   "title": "string",
@@ -143,7 +149,8 @@ JSON.
     "video_prompt": "music video or visualizer prompt",
     "video_negative_prompt": "text, logo, watermark, low quality"
   },
-  "performance_notes": "string"
+  "performance_notes": "delivery, pocket, ad-libs, doubles, harmonies, dynamics, energy",
+  "strict_completion_notes": "complete, original, commercial, no placeholders"
 }
 
 AVAILABLE LORA CATALOG
@@ -157,88 +164,48 @@ AVAILABLE LORA CATALOG
 - classic_rock_production-3 | trigger classic_rock_production | acestep-v15-xl-sft | classic rock studio production
 - classic_rock_production_pre_1990_75_90bpm | trigger classic_rock_production_pre_1990_75_90bpm | acestep-v15-xl-sft | slower pre-1990 classic rock
 - country_classic | trigger country_classic | acestep-v15-xl-sft | classic country songwriting
-- drdre-42b9e125ec60-final | trigger drdre | acestep-v15-xl-sft | polished West Coast production
+- drdre-42b9e125ec60-final | trigger drdre | acestep-v15-xl-sft | polished Dre-style West Coast production
 - eastcoast_boom_bap | trigger eastcoast_boom_bap | acestep-v15-xl-sft | East Coast boom bap
 - eastcoast_boom_bap_1990s_60_75bpm_male_rap | trigger eastcoast_boom_bap_1990s_60_75bpm_male_rap | acestep-v15-xl-sft | slow 1990s boom bap rap
 - eastcoast_boom_bap_1990s_90_110bpm_male_rap | trigger eastcoast_boom_bap_1990s_90_110bpm_male_rap | acestep-v15-xl-sft | midtempo 1990s boom bap rap
 - eastcoast_boom_bap_60_75bpm_male_rap | trigger eastcoast_boom_bap_60_75bpm_male_rap | acestep-v15-xl-sft | slow boom bap rap
 - eastcoast_boom_bap_90_110bpm_male_rap | trigger eastcoast_boom_bap_90_110bpm_male_rap | acestep-v15-xl-sft | midtempo boom bap rap
-- jdila | trigger unknown | model unknown | sample-heavy soulful beat craft
+- eastcoast_soul_rap | trigger eastcoast_soul_rap | acestep-v15-xl-sft | soulful East Coast sample rap
+- jdila | trigger jdila | acestep-v15-xl-sft | dusty soulful beat craft
 - scottstorch | trigger scottstorch | acestep-v15-xl-sft | big melodic hit production
 - stoupe-8167016f0cfa-final | trigger stoupe | acestep-v15-xl-sft | dense underground boom bap textures
-- theneptunes | trigger unknown | model unknown | minimalist funk futurism
-- timbaland epoch_50_loss_1.0480 | trigger unknown | model unknown | syncopated rhythm design
-- westcoast_gfunk_2000s_90_110bpm_male_rap-d43f0c80c16b | trigger unknown | model unknown | 2000s West Coast G-funk rap
+- theneptunes | trigger theneptunes | acestep-v15-xl-sft | minimalist funk futurism
+- timbaland epoch_50_loss_1.0480 | trigger unknown | acestep-v15-xl-sft | syncopated rhythm design
+- westcoast_gangsta | trigger westcoast_gangsta | acestep-v15-xl-sft | classic West Coast gangsta rap
+- westcoast_gangsta_2000s | trigger westcoast_gangsta_2000s | acestep-v15-xl-sft | polished 2000s gangsta rap
+- westcoast_gfunk_2000s_90_110bpm_male_rap-d43f0c80c16b | trigger westcoast gfunk 2000s 90 110bpm male rap | acestep-v15-xl-sft | 2000s G-funk rap
+- westcoast_gfunk_2010s_90_110bpm_male_rap | trigger westcoast_gfunk_2010s_90_110bpm_male_rap | acestep-v15-xl-sft | modernized 2010s G-funk rap
+- westcoast_modern | trigger westcoast_modern | acestep-v15-xl-sft | cinematic modern West Coast rap
+- westcoast_modern_2010s_60_75bpm_male_rap | trigger westcoast_modern_2010s_60_75bpm_male_rap | acestep-v15-xl-sft | slow moody 2010s West Coast rap
+- westcoast_modern_2020s | trigger westcoast_modern_2020s | acestep-v15-xl-sft | widescreen 2020s West Coast villain rap
+- westcoast_ratchet | trigger westcoast_ratchet | acestep-v15-xl-sft | ratchet club bounce
 - ye | trigger ye | acestep-v15-xl-sft | soul-flip rap maximalism
 
-LORA RULES
+RULES
 
 1. Set use_lora true only when one listed adapter strongly improves the fit.
 2. Use only known triggerwords from the catalog.
-3. For adapters with unknown triggerwords, default to use_lora false unless the
-   user explicitly wants that lane and a confirmed trigger exists elsewhere in
+3. If a triggerword is unknown, default to use_lora false unless the user
+   explicitly wants that lane and a confirmed trigger exists elsewhere in
    context.
-4. Default lora_scale is 1.0 unless the user explicitly asks for softer
-   blending.
+4. Keep lora_scale at 1.0 unless the user explicitly asks for softer blending.
 5. If use_lora is false, leave LoRA fields empty and explain why in
    lora_selection_reason.
-
-ACE-STEP RULES
-
-1. caption is sound-only and <=512 characters. It should be a compact
-   comma-separated stack covering genre, mood, drums/groove, bass, instruments,
-   vocal character, texture, era, and mix. Do not include title, plot, lyrics,
-   BPM, key, duration, producer names, or research notes.
-
-2. lyrics are the temporal script and <=4096 characters. Use section tags:
-   [Intro], [Verse - rap], [Verse - melodic], [Pre-Chorus], [Chorus], [Hook],
-   [Bridge], [Beat Switch], [Final Chorus], [Outro].
-
-3. Use one section modifier max. Good: [Verse - rap]. Bad:
-   [Verse - rap - dark - intense].
-
-4. Parentheses are sung ad-libs/backing vocals. Square brackets are not sung.
-
-5. If the song is vocal, write complete lyrics. Never return only a hook,
-   summary, or outline.
-
-6. Minimum vocal song structure:
+6. Caption is sound-only and <=512 characters.
+7. Lyrics must be complete, performable, and section-tagged.
+8. Parentheses are ad-libs, doubles, backing replies, whispers, or harmonies.
+9. Minimum vocal structure:
    - at least 2 verses
-   - at least 16 lines per verse for rap, hip-hop, drill, trap, boom bap,
-     spoken word, and verse-led songs
-   - at least 8 lines per verse for sung pop/R&B/rock/country songs
-   - at least 1 hook or chorus
-   - hook/chorus appears at least twice, verbatim
-   - bridge, beat switch, or outro when it helps the record land
-
-7. Metadata must be chosen deliberately. Do not lazily output null or empty
-   values unless they are genuinely the best choice.
-
-8. Translate producer references into sound tags and arrangement logic. Do not
-   put producer names in caption.
-
-QUALITY TARGET
-
-- One sharp commercial thesis.
-- A memorable hook.
-- Complete verses.
-- Coherent arrangement arc.
-- Sonic consistency between caption, lyrics, production tags, and LoRA choice.
-- Cadence-aware rap writing or breath-aware sung writing.
-- Explicit settings, not placeholders.
-
-SILENT CHECK BEFORE OUTPUT
-
-- One valid JSON object only.
-- No markdown fence.
-- No prose.
-- caption <=512 chars.
-- lyrics <=4096 chars.
-- Vocal songs have at least 2 verses and a repeated chorus/hook.
-- Rap/hip-hop verses have at least 16 lyric lines each.
-- All required fields present.
-- LoRA fields explicit and consistent with the catalog.
-- No copied lyrics.
+   - at least 16 lines per verse for rap/drill/trap/boom bap or verse-led songs
+   - at least 8 lines per verse for sung pop/rock/country/folk/singer-songwriter
+   - at least 1 chorus or hook that repeats
+10. Performance notes must explicitly cover pocket, ad-libs, doubles, harmony
+    support, and where the record lifts.
 ```
 
 ---
@@ -246,18 +213,14 @@ SILENT CHECK BEFORE OUTPUT
 ## User Message Template
 
 ```text
-Song idea:
-<concept>
+Write one complete AceJAM song as JSON.
 
-Lyric language:
-<language or Auto>
+Idea / concept:
+<theme, angle, storyline, target audience>
+
+Language:
+<language>
 
 Style references:
-<genres, producers, eras, instruments, mood>
-
-Must include:
-<optional>
-
-Must avoid:
-<optional>
+<genres, eras, artists, producers, instruments, textures>
 ```
