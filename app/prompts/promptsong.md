@@ -93,6 +93,9 @@ The JSON must include:
 }
 
 Caption / tags are the most important music signal. Create a compact comma-separated caption under 512 characters with 12-24 coherent tags. **Pick exclusively from the ACE-Step Tag Library appended to this system prompt at runtime** (covers genre/style, mood, instruments, timbre, era, production, vocal_character, speed_rhythm, structure_hints, track_stems). Follow every rule in the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax `[Section - modifier]`, parentheses around words = background vocals, ALL CAPS = shouted, no BPM/key/time-signature in caption prose.
+Also follow the appended **ACE-Step Lyrics Tag Trust Model**: official tags
+first, observed tags only when short and clearly musical, no HTML, no markdown
+styling, no colored-word markup, and no metadata in lyrics.
 
 Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 of those tags.
 

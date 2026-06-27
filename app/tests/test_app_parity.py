@@ -2405,9 +2405,19 @@ class AppParityTest(unittest.TestCase):
         web_src = Path(__file__).resolve().parents[1] / "web" / "src"
         ai_step = (web_src / "components" / "wizard" / "AIPromptStep.tsx").read_text(encoding="utf-8")
         wizard_store = (web_src / "store" / "wizard.ts").read_text(encoding="utf-8")
+        api_ts = (web_src / "lib" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("setPasteBlocks", wizard_store)
+        self.assertIn("promptPresets", wizard_store)
+        self.assertIn("setPromptPreset", wizard_store)
+        self.assertIn("getPromptAssistantPrompts", api_ts)
+        self.assertIn("prompt_preset?: string;", api_ts)
         self.assertIn("parseManualPastePayload", ai_step)
+        self.assertIn("Genre Prompt Preset", ai_step)
+        self.assertIn("Wizard-standaardprompt", ai_step)
+        self.assertIn("lyric_technique_report", ai_step)
+        self.assertIn("setPromptPreset(mode", ai_step)
+        self.assertIn("prompt_preset: promptPreset || undefined", ai_step)
         self.assertIn("JSON / paste block", ai_step)
         self.assertIn("Altijd zichtbaar", ai_step)
         self.assertIn("pasteEditorValue", ai_step)
@@ -6061,6 +6071,10 @@ class AppParityTest(unittest.TestCase):
         audio_backend = (web_src / "lib" / "audioBackend.ts").read_text(encoding="utf-8")
         promptsong = (acejam_app.BASE_DIR / "prompts" / "promptsong.md").read_text(encoding="utf-8")
         promptalbum = (acejam_app.BASE_DIR / "prompts" / "promptalbum.md").read_text(encoding="utf-8")
+        promptsimple = (acejam_app.BASE_DIR / "prompts" / "promptsimple.md").read_text(encoding="utf-8")
+        promptcustom = (acejam_app.BASE_DIR / "prompts" / "promptcustom.md").read_text(encoding="utf-8")
+        promptnews = (acejam_app.BASE_DIR / "prompts" / "promptnieuws.md").read_text(encoding="utf-8")
+        promptcover = (acejam_app.BASE_DIR / "prompts" / "promptcover.md").read_text(encoding="utf-8")
 
         self.assertIn('path="/wizard/batch"', app_tsx)
         self.assertIn('path="/wizard/lora-benchmark"', app_tsx)
@@ -6097,8 +6111,49 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('"audio_backend": "mlx"', promptsong)
         self.assertIn('"ace_lm_model": "none"', promptsong)
         self.assertNotIn('"ace_lm_model": "acestep-5Hz-lm-4B"', promptsong)
+        self.assertIn('"ace_lm_model": "none"', promptsimple)
+        self.assertIn('"ace_lm_model": "none"', promptcustom)
+        self.assertIn('"ace_lm_model": "none"', promptnews)
+        self.assertIn('"ace_lm_model": "none"', promptcover)
+        self.assertIn("ACE-Step Lyrics Tag Trust Model", promptsimple)
+        self.assertIn("ACE-Step Lyrics Tag Trust Model", promptcustom)
+        self.assertIn("ACE-Step Lyrics Tag Trust Model", promptnews)
+        self.assertIn("ACE-Step Lyrics Tag Trust Model", promptalbum)
+        self.assertIn("ACE-Step Lyrics Tag Trust Model", promptcover)
         self.assertIn('"song_model_strategy": "single_model_album"', promptalbum)
         self.assertIn("Every track must be render-ready", promptalbum)
+
+    def test_genre_prompt_contract_files_exist_for_ui_presets(self):
+        repo_root = acejam_app.BASE_DIR.parent
+        expected = [
+            "ACEJAM_PROMPT_JSON_HIPHOP.md",
+            "ACEJAM_PROMPT_JSON_GANGSTER_RAP.md",
+            "ACEJAM_PROMPT_JSON_BOOM_BAP.md",
+            "ACEJAM_PROMPT_JSON_DRILL.md",
+            "ACEJAM_PROMPT_JSON_TRAP.md",
+            "ACEJAM_PROMPT_JSON_SUMMER_HIT.md",
+            "ACEJAM_PROMPT_JSON_POP_HIT.md",
+            "ACEJAM_PROMPT_JSON_RNB.md",
+            "ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md",
+            "ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md",
+            "ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md",
+            "ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md",
+        ]
+
+        for name in expected:
+            text = (repo_root / name).read_text(encoding="utf-8")
+            self.assertIn("genre_execution_contract", text, name)
+            self.assertIn("lyric_technique_report", text, name)
+            self.assertIn("AVAILABLE LORA CATALOG", text, name)
+
+    def test_cheat_sheet_exists_and_draws_trust_boundary(self):
+        repo_root = acejam_app.BASE_DIR.parent
+        cheat = (repo_root / "ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md").read_text(encoding="utf-8")
+        self.assertIn("Officially documented", cheat)
+        self.assertIn("Observed / likely supported in practice", cheat)
+        self.assertIn("Do not rely on this", cheat)
+        self.assertIn("[Verse - rap]", cheat)
+        self.assertIn("HTML", cheat)
 
     def test_song_batch_body_normalizes_mlx_backend_before_queue(self):
         with patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):

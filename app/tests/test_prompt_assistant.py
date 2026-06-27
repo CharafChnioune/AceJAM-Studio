@@ -32,6 +32,7 @@ class PromptAssistantTest(unittest.TestCase):
             with self.subTest(mode=mode):
                 prompt = acejam_app._prompt_assistant_system_prompt(mode)
                 self.assertIn("## ACE-Step Authoring Rules", prompt)
+                self.assertIn("## ACE-Step Lyrics Tag Trust Model", prompt)
                 self.assertIn("## ACE-Step Tag Library", prompt)
                 self.assertIn("## Producer-Format Cookbook", prompt)
                 self.assertIn("## Rap-Mode Cookbook", prompt)
@@ -39,6 +40,19 @@ class PromptAssistantTest(unittest.TestCase):
                 self.assertIn("Dr. Dre / G-funk era", prompt)
                 self.assertIn("[Verse - rap]", prompt)
                 self.assertIn("[Hook]", prompt)
+                self.assertIn("Never use HTML", prompt)
+
+    def test_prompt_assistant_genre_preset_loads_repo_root_contract(self):
+        prompt = acejam_app._prompt_assistant_system_prompt("custom", "hiphop")
+        self.assertIn("GENRE TARGET: HIP-HOP", prompt)
+        self.assertIn("genre_execution_contract", prompt)
+        self.assertIn("lyric_technique_report", prompt)
+        self.assertIn("AVAILABLE LORA CATALOG", prompt)
+        self.assertIn(acejam_app.PROMPT_KIT_VERSION, prompt)
+
+    def test_prompt_assistant_genre_preset_rejects_unsupported_mode(self):
+        with self.assertRaisesRegex(ValueError, "not available for cover mode"):
+            acejam_app._prompt_assistant_system_prompt("cover", "hiphop")
 
     def test_album_wizard_fill_dispatches_through_crewai_micro(self):
         """Album mode in the prompt-assistant handler must route through the
@@ -665,9 +679,15 @@ ACEJAM_PAYLOAD_JSON
         client = TestClient(acejam_app.app)
         prompts = client.get("/api/prompt-assistant/prompts")
         self.assertEqual(prompts.status_code, 200)
-        self.assertNotIn("trainer", {item["mode"] for item in prompts.json()["prompts"]})
-        self.assertIn("image", {item["mode"] for item in prompts.json()["prompts"]})
-        self.assertIn("video", {item["mode"] for item in prompts.json()["prompts"]})
+        prompt_items = prompts.json()["prompts"]
+        self.assertNotIn("trainer", {item["mode"] for item in prompt_items})
+        self.assertIn("image", {item["mode"] for item in prompt_items})
+        self.assertIn("video", {item["mode"] for item in prompt_items})
+        custom_entry = next(item for item in prompt_items if item["mode"] == "custom")
+        self.assertTrue(any(preset["id"] == "hiphop" for preset in custom_entry["presets"]))
+        self.assertTrue(any(preset["id"] == "pop_hit" for preset in custom_entry["presets"]))
+        image_entry = next(item for item in prompt_items if item["mode"] == "image")
+        self.assertEqual(image_entry["presets"], [])
 
         response = client.post(
             "/api/prompt-assistant/run",
@@ -677,6 +697,37 @@ ACEJAM_PAYLOAD_JSON
         self.assertEqual(response.status_code, 400)
         self.assertFalse(response.json()["success"])
         self.assertIn("disabled for Trainer", response.json()["error"])
+
+    def test_prompt_assistant_run_uses_selected_genre_preset(self):
+        raw = """
+ACEJAM_PAYLOAD_JSON
+{
+  "task_type": "text2music",
+  "title": "Preset Song",
+  "artist_name": "Preset Artist",
+  "caption": "hip hop, hard drums, bass, male rap vocal, polished mix",
+  "lyrics": "[Verse - rap]\\nLine one\\n\\n[Hook]\\nHook line",
+  "duration": 120
+}
+"""
+        client = TestClient(acejam_app.app)
+        with patch.object(acejam_app, "_run_prompt_assistant_local", return_value=raw):
+            response = client.post(
+                "/api/prompt-assistant/run",
+                json={
+                    "mode": "custom",
+                    "prompt_preset": "hiphop",
+                    "user_prompt": "make a hard rap record",
+                    "planner_lm_provider": "lmstudio",
+                    "planner_model": "local-qwen",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["prompt_preset"], "hiphop")
+        self.assertEqual(data["prompt_file"], "ACEJAM_PROMPT_JSON_HIPHOP.md")
 
     def test_prompt_assistant_run_parses_image_payload_without_music_validation(self):
         raw = """

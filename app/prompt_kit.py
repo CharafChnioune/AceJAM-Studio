@@ -1714,6 +1714,21 @@ def _format_authoring_rules_block() -> str:
     return "\n".join(lines)
 
 
+def _format_lyrics_tag_trust_block() -> str:
+    lines = [
+        "## ACE-Step Lyrics Tag Trust Model",
+        "Use this trust model whenever you write the `lyrics` field.",
+        "1. Officially documented tags are the safe default: [Intro], [Verse], [Verse 1], [Verse 2], [Pre-Chorus], [Chorus], [Bridge], [Outro], [Build], [Drop], [Breakdown], [Instrumental], [Guitar Solo], [Piano Interlude], [Fade Out], [Silence].",
+        "2. Parentheses inside lyric lines mean echoes, backing vocals, ad-libs, or doubles: `main line (echo)`.",
+        "3. ALL CAPS means shouted emphasis. Use sparingly for hook accents or one-word hits, never for whole verses.",
+        "4. Observed / likely supported semantic tags from the tag library are acceptable when they are short and musically obvious, for example [Hook], [Post-Chorus], [Final Chorus], [Verse - rap], [Chorus - chant], [Bridge - spoken], [Outro - fade out].",
+        "5. Do not invent long bracket prose. If a modifier is longer than a few words, move the idea into caption, tags, or performance notes.",
+        "6. Never use HTML, markdown styling, colored-word markup, nested tags, or metadata text inside lyrics.",
+        "7. Vocal-character and energy words mostly belong in caption/tags. Use square brackets only for section identity and short section modifiers.",
+    ]
+    return "\n".join(lines)
+
+
 def _format_section_template_block() -> str:
     lines = ["## ACE-Step Section Templates (reference structures)"]
     for family, tags in SECTION_TAGS.items():
@@ -1828,6 +1843,7 @@ def prompt_kit_system_block(mode: str = "custom") -> str:
     blocks = [
         base,
         _format_authoring_rules_block(),
+        _format_lyrics_tag_trust_block(),
         _format_tag_taxonomy_block(),
         _format_section_template_block(),
     ]

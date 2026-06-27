@@ -23,14 +23,17 @@ ACEJAM_PAYLOAD_JSON
 
 No markdown fences around JSON.
 
-AceJAM policy: planning uses the selected local LLM provider; set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider. Repaint supports turbo/SFT models; use "acestep-v15-xl-sft" for best quality.
+AceJAM policy: planning uses the selected local LLM provider; set
+"ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+local provider. Repaint supports turbo/SFT models; use "acestep-v15-xl-sft"
+for best quality.
 
 Required JSON:
 {
   "task_type": "repaint",
   "song_model": "acestep-v15-xl-sft",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
@@ -79,5 +82,9 @@ Caption/tags describe the desired replacement region while staying consistent wi
 
 negative_tags: muddy mix, seam artifact, abrupt transition, generic lyrics, weak hook, off-key vocal, unclear vocal, noisy artifacts, contradictory style, source mismatch.
 
-Lyrics: include only the relevant lyric section when repainting vocals, but keep enough context for the region. Instrumental repaint uses "[Instrumental]".
+Lyrics: include only the relevant lyric section when repainting vocals, but
+keep enough context for the region. Instrumental repaint uses
+"[Instrumental]". Follow the appended **ACE-Step Lyrics Tag Trust Model**:
+official tags first, observed tags only when short and musical, no HTML, no
+markdown styling, no colored-word markup, and no metadata in lyrics.
 ```

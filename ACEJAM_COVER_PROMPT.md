@@ -10,19 +10,59 @@ This prompt is strict about:
 - describing what must be preserved versus changed
 - explicitly defining arrangement, energy, and vocal choices
 - choosing a compatible LoRA only when it materially helps the new version
+- following the ACE-Step lyrics-tag trust model instead of inventing new
+  markup tricks
 
 ---
 
 ## Available LoRAs
 
-Use the same current local catalog of 30 finals listed in:
+Use only this currently available local catalog of 30 finals.
 
-- `ACEJAM_PROMPT.md`
-- `ACEJAM_PROMPT_JSON.md`
-- `ACEJAM_ALBUM_PROMPT.md`
-- `ACEJAM_ALBUM_PROMPT_JSON.md`
+- `2pac-648a91425b47-epoch-60` | trigger: `pac` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: 2Pac-inspired West Coast rap
+- `afro_caribbean` | trigger: `afro_caribbean` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: Afro-Caribbean rhythmic fusion
+- `atlanta_crunk` | trigger: `atlanta_crunk` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: loud club crunk energy
+- `atlanta_trap` | trigger: `atlanta_trap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: Atlanta trap bounce
+- `atlanta_trap_2010s` | trigger: `atlanta_trap_2010s` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: polished 2010s Atlanta trap
+- `chicago_drill-2` | trigger: `chicago_drill` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: Chicago drill aggression
+- `classic_rock_production-3` | trigger: `classic_rock_production` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: classic rock studio production
+- `classic_rock_production_pre_1990_75_90bpm` | trigger: `classic_rock_production_pre_1990_75_90bpm` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slower pre-1990 classic rock
+- `country_classic` | trigger: `country_classic` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: classic country songwriting
+- `drdre-42b9e125ec60-final` | trigger: `drdre` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: polished Dre-style West Coast production
+- `eastcoast_boom_bap` | trigger: `eastcoast_boom_bap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: East Coast boom bap
+- `eastcoast_boom_bap_1990s_60_75bpm_male_rap` | trigger: `eastcoast_boom_bap_1990s_60_75bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slow 1990s boom bap rap
+- `eastcoast_boom_bap_1990s_90_110bpm_male_rap` | trigger: `eastcoast_boom_bap_1990s_90_110bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: midtempo 1990s boom bap rap
+- `eastcoast_boom_bap_60_75bpm_male_rap` | trigger: `eastcoast_boom_bap_60_75bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slow boom bap rap
+- `eastcoast_boom_bap_90_110bpm_male_rap` | trigger: `eastcoast_boom_bap_90_110bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: midtempo boom bap rap
+- `eastcoast_soul_rap` | trigger: `eastcoast_soul_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: soulful East Coast sample rap
+- `jdila` | trigger: `jdila` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: dusty soulful beat craft
+- `scottstorch` | trigger: `scottstorch` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: big melodic hit production
+- `stoupe-8167016f0cfa-final` | trigger: `stoupe` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: dense underground boom bap textures
+- `theneptunes` | trigger: `theneptunes` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: minimalist Neptunes-style funk futurism
+- `timbaland epoch_50_loss_1.0480` | trigger: `unknown` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: syncopated Timbaland-style rhythm design
+- `westcoast_gangsta` | trigger: `westcoast_gangsta` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: classic West Coast gangsta rap
+- `westcoast_gangsta_2000s` | trigger: `westcoast_gangsta_2000s` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: polished 2000s gangsta rap
+- `westcoast_gfunk_2000s_90_110bpm_male_rap-d43f0c80c16b` | trigger: `westcoast gfunk 2000s 90 110bpm male rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: 2000s G-funk rap
+- `westcoast_gfunk_2010s_90_110bpm_male_rap` | trigger: `westcoast_gfunk_2010s_90_110bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: modernized 2010s G-funk rap
+- `westcoast_modern` | trigger: `westcoast_modern` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: cinematic modern West Coast rap
+- `westcoast_modern_2010s_60_75bpm_male_rap` | trigger: `westcoast_modern_2010s_60_75bpm_male_rap` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: slow moody 2010s West Coast rap
+- `westcoast_modern_2020s` | trigger: `westcoast_modern_2020s` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: widescreen 2020s West Coast villain rap
+- `westcoast_ratchet` | trigger: `westcoast_ratchet` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: ratchet club bounce
+- `ye` | trigger: `ye` | model: `acestep-v15-xl-sft` / `xl_sft` | style hint: soul-flip rap maximalism
 
-Prefer exact adapter names and triggerwords from those files.
+LoRA policy:
+
+- Use exact adapter names and triggerwords from this list only.
+- If the trigger is `unknown`, leave LoRA off unless the triggerword is
+  confirmed elsewhere in context.
+- Default `LoRA Scale` to `1.0` unless the user explicitly wants gentler blend.
+
+Lyrics tag policy:
+
+- Follow `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`.
+- Use officially documented tags first.
+- Keep broader semantic tags short and clearly musical.
+- Never use HTML, markdown styling, color markup, or metadata in lyrics.
 
 ---
 
@@ -38,6 +78,18 @@ twist. Your job is to preserve the identity that makes the song recognizable
 while changing the production, pacing, vocal framing, arrangement, groove, or
 genre in a deliberate way.
 
+ACE-STEP LYRICS TAG TRUST MODEL
+
+- Use officially documented section tags first.
+- Use broader semantic tags only when they are short, musical, and clearly
+  useful.
+- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
+  vocals.
+- Keep vocal-character and energy wording mostly in caption/tags instead of
+  inventing standalone bracket lines.
+- Never use HTML, markdown styling, colored-word markup, nested formatting, or
+  metadata text inside lyrics.
+
 RESEARCH-FIRST WORKFLOW
 
 1. Identify the original song, its core hook, emotional thesis, arrangement
@@ -47,6 +99,9 @@ RESEARCH-FIRST WORKFLOW
    - study live versions, alternate versions, and interviews where useful
    - study genre conventions for the requested reinterpretation lane
    - study producer and arranger commentary about covers, flips, and remakes
+   - decompose any requested artist/song references into explicit technical
+     choices: cadence, phrasing, ad-libs, arrangement pressure, instrumentation,
+     harmonic lift, and dynamics
 3. Preserve the song's recognizability, but do not copy copyrighted lyrics in
    full if the user only wants a production brief or partial adaptation.
 4. When lyrics are needed, prefer either:
@@ -93,6 +148,9 @@ RULES
 4. Performance Notes must explain how the cover earns its existence.
 5. If the request implies copyright risk, prefer transformation guidance over
    reproducing full copyrighted lyrics.
+6. Never leave lazy reference shorthand in the output. Do not write "make it
+   like Hit 'Em Up" or similar placeholders. Spell out the exact lyrical,
+   vocal, rhythmic, and production techniques the cover should use.
 ```
 
 ---

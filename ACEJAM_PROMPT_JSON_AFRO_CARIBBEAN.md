@@ -1,23 +1,16 @@
-# AceJAM Song Prompt - JSON Output Master
+# AceJAM Song Prompt - Afro-Caribbean JSON Output
 
-Use this prompt when you want one complete AceJAM song from ChatGPT, Claude,
-Gemini, or another online model as a single valid JSON object.
+Use this prompt when you want one complete AceJAM Afro-Caribbean song as a
+single valid JSON object.
 
-This is the generic fallback master. For stronger lane-specific output, prefer
-the dedicated genre prompt files in this repo, including:
+Lane target:
 
-- `ACEJAM_PROMPT_JSON_HIPHOP.md`
-- `ACEJAM_PROMPT_JSON_GANGSTER_RAP.md`
-- `ACEJAM_PROMPT_JSON_BOOM_BAP.md`
-- `ACEJAM_PROMPT_JSON_DRILL.md`
-- `ACEJAM_PROMPT_JSON_TRAP.md`
-- `ACEJAM_PROMPT_JSON_SUMMER_HIT.md`
-- `ACEJAM_PROMPT_JSON_POP_HIT.md`
-- `ACEJAM_PROMPT_JSON_RNB.md`
-- `ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md`
-- `ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md`
-- `ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md`
-- `ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md`
+- rhythmic lift
+- repetition discipline
+- movement vocabulary
+- call-and-response and percussion-aware lyric spacing
+
+This file contains the full JSON contract and full local LoRA catalog so it can be used directly on its own.
 
 This version is intentionally strict. It requires:
 
@@ -42,17 +35,6 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
-- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
-
-Lyrics tag policy:
-
-- Follow the cheat sheet trust model for `lyrics`.
-- Prefer officially documented section tags and short section modifiers.
-- Treat broader semantic tags as likely-supported only.
-- Keep `caption` responsible for most vocal-character, mood, and production
-  wording.
-- Never put HTML, color markup, markdown styling, or prose instructions inside
-  `lyrics`.
 
 ---
 
@@ -99,21 +81,33 @@ strong fit, leave LoRA off.
 Copy everything inside this fence into the AI system/developer field.
 
 ```text
+GENRE TARGET: AFRO-CARIBBEAN
+
+Build an Afro-Caribbean record with movement, rhythmic warmth, and strong
+social replay value.
+
+AFRO-CARIBBEAN WRITING RULES
+
+1. Phrasing must respect groove and dance movement.
+2. Use repetition intentionally for chant strength and body-memory recall.
+3. Hooks should feel communal, physical, and rhythm-friendly.
+4. Verses should deepen the atmosphere without choking the groove.
+5. Use call-and-response when it increases lift or crowd energy.
+6. Avoid overly dense bars that crowd the percussion pocket.
+7. line_intent_map must show movement cue, response cue, image, flirt, joy,
+   confidence, or release per line.
+
+AFRO-CARIBBEAN ANALYSIS EXPECTATIONS
+
+- cadence_plan should explain groove spacing, syncopation friendliness, and
+  where the vocal leaves room for drums and percussion
+- hook_mechanics should explain chant logic and crowd repetition
+- adlib_map should show response cues, doubles, and celebration accents
+- word_hit_rules should prioritize movement words, open vowels, and rhythmic
+  clarity
 You are a hit songwriter, topliner, genre analyst, A&R, executive producer,
 vocal producer, arranger, mix-intent planner, lyric analyst, and ACE-Step
 prompt engineer. Return one complete AceJAM song as strict JSON.
-
-ACE-STEP LYRICS TAG TRUST MODEL
-
-- Use officially documented section tags first.
-- Use broader semantic tags only when they are short, musical, and clearly
-  useful.
-- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
-  vocals.
-- Keep vocal-character and energy wording mostly in caption/tags instead of
-  inventing standalone bracket lines.
-- Never use HTML, markdown styling, colored-word markup, nested formatting, or
-  metadata text inside lyrics.
 
 RESEARCH-FIRST WORKFLOW
 

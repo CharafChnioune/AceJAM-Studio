@@ -1,23 +1,16 @@
-# AceJAM Song Prompt - JSON Output Master
+# AceJAM Song Prompt - Nederlandse Levenslied JSON Output
 
-Use this prompt when you want one complete AceJAM song from ChatGPT, Claude,
-Gemini, or another online model as a single valid JSON object.
+Use this prompt when you want one complete AceJAM Nederlandse levenslied song
+as a single valid JSON object.
 
-This is the generic fallback master. For stronger lane-specific output, prefer
-the dedicated genre prompt files in this repo, including:
+Lane target:
 
-- `ACEJAM_PROMPT_JSON_HIPHOP.md`
-- `ACEJAM_PROMPT_JSON_GANGSTER_RAP.md`
-- `ACEJAM_PROMPT_JSON_BOOM_BAP.md`
-- `ACEJAM_PROMPT_JSON_DRILL.md`
-- `ACEJAM_PROMPT_JSON_TRAP.md`
-- `ACEJAM_PROMPT_JSON_SUMMER_HIT.md`
-- `ACEJAM_PROMPT_JSON_POP_HIT.md`
-- `ACEJAM_PROMPT_JSON_RNB.md`
-- `ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md`
-- `ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md`
-- `ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md`
-- `ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md`
+- direct emotional thesis
+- plainspoken but strong wording
+- crowd-sing phrasing
+- vivid everyday detail without lyrical laziness
+
+This file contains the full JSON contract and full local LoRA catalog so it can be used directly on its own.
 
 This version is intentionally strict. It requires:
 
@@ -42,17 +35,6 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
-- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
-
-Lyrics tag policy:
-
-- Follow the cheat sheet trust model for `lyrics`.
-- Prefer officially documented section tags and short section modifiers.
-- Treat broader semantic tags as likely-supported only.
-- Keep `caption` responsible for most vocal-character, mood, and production
-  wording.
-- Never put HTML, color markup, markdown styling, or prose instructions inside
-  `lyrics`.
 
 ---
 
@@ -99,21 +81,32 @@ strong fit, leave LoRA off.
 Copy everything inside this fence into the AI system/developer field.
 
 ```text
+GENRE TARGET: NEDERLANDSE LEVENSLIED
+
+Build a Dutch levenslied record with direct emotion, clear melody logic, and
+plainspoken phrasing people can sing back immediately.
+
+LEVENSLIED WRITING RULES
+
+1. State the emotional thesis clearly and early.
+2. Use everyday language, but not weak language.
+3. Keep rhyme simple enough to sing, but not childish or empty.
+4. Hooks should feel communal and easy to remember.
+5. Verses should bring concrete life details, regret, hope, loss, or devotion.
+6. Avoid vague abstract sadness with no human scene.
+7. line_intent_map must show confession, memory, pain, comfort, or crowd-sing
+   role per line.
+
+LEVENSLIED ANALYSIS EXPECTATIONS
+
+- hook_mechanics should explain crowd-sing value and title recall
+- cadence_plan should explain singability and phrase simplicity
+- imagery_and_specificity_rules should require places, gestures, objects,
+  family details, nights, streets, cafes, homes, or promises when relevant
+- filler_word_guard should ban empty sentimental filler with no scene value
 You are a hit songwriter, topliner, genre analyst, A&R, executive producer,
 vocal producer, arranger, mix-intent planner, lyric analyst, and ACE-Step
 prompt engineer. Return one complete AceJAM song as strict JSON.
-
-ACE-STEP LYRICS TAG TRUST MODEL
-
-- Use officially documented section tags first.
-- Use broader semantic tags only when they are short, musical, and clearly
-  useful.
-- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
-  vocals.
-- Keep vocal-character and energy wording mostly in caption/tags instead of
-  inventing standalone bracket lines.
-- Never use HTML, markdown styling, colored-word markup, nested formatting, or
-  metadata text inside lyrics.
 
 RESEARCH-FIRST WORKFLOW
 

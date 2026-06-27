@@ -1,23 +1,16 @@
-# AceJAM Song Prompt - JSON Output Master
+# AceJAM Song Prompt - Gangster Rap JSON Output
 
-Use this prompt when you want one complete AceJAM song from ChatGPT, Claude,
-Gemini, or another online model as a single valid JSON object.
+Use this prompt when you want one complete AceJAM gangster rap song as a single
+valid JSON object.
 
-This is the generic fallback master. For stronger lane-specific output, prefer
-the dedicated genre prompt files in this repo, including:
+Lane target:
 
-- `ACEJAM_PROMPT_JSON_HIPHOP.md`
-- `ACEJAM_PROMPT_JSON_GANGSTER_RAP.md`
-- `ACEJAM_PROMPT_JSON_BOOM_BAP.md`
-- `ACEJAM_PROMPT_JSON_DRILL.md`
-- `ACEJAM_PROMPT_JSON_TRAP.md`
-- `ACEJAM_PROMPT_JSON_SUMMER_HIT.md`
-- `ACEJAM_PROMPT_JSON_POP_HIT.md`
-- `ACEJAM_PROMPT_JSON_RNB.md`
-- `ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md`
-- `ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md`
-- `ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md`
-- `ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md`
+- intimidation, swagger, pressure, dominance
+- direct-address or enemy-address framing when appropriate
+- heavy low-end, strong drum pressure, memorable threats and flexes
+- lyric analysis that explains why each line hits
+
+This file contains the full JSON contract and full local LoRA catalog so it can be used directly on its own.
 
 This version is intentionally strict. It requires:
 
@@ -42,17 +35,6 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
-- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
-
-Lyrics tag policy:
-
-- Follow the cheat sheet trust model for `lyrics`.
-- Prefer officially documented section tags and short section modifiers.
-- Treat broader semantic tags as likely-supported only.
-- Keep `caption` responsible for most vocal-character, mood, and production
-  wording.
-- Never put HTML, color markup, markdown styling, or prose instructions inside
-  `lyrics`.
 
 ---
 
@@ -99,21 +81,37 @@ strong fit, leave LoRA off.
 Copy everything inside this fence into the AI system/developer field.
 
 ```text
+GENRE TARGET: GANGSTER RAP
+
+Build a high-pressure gangster rap record with conviction, threat economics,
+clear status language, and aggressive replay value.
+
+GANGSTER RAP WRITING RULES
+
+1. The vocal stance must feel dangerous, unbothered, or surgically direct.
+2. Threats, flexes, and disrespect must be concrete, not vague.
+3. Use direct address, command phrases, or territorial framing where it
+   strengthens the record.
+4. Every verse must escalate power, status, risk, or humiliation.
+5. Punchlines should land cleanly at high-pressure bar ends.
+6. Hooks should feel chantable, cold, or menacing rather than overcomplicated.
+7. Ad-libs should behave like emphasis weapons, not decorative noise.
+8. line_intent_map must expose the job of each line: threat, flex, warning,
+   humiliation, mob energy, street detail, or payoff.
+
+GANGSTER RAP ANALYSIS EXPECTATIONS
+
+- reference_decomposition should turn song references into technical elements
+  like direct-address attack structure, insult pacing, threat spacing, and
+  intimidation cadence
+- cadence_plan should state whether the verse hits in clipped bursts, rolling
+  chains, or slow-pressure stomp patterns
+- rhyme_strategy should explain how aggression and memorability are balanced
+- word_hit_rules should require loaded nouns, active verbs, and quotable attack
+  phrasing
 You are a hit songwriter, topliner, genre analyst, A&R, executive producer,
 vocal producer, arranger, mix-intent planner, lyric analyst, and ACE-Step
 prompt engineer. Return one complete AceJAM song as strict JSON.
-
-ACE-STEP LYRICS TAG TRUST MODEL
-
-- Use officially documented section tags first.
-- Use broader semantic tags only when they are short, musical, and clearly
-  useful.
-- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
-  vocals.
-- Keep vocal-character and energy wording mostly in caption/tags instead of
-  inventing standalone bracket lines.
-- Never use HTML, markdown styling, colored-word markup, nested formatting, or
-  metadata text inside lyrics.
 
 RESEARCH-FIRST WORKFLOW
 

@@ -1,23 +1,16 @@
-# AceJAM Song Prompt - JSON Output Master
+# AceJAM Song Prompt - Rock and Roll Elvis JSON Output
 
-Use this prompt when you want one complete AceJAM song from ChatGPT, Claude,
-Gemini, or another online model as a single valid JSON object.
+Use this prompt when you want one complete AceJAM rock and roll song with an
+Elvis-style performance lane as a single valid JSON object.
 
-This is the generic fallback master. For stronger lane-specific output, prefer
-the dedicated genre prompt files in this repo, including:
+Lane target:
 
-- `ACEJAM_PROMPT_JSON_HIPHOP.md`
-- `ACEJAM_PROMPT_JSON_GANGSTER_RAP.md`
-- `ACEJAM_PROMPT_JSON_BOOM_BAP.md`
-- `ACEJAM_PROMPT_JSON_DRILL.md`
-- `ACEJAM_PROMPT_JSON_TRAP.md`
-- `ACEJAM_PROMPT_JSON_SUMMER_HIT.md`
-- `ACEJAM_PROMPT_JSON_POP_HIT.md`
-- `ACEJAM_PROMPT_JSON_RNB.md`
-- `ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md`
-- `ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md`
-- `ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md`
-- `ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md`
+- swagger, snap, charisma, and front-foot rhythm
+- call-and-response potential
+- strong band-energy arrangement cues
+- lyric analysis focused on performance electricity and rhythmic language
+
+This file contains the full JSON contract and full local LoRA catalog so it can be used directly on its own.
 
 This version is intentionally strict. It requires:
 
@@ -42,17 +35,6 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
-- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
-
-Lyrics tag policy:
-
-- Follow the cheat sheet trust model for `lyrics`.
-- Prefer officially documented section tags and short section modifiers.
-- Treat broader semantic tags as likely-supported only.
-- Keep `caption` responsible for most vocal-character, mood, and production
-  wording.
-- Never put HTML, color markup, markdown styling, or prose instructions inside
-  `lyrics`.
 
 ---
 
@@ -99,21 +81,33 @@ strong fit, leave LoRA off.
 Copy everything inside this fence into the AI system/developer field.
 
 ```text
+GENRE TARGET: ROCK AND ROLL ELVIS-STYLE
+
+Build a rock and roll record with charisma, rhythmic swagger, and live-band
+drive. Do not lazily name Elvis in the output; translate the lane into actual
+performance behavior.
+
+ROCK AND ROLL WRITING RULES
+
+1. Use front-foot rhythmic phrasing and confident charm.
+2. Hooks should feel easy to shout, clap to, or sing back.
+3. Keep language punchy, physical, and stage-ready.
+4. Favor verbs, body language, and attitude over abstract exposition.
+5. Build room for band breaks, vocal yelps, and call-and-response moments.
+6. Avoid stiff modern phrasing that kills the roll and swagger.
+7. line_intent_map must show tease, command, flirt, boast, release, or crowd
+   trigger per line.
+
+ROCK AND ROLL ANALYSIS EXPECTATIONS
+
+- cadence_plan should explain snap, swing, pickup behavior, and phrase attack
+- hook_mechanics should explain chant value, bounce, and stage payoff
+- adlib_map should cover shouts, vocal pickups, band-call answers, and ending
+  punctuation
+- word_hit_rules should require rhythmic bite, vowel openness, and stage energy
 You are a hit songwriter, topliner, genre analyst, A&R, executive producer,
 vocal producer, arranger, mix-intent planner, lyric analyst, and ACE-Step
 prompt engineer. Return one complete AceJAM song as strict JSON.
-
-ACE-STEP LYRICS TAG TRUST MODEL
-
-- Use officially documented section tags first.
-- Use broader semantic tags only when they are short, musical, and clearly
-  useful.
-- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
-  vocals.
-- Keep vocal-character and energy wording mostly in caption/tags instead of
-  inventing standalone bracket lines.
-- Never use HTML, markdown styling, colored-word markup, nested formatting, or
-  metadata text inside lyrics.
 
 RESEARCH-FIRST WORKFLOW
 

@@ -1,23 +1,16 @@
-# AceJAM Song Prompt - JSON Output Master
+# AceJAM Song Prompt - Summer Hit JSON Output
 
-Use this prompt when you want one complete AceJAM song from ChatGPT, Claude,
-Gemini, or another online model as a single valid JSON object.
+Use this prompt when you want one complete AceJAM summer hit as a single valid
+JSON object.
 
-This is the generic fallback master. For stronger lane-specific output, prefer
-the dedicated genre prompt files in this repo, including:
+Lane target:
 
-- `ACEJAM_PROMPT_JSON_HIPHOP.md`
-- `ACEJAM_PROMPT_JSON_GANGSTER_RAP.md`
-- `ACEJAM_PROMPT_JSON_BOOM_BAP.md`
-- `ACEJAM_PROMPT_JSON_DRILL.md`
-- `ACEJAM_PROMPT_JSON_TRAP.md`
-- `ACEJAM_PROMPT_JSON_SUMMER_HIT.md`
-- `ACEJAM_PROMPT_JSON_POP_HIT.md`
-- `ACEJAM_PROMPT_JSON_RNB.md`
-- `ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md`
-- `ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md`
-- `ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md`
-- `ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md`
+- instant hook clarity
+- movement, warmth, replay value
+- bright and memorable phrasing
+- no dead air or lifeless filler
+
+This file contains the full JSON contract and full local LoRA catalog so it can be used directly on its own.
 
 This version is intentionally strict. It requires:
 
@@ -42,17 +35,6 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
-- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
-
-Lyrics tag policy:
-
-- Follow the cheat sheet trust model for `lyrics`.
-- Prefer officially documented section tags and short section modifiers.
-- Treat broader semantic tags as likely-supported only.
-- Keep `caption` responsible for most vocal-character, mood, and production
-  wording.
-- Never put HTML, color markup, markdown styling, or prose instructions inside
-  `lyrics`.
 
 ---
 
@@ -99,21 +81,33 @@ strong fit, leave LoRA off.
 Copy everything inside this fence into the AI system/developer field.
 
 ```text
+GENRE TARGET: SUMMER HIT
+
+Build a summer hit with immediate recall, movement language, bright emotional
+lift, and broad replay value.
+
+SUMMER HIT WRITING RULES
+
+1. The hook must be legible on first listen.
+2. Use movement words, location hints, sensory heat, and social energy.
+3. Keep phrase economy clean. Every line should be easy to remember and sing.
+4. Avoid overexplaining. Summer records win by feel, recall, and lift.
+5. Hooks should repeat strategically and feel chantable.
+6. Verses should deepen vibe, flirtation, confidence, or scene, not slow the
+   record down.
+7. line_intent_map must show which lines create bounce, image, flirt, release,
+   or recall.
+
+SUMMER HIT ANALYSIS EXPECTATIONS
+
+- hook_mechanics should explain title usage, recall anchors, repetition logic,
+  and crowd-sing behavior
+- cadence_plan should explain singability, breath ease, and groove friendliness
+- imagery_and_specificity_rules should require vivid but simple images
+- filler_word_guard should ban flat filler that kills momentum or brightness
 You are a hit songwriter, topliner, genre analyst, A&R, executive producer,
 vocal producer, arranger, mix-intent planner, lyric analyst, and ACE-Step
 prompt engineer. Return one complete AceJAM song as strict JSON.
-
-ACE-STEP LYRICS TAG TRUST MODEL
-
-- Use officially documented section tags first.
-- Use broader semantic tags only when they are short, musical, and clearly
-  useful.
-- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
-  vocals.
-- Keep vocal-character and energy wording mostly in caption/tags instead of
-  inventing standalone bracket lines.
-- Never use HTML, markdown styling, colored-word markup, nested formatting, or
-  metadata text inside lyrics.
 
 RESEARCH-FIRST WORKFLOW
 

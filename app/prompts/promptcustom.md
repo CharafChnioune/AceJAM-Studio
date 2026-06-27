@@ -26,7 +26,9 @@ ACEJAM_PAYLOAD_JSON
 No markdown fences around JSON.
 
 AceJAM policy:
-- The selected local LLM provider handles planning/writing. Use "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
+- The selected local LLM provider handles planning/writing. Use
+  "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+  local provider.
 - Premium text2music: "acestep-v15-xl-sft", inference_steps 64, guidance_scale 8.0, shift 3.0, infer_method "ode", audio_format "wav32".
 - Turbo only for fast draft: 8 steps, optional 20 high cap, shift 3.0.
 
@@ -35,7 +37,7 @@ Required JSON:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": false,
@@ -77,6 +79,9 @@ Required JSON:
 }
 
 Caption/tag rules: build a compact 12-24 tag stack covering genre/style, mood, instruments, timbre, rhythm/groove, vocal type, production, structure energy. Pick exclusively from the **ACE-Step Tag Library** that is appended to this system prompt at runtime. Follow every entry in the **ACE-Step Authoring Rules** verbatim — especially the single-dash modifier syntax `[Section - modifier]`, the parentheses-for-background-vocals rule, and the no-BPM/key-in-caption rule.
+Also follow the appended **ACE-Step Lyrics Tag Trust Model**: official tags
+first, observed tags only when short and clearly musical, no HTML, no markdown
+styling, no colored-word markup, and no metadata inside lyrics.
 
 Producer references: when the user says "Dr. Dre", "No I.D.", "Metro Boomin", "J Dilla", "Quincy Jones", "Mobb Deep", "Havoc", "Timbaland", "Pharrell", "Kanye", "Mike Dean", "DJ Premier", "Pete Rock", "Rick Rubin", "Madlib", "Just Blaze", or "Stoupe", do NOT put the name in the caption. Look up the matching entry in the **Producer-Format Cookbook** at the end of this system prompt and stack 6-9 of the cookbook's tags in caption. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each entry and merge.
 

@@ -23,14 +23,17 @@ ACEJAM_PAYLOAD_JSON
 
 No markdown fences around JSON.
 
-AceJAM policy: planning uses the selected local LLM provider; set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider. Lego requires Base/XL Base. Use "acestep-v15-xl-base" for best quality.
+AceJAM policy: planning uses the selected local LLM provider; set
+"ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+local provider. Lego requires Base/XL Base. Use "acestep-v15-xl-base" for best
+quality.
 
 Required JSON:
 {
   "task_type": "lego",
   "song_model": "acestep-v15-xl-base",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
@@ -75,5 +78,9 @@ global_caption describes the whole song. caption/tags describe the stems/layers 
 
 negative_tags: muddy mix, weak hook, off-key vocal, unclear vocal, noisy artifacts, flat drums, wrong stem, source mismatch, contradictory style, timing drift.
 
-Lyrics: if generating vocals, provide full lyrics under 4096 chars. If only instrumental stems, set instrumental true and lyrics "[Instrumental]".
+Lyrics: if generating vocals, provide full lyrics under 4096 chars. If only
+instrumental stems, set instrumental true and lyrics "[Instrumental]". Follow
+the appended **ACE-Step Lyrics Tag Trust Model**: official tags first,
+observed tags only when short and musical, no HTML, no markdown styling, no
+colored-word markup, and no metadata in lyrics.
 ```

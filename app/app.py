@@ -1397,6 +1397,93 @@ PROMPT_ASSISTANT_MODES: dict[str, dict[str, str]] = {
     "trainer": {"label": "Trainer / LoRA", "file": "prompttrainer.md", "description": "Dataset labels and training metadata."},
 }
 PROMPT_ASSISTANT_DISABLED_MODES = {"trainer"}
+PROMPT_ASSISTANT_GENRE_PRESET_MODES = ("simple", "custom", "song", "news")
+PROMPT_ASSISTANT_GENRE_PRESETS: dict[str, dict[str, Any]] = {
+    "hiphop": {
+        "label": "Hip-Hop",
+        "description": "Broad hip-hop craftsmanship with line-by-line intent, cadence, rhyme, and ad-lib planning.",
+        "file": "ACEJAM_PROMPT_JSON_HIPHOP.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "rap",
+    },
+    "gangster_rap": {
+        "label": "Gangster Rap",
+        "description": "Street-rap pressure, threat/reveal bars, direct-address logic, and aggressive hook engineering.",
+        "file": "ACEJAM_PROMPT_JSON_GANGSTER_RAP.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "rap",
+    },
+    "boom_bap": {
+        "label": "Boom Bap",
+        "description": "Dusty boom-bap structure, multisyllabic rhyme focus, pocket control, and bar-by-bar payoff.",
+        "file": "ACEJAM_PROMPT_JSON_BOOM_BAP.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "rap",
+    },
+    "drill": {
+        "label": "Drill",
+        "description": "Drill cadence discipline, menace curve, chant logic, and high-pressure word-hit placement.",
+        "file": "ACEJAM_PROMPT_JSON_DRILL.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "rap",
+    },
+    "trap": {
+        "label": "Trap",
+        "description": "Trap bounce, flex/escalation structure, ad-lib density, and commercial hook pressure.",
+        "file": "ACEJAM_PROMPT_JSON_TRAP.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "rap",
+    },
+    "summer_hit": {
+        "label": "Summer Hit",
+        "description": "Bright replayable toplines, movement words, low-friction chorus writing, and recall anchors.",
+        "file": "ACEJAM_PROMPT_JSON_SUMMER_HIT.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "pop",
+    },
+    "pop_hit": {
+        "label": "Pop Hit",
+        "description": "Topline-first pop writing with instant chorus payoff, singability, and phrase economy.",
+        "file": "ACEJAM_PROMPT_JSON_POP_HIT.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "pop",
+    },
+    "rnb": {
+        "label": "R&B",
+        "description": "Breath-aware intimacy, harmony planning, sensual detail, and pocket elasticity.",
+        "file": "ACEJAM_PROMPT_JSON_RNB.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "soul",
+    },
+    "nl_levenslied": {
+        "label": "Nederlandse Levenslied",
+        "description": "Plainspoken emotional thesis, crowd-sing phrasing, and direct Dutch melodic storytelling.",
+        "file": "ACEJAM_PROMPT_JSON_NL_LEVENSLIED.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "singer_songwriter",
+    },
+    "singer_songwriter": {
+        "label": "Singer-Songwriter",
+        "description": "Scene writing, emotional causality, clean pronoun logic, and detail-rich storytelling.",
+        "file": "ACEJAM_PROMPT_JSON_SINGER_SONGWRITER.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "singer_songwriter",
+    },
+    "rock_and_roll_elvis": {
+        "label": "Rock & Roll (Elvis Style)",
+        "description": "Front-foot swagger, call-and-response energy, and band-driven rock-and-roll phrasing.",
+        "file": "ACEJAM_PROMPT_JSON_ROCK_AND_ROLL_ELVIS.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "rock",
+    },
+    "afro_caribbean": {
+        "label": "Afro-Caribbean",
+        "description": "Percussion-aware lyric spacing, movement vocabulary, repetition discipline, and call-and-response lift.",
+        "file": "ACEJAM_PROMPT_JSON_AFRO_CARIBBEAN.md",
+        "modes": PROMPT_ASSISTANT_GENRE_PRESET_MODES,
+        "family": "afro_caribbean",
+    },
+}
 
 PROMPT_ASSISTANT_ALIASES = {
     "lora": "trainer",
@@ -1437,13 +1524,39 @@ def _prompt_assistant_path(mode: str) -> Path:
     return path
 
 
-def _prompt_assistant_system_prompt(mode: str) -> str:
+def _prompt_assistant_genre_preset_info(mode: str, preset: str | None = None) -> dict[str, Any] | None:
+    mode = _prompt_assistant_mode(mode)
+    key = str(preset or "").strip().lower().replace("-", "_")
+    if not key:
+        return None
+    info = PROMPT_ASSISTANT_GENRE_PRESETS.get(key)
+    if not info:
+        raise ValueError(f"Unknown prompt preset: {preset}")
+    if mode not in tuple(info.get("modes") or ()):
+        raise ValueError(f"Prompt preset '{key}' is not available for {mode} mode")
+    return info
+
+
+def _prompt_assistant_selected_path(mode: str, preset: str | None = None) -> Path:
+    preset_info = _prompt_assistant_genre_preset_info(mode, preset)
+    if not preset_info:
+        return _prompt_assistant_path(mode)
+    file_name = str(preset_info["file"])
+    path = (BASE_DIR.parent / file_name).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Prompt preset file not found: {file_name}")
+    if path.parent != BASE_DIR.parent.resolve():
+        raise ValueError("Prompt preset path escaped repo root")
+    return path
+
+
+def _prompt_assistant_system_prompt(mode: str, preset: str | None = None) -> str:
     # Album mode is handled by the CrewAI Micro Tasks director in
     # _run_prompt_assistant_album_crew before this function is reached. The
     # legacy single-Ollama-call album system prompt was deleted because each
     # wizard field is now filled by a specialised crew agent (Topline Hook
     # Writer, Tier-1 Lyric Writer, Sonic Tags Engineer, etc.).
-    text = _prompt_assistant_path(mode).read_text(encoding="utf-8")
+    text = _prompt_assistant_selected_path(mode, preset).read_text(encoding="utf-8")
     match = re.search(r"## System Prompt\s*```(?:text)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
     if match:
         base_prompt = match.group(1).strip()
@@ -21305,6 +21418,21 @@ async def api_prompt_assistant_prompts():
         if mode in PROMPT_ASSISTANT_DISABLED_MODES:
             continue
         path = BASE_DIR / "prompts" / info["file"]
+        presets = []
+        for preset_id, preset_info in PROMPT_ASSISTANT_GENRE_PRESETS.items():
+            if mode not in tuple(preset_info.get("modes") or ()):
+                continue
+            preset_path = (BASE_DIR.parent / str(preset_info["file"])).resolve()
+            presets.append(
+                {
+                    "id": preset_id,
+                    "label": str(preset_info["label"]),
+                    "description": str(preset_info["description"]),
+                    "family": str(preset_info.get("family") or ""),
+                    "file": str(preset_info["file"]),
+                    "available": preset_path.is_file(),
+                }
+            )
         prompts.append(
             {
                 "mode": mode,
@@ -21312,6 +21440,7 @@ async def api_prompt_assistant_prompts():
                 "description": info["description"],
                 "file": info["file"],
                 "available": path.is_file(),
+                "presets": presets,
             }
         )
     return JSONResponse({"success": True, "prompts": prompts})
@@ -21323,6 +21452,7 @@ async def api_prompt_assistant_run(request: Request):
     try:
         body = await request.json()
         mode = _prompt_assistant_mode(str(body.get("mode") or "custom"))
+        prompt_preset = str(body.get("prompt_preset") or "").strip().lower().replace("-", "_")
         if mode == "trainer":
             return JSONResponse(
                 {
@@ -21388,7 +21518,8 @@ async def api_prompt_assistant_run(request: Request):
                     "error": str(crew_result.get("error") or "") or None,
                 }
             )
-        system_prompt = _prompt_assistant_system_prompt(mode)
+        prompt_path = _prompt_assistant_selected_path(mode, prompt_preset or None)
+        system_prompt = _prompt_assistant_system_prompt(mode, prompt_preset or None)
         raw_text = _run_prompt_assistant_local_staged(
             system_prompt,
             user_prompt,
@@ -21418,7 +21549,8 @@ async def api_prompt_assistant_run(request: Request):
                 "success": True,
                 "mode": mode,
                 "prompt_kit_version": PROMPT_KIT_VERSION,
-                "prompt_file": PROMPT_ASSISTANT_MODES[mode]["file"],
+                "prompt_file": prompt_path.name,
+                "prompt_preset": prompt_preset or None,
                 "payload": _jsonable(payload),
                 "paste_blocks": paste_blocks,
                 "warnings": warnings,

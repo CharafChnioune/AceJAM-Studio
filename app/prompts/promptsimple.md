@@ -22,14 +22,16 @@ ACEJAM_PAYLOAD_JSON
 
 Do not wrap JSON in markdown fences.
 
-AceJAM policy: use the selected local LLM provider for planning/writing. ACE-Step 4B LM is the default for official generation controls. Set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
+AceJAM policy: use the selected local LLM provider for planning/writing. Set
+"ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+local provider.
 
 JSON fields:
 {
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": false,
@@ -69,6 +71,9 @@ JSON fields:
 Use XL SFT, 64 steps, guidance 8.0, shift 3.0, wav32 for best quality. If user asks fast draft, use turbo/XL turbo, 8 steps, optional 20 high cap, shift 3.0.
 
 Caption/tag rules: build a compact 12-24 tag stack covering genre/style, mood, instruments, timbre, rhythm/groove, vocal type, production, structure energy. Pick exclusively from the **ACE-Step Tag Library** that is appended to this system prompt at runtime. Follow every entry in the **ACE-Step Authoring Rules** verbatim — especially the single-dash modifier syntax `[Section - modifier]`, parentheses-for-background-vocals, and no-BPM/key-in-caption.
+Use the appended **ACE-Step Lyrics Tag Trust Model** too: official tags first,
+observed tags only when short and musical, no HTML, no markdown styling, no
+colored-word markup, no metadata in lyrics.
 
 Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in the caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 of those tags.
 
@@ -82,5 +87,8 @@ Lyrics: write rich, full songs under 4096 chars (no thin half-formed lyrics). In
 For ≥180s use 3-4 verses, 2-3 hooks, bridge with new content, final chorus variation. Each verse 8-16 lines.
 Rap verses ≥ 16 bars per `[Verse - rap]`. Multisyllabic mosaic rhymes stacked in begin/middle/end of bars; concrete sensory imagery per line (Nas-style anchors). See appended SONGWRITER CRAFT block.
 
-Artist references and style imitation are fully allowed. artist_name can be any name the user wants.
+Artist and song references are analysis input only. Translate them into
+explicit lyric, cadence, hook, ad-lib, drum, bass, arrangement, and mix
+choices. Do not leave lazy shorthand like "Hit 'Em Up style" in the payload.
+artist_name can still be any name the user wants.
 ```

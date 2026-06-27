@@ -23,14 +23,17 @@ ACEJAM_PAYLOAD_JSON
 
 No markdown fences around JSON.
 
-AceJAM policy: planning uses the selected local LLM provider; set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider. Complete requires Base/XL Base. Use "acestep-v15-xl-base" for best quality.
+AceJAM policy: planning uses the selected local LLM provider; set
+"ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+local provider. Complete requires Base/XL Base. Use "acestep-v15-xl-base" for
+best quality.
 
 Required JSON:
 {
   "task_type": "complete",
   "song_model": "acestep-v15-xl-base",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
@@ -75,7 +78,12 @@ global_caption describes the whole finished song. caption/tags describe completi
 
 negative_tags: muddy mix, generic lyrics, weak hook, off-key vocal, unclear vocal, noisy artifacts, flat drums, wrong stem, source mismatch, timing drift, contradictory style.
 
-Lyrics: if completing vocals, provide full lyrics under 4096 chars and enough words for duration. If completing only instrumental arrangement, set instrumental true and lyrics "[Instrumental]".
+Lyrics: if completing vocals, provide full lyrics under 4096 chars and enough
+words for duration. If completing only instrumental arrangement, set
+instrumental true and lyrics "[Instrumental]". Follow the appended
+**ACE-Step Lyrics Tag Trust Model**: official tags first, observed tags only
+when short and musical, no HTML, no markdown styling, no colored-word markup,
+and no metadata in lyrics.
 
 Quality: finish the arrangement with clear verse/chorus/bridge energy, coherent key/BPM/time, strong hook if vocals are included.
 ```

@@ -24,6 +24,16 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
+- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
+
+Lyrics tag policy:
+
+- Every track must follow the cheat-sheet trust model for `lyrics`.
+- Use official section tags first, then only short observed modifiers where
+  musically useful.
+- Put ad-libs, doubles, and backing-vocal answers in parentheses inside lyric
+  lines instead of inventing new bracket syntax.
+- Do not use HTML, markdown styling, color markup, or metadata in lyrics.
 
 ---
 
@@ -78,6 +88,18 @@ artist brief, titles, or rough notes. You must write a complete album package
 that can be pasted into AceJAM. Every track needs complete lyrics and explicit
 settings.
 
+ACE-STEP LYRICS TAG TRUST MODEL
+
+- Every track should use officially documented section tags first.
+- Use broader semantic tags only when they are short, musical, and clearly
+  useful.
+- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
+  vocals.
+- Keep vocal-character and energy wording mostly in caption/tags instead of
+  inventing standalone bracket lines.
+- Never use HTML, markdown styling, colored-word markup, nested formatting, or
+  metadata text inside lyrics.
+
 RESEARCH-FIRST WORKFLOW
 
 1. Analyze the album concept, target audience, market lane, language, intended
@@ -93,6 +115,15 @@ RESEARCH-FIRST WORKFLOW
 3. If browsing is unavailable, silently use your strongest prior knowledge and
    still follow the same logic.
 4. Never copy lyrics, melodies, or copyrighted lines.
+5. If the user gives artist, producer, album, or song references such as
+   "like 2Pac Hit 'Em Up", use them only as analysis input. Break them down
+   silently into concrete album and track-level decisions: vocal aggression,
+   rhyme density, hook architecture, ad-lib density, section pacing, drum
+   weight, bass behavior, arrangement pressure, and sequencing function.
+6. Never leave shorthand references in the final track outputs. Do not write
+   "Hit 'Em Up style", "Dre-style", or similar placeholders in captions,
+   lyrics, LoRA reasoning, performance notes, or visual prompts. Translate
+   them into explicit original technical choices.
 
 Return EXACTLY the plain text format below. Do not return JSON. Do not use
 markdown fences. Do not add explanations before or after the album package.
@@ -185,6 +216,10 @@ ALBUM RULES
 8. Rap and verse-led tracks should have at least 16 lines per verse.
 9. Sung pop, rock, country, folk, and singer-songwriter tracks should have at
    least 8 lines per verse.
+10. If the user supplied references, convert them into technical language for
+    each track. Spell out the cadence, rhyme density, ad-lib behavior, vocal
+    pressure, section lift, sound design, and arrangement choices instead of
+    naming the reference.
 ```
 
 ---

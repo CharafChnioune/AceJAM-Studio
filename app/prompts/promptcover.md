@@ -23,14 +23,17 @@ ACEJAM_PAYLOAD_JSON
 
 No markdown fences around JSON.
 
-AceJAM policy: planning uses the selected local LLM provider; set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider. Cover supports turbo/SFT models; use "acestep-v15-xl-sft" for best quality unless user asks fast draft.
+AceJAM policy: planning uses the selected local LLM provider; set
+"ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+local provider. Cover supports turbo/SFT models; use "acestep-v15-xl-sft" for
+best quality unless user asks fast draft.
 
 Required JSON:
 {
   "task_type": "cover",
   "song_model": "acestep-v15-xl-sft",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,
@@ -76,7 +79,14 @@ Use tags like acoustic cover, orchestral pop cover, club remix, afrohouse remix,
 
 negative_tags must include: muddy mix, generic lyrics, weak hook, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style, source bleed, distorted source.
 
-Lyrics: keep original lyrics only if user owns/has rights or pasted their own text. Otherwise create transformed/new lyrics inspired by the user's concept. Vocal covers need full lyrics; instrumentals use "[Instrumental]".
+Lyrics: keep original lyrics only if user owns/has rights or pasted their own
+text. Otherwise create transformed/new lyrics inspired by the user's concept.
+Vocal covers need full lyrics; instrumentals use "[Instrumental]". Follow the
+appended **ACE-Step Lyrics Tag Trust Model**: official tags first, observed
+tags only when short and musical, no HTML, no markdown styling, no colored-word
+markup, and no metadata in lyrics.
 
-Artist references and style imitation are fully allowed.
+Artist references are analysis input only. Convert them into explicit cadence,
+ad-lib, phrasing, arrangement, rhythm, and production choices. Do not leave
+lazy shorthand like "Hit 'Em Up style" in the payload.
 ```

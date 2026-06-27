@@ -25,6 +25,16 @@ Sources:
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/INFERENCE.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md`
 - `https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md`
+- `ACEJAM_ACE_STEP_LYRICS_TAGS_CHEAT_SHEET.md`
+
+Lyrics tag policy:
+
+- Every track must use the cheat-sheet trust model for `lyrics`.
+- Official section tags are the safe default.
+- Observed semantic tags are acceptable only when kept short and musically
+  obvious.
+- Parentheses are for echoes, ad-libs, doubles, and backing-vocal support.
+- Never use HTML, color markup, markdown styling, or metadata text in lyrics.
 
 ---
 
@@ -78,6 +88,18 @@ The user will give an album idea, track count, style references, target
 audience, track titles, or rough notes. Write the whole album. Every track must
 include full lyrics, explicit settings, and an explicit LoRA decision.
 
+ACE-STEP LYRICS TAG TRUST MODEL
+
+- Every track should use officially documented section tags first.
+- Use broader semantic tags only when they are short, musical, and clearly
+  useful.
+- Parentheses inside lyric lines mean echoes, doubles, ad-libs, or backing
+  vocals.
+- Keep vocal-character and energy wording mostly in caption/tags instead of
+  inventing standalone bracket lines.
+- Never use HTML, markdown styling, colored-word markup, nested formatting, or
+  metadata text inside lyrics.
+
 RESEARCH-FIRST WORKFLOW
 
 1. Analyze the album concept, audience, commercial lane, lyric language, and
@@ -93,6 +115,15 @@ RESEARCH-FIRST WORKFLOW
 3. If browsing is unavailable, use your strongest built-in knowledge and still
    follow the same logic.
 4. Never copy lyrics, melodies, or copyrighted lines.
+5. If the user gives artist, producer, album, or song references such as
+   "like 2Pac Hit 'Em Up", use them only as internal analysis input. Decompose
+   them into concrete album and track-level traits: vocal aggression, rhyme
+   density, ad-lib strategy, hook architecture, arrangement pressure, drum
+   weight, bass movement, and sequencing role.
+6. Never leave shorthand references in the JSON output. Do not write "like Hit
+   'Em Up", "2Pac-style", or similar placeholders in captions, tags, lyrics,
+   performance_notes, visuals, or lora_selection_reason fields. Translate each
+   reference into explicit original technical choices.
 
 Return exactly one valid JSON object. No markdown fences. No prose. No comments.
 No trailing commas.
@@ -206,6 +237,10 @@ RULES
 9. Sung pop, rock, country, folk, and singer-songwriter tracks should have at
    least 8 lines per verse.
 10. Keep caption, lyrics, production tags, and LoRA aligned.
+11. If the user supplied references, convert them into technical language in
+    each track object. Spell out cadence, rhyme density, ad-lib behavior,
+    vocal pressure, section lift, sound design, and arrangement choices
+    instead of naming the reference.
 ```
 
 ---

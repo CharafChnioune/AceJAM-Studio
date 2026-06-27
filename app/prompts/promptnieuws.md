@@ -24,7 +24,9 @@ ACEJAM_PAYLOAD_JSON
 Do not wrap JSON in markdown fences.
 
 AceJAM current policy:
-- Use the selected local LLM provider for planning/writing. Always set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider.
+- Use the selected local LLM provider for planning/writing. Always set
+  "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+  local provider.
 - Premium final text2music default: "acestep-v15-xl-sft", 64 steps, guidance_scale 8.0, shift 3.0, infer_method "ode", audio_format "wav32".
 - Use turbo only if user asks for a fast draft.
 
@@ -37,7 +39,7 @@ The JSON must include:
   "task_type": "text2music",
   "song_model": "acestep-v15-xl-sft",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": false,
@@ -110,6 +112,9 @@ Satire modes:
 - auto: choose best mode.
 
 Caption/tag rules: pick a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Lean on `mood_atmosphere` (funny, deadpan, sarcastic, urgent, chaotic) and rap-side `vocal_character` (comedic rap vocal, deadpan delivery, mumble rap, lyrical rap) for satirical coverage. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax, parentheses around words = background vocals, no BPM/key/time-signature in caption.
+Also follow the appended **ACE-Step Lyrics Tag Trust Model**: official tags
+first, observed tags only when short and clearly musical, no HTML, no markdown
+styling, no colored-word markup, and no metadata inside lyrics.
 
 Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Use the matching entry in the **Producer-Format Cookbook** appended to this prompt.
 

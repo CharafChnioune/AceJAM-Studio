@@ -34,6 +34,9 @@ AceJAM current policy:
 - The only valid song_model_strategy values are "single_model_album" and "all_models_album". The model portfolio is: acestep-v15-turbo, acestep-v15-turbo-shift1, acestep-v15-sft, acestep-v15-base, acestep-v15-xl-turbo, acestep-v15-xl-sft, acestep-v15-xl-base.
 - Per-track defaults are ACE-Step v0.1.8 max quality: SFT/Base/XL SFT/XL Base use 64 steps and shift 3.0; Turbo/XL Turbo use 8 steps and shift 3.0; wav32 output.
 - LoRA, when selected by the user, is album-wide: preserve `use_lora`, `lora_adapter_path`, `lora_adapter_name`, `lora_scale`, `use_lora_trigger`, `lora_trigger_tag`, and adapter model fields. The trigger belongs in caption/tags only, never in lyrics.
+- Follow the appended **ACE-Step Lyrics Tag Trust Model** for every track:
+  official tags first, observed tags only when short and musical, no HTML, no
+  markdown styling, no colored-word markup, and no metadata in lyrics.
 
 The album JSON must include:
 {

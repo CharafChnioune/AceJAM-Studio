@@ -45,6 +45,7 @@ export function normalizePasteBlocks(value: unknown): PasteBlock[] {
 interface WizardSlice {
   /** Per wizard mode: prompt + last AI-fill response + warnings */
   prompts: Record<string, string>;
+  promptPresets: Record<string, string | undefined>;
   payloads: Record<string, Record<string, unknown> | undefined>;
   warnings: Record<string, string[] | undefined>;
   pasteBlocks: Record<string, PasteBlock[] | undefined>;
@@ -54,6 +55,7 @@ interface WizardSlice {
   lastResult: Record<string, Record<string, unknown> | undefined>;
 
   setPrompt: (mode: string, value: string) => void;
+  setPromptPreset: (mode: string, value: string | undefined) => void;
   setDraft: (mode: string, value: Record<string, unknown>) => void;
   clearDraft: (mode: string) => void;
   setPasteBlocks: (mode: string, blocks: PasteBlock[] | undefined) => void;
@@ -103,6 +105,7 @@ export const useWizardStore = create<WizardSlice>()(
   persist(
     (set) => ({
       prompts: {},
+      promptPresets: {},
       payloads: {},
       warnings: {},
       pasteBlocks: {},
@@ -110,6 +113,13 @@ export const useWizardStore = create<WizardSlice>()(
       lastResult: {},
       setPrompt: (mode, value) =>
         set((s) => ({ prompts: { ...s.prompts, [mode]: value } })),
+      setPromptPreset: (mode, value) =>
+        set((s) => ({
+          promptPresets: {
+            ...s.promptPresets,
+            [mode]: value && value.trim() ? value.trim() : undefined,
+          },
+        })),
       setDraft: (mode, value) =>
         set((s) => ({ drafts: { ...s.drafts, [mode]: value } })),
       clearDraft: (mode) =>
@@ -132,6 +142,7 @@ export const useWizardStore = create<WizardSlice>()(
       reset: (mode) =>
         set((s) => ({
           prompts: { ...s.prompts, [mode]: "" },
+          promptPresets: { ...s.promptPresets, [mode]: undefined },
           payloads: { ...s.payloads, [mode]: undefined },
           warnings: { ...s.warnings, [mode]: undefined },
           pasteBlocks: { ...s.pasteBlocks, [mode]: undefined },
@@ -141,10 +152,11 @@ export const useWizardStore = create<WizardSlice>()(
     }),
     {
       name: "acejam-wizard-state",
-      version: 2,
+      version: 3,
       migrate: (state) => migratePersistedAudioDefaults(state) as WizardSlice,
       partialize: (state) => ({
         prompts: state.prompts,
+        promptPresets: state.promptPresets,
         payloads: state.payloads,
         warnings: state.warnings,
         pasteBlocks: state.pasteBlocks,

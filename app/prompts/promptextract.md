@@ -21,14 +21,17 @@ ACEJAM_PAYLOAD_JSON
 
 No markdown fences around JSON.
 
-AceJAM policy: planning uses the selected local LLM provider; set "ace_lm_model": "acestep-5Hz-lm-4B" and keep "planner_lm_provider" set to the selected local provider. Extract requires Base/XL Base. Use "acestep-v15-xl-base" for best quality.
+AceJAM policy: planning uses the selected local LLM provider; set
+"ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
+local provider. Extract requires Base/XL Base. Use "acestep-v15-xl-base" for
+best quality.
 
 Required JSON:
 {
   "task_type": "extract",
   "song_model": "acestep-v15-xl-base",
   "quality_profile": "chart_master",
-  "ace_lm_model": "acestep-5Hz-lm-4B",
+  "ace_lm_model": "none",
   "planner_lm_provider": "",
   "thinking": true,
   "use_format": true,

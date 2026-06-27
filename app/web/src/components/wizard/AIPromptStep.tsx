@@ -23,6 +23,7 @@ import {
   embeddingModelDetails,
   getAlbumPlanJob,
   getLLMCatalog,
+  getPromptAssistantPrompts,
   promptAssistantRun,
   PROVIDER_LABEL,
   startAlbumPlanJob,
@@ -375,11 +376,13 @@ export function AIPromptStep({
   onPendingChange,
 }: AIPromptStepProps) {
   const prompt = useWizardStore((s) => s.prompts[mode]) ?? "";
+  const promptPreset = useWizardStore((s) => s.promptPresets[mode]) ?? "";
   const warnings = normalizeWarnings(useWizardStore((s) => s.warnings[mode]));
   const storedPayload = useWizardStore((s) => s.payloads[mode]);
   const storedPasteBlocks = useWizardStore((s) => s.pasteBlocks[mode]);
   const pasteBlocks = normalizePasteBlocks(storedPasteBlocks);
   const setPrompt = useWizardStore((s) => s.setPrompt);
+  const setPromptPreset = useWizardStore((s) => s.setPromptPreset);
   const setPasteBlocks = useWizardStore((s) => s.setPasteBlocks);
   const setHydration = useWizardStore((s) => s.setHydration);
 
@@ -394,6 +397,12 @@ export function AIPromptStep({
     queryKey: ["llm-catalog"],
     queryFn: getLLMCatalog,
     staleTime: 30_000,
+  });
+
+  const promptCatalogQuery = useQuery({
+    queryKey: ["prompt-assistant-prompts"],
+    queryFn: getPromptAssistantPrompts,
+    staleTime: 300_000,
   });
 
   const allChatModels = React.useMemo(
@@ -430,6 +439,14 @@ export function AIPromptStep({
     return map;
   }, [allEmbeddingModels]);
 
+  const availablePromptPresets = React.useMemo(
+    () =>
+      (promptCatalogQuery.data?.prompts.find((item) => item.mode === mode)?.presets ?? []).filter(
+        (preset) => preset.available,
+      ),
+    [mode, promptCatalogQuery.data],
+  );
+
   // Auto-pick a sensible default planner from catalog.settings or first chat model
   React.useEffect(() => {
     if (plannerModel || !catalogQuery.data) return;
@@ -463,6 +480,12 @@ export function AIPromptStep({
       setEmbedding(first.provider, first.name);
     }
   }, [allEmbeddingModels, catalogQuery.data, embeddingModel, setEmbedding]);
+
+  React.useEffect(() => {
+    if (!promptPreset) return;
+    if (availablePromptPresets.some((preset) => preset.id === promptPreset)) return;
+    setPromptPreset(mode, undefined);
+  }, [availablePromptPresets, mode, promptPreset, setPromptPreset]);
 
   const currentKey = plannerModel ? modelKey(plannerProvider, plannerModel) : "";
   const embeddingKey = embeddingModel ? modelKey(embeddingProvider, embeddingModel) : "";
@@ -500,6 +523,7 @@ export function AIPromptStep({
       return promptAssistantRun({
         mode,
         user_prompt: prompt,
+        prompt_preset: promptPreset || undefined,
         current_payload: currentPayload,
         planner_lm_provider: plannerProvider,
         planner_model: plannerModel || undefined,
@@ -704,6 +728,8 @@ export function AIPromptStep({
     [pasteEditorFallback, storedPasteBlocks],
   );
   const pasteEditorValue = editablePasteBlocks[0]?.content ?? pasteEditorFallback;
+  const promptPresetValue =
+    availablePromptPresets.length > 0 ? promptPreset || "__wizard_default__" : "";
 
   const updatePasteBlock = (index: number, content: string) => {
     const next = editablePasteBlocks.map((block) => ({ ...block }));
@@ -771,6 +797,44 @@ export function AIPromptStep({
           </div>
         )}
       </div>
+
+      {availablePromptPresets.length > 0 && (
+        <div className="space-y-2">
+          <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+            Genre Prompt Preset
+          </Label>
+          <Select
+            value={promptPresetValue}
+            onValueChange={(value) =>
+              setPromptPreset(mode, value === "__wizard_default__" ? undefined : value)
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Gebruik wizard-standaardprompt" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__wizard_default__">Wizard-standaardprompt</SelectItem>
+              {availablePromptPresets.map((preset) => (
+                <SelectItem key={preset.id} value={preset.id}>
+                  <div className="flex items-center gap-2">
+                    <span>{preset.label}</span>
+                    {preset.family ? (
+                      <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                        {preset.family}
+                      </span>
+                    ) : null}
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            Rap-presets forceren extra <code>lyric_technique_report</code> analyse zoals
+            line-intent, word hits en ad-libs. De uiteindelijke <code>lyrics</code> blijven
+            ACE-Step-schoon zonder inline kleurmarkup of HTML.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
         <div className="space-y-2">

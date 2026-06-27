@@ -77,6 +77,7 @@ export type WizardMode =
 export interface PromptAssistantRunRequest {
   mode: WizardMode;
   user_prompt: string;
+  prompt_preset?: string;
   current_payload?: Record<string, unknown>;
   planner_model?: string;
   planner_lm_provider?: string;
@@ -91,12 +92,40 @@ export interface PromptAssistantRunResponse {
   payload?: Record<string, unknown>;
   warnings?: string[] | string | null;
   paste_blocks?: Array<{ label?: string; content?: string; text?: string }> | string | null;
+  prompt_preset?: string | null;
+  prompt_file?: string;
   error?: string;
   raw_response?: string;
 }
 
 export const promptAssistantRun = (body: PromptAssistantRunRequest) =>
   api.post<PromptAssistantRunResponse>("/api/prompt-assistant/run", body);
+
+export interface PromptAssistantPreset {
+  id: string;
+  label: string;
+  description?: string;
+  family?: string;
+  file: string;
+  available: boolean;
+}
+
+export interface PromptAssistantPromptInfo {
+  mode: WizardMode | "improve";
+  label: string;
+  description: string;
+  file: string;
+  available: boolean;
+  presets?: PromptAssistantPreset[];
+}
+
+export interface PromptAssistantCatalogResponse {
+  success: boolean;
+  prompts: PromptAssistantPromptInfo[];
+}
+
+export const getPromptAssistantPrompts = () =>
+  api.get<PromptAssistantCatalogResponse>("/api/prompt-assistant/prompts");
 
 export const getConfig = () => api.get<Record<string, unknown>>("/api/config");
 

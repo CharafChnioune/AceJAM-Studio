@@ -78,10 +78,12 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("Never hardcode planner_lm_provider to ollama", block)
         self.assertIn("song_intent", block)
         self.assertIn("concrete sonic portrait", block)
+        self.assertIn("## ACE-Step Lyrics Tag Trust Model", block)
 
     def test_system_block_appends_acestep_full_reference_for_music_modes(self):
         block = prompt_kit_system_block("custom")
         self.assertIn("## ACE-Step Authoring Rules", block)
+        self.assertIn("## ACE-Step Lyrics Tag Trust Model", block)
         self.assertIn("## ACE-Step Tag Library", block)
         self.assertIn("## Producer-Format Cookbook", block)
         self.assertIn("## Rap-Mode Cookbook", block)
@@ -113,6 +115,8 @@ class PromptKitTest(unittest.TestCase):
         self.assertIn("Modifier syntax", block)
         self.assertIn("Background vocals use parentheses", block)
         self.assertIn("ALL CAPS", block)
+        self.assertIn("Officially documented tags are the safe default", block)
+        self.assertIn("Never use HTML", block)
         # Vocal-technique words live in caption tags (taxonomy), section
         # modifiers like [Verse - whispered] are still valid in lyrics.
         self.assertIn("ad-libs", block)
