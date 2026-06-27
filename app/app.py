@@ -175,6 +175,16 @@ ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS = max(
     ACEJAM_GENERATE_ADVANCED_TIME_LIMIT_SECONDS,
     _env_int("ACEJAM_GENERATE_ALBUM_TIME_LIMIT_SECONDS", 21600),
 )
+AUDIO_DOWNLOAD_VARIANT_MASTER = "master"
+AUDIO_DOWNLOAD_VARIANT_WHATSAPP = "whatsapp"
+AUDIO_DOWNLOAD_VARIANTS = {AUDIO_DOWNLOAD_VARIANT_MASTER, AUDIO_DOWNLOAD_VARIANT_WHATSAPP}
+WHATSAPP_AUDIO_MAX_BYTES = 5 * 1024 * 1024
+WHATSAPP_AUDIO_CONTAINER_OVERHEAD_BYTES = 64 * 1024
+WHATSAPP_AUDIO_MAX_BITRATE_KBPS = 192
+WHATSAPP_AUDIO_MIN_BITRATE_KBPS = 24
+WHATSAPP_AUDIO_RETRY_STEP_KBPS = 16
+WHATSAPP_AUDIO_CACHE_DIRNAME = "_downloads"
+WHATSAPP_AUDIO_EXTENSION = ".m4a"
 ALBUM_UI_RENDER_STALE_FIELDS = {
     "planning_status",
     "planning_error",
@@ -6076,9 +6086,209 @@ def _run_inference(
     _write_audio_file(result["audios"][0], out_path)
     return str(out_path), active_song_model
 
+def _song_download_url(song_id: str, filename: str, *, variant: str = AUDIO_DOWNLOAD_VARIANT_MASTER) -> str:
+    base = _song_public_url(song_id, filename)
+    if variant == AUDIO_DOWNLOAD_VARIANT_MASTER:
+        return base
+    return f"{base}?variant={quote(variant)}"
 
-def _song_public_url(song_id: str, filename: str) -> str:
-    return f"/media/songs/{song_id}/{filename}"
+
+def _result_download_url(result_id: str, filename: str, *, variant: str = AUDIO_DOWNLOAD_VARIANT_MASTER) -> str:
+    base = _result_public_url(result_id, filename)
+    if variant == AUDIO_DOWNLOAD_VARIANT_MASTER:
+        return base
+    return f"{base}?variant={quote(variant)}"
+
+
+def _audio_downloads_payload(*, master_url: str, whatsapp_url: str) -> dict[str, str]:
+    return {
+        "master": master_url,
+        "whatsapp": whatsapp_url,
+    }
+
+
+def _song_downloads_payload(song_id: str, filename: str) -> dict[str, str]:
+    return _audio_downloads_payload(
+        master_url=_song_download_url(song_id, filename, variant=AUDIO_DOWNLOAD_VARIANT_MASTER),
+        whatsapp_url=_song_download_url(song_id, filename, variant=AUDIO_DOWNLOAD_VARIANT_WHATSAPP),
+    )
+
+
+def _result_downloads_payload(result_id: str, filename: str) -> dict[str, str]:
+    return _audio_downloads_payload(
+        master_url=_result_download_url(result_id, filename, variant=AUDIO_DOWNLOAD_VARIANT_MASTER),
+        whatsapp_url=_result_download_url(result_id, filename, variant=AUDIO_DOWNLOAD_VARIANT_WHATSAPP),
+    )
+
+
+def _normalize_audio_download_variant(value: str | None) -> str:
+    variant = str(value or AUDIO_DOWNLOAD_VARIANT_MASTER).strip().lower()
+    if variant not in AUDIO_DOWNLOAD_VARIANTS:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio download variant: {variant}")
+    return variant
+
+
+def _audio_variant_cache_dir(owner_dir: Path) -> Path:
+    return owner_dir / WHATSAPP_AUDIO_CACHE_DIRNAME
+
+
+def _audio_variant_cache_filename(source_filename: str, variant: str) -> str:
+    source_name = _library_safe_filename(source_filename)
+    stem = Path(source_name).stem or "audio"
+    digest = hashlib.sha1(source_name.encode("utf-8")).hexdigest()[:8]
+    return f"{stem}-{digest}-{variant}{WHATSAPP_AUDIO_EXTENSION}"
+
+
+def _audio_variant_cache_path(owner_dir: Path, source_filename: str, variant: str) -> Path:
+    return _audio_variant_cache_dir(owner_dir) / _audio_variant_cache_filename(source_filename, variant)
+
+
+def _delete_cached_audio_variants(owner_dir: Path, source_filename: str = "") -> int:
+    cache_dir = _audio_variant_cache_dir(owner_dir)
+    if not cache_dir.exists():
+        return 0
+    deleted = 0
+    if source_filename:
+        candidates = [
+            _audio_variant_cache_path(owner_dir, source_filename, AUDIO_DOWNLOAD_VARIANT_WHATSAPP),
+        ]
+    else:
+        candidates = [path for path in cache_dir.iterdir() if path.is_file()]
+    for path in candidates:
+        try:
+            if path.is_file():
+                path.unlink()
+                deleted += 1
+        except FileNotFoundError:
+            continue
+    if cache_dir.exists() and not any(cache_dir.iterdir()):
+        cache_dir.rmdir()
+    return deleted
+
+
+def _find_ffmpeg_binary() -> str:
+    direct = shutil.which("ffmpeg")
+    if direct:
+        return direct
+    for directory in _ffmpeg_subprocess_bin_dirs():
+        candidate = Path(directory) / "ffmpeg"
+        if candidate.is_file():
+            return str(candidate)
+    raise RuntimeError("ffmpeg is required to create the WhatsApp audio download variant.")
+
+
+def _audio_duration_seconds(path: Path) -> float:
+    try:
+        info = sf.info(str(path))
+        if getattr(info, "samplerate", 0) and getattr(info, "frames", 0):
+            return max(0.0, float(info.frames) / float(info.samplerate))
+    except Exception:
+        pass
+    ffmpeg = _find_ffmpeg_binary()
+    completed = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", str(path), "-f", "null", "-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    detail = f"{completed.stdout}\n{completed.stderr}"
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", detail)
+    if not match:
+        raise RuntimeError(f"Could not determine audio duration for {path.name}")
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    return max(0.0, (hours * 3600) + (minutes * 60) + seconds)
+
+
+def _whatsapp_audio_bitrate_plan(duration_seconds: float) -> list[int]:
+    duration = max(1.0, float(duration_seconds or 0.0))
+    available_bytes = max(1, WHATSAPP_AUDIO_MAX_BYTES - WHATSAPP_AUDIO_CONTAINER_OVERHEAD_BYTES)
+    target_kbps = int(math.floor((available_bytes * 8) / duration / 1000))
+    start = max(WHATSAPP_AUDIO_MIN_BITRATE_KBPS, min(WHATSAPP_AUDIO_MAX_BITRATE_KBPS, target_kbps))
+    plan: list[int] = []
+    current = start
+    while current >= WHATSAPP_AUDIO_MIN_BITRATE_KBPS:
+        if current not in plan:
+            plan.append(current)
+        current -= WHATSAPP_AUDIO_RETRY_STEP_KBPS
+    if WHATSAPP_AUDIO_MIN_BITRATE_KBPS not in plan:
+        plan.append(WHATSAPP_AUDIO_MIN_BITRATE_KBPS)
+    return plan
+
+
+def _build_whatsapp_audio_variant(source_path: Path, target_path: Path) -> Path:
+    ffmpeg = _find_ffmpeg_binary()
+    duration_seconds = _audio_duration_seconds(source_path)
+    last_detail = ""
+    smallest_size = -1
+    smallest_bitrate = 0
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    for bitrate_kbps in _whatsapp_audio_bitrate_plan(duration_seconds):
+        temp_path = target_path.with_name(f"{target_path.stem}.tmp-{bitrate_kbps}{target_path.suffix}")
+        completed = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source_path),
+                "-vn",
+                "-map_metadata",
+                "0",
+                "-c:a",
+                "aac",
+                "-b:a",
+                f"{bitrate_kbps}k",
+                "-movflags",
+                "+faststart",
+                str(temp_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if completed.returncode != 0:
+            last_detail = (completed.stderr or completed.stdout or f"ffmpeg exited {completed.returncode}").strip()
+            temp_path.unlink(missing_ok=True)
+            continue
+        if not temp_path.is_file():
+            last_detail = f"ffmpeg did not create an output file for bitrate {bitrate_kbps}k"
+            continue
+        size = temp_path.stat().st_size
+        if smallest_size < 0 or size < smallest_size:
+            smallest_size = size
+            smallest_bitrate = bitrate_kbps
+        if size <= WHATSAPP_AUDIO_MAX_BYTES:
+            temp_path.replace(target_path)
+            return target_path
+        temp_path.unlink(missing_ok=True)
+    if smallest_size > 0:
+        raise RuntimeError(
+            f"Could not fit {source_path.name} under 5 MB. Smallest attempt was {smallest_size} bytes at {smallest_bitrate}k."
+        )
+    raise RuntimeError(last_detail or f"Failed to create WhatsApp audio variant for {source_path.name}")
+
+
+def _serve_audio_download_variant(
+    *,
+    source_path: Path,
+    owner_dir: Path,
+    source_filename: str,
+    variant: str,
+) -> FileResponse:
+    normalized_variant = _normalize_audio_download_variant(variant)
+    if normalized_variant == AUDIO_DOWNLOAD_VARIANT_MASTER:
+        return FileResponse(source_path, filename=source_path.name)
+    cache_path = _audio_variant_cache_path(owner_dir, source_filename, normalized_variant)
+    if not cache_path.is_file() or cache_path.stat().st_mtime < source_path.stat().st_mtime:
+        try:
+            _build_whatsapp_audio_variant(source_path, cache_path)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return FileResponse(cache_path, filename=cache_path.name, media_type="audio/mp4")
 
 
 def _decorate_song(meta: dict) -> dict:
@@ -6088,6 +6298,8 @@ def _decorate_song(meta: dict) -> dict:
     audio_file = entry.get("audio_file")
     if audio_file:
         entry["audio_url"] = _song_public_url(entry["id"], audio_file)
+        entry["download_url"] = _song_download_url(entry["id"], audio_file)
+        entry["downloads"] = _song_downloads_payload(entry["id"], audio_file)
     thumb_file = entry.get("thumb_file")
     if thumb_file:
         entry["thumb_url"] = _song_public_url(entry["id"], thumb_file)
@@ -6215,6 +6427,10 @@ def _library_song_item(song: dict[str, Any]) -> dict[str, Any] | None:
     if not song_id:
         return None
     audio_url = str(song.get("audio_url") or "").strip()
+    audio_file = str(song.get("audio_file") or "").strip()
+    downloads = song.get("downloads") if isinstance(song.get("downloads"), dict) else {}
+    if song_id and audio_file and not downloads:
+        downloads = _song_downloads_payload(song_id, audio_file)
     return {
         "id": f"song:{song_id}",
         "kind": "audio",
@@ -6235,7 +6451,8 @@ def _library_song_item(song: dict[str, Any]) -> dict[str, Any] | None:
         "song_model": song.get("song_model"),
         "created_at": song.get("created_at"),
         "audio_url": audio_url,
-        "download_url": audio_url,
+        "download_url": str(song.get("download_url") or audio_url),
+        "downloads": _jsonable(downloads),
         "art": song.get("art") or song.get("single_art"),
         "raw": _jsonable(song),
     }
@@ -6294,6 +6511,7 @@ def _library_result_audio_items(song_ids: set[str]) -> list[dict[str, Any]]:
                 continue
             audio_id = str(audio.get("id") or f"take-{index + 1}")
             audio_url = str(audio.get("audio_url") or audio.get("download_url") or _result_public_url(result_id, filename))
+            downloads = audio.get("downloads") if isinstance(audio.get("downloads"), dict) else _result_downloads_payload(result_id, filename)
             items.append(
                 {
                     "id": f"result-audio:{result_id}:{audio_id}",
@@ -6317,6 +6535,7 @@ def _library_result_audio_items(song_ids: set[str]) -> list[dict[str, Any]]:
                     "created_at": meta.get("created_at") or datetime.fromtimestamp(audio_path.stat().st_mtime, timezone.utc).isoformat(),
                     "audio_url": audio_url,
                     "download_url": str(audio.get("download_url") or audio_url),
+                    "downloads": _jsonable(downloads),
                     "art": audio.get("art") or meta.get("art") or meta.get("single_art"),
                     "use_lora": bool(meta.get("use_lora")),
                     "lora_scale": meta.get("lora_scale"),
@@ -6468,6 +6687,7 @@ def _delete_library_song(song_id: str) -> dict[str, Any]:
     song_dir = _resolve_child(SONGS_DIR, song_id)
     if not song_dir.is_dir():
         raise HTTPException(status_code=404, detail="Song not found")
+    _delete_cached_audio_variants(song_dir)
     shutil.rmtree(song_dir, ignore_errors=True)
     _feed_songs[:] = [song for song in _feed_songs if str(song.get("id") or song.get("song_id") or "") != song_id]
     return {"songs": 1, "results": 0, "videos": 0, "files": 1}
@@ -6501,6 +6721,7 @@ def _delete_library_result_audio(result_id: str, audio_id: str = "", filename: s
         audio_filename = _library_safe_filename(str(audio.get("filename") or filename or ""))
         if not audio_filename:
             continue
+        deleted_files += _delete_cached_audio_variants(result_dir, audio_filename)
         target = _resolve_child(RESULTS_DIR, result_id, audio_filename)
         if target.is_file():
             target.unlink()
@@ -8598,10 +8819,6 @@ def _effective_metadata_locks(payload: dict[str, Any]) -> dict[str, bool]:
 def _default_quality_profile_for_payload(payload: dict[str, Any], task_type: str | None = None) -> str:
     if payload.get("quality_profile"):
         return normalize_quality_profile(payload.get("quality_profile"))
-    mode = str(payload.get("ui_mode") or payload.get("mode") or "").strip().lower()
-    task = normalize_task_type(task_type or payload.get("task_type"))
-    if mode == "simple" and task == "text2music":
-        return QUALITY_PROFILE_DOCS_DAILY
     return DEFAULT_QUALITY_PROFILE
 
 
@@ -12830,7 +13047,8 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 "result_id": result_id,
                 "filename": filename,
                 "audio_url": _result_public_url(result_id, filename),
-                "download_url": _result_public_url(result_id, filename),
+                "download_url": _result_download_url(result_id, filename),
+                "downloads": _result_downloads_payload(result_id, filename),
                 "artist_name": params["artist_name"],
                 "title": params["title"] if title_total == 1 else f"{params['title']} {index + 1}",
                 "seed": seed_text,
@@ -12924,6 +13142,7 @@ def _run_official_generation(params: dict[str, Any]) -> dict[str, Any]:
                 )
                 item["song_id"] = entry["id"]
                 item["library_url"] = entry["audio_url"]
+                item["downloads"] = _song_downloads_payload(entry["id"], entry["audio_file"])
             audios.append(item)
             publish_completed_takes()
 
@@ -13184,7 +13403,8 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
             "result_id": result_id,
             "filename": filename,
             "audio_url": _result_public_url(result_id, filename),
-            "download_url": _result_public_url(result_id, filename),
+            "download_url": _result_download_url(result_id, filename),
+            "downloads": _result_downloads_payload(result_id, filename),
             "artist_name": params["artist_name"],
             "title": params["title"] if len(result.get("audios", [])) == 1 else f"{params['title']} {index + 1}",
             "seed": seed_text,
@@ -13257,6 +13477,7 @@ def _run_advanced_generation_once(params: dict[str, Any]) -> dict[str, Any]:
             )
             item["song_id"] = entry["id"]
             item["library_url"] = entry["audio_url"]
+            item["downloads"] = _song_downloads_payload(entry["id"], entry["audio_file"])
         audios.append(item)
 
     pro_quality_audit = _build_pro_quality_audit(params, audios, metadata_audit, hit_readiness)
@@ -23440,21 +23661,31 @@ async def api_download_album_family(family_id: str):
 
 
 @app.get("/media/songs/{song_id}/{filename}")
-async def media(song_id: str, filename: str):
+async def media(song_id: str, filename: str, variant: str = AUDIO_DOWNLOAD_VARIANT_MASTER):
     songs_root = SONGS_DIR.resolve()
     song_dir = (SONGS_DIR / song_id).resolve()
     target = (song_dir / filename).resolve()
     if songs_root not in song_dir.parents or not song_dir.is_dir() or song_dir not in target.parents or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target, filename=target.name)
+    return _serve_audio_download_variant(
+        source_path=target,
+        owner_dir=song_dir,
+        source_filename=target.name,
+        variant=variant,
+    )
 
 
 @app.get("/media/results/{result_id}/{filename}")
-async def result_media(result_id: str, filename: str):
+async def result_media(result_id: str, filename: str, variant: str = AUDIO_DOWNLOAD_VARIANT_MASTER):
     target = _resolve_child(RESULTS_DIR, safe_id(result_id), filename)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target, filename=target.name)
+    return _serve_audio_download_variant(
+        source_path=target,
+        owner_dir=target.parent,
+        source_filename=target.name,
+        variant=variant,
+    )
 
 
 @app.get("/media/art/{art_id}/{filename}")

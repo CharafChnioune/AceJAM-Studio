@@ -749,7 +749,7 @@ def _quality_profile_base_settings(profile: str) -> dict[str, Any]:
             "shift": DOCS_BEST_STANDARD_SHIFT,
             "infer_method": "ode",
             "sampler_mode": "heun",
-            "audio_format": "flac",
+            "audio_format": DOCS_BEST_AUDIO_FORMAT,
             "use_adg": False,
             "single_song_takes": 1,
             "album_takes": 1,
@@ -810,7 +810,7 @@ def quality_profile_model_settings(song_model: Any, quality_profile: Any = DEFAU
         if profile == QUALITY_PROFILE_PREVIEW_FAST:
             settings["audio_format"] = "wav"
         elif profile == QUALITY_PROFILE_DOCS_DAILY:
-            settings["audio_format"] = "flac"
+            settings["audio_format"] = DOCS_BEST_AUDIO_FORMAT
     elif profile == QUALITY_PROFILE_BALANCED_PRO:
         settings["inference_steps"] = int(BALANCED_PRO_MODEL_STEPS.get(str(song_model or "").strip(), BALANCED_PRO_STANDARD_STEPS))
         settings["shift"] = BALANCED_PRO_STANDARD_SHIFT
@@ -1607,7 +1607,7 @@ ACE_STEP_OFFICIAL_DEFAULTS: dict[str, Any] = {
     "seeds": None,
     "lm_batch_chunk_size": 8,
     "constrained_decoding_debug": False,
-    "audio_format": "flac",
+    "audio_format": DOCS_BEST_AUDIO_FORMAT,
     "mp3_bitrate": "128k",
     "mp3_sample_rate": 48000,
 }
@@ -3008,7 +3008,7 @@ def normalize_audio_format(value: str | None, allow_official: bool = False) -> s
     fmt = (value or "wav").strip().lower().lstrip(".")
     valid = OFFICIAL_AUDIO_FORMATS if allow_official else SUPPORTED_AUDIO_FORMATS
     if fmt not in valid:
-        return "flac" if allow_official else "wav"
+        return DOCS_BEST_AUDIO_FORMAT if allow_official else "wav"
     return fmt
 
 

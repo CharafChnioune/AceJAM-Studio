@@ -363,7 +363,7 @@ class StudioCoreTest(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, settings)
         self.assertEqual(registry["profiles"]["official_defaults"]["sampler_mode"], "euler")
-        self.assertEqual(registry["profiles"]["official_defaults"]["audio_format"], "flac")
+        self.assertEqual(registry["profiles"]["official_defaults"]["audio_format"], "wav32")
         self.assertEqual(registry["default_quality_profile"], "chart_master")
         self.assertEqual(registry["coverage"]["status"], "complete")
         self.assertEqual(registry["profiles"]["chart_master"]["models"]["acestep-v15-xl-sft"]["inference_steps"], 64)

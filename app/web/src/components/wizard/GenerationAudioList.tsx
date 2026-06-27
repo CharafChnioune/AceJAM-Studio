@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { masterAudioDownloadUrl, whatsappAudioDownloadUrl } from "@/lib/audioDownloads";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -60,6 +61,7 @@ export function GenerationAudioList({
     <div className={className ?? "space-y-3"}>
       {items.map((audio, index) => {
         const src = text(audio.audio_url || audio.download_url || audio.library_url);
+        const shareDownloadUrl = whatsappAudioDownloadUrl(asRecord(audio.downloads));
         const audioTitle =
           text(audio.title, "") ||
           (items.length > 1 ? `${title || text(record.title, "Track")} · take ${index + 1}` : title || text(record.title, "Track"));
@@ -69,6 +71,8 @@ export function GenerationAudioList({
             src={src}
             title={audioTitle}
             artist={text(audio.artist_name, artist || text(record.artist_name, ""))}
+            downloadUrl={masterAudioDownloadUrl(src, asRecord(audio.downloads))}
+            shareDownloadUrl={shareDownloadUrl}
             metadata={{
               model: audio.song_model ?? record.song_model ?? record.active_song_model,
               quality: record.quality_profile,

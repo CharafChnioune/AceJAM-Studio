@@ -469,8 +469,8 @@ class AppParityTest(unittest.TestCase):
                 "acestep-v15-xl-base",
             )
 
-    def test_docs_daily_simple_defaults_use_turbo_and_auto_metadata(self):
-        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-turbo"}), \
+    def test_simple_defaults_use_chart_master_quality_settings(self):
+        with patch.object(acejam_app, "_installed_acestep_models", return_value={"acestep-v15-xl-turbo", "acestep-v15-xl-sft"}), \
             patch.object(acejam_app, "_installed_lm_models", return_value={"auto", "none", "acestep-5Hz-lm-1.7B"}):
             params = acejam_app._parse_generation_payload(
                 {
@@ -482,12 +482,12 @@ class AppParityTest(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(params["quality_profile"], "docs_daily")
-        self.assertEqual(params["song_model"], "acestep-v15-xl-turbo")
-        self.assertEqual(params["inference_steps"], 8)
-        self.assertEqual(params["guidance_scale"], 7.0)
+        self.assertEqual(params["quality_profile"], "chart_master")
+        self.assertEqual(params["song_model"], "acestep-v15-xl-sft")
+        self.assertEqual(params["inference_steps"], 64)
+        self.assertEqual(params["guidance_scale"], 8.0)
         self.assertEqual(params["shift"], 3.0)
-        self.assertEqual(params["audio_format"], "flac")
+        self.assertEqual(params["audio_format"], "wav32")
         self.assertEqual(params["duration"], -1.0)
         self.assertIsNone(params["bpm"])
         self.assertEqual(params["key_scale"], "")
@@ -1225,6 +1225,8 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(data["counts"]["results"], 1)
         self.assertEqual(data["items"][0]["source"], "result")
         self.assertEqual(data["items"][0]["audio_url"], "/media/results/result123/take.wav")
+        self.assertEqual(data["items"][0]["downloads"]["master"], "/media/results/result123/take.wav")
+        self.assertEqual(data["items"][0]["downloads"]["whatsapp"], "/media/results/result123/take.wav?variant=whatsapp")
 
     def test_library_endpoint_dedupes_result_audio_with_saved_song(self):
         client = TestClient(acejam_app.app)
@@ -1265,6 +1267,62 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(data["counts"]["songs"], 1)
         self.assertEqual(data["counts"]["results"], 0)
         self.assertEqual(data["items"][0]["source"], "song")
+        self.assertEqual(data["items"][0]["downloads"]["master"], "/media/songs/song123/take.wav")
+        self.assertEqual(data["items"][0]["downloads"]["whatsapp"], "/media/songs/song123/take.wav?variant=whatsapp")
+
+    def test_result_media_whatsapp_variant_builds_once_and_reuses_cache(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            source = result_dir / "take.wav"
+            source.write_bytes(b"RIFF0000WAVE")
+            calls: list[tuple[str, str]] = []
+
+            def fake_build(source_path: Path, target_path: Path) -> Path:
+                calls.append((source_path.name, target_path.name))
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_bytes(b"m4a")
+                return target_path
+
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_build_whatsapp_audio_variant", side_effect=fake_build):
+                first = client.get("/media/results/result123/take.wav?variant=whatsapp")
+                second = client.get("/media/results/result123/take.wav?variant=whatsapp")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, b"m4a")
+        self.assertEqual(len(calls), 1)
+
+    def test_result_media_master_variant_serves_original_audio(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            source = result_dir / "take.wav"
+            source.write_bytes(b"RIFF0000WAVE")
+            with patch.object(acejam_app, "RESULTS_DIR", results):
+                response = client.get("/media/results/result123/take.wav?variant=master")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"RIFF0000WAVE")
+
+    def test_result_media_whatsapp_variant_returns_503_on_build_error(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            (result_dir / "take.wav").write_bytes(b"RIFF0000WAVE")
+            with patch.object(acejam_app, "RESULTS_DIR", results), \
+                patch.object(acejam_app, "_build_whatsapp_audio_variant", side_effect=RuntimeError("ffmpeg missing")):
+                response = client.get("/media/results/result123/take.wav?variant=whatsapp")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "ffmpeg missing")
 
     def test_library_endpoint_shows_mlx_video_results(self):
         client = TestClient(acejam_app.app)
@@ -1381,6 +1439,30 @@ class AppParityTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(result_dir_exists)
+
+    def test_library_delete_result_take_removes_cached_whatsapp_variant(self):
+        client = TestClient(acejam_app.app)
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results"
+            result_dir = results / "result123"
+            result_dir.mkdir(parents=True)
+            (result_dir / "one.wav").write_bytes(b"one")
+            cache_path = acejam_app._audio_variant_cache_path(result_dir, "one.wav", acejam_app.AUDIO_DOWNLOAD_VARIANT_WHATSAPP)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(b"m4a")
+            (result_dir / "result.json").write_text(
+                json.dumps({"id": "result123", "audios": [{"id": "take-1", "filename": "one.wav"}]}),
+                encoding="utf-8",
+            )
+            with patch.object(acejam_app, "RESULTS_DIR", results):
+                response = client.post(
+                    "/api/library/delete",
+                    json={"kind": "result-audio", "result_id": "result123", "audio_id": "take-1", "confirm": "DELETE"},
+                )
+            cache_exists = cache_path.exists()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(cache_exists)
 
     def test_library_delete_video_removes_result_job_and_attachment(self):
         client = TestClient(acejam_app.app)
@@ -5993,6 +6075,8 @@ class AppParityTest(unittest.TestCase):
         image_wizard = (web_src / "wizards" / "ImageWizard.tsx").read_text(encoding="utf-8")
         tracker = (web_src / "components" / "JobTracker.tsx").read_text(encoding="utf-8")
         home = (web_src / "pages" / "Home.tsx").read_text(encoding="utf-8")
+        waveform = (web_src / "components" / "audio" / "WaveformPlayer.tsx").read_text(encoding="utf-8")
+        generation_audio_list = (web_src / "components" / "wizard" / "GenerationAudioList.tsx").read_text(encoding="utf-8")
 
         self.assertIn('path="/wizard/video"', app_tsx)
         self.assertIn("getMlxVideoStatus", api_ts)
@@ -6034,10 +6118,14 @@ class AppParityTest(unittest.TestCase):
         self.assertIn('TabsTrigger value="images"', library)
         self.assertIn('TabsTrigger value="videos"', library)
         self.assertIn("<WaveformPlayer", library)
+        self.assertIn("WhatsApp max 5 MB", library)
         self.assertIn("<img", library)
         self.assertIn("<video", library)
         self.assertIn("getMlxVideoAttachments", library)
         self.assertIn('to="/wizard/video"', library)
+        self.assertIn("shareDownloadUrl", waveform)
+        self.assertIn("masterAudioDownloadUrl", generation_audio_list)
+        self.assertIn("whatsappAudioDownloadUrl", generation_audio_list)
         self.assertIn('navigate("/wizard/video"', source_audio)
         self.assertIn('navigate("/wizard/video"', news)
         self.assertIn('navigate("/wizard/video"', image_wizard)

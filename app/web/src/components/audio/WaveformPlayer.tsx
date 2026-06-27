@@ -1,6 +1,6 @@
 import * as React from "react";
 import WaveSurfer from "wavesurfer.js";
-import { Gauge, Play, Pause, Volume2, VolumeX, Repeat, Download, Rewind, FastForward } from "lucide-react";
+import { Gauge, Play, Pause, Volume2, VolumeX, Repeat, Download, Rewind, FastForward, Share2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -28,6 +28,8 @@ interface WaveformPlayerProps {
   title?: string;
   artist?: string;
   metadata?: WaveformMetadata;
+  downloadUrl?: string;
+  shareDownloadUrl?: string;
   actions?: React.ReactNode;
   className?: string;
   onReady?: (duration: number) => void;
@@ -40,6 +42,8 @@ export function WaveformPlayer({
   title,
   artist,
   metadata,
+  downloadUrl,
+  shareDownloadUrl,
   actions,
   className,
   onReady,
@@ -153,11 +157,18 @@ export function WaveformPlayer({
         </div>
         <div className="flex items-center gap-1.5">
           {actions}
-          <Button variant="ghost" size="icon-sm" asChild title="Download">
-            <a href={src} download target="_blank" rel="noreferrer">
+          <Button variant="ghost" size="icon-sm" asChild title="Download HQ">
+            <a href={downloadUrl || src} download target="_blank" rel="noreferrer">
               <Download className="size-4" />
             </a>
           </Button>
+          {shareDownloadUrl && (
+            <Button variant="ghost" size="icon-sm" asChild title="Download WhatsApp versie">
+              <a href={shareDownloadUrl} download target="_blank" rel="noreferrer">
+                <Share2 className="size-4" />
+              </a>
+            </Button>
+          )}
         </div>
       </div>
 

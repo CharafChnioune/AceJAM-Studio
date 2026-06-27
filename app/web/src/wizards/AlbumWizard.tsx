@@ -16,6 +16,7 @@ import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
 import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
+import { masterAudioDownloadUrl, whatsappAudioDownloadUrl } from "@/lib/audioDownloads";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1589,6 +1590,10 @@ export function AlbumWizard() {
                           const audioUrl = String(audio.audio_url || audio.library_url || "");
                           const variantNumber = Number(audio.track_variant || audioIndex + 1);
                           const variantSeed = audio.variant_seed || audio.seed;
+                          const downloadVariants: Record<string, unknown> | undefined =
+                            audio && typeof audio === "object" && !Array.isArray(audio)
+                              ? ((audio as Record<string, unknown>).downloads as Record<string, unknown> | undefined)
+                              : undefined;
                           if (!audioUrl) return null;
                           return (
                             <div key={`${audioUrl}-${audioIndex}`} className="space-y-2 rounded-lg border border-border/50 bg-background/40 p-2">
@@ -1600,6 +1605,8 @@ export function AlbumWizard() {
                                 src={audioUrl}
                                 title={`${t.title || "Track"} v${variantNumber}`}
                                 artist={values.artist_name}
+                                downloadUrl={masterAudioDownloadUrl(audioUrl, downloadVariants)}
+                                shareDownloadUrl={whatsappAudioDownloadUrl(downloadVariants)}
                               />
                               <Button
                                 variant="outline"

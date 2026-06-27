@@ -38,6 +38,7 @@ import { WaveformPlayer } from "@/components/audio/WaveformPlayer";
 import { LyricSync } from "@/components/audio/LyricSync";
 import { MfluxArtMaker } from "@/components/mflux/MfluxArtMaker";
 import { toast } from "@/components/ui/sonner";
+import { masterAudioDownloadUrl, whatsappAudioDownloadUrl } from "@/lib/audioDownloads";
 import { cn, formatDuration } from "@/lib/utils";
 
 type LibraryTab = "all" | "songs" | "results" | "images" | "videos";
@@ -96,6 +97,8 @@ function ActiveAudio({ active }: { active: LibraryItem }) {
         src={active.audio_url!}
         title={itemTitle(active)}
         artist={itemArtist(active)}
+        downloadUrl={masterAudioDownloadUrl(active.audio_url || "", active.downloads)}
+        shareDownloadUrl={whatsappAudioDownloadUrl(active.downloads)}
         onTimeUpdate={setTime}
       />
       <LyricSync
@@ -490,8 +493,20 @@ export function Library() {
               <div className="flex flex-wrap gap-2">
                 {mediaUrl(active) && (
                   <Button asChild variant="outline" size="sm" className="gap-2">
-                    <a href={mediaUrl(active)} download target="_blank" rel="noreferrer">
-                      <Download className="size-3.5" /> Download
+                    <a
+                      href={active.kind === "audio" ? masterAudioDownloadUrl(mediaUrl(active), active.downloads) : mediaUrl(active)}
+                      download
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Download className="size-3.5" /> Download HQ
+                    </a>
+                  </Button>
+                )}
+                {active.kind === "audio" && whatsappAudioDownloadUrl(active.downloads) && (
+                  <Button asChild variant="outline" size="sm" className="gap-2">
+                    <a href={whatsappAudioDownloadUrl(active.downloads)} download target="_blank" rel="noreferrer">
+                      <HardDrive className="size-3.5" /> WhatsApp max 5 MB
                     </a>
                   </Button>
                 )}

@@ -658,7 +658,7 @@ def _run(request_path: Path, response_path: Path) -> None:
         seeds=_parse_seeds(config_data.get("seeds")),
         lm_batch_chunk_size=int(config_data.get("lm_batch_chunk_size") or 8),
         constrained_decoding_debug=bool(config_data.get("constrained_decoding_debug")),
-        audio_format=str(config_data.get("audio_format") or "flac"),
+        audio_format=str(config_data.get("audio_format") or "wav32"),
         mp3_bitrate=str(config_data.get("mp3_bitrate") or "128k"),
         mp3_sample_rate=int(config_data.get("mp3_sample_rate") or 48000),
     )

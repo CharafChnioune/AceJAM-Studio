@@ -278,6 +278,11 @@ export interface GenerateAdvancedResponse {
   [k: string]: unknown;
 }
 
+export interface AudioDownloadVariants {
+  master?: string;
+  whatsapp?: string;
+}
+
 export const generateAdvanced = (body: Record<string, unknown>) =>
   api.post<GenerateAdvancedResponse>("/api/generate_advanced", body);
 
@@ -675,6 +680,8 @@ export interface SongMeta {
   key_scale?: string;
   vocal_language?: string;
   audio_url?: string;
+  download_url?: string;
+  downloads?: AudioDownloadVariants;
   art?: ArtMetadata;
   song_model?: string;
   created_at?: string;
