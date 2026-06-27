@@ -856,6 +856,14 @@ export interface MfluxStatus {
   }>;
   commands?: Record<string, string | null>;
   command_help?: Record<string, { available: boolean; help_ok: boolean; reason?: string }>;
+  cli_features?: {
+    atomic_lora?: boolean;
+    atomic_image?: boolean;
+    atomic_lora_commands?: string[];
+    atomic_image_commands?: string[];
+    legacy_fallback?: boolean;
+    note?: string;
+  };
   action_readiness?: Record<string, {
     label?: string;
     ready: boolean;

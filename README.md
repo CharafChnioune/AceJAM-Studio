@@ -57,6 +57,8 @@ The MFLUX API surface is:
 
 MFLUX results live under `app/data/mflux/results`, source/mask uploads under `app/data/mflux/uploads`, and image-LoRA adapters under `app/data/mflux/loras`. The default image flow is Apple MLX-only; non-Apple or missing-MLX systems return a clear block message instead of falling back to CPU image generation. Image Studio tracks MFLUX `0.18.x` and uses action-specific MFLUX commands such as `mflux-generate-qwen`, `mflux-generate-qwen-edit`, `mflux-generate-flux2`, `mflux-generate-flux2-edit`, `mflux-generate-ernie-image`, `mflux-generate-ernie-image-turbo`, `mflux-generate-ideogram4`, `mflux-generate-z-image`, `mflux-generate-z-image-turbo`, `mflux-generate-fibo`, `mflux-generate-fibo-edit`, `mflux-upscale-seedvr2`, `mflux-save-depth`, and `mflux-train`. That covers the current upstream `0.18.0` additions: ERNIE-Image, ERNIE-Image-Turbo, Ideogram 4 FP8, FIBO/FIBO Lite structured prompting, and the `flux2-klein-9b-kv` multi-reference edit path.
 
+Upstream `main` added atomic `--lora` and `--image` flags on June 24, 2026. MLX Media now probes CLI help at runtime, uses those atomic forms when available, and falls back to the stable `0.18.x` `--lora-paths` / `--lora-scales` and `--image-path` / `--strength` syntax when the installed MFLUX build is older.
+
 Image Studio now exposes `guidance` as a first-class payload field for prompt-based MFLUX jobs. That matters most for FIBO: base FIBO follows upstream `mflux-generate-fibo-edit` for source-image edits, while FIBO Lite keeps the documented fast path of `8` steps with `guidance=1.0` for quick structured-prompt drafts.
 
 Example `/api/mflux/jobs` payload for a fast FIBO Lite draft:
@@ -74,7 +76,7 @@ Example `/api/mflux/jobs` payload for a fast FIBO Lite draft:
 }
 ```
 
-Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) `v0.6.0` for tiny-autoencoder live previews / lower-memory FLUX and Qwen Image decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) `v0.9.1` for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. Both packages target Python 3.11+, so MLX Media surfaces their readiness in `/api/mflux/status` and Settings; fresh installs create a Python 3.11 `mflux-env`, while existing older envs stay untouched until a deliberate Reset/Install recreates them.
+Relevant MLX image ecosystem notes from the current upstream window: MFLUX now points to [`mlx-taef`](https://github.com/IonDen/mlx-taef) `v0.6.0` for tiny-autoencoder live previews / lower-memory FLUX and Qwen Image decode and [`mlx-teacache`](https://github.com/IonDen/mlx-teacache) `v0.9.1` for TeaCache step-skipping acceleration on FLUX, Qwen Image and Z-Image. Both packages target Python 3.11+, so MLX Media surfaces their readiness in `/api/mflux/status` and Settings; fresh installs create a Python 3.11 `mflux-env`, while existing older envs stay untouched until a deliberate Reset/Install recreates them. Nearby audio tooling also moved: [`mlx-audio`](https://github.com/Blaizzy/mlx-audio/releases/tag/v0.4.4) is now at `v0.4.4` for Apple Silicon STT/TTS/STS workflows.
 
 ## MLX Video Studio
 

@@ -761,6 +761,43 @@ function MFLUXTab() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2 md:grid-cols-2">
+            <div className="rounded-md border bg-card/35 p-3 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium">Atomic LoRA flags</p>
+                <Badge variant={statusData?.cli_features?.atomic_lora ? "default" : "secondary"}>
+                  {statusData?.cli_features?.atomic_lora ? "supported" : "legacy"}
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Uses the newer `--lora PATH SCALE` syntax when upstream supports it; otherwise MLX Media keeps the stable `--lora-paths/--lora-scales` fallback.
+              </p>
+              {statusData?.cli_features?.atomic_lora_commands?.length ? (
+                <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                  {statusData.cli_features.atomic_lora_commands.join(", ")}
+                </p>
+              ) : null}
+            </div>
+            <div className="rounded-md border bg-card/35 p-3 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium">Atomic image flags</p>
+                <Badge variant={statusData?.cli_features?.atomic_image ? "default" : "secondary"}>
+                  {statusData?.cli_features?.atomic_image ? "supported" : "legacy"}
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Uses the newer `--image PATH [STRENGTH]` syntax when available; older 0.18.x installs stay on `--image-path` plus `--strength`.
+              </p>
+              {statusData?.cli_features?.atomic_image_commands?.length ? (
+                <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                  {statusData.cli_features.atomic_image_commands.join(", ")}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          {statusData?.cli_features?.note ? (
+            <p className="text-xs text-muted-foreground">{statusData.cli_features.note}</p>
+          ) : null}
+          <div className="grid gap-2 md:grid-cols-2">
             {Object.entries(statusData?.action_readiness ?? {}).map(([action, info]) => (
               <div key={action} className="rounded-md border bg-card/35 p-3 text-sm">
                 <div className="flex items-center justify-between gap-2">

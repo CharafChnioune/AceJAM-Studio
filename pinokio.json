@@ -17,11 +17,17 @@
       "title": "MFLUX 0.18.0",
       "value": "https://github.com/filipstrand/mflux/releases/tag/v.0.18.0"
     }, {
+      "title": "MFLUX main 32de875",
+      "value": "https://github.com/filipstrand/mflux/commit/32de875903fa387d8f19045366c53926cf9681ab"
+    }, {
       "title": "MLX-Video Pin",
       "value": "https://github.com/Blaizzy/mlx-video/commit/87db56a51758fefb748a359b90a5283bb8ba4837"
     }, {
       "title": "MLX-Audio",
       "value": "https://github.com/Blaizzy/mlx-audio"
+    }, {
+      "title": "MLX-Audio v0.4.4",
+      "value": "https://github.com/Blaizzy/mlx-audio/releases/tag/v0.4.4"
     }, {
       "title": "mlx-taef v0.6.0",
       "value": "https://github.com/IonDen/mlx-taef/releases/tag/v0.6.0"

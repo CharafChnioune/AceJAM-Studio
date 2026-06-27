@@ -66,6 +66,36 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertIn("mflux-generate-flux2-edit", status["action_readiness"]["edit"]["missing_commands"])
         self.assertIn("mflux-generate-fibo-edit", status["action_readiness"]["edit"]["missing_commands"])
         self.assertIn("mflux-upscale-seedvr2", status["action_readiness"]["upscale"]["missing_commands"])
+        self.assertFalse(status["cli_features"]["atomic_lora"])
+        self.assertFalse(status["cli_features"]["atomic_image"])
+
+    def test_status_reports_atomic_cli_features(self):
+        def fake_which(command):
+            return f"/mock/{command}" if command in {"mflux-generate-flux2-edit", "mflux-generate-fibo-edit"} else None
+
+        def fake_help(command, path):
+            return {
+                "available": bool(path),
+                "help_ok": bool(path),
+                "reason": "",
+                "help_text": "",
+                "supports_atomic_lora": command == "mflux-generate-flux2-edit",
+                "supports_atomic_image": command in {"mflux-generate-flux2-edit", "mflux-generate-fibo-edit"},
+            }
+
+        with patch.object(mflux_manager.sys, "platform", "darwin"), \
+             patch.object(mflux_manager.platform, "machine", return_value="arm64"), \
+             patch.object(mflux_manager, "MFLUX_ENV_DIR", Path("/tmp/acejam-no-mflux-env")), \
+             patch.object(mflux_manager.importlib.util, "find_spec", return_value=True), \
+             patch.object(mflux_manager.shutil, "which", side_effect=fake_which), \
+             patch.object(mflux_manager, "_command_help_status", side_effect=fake_help):
+            status = mflux_manager.mflux_status()
+
+        self.assertTrue(status["cli_features"]["atomic_lora"])
+        self.assertTrue(status["cli_features"]["atomic_image"])
+        self.assertIn("mflux-generate-flux2-edit", status["cli_features"]["atomic_lora_commands"])
+        self.assertIn("mflux-generate-fibo-edit", status["cli_features"]["atomic_image_commands"])
+        self.assertTrue(status["cli_features"]["legacy_fallback"])
 
     def test_action_command_builder_uses_uploads_and_multi_lora(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,7 +113,9 @@ class MfluxManagerTests(unittest.TestCase):
                  patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
                  patch.object(mflux_manager, "MFLUX_RESULTS_DIR", results), \
                  patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
-                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"):
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"), \
+                 patch.object(mflux_manager, "_command_supports_atomic_image", return_value=False), \
+                 patch.object(mflux_manager, "_command_supports_atomic_lora", return_value=False):
                 command = mflux_manager._build_mflux_command(  # noqa: SLF001
                     {
                         "action": "edit",
@@ -102,6 +134,45 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertIn("--lora-paths", command)
         self.assertIn("--lora-scales", command)
 
+    def test_action_command_builder_prefers_atomic_cli_flags_when_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uploads = root / "uploads"
+            results = root / "results"
+            uploads.mkdir()
+            results.mkdir()
+            source = uploads / "source.png"
+            source.write_bytes(b"png")
+            lora = root / "adapter.safetensors"
+            lora.write_bytes(b"lora")
+
+            with patch.object(mflux_manager, "DATA_DIR", root), \
+                 patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
+                 patch.object(mflux_manager, "MFLUX_RESULTS_DIR", results), \
+                 patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"), \
+                 patch.object(mflux_manager, "_command_supports_atomic_image", return_value=True), \
+                 patch.object(mflux_manager, "_command_supports_atomic_lora", return_value=True):
+                command = mflux_manager._build_mflux_command(  # noqa: SLF001
+                    {
+                        "action": "edit",
+                        "prompt": "turn it into premium cover art",
+                        "model_id": "flux2-klein-9b",
+                        "image_path": str(source),
+                        "strength": 0.6,
+                        "lora_adapters": [{"path": str(lora), "scale": 0.5, "model_id": "flux2-klein-9b"}],
+                    },
+                    results / "out.png",
+                )
+
+        self.assertIn("--image", command)
+        self.assertNotIn("--image-path", command)
+        self.assertNotIn("--lora-paths", command)
+        self.assertNotIn("--lora-scales", command)
+        self.assertGreaterEqual(command.count("--lora"), 1)
+        self.assertEqual(command[command.index("--image") + 1], str(source.resolve()))
+        self.assertEqual(command[command.index("--image") + 2], "0.6")
+
     def test_new_mflux_018_models_build_expected_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -113,7 +184,9 @@ class MfluxManagerTests(unittest.TestCase):
             with patch.object(mflux_manager, "DATA_DIR", root), \
                  patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
                  patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
-                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"):
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"), \
+                 patch.object(mflux_manager, "_command_supports_atomic_image", return_value=False), \
+                 patch.object(mflux_manager, "_command_supports_atomic_lora", return_value=False):
                 ernie = mflux_manager._build_mflux_command(  # noqa: SLF001
                     {
                         "action": "edit",
@@ -148,7 +221,9 @@ class MfluxManagerTests(unittest.TestCase):
             with patch.object(mflux_manager, "DATA_DIR", root), \
                  patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
                  patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
-                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"):
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"), \
+                 patch.object(mflux_manager, "_command_supports_atomic_image", return_value=False), \
+                 patch.object(mflux_manager, "_command_supports_atomic_lora", return_value=False):
                 lite = mflux_manager._build_mflux_command(  # noqa: SLF001
                     {
                         "action": "generate",
@@ -191,7 +266,9 @@ class MfluxManagerTests(unittest.TestCase):
             with patch.object(mflux_manager, "DATA_DIR", root), \
                  patch.object(mflux_manager, "MFLUX_UPLOADS_DIR", uploads), \
                  patch.object(mflux_manager, "MFLUX_ENV_DIR", root / "no-mflux-env"), \
-                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"):
+                 patch.object(mflux_manager.shutil, "which", lambda command: f"/usr/bin/{command}"), \
+                 patch.object(mflux_manager, "_command_supports_atomic_image", return_value=False), \
+                 patch.object(mflux_manager, "_command_supports_atomic_lora", return_value=False):
                 with self.assertRaisesRegex(RuntimeError, "required"):
                     mflux_manager._build_mflux_command(  # noqa: SLF001
                         {"action": "inpaint", "prompt": "fill", "model_id": "flux2-klein-9b", "image_path": str(source)},

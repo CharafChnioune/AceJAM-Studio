@@ -500,20 +500,53 @@ def _all_commands() -> list[str]:
 
 def _command_help_status(command: str, path: str | None) -> dict[str, Any]:
     if not path:
-        return {"available": False, "help_ok": False, "reason": "command not on PATH"}
+        return {
+            "available": False,
+            "help_ok": False,
+            "reason": "command not on PATH",
+            "help_text": "",
+            "supports_atomic_lora": False,
+            "supports_atomic_image": False,
+        }
     cached = _HELP_CACHE.get(path)
     if cached:
         return dict(cached)
-    result = {"available": True, "help_ok": False, "reason": ""}
+    result = {
+        "available": True,
+        "help_ok": False,
+        "reason": "",
+        "help_text": "",
+        "supports_atomic_lora": False,
+        "supports_atomic_image": False,
+    }
     try:
         completed = subprocess.run([path, "--help"], text=True, capture_output=True, timeout=8)
+        help_text = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+        result["help_text"] = help_text[-4000:]
         result["help_ok"] = completed.returncode == 0
+        if result["help_text"]:
+            result["supports_atomic_lora"] = bool(re.search(r"(^|\s)--lora(?:\s|$|,)", str(result["help_text"])))
+            result["supports_atomic_image"] = bool(re.search(r"(^|\s)--image(?:\s|$|,)", str(result["help_text"])))
         if completed.returncode != 0:
             result["reason"] = (completed.stderr or completed.stdout or "help check failed")[-500:]
     except Exception as exc:
         result["reason"] = str(exc)
     _HELP_CACHE[path] = result
     return dict(result)
+
+
+def _command_supports_atomic_lora(path: str | None) -> bool:
+    if not path:
+        return False
+    status = _command_help_status("mflux", path)
+    return bool(status.get("supports_atomic_lora"))
+
+
+def _command_supports_atomic_image(path: str | None) -> bool:
+    if not path:
+        return False
+    status = _command_help_status("mflux", path)
+    return bool(status.get("supports_atomic_image"))
 
 
 def _optional_integrations_status(env_python: Path, env_python_status: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -592,6 +625,8 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
     command_help = {cmd: _command_help_status(cmd, path) for cmd, path in command_paths.items()} if check_help else {}
     cli_available = any(command_paths.values())
     ready = bool(is_apple_mlx_platform and mlx_available and (mflux_available or cli_available))
+    atomic_lora_commands = sorted(cmd for cmd, info in command_help.items() if info.get("supports_atomic_lora"))
+    atomic_image_commands = sorted(cmd for cmd, info in command_help.items() if info.get("supports_atomic_image"))
     action_readiness: dict[str, Any] = {}
     for action, spec in MFLUX_ACTIONS.items():
         models = [
@@ -630,6 +665,14 @@ def mflux_status(check_help: bool = True) -> dict[str, Any]:
         "cli_available": cli_available,
         "commands": command_paths,
         "command_help": command_help,
+        "cli_features": {
+            "atomic_lora": bool(atomic_lora_commands),
+            "atomic_image": bool(atomic_image_commands),
+            "atomic_lora_commands": atomic_lora_commands,
+            "atomic_image_commands": atomic_image_commands,
+            "legacy_fallback": True,
+            "note": "MLX Media auto-detects newer atomic --lora/--image syntax and falls back to the 0.18.x legacy flags when needed.",
+        },
         "action_readiness": action_readiness,
         "data_dir": str(MFLUX_DIR),
         "results_dir": str(MFLUX_RESULTS_DIR),
@@ -771,11 +814,10 @@ def _normalize_lora_family(value: str | None) -> str:
     return text.strip()
 
 
-def _lora_args(payload: dict[str, Any], model: dict[str, Any]) -> list[str]:
+def _lora_args(payload: dict[str, Any], model: dict[str, Any], command_path: str | None) -> list[str]:
     raw = payload.get("lora_adapters") or []
     adapters = raw if isinstance(raw, list) else []
-    paths: list[str] = []
-    scales: list[str] = []
+    resolved: list[tuple[str, str]] = []
     model_family = _normalize_lora_family(str(model.get("family") or model.get("id") or ""))
     for item in adapters:
         if not isinstance(item, dict):
@@ -789,16 +831,22 @@ def _lora_args(payload: dict[str, Any], model: dict[str, Any]) -> list[str]:
         path_obj = Path(path).expanduser()
         if not path_obj.exists():
             raise RuntimeError(f"Image LoRA path does not exist: {path}")
-        paths.append(str(path_obj.resolve()))
         try:
             scale = float(item.get("scale", 1.0))
         except (TypeError, ValueError):
             scale = 1.0
-        scales.append(str(max(0.0, min(2.0, scale))))
+        resolved.append((str(path_obj.resolve()), str(max(0.0, min(2.0, scale)))))
     args: list[str] = []
-    if paths:
-        args.extend(["--lora-paths", *paths])
-        args.extend(["--lora-scales", *scales])
+    if not resolved:
+        return args
+    if _command_supports_atomic_lora(command_path):
+        for path, scale in resolved:
+            args.extend(["--lora", path, scale])
+        return args
+    paths = [path for path, _scale in resolved]
+    scales = [scale for _path, scale in resolved]
+    args.extend(["--lora-paths", *paths])
+    args.extend(["--lora-scales", *scales])
     return args
 
 
@@ -834,15 +882,22 @@ def _build_mflux_command(payload: dict[str, Any], output: Path) -> list[str]:
     args.extend(["--prompt", prompt, "--width", width, "--height", height, "--seed", seed, "--steps", steps, "-q", quantize, "--output", str(output)])
     if model_arg:
         args.extend(["--model", model_arg])
+    strength = str(payload.get("strength") or "").strip()
+    atomic_image = bool(image_path and action not in {"upscale", "depth"} and _command_supports_atomic_image(cmd_path))
     if image_path:
-        args.extend(["--image-path", str(image_path)])
+        if atomic_image:
+            args.extend(["--image", str(image_path)])
+            if strength:
+                args.append(strength)
+        else:
+            args.extend(["--image-path", str(image_path)])
     if mask_path:
         args.extend(["--mask-path", str(mask_path)])
     if str(payload.get("guidance") or "").strip():
         args.extend(["--guidance", str(payload.get("guidance"))])
-    if str(payload.get("strength") or "").strip():
-        args.extend(["--strength", str(payload.get("strength"))])
-    args.extend(_lora_args(payload, model))
+    if strength and not atomic_image:
+        args.extend(["--strength", strength])
+    args.extend(_lora_args(payload, model, cmd_path))
     return args
 
 
@@ -934,7 +989,8 @@ def mflux_create_job(payload: dict[str, Any], runner: Callable[[str, dict[str, A
         mflux_validate_image_path(payload.get("image_path") or payload.get("input_image_path"), required=True)
     if MFLUX_ACTIONS[action].get("requires_mask"):
         mflux_validate_image_path(payload.get("mask_path") or payload.get("inpaint_mask_path"), required=True)
-    _lora_args(payload, model)
+    cmd_path = _command_path(_command_name_for_action(model, action))
+    _lora_args(payload, model, cmd_path)
     job_id = _safe_id(str(payload.get("job_id") or f"mflux-{uuid.uuid4().hex[:12]}"))
     job = {
         "id": job_id,
