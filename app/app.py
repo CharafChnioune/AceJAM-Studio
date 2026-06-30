@@ -17914,7 +17914,7 @@ def _normalise_album_batch_body(body: dict[str, Any]) -> tuple[dict[str, Any], l
     return {
         "batch_title": str(body.get("batch_title") or body.get("title") or "Album batch").strip() or "Album batch",
         "stop_on_error": parse_bool(body.get("stop_on_error"), False),
-        "albums": [_jsonable(asRecord(entry.get("payload"))) for entry in entries],
+        "albums": [_jsonable(_prompt_kit_record(entry.get("payload"))) for entry in entries],
     }, entries
 
 
@@ -18124,7 +18124,7 @@ def _normalise_lora_sweep_batch_body(body: dict[str, Any]) -> tuple[dict[str, An
     return {
         "batch_title": str(body.get("batch_title") or body.get("title") or "LoRA sweep batch").strip() or "LoRA sweep batch",
         "stop_on_error": parse_bool(body.get("stop_on_error"), False),
-        "sweeps": [_jsonable(asRecord(entry.get("payload"))) for entry in entries],
+        "sweeps": [_jsonable(_prompt_kit_record(entry.get("payload"))) for entry in entries],
     }, entries
 
 
