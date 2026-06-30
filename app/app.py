@@ -115,8 +115,10 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 RESULTS_DIR = DATA_DIR / "results"
 ALBUMS_DIR = DATA_DIR / "albums"
 SONG_BATCHES_DIR = DATA_DIR / "song_batches"
+ALBUM_BATCHES_DIR = DATA_DIR / "album_batches"
 LORA_BENCHMARKS_DIR = DATA_DIR / "lora_benchmarks"
 LORA_SWEEPS_DIR = DATA_DIR / "lora_sweeps"
+LORA_SWEEP_BATCHES_DIR = DATA_DIR / "lora_sweep_batches"
 ART_DIR = DATA_DIR / "art"
 LORA_DATASETS_DIR = DATA_DIR / "lora_datasets"
 LORA_EXPORTS_DIR = DATA_DIR / "loras"
@@ -345,8 +347,10 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 ALBUMS_DIR.mkdir(parents=True, exist_ok=True)
 SONG_BATCHES_DIR.mkdir(parents=True, exist_ok=True)
+ALBUM_BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 LORA_BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_SWEEPS_DIR.mkdir(parents=True, exist_ok=True)
+LORA_SWEEP_BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 ART_DIR.mkdir(parents=True, exist_ok=True)
 LORA_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1495,6 +1499,24 @@ PROMPT_ASSISTANT_GENRE_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
+RAP_PROMPT_PRESET_IDS = {
+    preset_id
+    for preset_id, preset_info in PROMPT_ASSISTANT_GENRE_PRESETS.items()
+    if str(preset_info.get("family") or "").strip().lower() == "rap"
+}
+RAP_QUALITY_GATE_MAX_REWRITES = 2
+RAP_REQUEST_RE = re.compile(
+    r"\b(?:rap|hip[\s-]?hop|hiphop|gangster rap|boom[\s-]?bap|drill|trap|g[\s-]?funk|west coast|east coast)\b",
+    re.I,
+)
+RAP_BLOCKING_LABELS = {
+    "too_many_filler_bars",
+    "weak_internal_rhyme_density",
+    "punchlines_lack_setup",
+    "rhyme_scheme_too_flat",
+    "cadence_likely_awkward_when_performed",
+}
+
 PROMPT_ASSISTANT_ALIASES = {
     "lora": "trainer",
     "trainer_lora": "trainer",
@@ -1558,6 +1580,116 @@ def _prompt_assistant_selected_path(mode: str, preset: str | None = None) -> Pat
     if path.parent != BASE_DIR.parent.resolve():
         raise ValueError("Prompt preset path escaped repo root")
     return path
+
+
+def _prompt_assistant_request_text(payload: dict[str, Any], user_prompt: str = "") -> str:
+    parts = [str(user_prompt or "")]
+    if isinstance(payload, dict):
+        for key in (
+            "style_profile",
+            "genre_family",
+            "subgenre",
+            "caption",
+            "tags",
+            "lyrics",
+            "song_description",
+            "simple_description",
+            "user_prompt",
+        ):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+        song_intent = payload.get("song_intent")
+        if isinstance(song_intent, dict):
+            for value in song_intent.values():
+                if isinstance(value, str) and value.strip():
+                    parts.append(value)
+                elif isinstance(value, list):
+                    parts.extend(str(item) for item in value if str(item).strip())
+    return "\n".join(parts)
+
+
+def _prompt_assistant_is_rap_request(
+    mode: str,
+    user_prompt: str,
+    current_payload: dict[str, Any] | None = None,
+    prompt_preset: str | None = None,
+) -> bool:
+    raw_mode = str(mode or "custom").strip().lower().replace("-", "_")
+    mode = PROMPT_ASSISTANT_ALIASES.get(raw_mode, raw_mode)
+    preset = str(prompt_preset or "").strip().lower().replace("-", "_")
+    if preset in RAP_PROMPT_PRESET_IDS:
+        return True
+    if mode in {"image", "video", "trainer", "album"}:
+        return False
+    text = _prompt_assistant_request_text(current_payload or {}, user_prompt)
+    return bool(RAP_REQUEST_RE.search(text))
+
+
+def _normalize_blocking_issue_list(value: Any) -> list[str]:
+    items: list[str] = []
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        raw_items = [value]
+    else:
+        raw_items = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        text = re.sub(r"[_\s]+", " ", text).strip()
+        items.append(text)
+    return _dedupe_prompt_values(items, limit=12)
+
+
+def _apply_rap_quality_gate_fields(payload: dict[str, Any], active: bool) -> dict[str, Any]:
+    updated = dict(payload or {})
+    if not active:
+        updated.pop("rap_quality_report", None)
+        updated["rap_rewrite_status"] = "not_applicable"
+        updated["rap_blocking_issues"] = []
+        updated["rap_strengths"] = []
+        updated["rap_revision_focus"] = []
+        return updated
+    report = updated.get("rap_quality_report")
+    if not isinstance(report, dict):
+        report = {}
+    blocking_source = updated.get("rap_blocking_issues") if "rap_blocking_issues" in updated else report.get("blocking_issues")
+    strengths_source = updated.get("rap_strengths") if "rap_strengths" in updated else report.get("strengths")
+    revision_source = updated.get("rap_revision_focus") if "rap_revision_focus" in updated else report.get("revision_focus")
+    blocking = _normalize_blocking_issue_list(blocking_source)
+    strengths = _normalize_blocking_issue_list(strengths_source)
+    revision_focus = _normalize_blocking_issue_list(revision_source)
+    rewrite_status = str(updated.get("rap_rewrite_status") or "").strip() or ("blocked" if blocking else "passed")
+    if not blocking and rewrite_status.startswith("rewritten"):
+        rewrite_status = "passed_after_rewrite"
+    report = {
+        **report,
+        "active": True,
+        "gate_passed": not blocking,
+        "blocking_issues": blocking,
+        "strengths": strengths,
+        "revision_focus": revision_focus,
+        "rewrite_status": rewrite_status,
+    }
+    quality_gate = updated.get("payload_quality_gate")
+    if not isinstance(quality_gate, dict):
+        quality_gate = {}
+    quality_gate = {
+        **quality_gate,
+        "rap_quality_gate": report,
+    }
+    updated["rap_quality_report"] = report
+    updated["rap_rewrite_status"] = rewrite_status
+    updated["rap_blocking_issues"] = blocking
+    updated["rap_strengths"] = strengths
+    updated["rap_revision_focus"] = revision_focus
+    updated["payload_quality_gate"] = quality_gate
+    updated["payload_gate_status"] = "rap_quality_blocked" if blocking else "pass"
+    updated["payload_gate_passed"] = not blocking
+    updated["payload_gate_blocking_issues"] = blocking
+    return updated
 
 
 def _prompt_assistant_system_prompt(mode: str, preset: str | None = None) -> str:
@@ -1858,12 +1990,142 @@ def _prompt_assistant_stage_system_prompt(system_prompt: str, mode: str, stage_i
     )
 
 
+def _run_prompt_assistant_stage_once(
+    system_prompt: str,
+    user_prompt: str,
+    planner_provider: str,
+    planner_model: str,
+    current_payload: dict[str, Any],
+    combined_payload: dict[str, Any],
+    planner_llm_settings: dict[str, Any] | None,
+    *,
+    mode: str,
+    stage_id: str,
+    instruction: str,
+    index: int,
+    total: int,
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    stage_current = dict(current_payload or {})
+    stage_current["ai_fill_stage"] = stage_id
+    stage_current["previous_ai_payload"] = _compact_prompt_assistant_current_payload(combined_payload, mode)
+    raw = _run_prompt_assistant_local(
+        _prompt_assistant_stage_system_prompt(system_prompt, mode, stage_id, instruction, index, total),
+        user_prompt,
+        planner_provider,
+        planner_model,
+        stage_current,
+        planner_llm_settings,
+        mode=mode,
+    )
+    try:
+        parsed, _ = _extract_prompt_assistant_json(raw, mode)
+        stage_payload, stage_warnings, _ = _unwrap_prompt_assistant_structured_payload(parsed)
+    except Exception as exc:
+        raise PromptAssistantStageError(f"AI Fill stage `{stage_id}` returned invalid JSON: {exc}", raw) from exc
+    if not isinstance(stage_payload, dict) or not stage_payload:
+        raise PromptAssistantStageError(f"AI Fill stage `{stage_id}` returned an empty payload.", raw)
+    compact_payload = _compact_prompt_assistant_current_payload(
+        _merge_prompt_stage_payload(combined_payload, stage_payload),
+        mode,
+    )
+    return stage_payload, stage_warnings, compact_payload
+
+
+def _run_prompt_assistant_rap_quality_loop(
+    system_prompt: str,
+    user_prompt: str,
+    planner_provider: str,
+    planner_model: str,
+    current_payload: dict[str, Any],
+    combined_payload: dict[str, Any],
+    planner_llm_settings: dict[str, Any] | None,
+    warnings: list[str],
+    stage_payloads: dict[str, Any],
+    *,
+    mode: str,
+    base_stage_total: int,
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    payload = dict(combined_payload or {})
+    note_total = base_stage_total + (RAP_QUALITY_GATE_MAX_REWRITES * 2) + 1
+    stage_index = base_stage_total
+    for attempt in range(1, RAP_QUALITY_GATE_MAX_REWRITES + 2):
+        audit_stage_id = f"rap_quality_audit_{attempt}"
+        audit_instruction = (
+            "Audit the CURRENT rap lyrics against the hard rap craftsmanship gate. "
+            "Do not rewrite lyrics in this stage. Return rap_quality_report, rap_strengths, "
+            "rap_revision_focus, rap_blocking_issues, and rap_rewrite_status only. "
+            "Gate criteria: heavy multisyllabic rhyme, dense internal rhyme, varied rhyme schemes, "
+            "setup/payoff punchlines, layered wordplay, alliteration/assonance, high syllable density "
+            "with clear performable cadence, zero filler bars, and every bar must feel technical and "
+            "impressive out loud. Use concise blocker labels when needed."
+        )
+        audit_payload, audit_warnings, compact_audit = _run_prompt_assistant_stage_once(
+            system_prompt,
+            user_prompt,
+            planner_provider,
+            planner_model,
+            current_payload,
+            payload,
+            planner_llm_settings,
+            mode=mode,
+            stage_id=audit_stage_id,
+            instruction=audit_instruction,
+            index=stage_index,
+            total=note_total,
+        )
+        payload = _apply_rap_quality_gate_fields(_merge_prompt_stage_payload(payload, audit_payload), active=True)
+        warnings.extend(audit_warnings)
+        stage_payloads[audit_stage_id] = compact_audit
+        stage_index += 1
+        if not payload.get("rap_blocking_issues"):
+            if attempt == 1 and str(payload.get("rap_rewrite_status") or "").strip() in {"", "passed"}:
+                payload["rap_rewrite_status"] = "passed_without_rewrite"
+            elif attempt > 1:
+                payload["rap_rewrite_status"] = "passed_after_rewrite"
+            payload = _apply_rap_quality_gate_fields(payload, active=True)
+            return payload, warnings, stage_payloads
+        if attempt > RAP_QUALITY_GATE_MAX_REWRITES:
+            payload["rap_rewrite_status"] = "blocked_after_rewrites"
+            payload = _apply_rap_quality_gate_fields(payload, active=True)
+            return payload, warnings, stage_payloads
+        rewrite_stage_id = f"rap_quality_rewrite_{attempt}"
+        rewrite_instruction = (
+            "Rewrite ONLY the rap lyrics to fix the current rap blockers while preserving the same song identity, "
+            "genre lane, language, title intent, and core sonic direction. Return improved lyrics plus updated "
+            "rap_quality_report, rap_strengths, rap_revision_focus, rap_blocking_issues, and rap_rewrite_status. "
+            "Do not weaken the bars to make them simpler. Remove filler, strengthen multis/internal rhyme, improve "
+            "setup/payoff punchlines, sharpen wordplay, and make cadence more performable."
+        )
+        rewrite_payload, rewrite_warnings, compact_rewrite = _run_prompt_assistant_stage_once(
+            system_prompt,
+            user_prompt,
+            planner_provider,
+            planner_model,
+            current_payload,
+            payload,
+            planner_llm_settings,
+            mode=mode,
+            stage_id=rewrite_stage_id,
+            instruction=rewrite_instruction,
+            index=stage_index,
+            total=note_total,
+        )
+        payload = _apply_rap_quality_gate_fields(_merge_prompt_stage_payload(payload, rewrite_payload), active=True)
+        warnings.extend(rewrite_warnings)
+        stage_payloads[rewrite_stage_id] = compact_rewrite
+        stage_index += 1
+    return payload, warnings, stage_payloads
+
+
 def _merge_prompt_stage_payload(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base or {})
     for key, value in (update or {}).items():
         if key in {"previous_ai_payload", "ai_fill_stage"}:
             continue
         if value is None:
+            continue
+        if key in {"rap_blocking_issues", "rap_strengths", "rap_revision_focus", "payload_gate_blocking_issues"} and isinstance(value, list):
+            merged[key] = [str(item) for item in value if str(item).strip()]
             continue
         if isinstance(value, str) and not value.strip():
             continue
@@ -2395,6 +2657,12 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
     normalized = dict(payload or {})
     warnings: list[str] = []
     mode = _prompt_assistant_mode(mode)
+    rap_gate_active = _prompt_assistant_is_rap_request(
+        mode,
+        str(body.get("user_prompt") or body.get("prompt") or ""),
+        normalized,
+        str(body.get("prompt_preset") or ""),
+    )
     normalized.setdefault("ui_mode", mode)
     planner_provider = _writer_provider_from_payload({**normalized, **body})
     planner_model = str(
@@ -2453,7 +2721,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized.setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
         normalized.setdefault("planner_lm_provider", planner_provider)
         normalized.setdefault("planner_model", planner_model)
-        return normalized, warnings
+        return _apply_rap_quality_gate_fields(normalized, active=False), warnings
 
     if mode == "video":
         action = str(normalized.get("action") or "t2v").strip().lower()
@@ -2490,7 +2758,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized.setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
         normalized.setdefault("planner_lm_provider", planner_provider)
         normalized.setdefault("planner_model", planner_model)
-        return normalized, warnings
+        return _apply_rap_quality_gate_fields(normalized, active=False), warnings
 
     if mode == "album":
         if planner_provider == "ace_step_lm":
@@ -2607,7 +2875,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
                 _apply_prompt_kit_metadata("album", track)
         _apply_prompt_kit_metadata("album", normalized)
         normalized["use_format"] = False
-        return normalized, warnings
+        return _apply_rap_quality_gate_fields(normalized, active=False), warnings
 
     if mode == "trainer":
         normalized.setdefault("adapter_type", "lora")
@@ -2623,7 +2891,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
             normalized["generation_reference_defaults"].setdefault("use_cot_lyrics", DOCS_BEST_LM_DEFAULTS["use_cot_lyrics"])
             normalized["generation_reference_defaults"].setdefault("prompt_kit_version", PROMPT_KIT_VERSION)
         _apply_prompt_kit_metadata("trainer", normalized)
-        return normalized, warnings
+        return _apply_rap_quality_gate_fields(normalized, active=False), warnings
 
     normalized.setdefault("task_type", _prompt_mode_task_type(mode))
     normalized.setdefault("song_model", _prompt_mode_default_model(mode))
@@ -2713,7 +2981,7 @@ def _normalize_prompt_assistant_payload(mode: str, payload: dict[str, Any], body
         normalized.get("src_audio_id") or normalized.get("src_result_id") or normalized.get("audio_code_string")
     ):
         warnings.append(f"{mode} needs source audio selected/uploaded in MLX Media before generation.")
-    return normalized, warnings
+    return _apply_rap_quality_gate_fields(normalized, active=rap_gate_active), warnings
 
 
 def _run_prompt_assistant_local(
@@ -2832,6 +3100,7 @@ def _run_prompt_assistant_local_staged(
     planner_llm_settings: dict[str, Any] | None = None,
     *,
     mode: str = "custom",
+    prompt_preset: str | None = None,
 ) -> str:
     stages = _prompt_assistant_stage_specs(mode)
     if not stages:
@@ -2848,31 +3117,43 @@ def _run_prompt_assistant_local_staged(
     warnings: list[str] = []
     stage_payloads: dict[str, Any] = {}
     total = len(stages)
+    rap_gate_active = _prompt_assistant_is_rap_request(mode, user_prompt, current_payload, prompt_preset)
     for index, (stage_id, instruction) in enumerate(stages):
-        stage_current = dict(current_payload or {})
-        stage_current["ai_fill_stage"] = stage_id
-        stage_current["previous_ai_payload"] = _compact_prompt_assistant_current_payload(combined_payload, mode)
-        raw = _run_prompt_assistant_local(
-            _prompt_assistant_stage_system_prompt(system_prompt, mode, stage_id, instruction, index, total),
+        stage_payload, stage_warnings, compact_stage = _run_prompt_assistant_stage_once(
+            system_prompt,
             user_prompt,
             planner_provider,
             planner_model,
-            stage_current,
+            current_payload,
+            combined_payload,
             planner_llm_settings,
             mode=mode,
+            stage_id=stage_id,
+            instruction=instruction,
+            index=index,
+            total=total,
         )
-        try:
-            parsed, _ = _extract_prompt_assistant_json(raw, mode)
-            stage_payload, stage_warnings, _ = _unwrap_prompt_assistant_structured_payload(parsed)
-        except Exception as exc:
-            raise PromptAssistantStageError(f"AI Fill stage `{stage_id}` returned invalid JSON: {exc}", raw) from exc
-        if not isinstance(stage_payload, dict) or not stage_payload:
-            raise PromptAssistantStageError(f"AI Fill stage `{stage_id}` returned an empty payload.", raw)
         combined_payload = _merge_prompt_stage_payload(combined_payload, stage_payload)
+        combined_payload = _apply_rap_quality_gate_fields(combined_payload, active=rap_gate_active)
         if mode != "album":
             _ensure_song_intent_payload(combined_payload, mode)
         warnings.extend(stage_warnings)
-        stage_payloads[stage_id] = _compact_prompt_assistant_current_payload(combined_payload, mode)
+        stage_payloads[stage_id] = compact_stage
+        if rap_gate_active and stage_id == "song_writing":
+            combined_payload, warnings, stage_payloads = _run_prompt_assistant_rap_quality_loop(
+                system_prompt,
+                user_prompt,
+                planner_provider,
+                planner_model,
+                current_payload,
+                combined_payload,
+                planner_llm_settings,
+                warnings,
+                stage_payloads,
+                mode=mode,
+                base_stage_total=total,
+            )
+    combined_payload = _apply_rap_quality_gate_fields(combined_payload, active=rap_gate_active)
     return json.dumps(
         {
             "payload": combined_payload,
@@ -4765,6 +5046,38 @@ def _clear_directory_children(path: Path) -> None:
             child.unlink(missing_ok=True)
 
 
+def _mark_persisted_background_job_stale(
+    job: dict[str, Any],
+    *,
+    stage: str = "Interrupted by app restart",
+    error: str = "Interrupted by app restart",
+) -> dict[str, Any]:
+    if not _background_job_is_active(job):
+        return dict(job)
+    now = datetime.now(timezone.utc).isoformat()
+    snapshot = dict(job)
+    logs = [str(item) for item in (snapshot.get("logs") or []) if str(item)]
+    errors = [str(item) for item in (snapshot.get("errors") or []) if str(item)]
+    if error not in errors:
+        errors.append(error)
+    stale_log = f"[startup] {stage}; stale job marked failed."
+    if stale_log not in logs:
+        logs.append(stale_log)
+    snapshot.update(
+        {
+            "state": "failed",
+            "status": stage,
+            "stage": stage,
+            "error": error,
+            "errors": errors[-150:],
+            "logs": logs[-700:],
+            "finished_at": snapshot.get("finished_at") or now,
+            "updated_at": now,
+        }
+    )
+    return _jsonable(snapshot)
+
+
 def _clear_background_job_history_on_startup() -> None:
     with _api_generation_tasks_lock:
         _api_generation_tasks.clear()
@@ -4774,12 +5087,18 @@ def _clear_background_job_history_on_startup() -> None:
         _lora_benchmark_jobs.clear()
     with _lora_sweep_jobs_lock:
         _lora_sweep_jobs.clear()
+    with _album_batch_jobs_lock:
+        _album_batch_jobs.clear()
+    with _lora_sweep_batch_jobs_lock:
+        _lora_sweep_batch_jobs.clear()
     with _album_jobs_lock:
         _album_jobs.clear()
     _clear_directory_children(DATA_DIR / "lora_jobs")
     _clear_directory_children(SONG_BATCHES_DIR)
+    _clear_directory_children(ALBUM_BATCHES_DIR)
     _clear_directory_children(LORA_BENCHMARKS_DIR)
     _clear_directory_children(LORA_SWEEPS_DIR)
+    _clear_directory_children(LORA_SWEEP_BATCHES_DIR)
     _clear_directory_children(MFLUX_RESULTS_DIR.parent / "jobs")
     _clear_directory_children(MLX_VIDEO_JOBS_DIR)
 
@@ -6335,6 +6654,8 @@ _ollama_pull_jobs: dict[str, dict[str, Any]] = {}
 _ollama_pull_lock = threading.Lock()
 _album_jobs: dict[str, dict[str, Any]] = {}
 _album_jobs_lock = threading.Lock()
+_album_batch_jobs: dict[str, dict[str, Any]] = {}
+_album_batch_jobs_lock = threading.Lock()
 _api_generation_tasks: dict[str, dict[str, Any]] = {}
 _api_generation_tasks_lock = threading.Lock()
 _song_batch_jobs: dict[str, dict[str, Any]] = {}
@@ -6343,6 +6664,8 @@ _lora_benchmark_jobs: dict[str, dict[str, Any]] = {}
 _lora_benchmark_jobs_lock = threading.Lock()
 _lora_sweep_jobs: dict[str, dict[str, Any]] = {}
 _lora_sweep_jobs_lock = threading.Lock()
+_lora_sweep_batch_jobs: dict[str, dict[str, Any]] = {}
+_lora_sweep_batch_jobs_lock = threading.Lock()
 _lora_autolabel_jobs: dict[str, dict[str, Any]] = {}
 _lora_autolabel_jobs_lock = threading.Lock()
 
@@ -10145,6 +10468,38 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
             parse_error = str(exc)
             _set_field_error(field_errors, "payload", parse_error)
 
+    rap_gate_active = _prompt_assistant_is_rap_request(
+        str(normalized_text.get("ui_mode") or task_type or "custom"),
+        str(normalized_text.get("user_prompt") or normalized_text.get("simple_description") or normalized_text.get("song_description") or ""),
+        normalized_payload if isinstance(normalized_payload, dict) else normalized_text,
+        str(normalized_text.get("prompt_preset") or ""),
+    )
+    rap_seed_payload = dict(normalized_payload if isinstance(normalized_payload, dict) else {})
+    for key in (
+        "rap_quality_report",
+        "rap_rewrite_status",
+        "rap_blocking_issues",
+        "rap_strengths",
+        "rap_revision_focus",
+        "payload_quality_gate",
+        "payload_gate_status",
+        "payload_gate_passed",
+        "payload_gate_blocking_issues",
+    ):
+        if key in normalized_text and key not in rap_seed_payload:
+            rap_seed_payload[key] = normalized_text.get(key)
+    normalized_payload = _apply_rap_quality_gate_fields(
+        rap_seed_payload,
+        active=rap_gate_active,
+    )
+    rap_blocking_issues = list(normalized_payload.get("payload_gate_blocking_issues") or [])
+    if rap_gate_active and rap_blocking_issues:
+        _set_field_error(
+            field_errors,
+            "lyrics",
+            "Rap quality gate failed: " + "; ".join(str(item) for item in rap_blocking_issues[:6]),
+        )
+
     valid = not field_errors
     settings_compliance = ace_step_settings_compliance(
         normalized_payload,
@@ -10170,6 +10525,10 @@ def _validate_generation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "effective_settings": _jsonable(normalized_payload.get("effective_settings") or {}),
         "settings_coverage": _jsonable(normalized_payload.get("settings_coverage") or {}),
         "runtime_planner": _jsonable(normalized_payload.get("runtime_planner") or {}),
+        "payload_gate_status": normalized_payload.get("payload_gate_status") or "",
+        "payload_gate_passed": bool(normalized_payload.get("payload_gate_passed")),
+        "blocking_issues": _jsonable(normalized_payload.get("payload_gate_blocking_issues") or []),
+        "rap_quality_gate": _jsonable(normalized_payload.get("rap_quality_report") or {}),
         "model": {
             "name": song_model,
             "installed": installed,
@@ -17216,6 +17575,10 @@ def _song_batch_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
                 if path.is_file():
                     try:
                         job = json.loads(path.read_text(encoding="utf-8"))
+                        stale = _mark_persisted_background_job_stale(job)
+                        if stale != job:
+                            job = stale
+                            _persist_song_batch_job(job)
                         _song_batch_jobs[job_id] = dict(job)
                     except Exception:
                         job = {}
@@ -17227,6 +17590,13 @@ def _song_batch_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
             job = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        stale = _mark_persisted_background_job_stale(job)
+        if stale != job:
+            job = stale
+            try:
+                _persist_song_batch_job(job)
+            except Exception:
+                pass
         job_id_from_disk = str(job.get("id") or path.parent.name)
         if job_id_from_disk in known_ids:
             continue
@@ -17447,6 +17817,426 @@ def _submit_song_batch_job(body: dict[str, Any]) -> dict[str, Any]:
     thread = threading.Thread(target=_song_batch_worker, args=(job_id, payload), daemon=True)
     thread.start()
     return {"job_id": job_id, "job": _song_batch_snapshot(job_id)}
+
+
+def _set_album_batch_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _album_batch_jobs_lock:
+        job = _album_batch_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "kind": "album_batch",
+                "state": "queued",
+                "status": "Queued",
+                "stage": "queued",
+                "progress": 0,
+                "batch_title": "Album batch",
+                "payload": {},
+                "entries": [],
+                "logs": [],
+                "errors": [],
+                "current_item": 0,
+                "total_items": 0,
+                "completed_items": 0,
+                "failed_items": 0,
+                "remaining_items": 0,
+                "child_job_id": "",
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "updated_at": now,
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-500:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-500:]
+        if "errors" in updates:
+            old_errors = list(job.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                job["errors"] = (old_errors + [str(item) for item in new_errors])[-100:]
+            elif new_errors:
+                job["errors"] = (old_errors + [str(new_errors)])[-100:]
+        updates.setdefault("updated_at", now)
+        job.update(_jsonable(updates))
+        return dict(job)
+
+
+def _album_batch_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _album_batch_jobs_lock:
+        if job_id:
+            return _jsonable(dict(_album_batch_jobs.get(job_id) or {}))
+        return [_jsonable(dict(job)) for job in _album_batch_jobs.values()]
+
+
+def _delete_album_batch_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    with _album_batch_jobs_lock:
+        job = dict(_album_batch_jobs.get(job_id) or {})
+        if not job:
+            raise KeyError("Album batch job not found")
+        if _background_job_is_active(job):
+            raise RuntimeError("Cannot delete an active album batch job.")
+        _album_batch_jobs.pop(job_id, None)
+    return {"job_id": job_id, "deleted": True}
+
+
+def _normalise_album_batch_body(body: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(body, dict):
+        raise ValueError("Album batch payload must be an object.")
+    raw_entries = body.get("albums")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValueError("Album batch requires at least one album in albums[].")
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            raise ValueError(f"Album {index + 1}: payload must be an object.")
+        payload = dict(item)
+        entries.append(
+            {
+                "index": index,
+                "item_number": index + 1,
+                "title": str(payload.get("album_title") or payload.get("concept") or f"Album {index + 1}").strip() or f"Album {index + 1}",
+                "state": "queued",
+                "status": "Queued",
+                "progress": 0,
+                "payload": _jsonable(payload),
+                "child_job_id": "",
+                "result": None,
+                "error": "",
+            }
+        )
+    return {
+        "batch_title": str(body.get("batch_title") or body.get("title") or "Album batch").strip() or "Album batch",
+        "stop_on_error": parse_bool(body.get("stop_on_error"), False),
+        "albums": [_jsonable(asRecord(entry.get("payload"))) for entry in entries],
+    }, entries
+
+
+def _album_batch_worker(job_id: str, payload: dict[str, Any]) -> None:
+    entries = json.loads(json.dumps(_jsonable(_album_batch_snapshot(job_id).get("entries") if isinstance(_album_batch_snapshot(job_id), dict) else [])))
+    albums = list(payload.get("albums") or [])
+    total = len(albums)
+    completed = 0
+    failed = 0
+    stop_on_error = parse_bool(payload.get("stop_on_error"), False)
+    _set_album_batch_job(
+        job_id,
+        state="running",
+        status="Album batch running",
+        stage="running",
+        progress=1,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        logs=[f"Album batch {job_id} started with {total} album(s)."],
+    )
+    try:
+        for index, album_payload in enumerate(albums):
+            if not isinstance(album_payload, dict):
+                continue
+            entry = entries[index]
+            entry.update(state="running", status="Starting", progress=0, error="")
+            _set_album_batch_job(
+                job_id,
+                entries=entries,
+                current_item=index + 1,
+                stage="rendering",
+                status=f"Album {index + 1}/{total}",
+                progress=max(1, int((index / max(1, total)) * 100)),
+                remaining_items=max(0, total - index),
+                logs=[f"Album {index + 1}/{total} queued: {entry.get('title')}"],
+            )
+            child = _submit_album_job(album_payload)
+            child_id = str(child.get("job_id") or "")
+            entry["child_job_id"] = child_id
+            _set_album_batch_job(job_id, entries=entries, child_job_id=child_id, logs=[f"Album {index + 1}/{total} render started: {child_id}"])
+            while True:
+                child_job = _album_job_snapshot(child_id)
+                if not isinstance(child_job, dict) or not child_job:
+                    raise RuntimeError(f"Album child job missing: {child_id}")
+                entry["progress"] = clamp_int(child_job.get("progress"), 0, 0, 100)
+                entry["status"] = str(child_job.get("status") or child_job.get("stage") or "Rendering")
+                _set_album_batch_job(
+                    job_id,
+                    entries=entries,
+                    progress=max(1, min(99, int(((index + entry["progress"] / 100.0) / max(1, total)) * 100))),
+                    status=f"Album {index + 1}/{total}",
+                )
+                state = str(child_job.get("state") or "").lower()
+                if state in {"succeeded", "success", "complete", "completed", "failed", "error", "stopped"}:
+                    break
+                time.sleep(2.0)
+            state = str(child_job.get("state") or "").lower()
+            if state in {"succeeded", "success", "complete", "completed"}:
+                completed += 1
+                entry.update(state="succeeded", status="Complete", progress=100, result=_jsonable(child_job.get("result")))
+                _set_album_batch_job(job_id, entries=entries, completed_items=completed, failed_items=failed, remaining_items=max(0, total - completed - failed), logs=[f"Album {index + 1}/{total} complete: {entry.get('title')}"])
+            else:
+                failed += 1
+                error = str(child_job.get("error") or "Album failed")
+                entry.update(state="failed", status="Failed", progress=100, error=error, result=_jsonable(child_job.get("result")))
+                _set_album_batch_job(job_id, entries=entries, completed_items=completed, failed_items=failed, remaining_items=max(0, total - completed - failed), errors=[error], logs=[f"Album {index + 1}/{total} failed: {error}"])
+                if stop_on_error:
+                    break
+        final_state = "failed" if failed and stop_on_error else "succeeded"
+        final_status = "Album batch stopped after failure" if failed and stop_on_error else ("Album batch completed with errors" if failed else "Album batch completed")
+        _set_album_batch_job(
+            job_id,
+            state=final_state,
+            status=final_status,
+            stage="complete" if final_state == "succeeded" else "failed",
+            progress=100,
+            entries=entries,
+            completed_items=completed,
+            failed_items=failed,
+            remaining_items=max(0, total - completed - failed),
+            child_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            logs=[final_status],
+        )
+    except Exception as exc:
+        _set_album_batch_job(
+            job_id,
+            state="failed",
+            status="Album batch failed",
+            stage="failed",
+            progress=100,
+            entries=entries,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            child_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+def _submit_album_batch_job(body: dict[str, Any]) -> dict[str, Any]:
+    payload, entries = _normalise_album_batch_body(body)
+    job_id = uuid.uuid4().hex[:12]
+    _set_album_batch_job(
+        job_id,
+        payload=payload,
+        batch_title=payload["batch_title"],
+        total_items=len(entries),
+        remaining_items=len(entries),
+        entries=entries,
+        logs=[f"Album batch {job_id} queued with {len(entries)} album(s)."],
+    )
+    threading.Thread(target=_album_batch_worker, args=(job_id, payload), daemon=True).start()
+    return {"job_id": job_id, "job": _album_batch_snapshot(job_id)}
+
+
+def _set_lora_sweep_batch_job(job_id: str, **updates: Any) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _lora_sweep_batch_jobs_lock:
+        job = _lora_sweep_batch_jobs.setdefault(
+            job_id,
+            {
+                "id": job_id,
+                "kind": "lora_sweep_batch",
+                "state": "queued",
+                "status": "Queued",
+                "stage": "queued",
+                "progress": 0,
+                "batch_title": "LoRA sweep batch",
+                "payload": {},
+                "entries": [],
+                "logs": [],
+                "errors": [],
+                "current_item": 0,
+                "total_items": 0,
+                "completed_items": 0,
+                "failed_items": 0,
+                "remaining_items": 0,
+                "child_job_id": "",
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "updated_at": now,
+            },
+        )
+        if "logs" in updates:
+            old_logs = list(job.get("logs") or [])
+            new_logs = updates.pop("logs")
+            if isinstance(new_logs, list):
+                job["logs"] = (old_logs + [str(item) for item in new_logs])[-500:]
+            elif new_logs:
+                job["logs"] = (old_logs + [str(new_logs)])[-500:]
+        if "errors" in updates:
+            old_errors = list(job.get("errors") or [])
+            new_errors = updates.pop("errors")
+            if isinstance(new_errors, list):
+                job["errors"] = (old_errors + [str(item) for item in new_errors])[-100:]
+            elif new_errors:
+                job["errors"] = (old_errors + [str(new_errors)])[-100:]
+        updates.setdefault("updated_at", now)
+        job.update(_jsonable(updates))
+        return dict(job)
+
+
+def _lora_sweep_batch_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
+    with _lora_sweep_batch_jobs_lock:
+        if job_id:
+            return _jsonable(dict(_lora_sweep_batch_jobs.get(job_id) or {}))
+        return [_jsonable(dict(job)) for job in _lora_sweep_batch_jobs.values()]
+
+
+def _delete_lora_sweep_batch_job(job_id: str) -> dict[str, Any]:
+    job_id = safe_id(job_id)
+    with _lora_sweep_batch_jobs_lock:
+        job = dict(_lora_sweep_batch_jobs.get(job_id) or {})
+        if not job:
+            raise KeyError("LoRA sweep batch job not found")
+        if _background_job_is_active(job):
+            raise RuntimeError("Cannot delete an active LoRA sweep batch job.")
+        _lora_sweep_batch_jobs.pop(job_id, None)
+    return {"job_id": job_id, "deleted": True}
+
+
+def _normalise_lora_sweep_batch_body(body: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(body, dict):
+        raise ValueError("LoRA sweep batch payload must be an object.")
+    raw_entries = body.get("sweeps")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValueError("LoRA sweep batch requires at least one sweep in sweeps[].")
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            raise ValueError(f"Sweep {index + 1}: payload must be an object.")
+        payload = dict(item)
+        entries.append(
+            {
+                "index": index,
+                "item_number": index + 1,
+                "title": str(payload.get("sweep_title") or payload.get("title") or f"Sweep {index + 1}").strip() or f"Sweep {index + 1}",
+                "state": "queued",
+                "status": "Queued",
+                "progress": 0,
+                "payload": _jsonable(payload),
+                "child_job_id": "",
+                "result": None,
+                "error": "",
+            }
+        )
+    return {
+        "batch_title": str(body.get("batch_title") or body.get("title") or "LoRA sweep batch").strip() or "LoRA sweep batch",
+        "stop_on_error": parse_bool(body.get("stop_on_error"), False),
+        "sweeps": [_jsonable(asRecord(entry.get("payload"))) for entry in entries],
+    }, entries
+
+
+def _lora_sweep_batch_worker(job_id: str, payload: dict[str, Any]) -> None:
+    entries = json.loads(json.dumps(_jsonable(_lora_sweep_batch_snapshot(job_id).get("entries") if isinstance(_lora_sweep_batch_snapshot(job_id), dict) else [])))
+    sweeps = list(payload.get("sweeps") or [])
+    total = len(sweeps)
+    completed = 0
+    failed = 0
+    stop_on_error = parse_bool(payload.get("stop_on_error"), False)
+    _set_lora_sweep_batch_job(
+        job_id,
+        state="running",
+        status="LoRA sweep batch running",
+        stage="running",
+        progress=1,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        logs=[f"LoRA sweep batch {job_id} started with {total} sweep(s)."],
+    )
+    try:
+        for index, sweep_payload in enumerate(sweeps):
+            if not isinstance(sweep_payload, dict):
+                continue
+            entry = entries[index]
+            entry.update(state="running", status="Starting", progress=0, error="")
+            _set_lora_sweep_batch_job(
+                job_id,
+                entries=entries,
+                current_item=index + 1,
+                stage="rendering",
+                status=f"Sweep {index + 1}/{total}",
+                progress=max(1, int((index / max(1, total)) * 100)),
+                remaining_items=max(0, total - index),
+                logs=[f"Sweep {index + 1}/{total} queued: {entry.get('title')}"],
+            )
+            child = _submit_lora_sweep_job(sweep_payload)
+            child_id = str(child.get("job_id") or "")
+            entry["child_job_id"] = child_id
+            _set_lora_sweep_batch_job(job_id, entries=entries, child_job_id=child_id, logs=[f"Sweep {index + 1}/{total} render started: {child_id}"])
+            while True:
+                child_job = _lora_sweep_snapshot(child_id)
+                if not isinstance(child_job, dict) or not child_job:
+                    raise RuntimeError(f"Sweep child job missing: {child_id}")
+                entry["progress"] = clamp_int(child_job.get("progress"), 0, 0, 100)
+                entry["status"] = str(child_job.get("status") or child_job.get("stage") or "Rendering")
+                _set_lora_sweep_batch_job(
+                    job_id,
+                    entries=entries,
+                    progress=max(1, min(99, int(((index + entry["progress"] / 100.0) / max(1, total)) * 100))),
+                    status=f"Sweep {index + 1}/{total}",
+                )
+                state = str(child_job.get("state") or "").lower()
+                if state in {"succeeded", "success", "complete", "completed", "failed", "error", "stopped"}:
+                    break
+                time.sleep(2.0)
+            state = str(child_job.get("state") or "").lower()
+            if state in {"succeeded", "success", "complete", "completed"}:
+                completed += 1
+                entry.update(state="succeeded", status="Complete", progress=100, result=_jsonable(child_job))
+                _set_lora_sweep_batch_job(job_id, entries=entries, completed_items=completed, failed_items=failed, remaining_items=max(0, total - completed - failed), logs=[f"Sweep {index + 1}/{total} complete: {entry.get('title')}"])
+            else:
+                failed += 1
+                error = str(child_job.get("error") or "Sweep failed")
+                entry.update(state="failed", status="Failed", progress=100, error=error, result=_jsonable(child_job))
+                _set_lora_sweep_batch_job(job_id, entries=entries, completed_items=completed, failed_items=failed, remaining_items=max(0, total - completed - failed), errors=[error], logs=[f"Sweep {index + 1}/{total} failed: {error}"])
+                if stop_on_error:
+                    break
+        final_state = "failed" if failed and stop_on_error else "succeeded"
+        final_status = "LoRA sweep batch stopped after failure" if failed and stop_on_error else ("LoRA sweep batch completed with errors" if failed else "LoRA sweep batch completed")
+        _set_lora_sweep_batch_job(
+            job_id,
+            state=final_state,
+            status=final_status,
+            stage="complete" if final_state == "succeeded" else "failed",
+            progress=100,
+            entries=entries,
+            completed_items=completed,
+            failed_items=failed,
+            remaining_items=max(0, total - completed - failed),
+            child_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            logs=[final_status],
+        )
+    except Exception as exc:
+        _set_lora_sweep_batch_job(
+            job_id,
+            state="failed",
+            status="LoRA sweep batch failed",
+            stage="failed",
+            progress=100,
+            entries=entries,
+            errors=[str(exc)],
+            logs=[traceback.format_exc()],
+            child_job_id="",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+def _submit_lora_sweep_batch_job(body: dict[str, Any]) -> dict[str, Any]:
+    payload, entries = _normalise_lora_sweep_batch_body(body)
+    job_id = uuid.uuid4().hex[:12]
+    _set_lora_sweep_batch_job(
+        job_id,
+        payload=payload,
+        batch_title=payload["batch_title"],
+        total_items=len(entries),
+        remaining_items=len(entries),
+        entries=entries,
+        logs=[f"LoRA sweep batch {job_id} queued with {len(entries)} sweep(s)."],
+    )
+    threading.Thread(target=_lora_sweep_batch_worker, args=(job_id, payload), daemon=True).start()
+    return {"job_id": job_id, "job": _lora_sweep_batch_snapshot(job_id)}
 
 
 def _lora_benchmark_job_path(job_id: str) -> Path:
@@ -18215,6 +19005,10 @@ def _lora_benchmark_snapshot(job_id: str | None = None, *, include_archived: boo
                 if path.is_file():
                     try:
                         job = json.loads(path.read_text(encoding="utf-8"))
+                        stale = _mark_persisted_background_job_stale(job)
+                        if stale != job:
+                            job = stale
+                            _persist_lora_benchmark_job(job)
                         _lora_benchmark_jobs[job_id] = dict(job)
                     except Exception:
                         job = {}
@@ -18226,6 +19020,13 @@ def _lora_benchmark_snapshot(job_id: str | None = None, *, include_archived: boo
             job = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        stale = _mark_persisted_background_job_stale(job)
+        if stale != job:
+            job = stale
+            try:
+                _persist_lora_benchmark_job(job)
+            except Exception:
+                pass
         job_id_from_disk = str(job.get("id") or path.parent.name)
         if job_id_from_disk in known_ids:
             continue
@@ -19392,6 +20193,10 @@ def _lora_sweep_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
                 if path.is_file():
                     try:
                         job = json.loads(path.read_text(encoding="utf-8"))
+                        stale = _mark_persisted_background_job_stale(job)
+                        if stale != job:
+                            job = stale
+                            _persist_lora_sweep_job(job)
                         _lora_sweep_jobs[job_id] = dict(job)
                     except Exception:
                         job = {}
@@ -19403,6 +20208,13 @@ def _lora_sweep_snapshot(job_id: str | None = None) -> dict[str, Any] | list[dic
             job = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        stale = _mark_persisted_background_job_stale(job)
+        if stale != job:
+            job = stale
+            try:
+                _persist_lora_sweep_job(job)
+            except Exception:
+                pass
         job_id_from_disk = str(job.get("id") or path.parent.name)
         if job_id_from_disk in known_ids:
             continue
@@ -21749,6 +22561,7 @@ async def api_prompt_assistant_run(request: Request):
             current_payload,
             planner_settings,
             mode=mode,
+            prompt_preset=prompt_preset or None,
         )
         parsed_payload, paste_blocks = _extract_prompt_assistant_json(raw_text, mode)
         parsed_payload, structured_warnings, structured_paste_blocks = _unwrap_prompt_assistant_structured_payload(parsed_payload)
@@ -22089,6 +22902,52 @@ async def api_song_batch_job_delete(job_id: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
 
 
+@app.get("/api/album-batches/jobs")
+async def api_album_batch_jobs_list():
+    jobs = _album_batch_snapshot()
+    return JSONResponse({"success": True, "jobs": jobs})
+
+
+@app.post("/api/album-batches/jobs")
+async def api_album_batch_jobs_start(request: Request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Album batch payload must be an object")
+        task = _submit_album_batch_job(payload)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/album-batches/jobs/{job_id}")
+async def api_album_batch_job_detail(job_id: str):
+    job = _album_batch_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Album batch job not found")
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/album-batches/jobs/{job_id}/log")
+async def api_album_batch_job_log(job_id: str):
+    job = _album_batch_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Album batch job not found")
+    logs = [str(item) for item in (job.get("logs") or []) if str(item)]
+    return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.delete("/api/album-batches/jobs/{job_id}")
+async def api_album_batch_job_delete(job_id: str):
+    try:
+        deleted = _delete_album_batch_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
+
+
 @app.get("/api/lora/benchmarks/jobs")
 async def api_lora_benchmark_jobs_list(include_archived: bool = False):
     jobs = _lora_benchmark_snapshot(include_archived=include_archived)
@@ -22217,6 +23076,52 @@ async def api_lora_sweep_job_stop(job_id: str):
         return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
     except Exception as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/lora/sweep-batches/jobs")
+async def api_lora_sweep_batch_jobs_list():
+    jobs = _lora_sweep_batch_snapshot()
+    return JSONResponse({"success": True, "jobs": jobs})
+
+
+@app.post("/api/lora/sweep-batches/jobs")
+async def api_lora_sweep_batch_jobs_start(request: Request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("LoRA sweep batch payload must be an object")
+        task = _submit_lora_sweep_batch_job(payload)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/lora/sweep-batches/jobs/{job_id}")
+async def api_lora_sweep_batch_job_detail(job_id: str):
+    job = _lora_sweep_batch_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="LoRA sweep batch job not found")
+    return JSONResponse({"success": True, "job": job})
+
+
+@app.get("/api/lora/sweep-batches/jobs/{job_id}/log")
+async def api_lora_sweep_batch_job_log(job_id: str):
+    job = _lora_sweep_batch_snapshot(safe_id(job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="LoRA sweep batch job not found")
+    logs = [str(item) for item in (job.get("logs") or []) if str(item)]
+    return JSONResponse({"success": True, "log": "\n".join(logs), "logs": logs})
+
+
+@app.delete("/api/lora/sweep-batches/jobs/{job_id}")
+async def api_lora_sweep_batch_job_delete(job_id: str):
+    try:
+        deleted = _delete_lora_sweep_batch_job(job_id)
+        return JSONResponse({"success": True, **deleted})
+    except KeyError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=409)
 
 
 @app.post("/api/generate_advanced")
@@ -23524,78 +24429,84 @@ async def api_generate_album(request: Request):
         return JSONResponse({"success": False, "error": str(exc), "logs": [str(exc)]}, status_code=400)
 
 
+def _submit_album_job(body: dict[str, Any]) -> dict[str, Any]:
+    body = _album_ace_lm_disabled_payload(body)
+    direct_render_tracks = _json_list(body.get("tracks") or body.get("planned_tracks"))
+    direct_existing_render = bool(direct_render_tracks) and (
+        parse_bool(body.get("render_from_existing_tracks"), False)
+        or parse_bool(body.get("skip_album_planning"), False)
+        or str(body.get("album_generation_mode") or "").strip().lower()
+        in {"render_existing_tracks", "direct_render", "ui_tracks"}
+    )
+    planner_provider = _album_planner_provider_from_payload(body)
+    embedding_provider = _embedding_provider_from_payload(body)
+    if direct_existing_render:
+        planner_model = str(
+            body.get("planner_model")
+            or body.get("planner_ollama_model")
+            or body.get("ollama_model")
+            or ""
+        ).strip()
+        embedding_model = str(body.get("embedding_model") or "").strip()
+    else:
+        planner_model = _resolve_local_llm_model_selection(
+            planner_provider,
+            str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
+            "chat",
+            "album job planning",
+        )
+        embedding_model = _resolve_local_llm_model_selection(
+            embedding_provider,
+            str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL),
+            "embedding",
+            "album job embeddings",
+        )
+    job_id = uuid.uuid4().hex[:12]
+    planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
+    planning_engine_label = _album_agent_engine_label_value(planning_engine)
+    request_body = {
+        **body,
+        "agent_engine": planning_engine,
+        "planner_lm_provider": planner_provider,
+        "embedding_lm_provider": embedding_provider,
+        "planner_model": planner_model,
+        "ollama_model": planner_model if planner_provider == "ollama" else body.get("ollama_model", ""),
+        "embedding_model": embedding_model,
+    }
+    _set_album_job(
+        job_id,
+        state="queued",
+        status="Queued album production job",
+        progress=0,
+        payload=request_body,
+        planner_model=planner_model,
+        planner_provider=planner_provider,
+        embedding_model=embedding_model,
+        embedding_provider=embedding_provider,
+        planning_engine="existing_ui_tracks" if direct_existing_render else planning_engine,
+        custom_agents_used=False if direct_existing_render else True,
+        crewai_used=False if direct_existing_render else planning_engine == "crewai_micro",
+        memory_enabled=False,
+        logs=[
+            f"Queued album job {job_id}.",
+            (
+                f"Direct render: {len(direct_render_tracks)} UI-approved track(s); no album agents will run."
+                if direct_existing_render
+                else f"Planning Engine: {planning_engine_label} ({planning_engine})"
+            ),
+            "ACE-Step LM disabled for album agents.",
+        ],
+    )
+    threading.Thread(target=_album_job_worker, args=(job_id, request_body), daemon=True).start()
+    return {"job_id": job_id, "job": _album_job_snapshot(job_id)}
+
+
 @app.post("/api/album/jobs")
 async def api_create_album_job(request: Request):
     try:
-        body = _album_ace_lm_disabled_payload(await request.json())
-        direct_render_tracks = _json_list(body.get("tracks") or body.get("planned_tracks"))
-        direct_existing_render = bool(direct_render_tracks) and (
-            parse_bool(body.get("render_from_existing_tracks"), False)
-            or parse_bool(body.get("skip_album_planning"), False)
-            or str(body.get("album_generation_mode") or "").strip().lower()
-            in {"render_existing_tracks", "direct_render", "ui_tracks"}
-        )
-        planner_provider = _album_planner_provider_from_payload(body)
-        embedding_provider = _embedding_provider_from_payload(body)
-        if direct_existing_render:
-            planner_model = str(
-                body.get("planner_model")
-                or body.get("planner_ollama_model")
-                or body.get("ollama_model")
-                or ""
-            ).strip()
-            embedding_model = str(body.get("embedding_model") or "").strip()
-        else:
-            planner_model = _resolve_local_llm_model_selection(
-                planner_provider,
-                str(body.get("planner_model") or body.get("planner_ollama_model") or body.get("ollama_model") or (DEFAULT_ALBUM_PLANNER_OLLAMA_MODEL if planner_provider == "ollama" else "")),
-                "chat",
-                "album job planning",
-            )
-            embedding_model = _resolve_local_llm_model_selection(
-                embedding_provider,
-                str(body.get("embedding_model") or DEFAULT_ALBUM_EMBEDDING_MODEL),
-                "embedding",
-                "album job embeddings",
-            )
-        job_id = uuid.uuid4().hex[:12]
-        planning_engine = _normalize_album_agent_engine_value(body.get("agent_engine"))
-        planning_engine_label = _album_agent_engine_label_value(planning_engine)
-        request_body = {
-            **body,
-            "agent_engine": planning_engine,
-            "planner_lm_provider": planner_provider,
-            "embedding_lm_provider": embedding_provider,
-            "planner_model": planner_model,
-            "ollama_model": planner_model if planner_provider == "ollama" else body.get("ollama_model", ""),
-            "embedding_model": embedding_model,
-        }
-        _set_album_job(
-            job_id,
-            state="queued",
-            status="Queued album production job",
-            progress=0,
-            payload=request_body,
-            planner_model=planner_model,
-            planner_provider=planner_provider,
-            embedding_model=embedding_model,
-            embedding_provider=embedding_provider,
-            planning_engine="existing_ui_tracks" if direct_existing_render else planning_engine,
-            custom_agents_used=False if direct_existing_render else True,
-            crewai_used=False if direct_existing_render else planning_engine == "crewai_micro",
-            memory_enabled=False,
-            logs=[
-                f"Queued album job {job_id}.",
-                (
-                    f"Direct render: {len(direct_render_tracks)} UI-approved track(s); no album agents will run."
-                    if direct_existing_render
-                    else f"Planning Engine: {planning_engine_label} ({planning_engine})"
-                ),
-                "ACE-Step LM disabled for album agents.",
-            ],
-        )
-        threading.Thread(target=_album_job_worker, args=(job_id, request_body), daemon=True).start()
-        return JSONResponse({"success": True, "job_id": job_id, "job": _album_job_snapshot(job_id)})
+        body = await request.json()
+        task = _submit_album_job(body)
+        return JSONResponse({"success": True, "job_id": task["job_id"], "job": task["job"]})
     except OllamaPullStarted as exc:
         return JSONResponse(_ollama_pull_started_payload(exc.model_name, exc.job, "album job"))
     except Exception as exc:

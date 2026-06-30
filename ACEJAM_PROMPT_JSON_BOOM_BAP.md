@@ -95,6 +95,11 @@ BOOM BAP WRITING RULES
 5. Avoid fake complexity. Every dense line must still land in the pocket.
 6. Punchlines, pivots, and imagery need clean setup/payoff behavior.
 7. line_intent_map must make the verse logic visible bar by bar.
+8. Multisyllabic rhyme chains and internal rhyme should stay active across the
+   verse, not arrive only on showcase bars.
+9. Use alliteration and assonance so technical writing still swings musically.
+10. Keep rewriting internally until the verse sounds sharp, quotable, and
+    performable over a loop.
 
 BOOM BAP ANALYSIS EXPECTATIONS
 

@@ -25,6 +25,7 @@ import {
   getLLMCatalog,
   getPromptAssistantPrompts,
   promptAssistantRun,
+  validatePayload,
   PROVIDER_LABEL,
   startAlbumPlanJob,
   type LLMProvider,
@@ -32,7 +33,18 @@ import {
 } from "@/lib/api";
 import { useSettingsStore } from "@/store/settings";
 import { normalizePasteBlocks, normalizeWarnings, useWizardStore } from "@/store/wizard";
+import {
+  extractPromptCompanion,
+  mergePayloadWithCompanion,
+} from "@/lib/musicQueue";
 import { toast } from "@/components/ui/sonner";
+
+interface ManualApplyResult {
+  payload: Record<string, unknown>;
+  companion?: Record<string, unknown>;
+  queue?: Record<string, unknown>[];
+  wrapperKey?: "songs" | "albums" | "sweeps" | "tracks" | "items";
+}
 
 interface AIPromptStepProps {
   mode: WizardMode;
@@ -40,7 +52,7 @@ interface AIPromptStepProps {
   examples?: string[];
   currentPayload?: Record<string, unknown>;
   onHydrated?: (payload: Record<string, unknown>) => void;
-  onManualApply?: (payload: Record<string, unknown>) => void;
+  onManualApply?: (result: ManualApplyResult) => void;
   onPendingChange?: (pending: boolean) => void;
 }
 
@@ -170,10 +182,36 @@ function normalizeMusicHydrationPayload(
   if (payload.lora_adapters !== undefined) normalized.lora_adapters = payload.lora_adapters;
   if (payload.adapter_model_variant !== undefined) normalized.adapter_model_variant = payload.adapter_model_variant;
   if (payload.adapter_song_model !== undefined) normalized.adapter_song_model = payload.adapter_song_model;
+  if (payload.genre_execution_contract !== undefined) normalized.genre_execution_contract = payload.genre_execution_contract;
+  if (payload.lyric_technique_report !== undefined) normalized.lyric_technique_report = payload.lyric_technique_report;
+  if (payload.lora_selection_reason !== undefined) normalized.lora_selection_reason = payload.lora_selection_reason;
+  if (payload.performance_notes !== undefined) normalized.performance_notes = payload.performance_notes;
+  if (payload.strict_completion_notes !== undefined) normalized.strict_completion_notes = payload.strict_completion_notes;
+  if (payload.payload_gate_status !== undefined) normalized.payload_gate_status = payload.payload_gate_status;
+  if (payload.payload_gate_passed !== undefined) normalized.payload_gate_passed = payload.payload_gate_passed;
+  if (payload.payload_gate_blocking_issues !== undefined) normalized.payload_gate_blocking_issues = payload.payload_gate_blocking_issues;
+  if (payload.payload_quality_gate !== undefined) normalized.payload_quality_gate = payload.payload_quality_gate;
+  if (payload.rap_quality_report !== undefined) normalized.rap_quality_report = payload.rap_quality_report;
+  if (payload.rap_rewrite_status !== undefined) normalized.rap_rewrite_status = payload.rap_rewrite_status;
+  if (payload.rap_blocking_issues !== undefined) normalized.rap_blocking_issues = payload.rap_blocking_issues;
+  if (payload.rap_strengths !== undefined) normalized.rap_strengths = payload.rap_strengths;
+  if (payload.rap_revision_focus !== undefined) normalized.rap_revision_focus = payload.rap_revision_focus;
   if (visuals.single_art_prompt !== undefined) normalized.art_prompt = visuals.single_art_prompt;
+  if (visuals.single_art_negative_prompt !== undefined) {
+    normalized.single_art_negative_prompt = visuals.single_art_negative_prompt;
+  }
   if (visuals.video_prompt !== undefined) normalized.video_prompt = visuals.video_prompt;
+  if (visuals.video_negative_prompt !== undefined) {
+    normalized.video_negative_prompt = visuals.video_negative_prompt;
+  }
   if (payload.art_prompt !== undefined) normalized.art_prompt = payload.art_prompt;
   if (payload.video_prompt !== undefined) normalized.video_prompt = payload.video_prompt;
+  if (payload.single_art_negative_prompt !== undefined) {
+    normalized.single_art_negative_prompt = payload.single_art_negative_prompt;
+  }
+  if (payload.video_negative_prompt !== undefined) {
+    normalized.video_negative_prompt = payload.video_negative_prompt;
+  }
   return normalized;
 }
 
@@ -191,6 +229,18 @@ function stripJsonFence(value: string): string {
     text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/m, "").trim();
   }
   return text;
+}
+
+function formatJsonParseError(error: unknown): string {
+  if (error instanceof SyntaxError) {
+    const match = error.message.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+    if (match) {
+      return `JSON parse fout op regel ${match[1]}, kolom ${match[2]}: ${error.message}`;
+    }
+    return `JSON parse fout: ${error.message}`;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return "JSON kon niet worden gelezen.";
 }
 
 function balancedJsonText(value: string): string {
@@ -228,9 +278,14 @@ function balancedJsonText(value: string): string {
   return text.slice(start);
 }
 
-function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, unknown> {
+function normalizeManualEntry(record: Record<string, unknown>, mode: WizardMode): Record<string, unknown> {
+  const normalized = normalizeMusicHydrationPayload(record, mode);
+  return mergePayloadWithCompanion(normalized, extractPromptCompanion(record));
+}
+
+function parseManualPastePayload(raw: string, mode: WizardMode): ManualApplyResult {
   let text = stripJsonFence(raw);
-  if (!text) return {};
+  if (!text) return { payload: {} };
   const markerIndex = text.indexOf("ACEJAM_PAYLOAD_JSON");
   if (markerIndex >= 0) {
     text = text.slice(markerIndex + "ACEJAM_PAYLOAD_JSON".length).trim();
@@ -255,7 +310,16 @@ function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, 
     }
   }
   if (Array.isArray(payload)) {
-    return mode === "album" ? { tracks: payload } : { items: payload };
+    const queue = payload
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      .map((item) => normalizeManualEntry(item, mode));
+    const [current, ...rest] = queue;
+    return {
+      payload: current ?? {},
+      companion: extractPromptCompanion(current),
+      queue: rest,
+      wrapperKey: mode === "album" ? "albums" : "songs",
+    };
   }
   if (!payload || typeof payload !== "object") {
     throw new Error("JSON root must be an object.");
@@ -283,9 +347,44 @@ function parseManualPastePayload(raw: string, mode: WizardMode): Record<string, 
     if (mode === "complete" || mode === "lego" || mode === "extract") {
       normalized.track_names = Array.isArray(aceStepParams.track_names) ? aceStepParams.track_names : [];
     }
-    return normalizeMusicHydrationPayload(normalized, mode);
+    const merged = normalizeManualEntry(normalized, mode);
+    return { payload: merged, companion: extractPromptCompanion(merged) };
   }
-  return normalizeMusicHydrationPayload(record, mode);
+
+  const wrapperMap: Array<["songs" | "albums" | "sweeps" | "items" | "tracks", unknown]> = [
+    ["songs", record.songs],
+    ["albums", record.albums],
+    ["sweeps", record.sweeps],
+    ["items", record.items],
+    ["tracks", mode === "album" ? record.tracks : undefined],
+  ];
+  for (const [wrapperKey, value] of wrapperMap) {
+    if (!Array.isArray(value)) continue;
+    const queue = value
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      .map((item) => normalizeManualEntry(item, mode));
+    if (queue.length > 0) {
+      const [current, ...rest] = queue;
+      return {
+        payload: current,
+        companion: extractPromptCompanion(current),
+        queue: rest,
+        wrapperKey,
+      };
+    }
+  }
+  if (mode === "album" && Array.isArray(record.tracks)) {
+    const merged = { ...record, tracks: record.tracks };
+    const payloadWithCompanion = mergePayloadWithCompanion(merged, extractPromptCompanion(record));
+    return {
+      payload: payloadWithCompanion,
+      companion: extractPromptCompanion(payloadWithCompanion),
+      queue: [payloadWithCompanion],
+      wrapperKey: "albums",
+    };
+  }
+  const payloadWithCompanion = normalizeManualEntry(record, mode);
+  return { payload: payloadWithCompanion, companion: extractPromptCompanion(payloadWithCompanion) };
 }
 
 const ALBUM_CONTRACT_NEGATIVE_TAGS =
@@ -379,6 +478,7 @@ export function AIPromptStep({
   const promptPreset = useWizardStore((s) => s.promptPresets[mode]) ?? "";
   const warnings = normalizeWarnings(useWizardStore((s) => s.warnings[mode]));
   const storedPayload = useWizardStore((s) => s.payloads[mode]);
+  const storedCompanion = useWizardStore((s) => s.companions[mode]);
   const storedPasteBlocks = useWizardStore((s) => s.pasteBlocks[mode]);
   const pasteBlocks = normalizePasteBlocks(storedPasteBlocks);
   const setPrompt = useWizardStore((s) => s.setPrompt);
@@ -491,6 +591,7 @@ export function AIPromptStep({
   const embeddingKey = embeddingModel ? modelKey(embeddingProvider, embeddingModel) : "";
   const [albumJobId, setAlbumJobId] = React.useState("");
   const [albumJob, setAlbumJob] = React.useState<Record<string, unknown> | null>(null);
+  const [manualApplyError, setManualApplyError] = React.useState("");
 
   const saveLocalSettings = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -606,6 +707,7 @@ export function AIPromptStep({
             warnings: [
               "Albumcontract alvast ingevuld; CrewAI werkt nu track-voor-track aan verdere verrijking.",
             ],
+            validation: null,
             paste_blocks: null,
           });
           onHydrated?.(initialPayload);
@@ -617,11 +719,13 @@ export function AIPromptStep({
       }
       const assistantData = data as {
         payload?: Record<string, unknown>;
+        validation?: Record<string, unknown> | null;
         warnings?: string[] | string | null;
         paste_blocks?: Array<{ label?: string; content?: string; text?: string }> | string | null;
       };
       setHydration(mode, {
         payload: assistantData.payload,
+        validation: assistantData.validation ?? null,
         warnings: assistantData.warnings,
         paste_blocks: assistantData.paste_blocks,
       });
@@ -647,6 +751,7 @@ export function AIPromptStep({
           const payload = asRecord(result.payload).tracks ? asRecord(result.payload) : result;
           setHydration(mode, {
             payload,
+            validation: null,
             warnings: result.warnings,
             paste_blocks: result.paste_blocks,
           });
@@ -712,8 +817,11 @@ export function AIPromptStep({
     Boolean(albumJob?.waiting_on_llm) ||
     asText(albumJob?.waiting_on_llm).toLowerCase() === "true";
   const pasteEditorFallback = React.useMemo(
-    () => stableJson(currentPayload ?? storedPayload ?? {}),
-    [currentPayload, storedPayload],
+    () =>
+      stableJson(
+        mergePayloadWithCompanion(currentPayload ?? storedPayload ?? {}, storedCompanion),
+      ),
+    [currentPayload, storedCompanion, storedPayload],
   );
   const editablePasteBlocks = React.useMemo(
     () =>
@@ -732,6 +840,7 @@ export function AIPromptStep({
     availablePromptPresets.length > 0 ? promptPreset || "__wizard_default__" : "";
 
   const updatePasteBlock = (index: number, content: string) => {
+    setManualApplyError("");
     const next = editablePasteBlocks.map((block) => ({ ...block }));
     next[index] = {
       label: next[index]?.label || `Paste block ${index + 1}`,
@@ -741,6 +850,7 @@ export function AIPromptStep({
   };
 
   const resetPasteEditor = () => {
+    setManualApplyError("");
     setPasteBlocks(mode, [
       {
         label: "Huidige wizard JSON",
@@ -749,21 +859,42 @@ export function AIPromptStep({
     ]);
   };
 
-  const applyPasteEditor = (index = 0) => {
+  const applyPasteEditor = async (index = 0) => {
     const block = editablePasteBlocks[index] ?? editablePasteBlocks[0];
     const content = block?.content ?? pasteEditorValue;
     try {
-      const manualPayload = parseManualPastePayload(content, mode);
+      const applied = parseManualPastePayload(content, mode);
+      const manualPayload = applied.payload;
+      const validation =
+        mode === "album" || mode === "image" || mode === "video" || (applied.queue?.length ?? 0) > 1
+          ? null
+          : await validatePayload(manualPayload);
       setHydration(mode, {
         payload: manualPayload,
+        validation,
         warnings,
-        paste_blocks: editablePasteBlocks,
+        paste_blocks: [
+          {
+            label: "Huidige wizard JSON",
+            content: stableJson(manualPayload),
+          },
+          ...editablePasteBlocks.slice(1),
+        ],
+        companion: applied.companion ?? extractPromptCompanion(manualPayload),
+        queue: applied.queue,
       });
       onHydrated?.(manualPayload);
-      onManualApply?.(manualPayload);
-      toast.success("JSON toegepast op de wizard.");
+      onManualApply?.(applied);
+      setManualApplyError("");
+      toast.success(
+        applied.queue && applied.queue.length > 0
+          ? `JSON toegepast: huidig item geladen, ${applied.queue.length} extra item(s) aan queue toegevoegd.`
+          : "JSON toegepast op de wizard.",
+      );
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "JSON kon niet worden gelezen.");
+      const message = formatJsonParseError(err);
+      setManualApplyError(message);
+      toast.error(message);
     }
   };
 
@@ -1014,15 +1145,21 @@ export function AIPromptStep({
             className="font-mono text-xs leading-relaxed"
           />
           <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" onClick={() => applyPasteEditor()}>
+            <Button type="button" size="sm" onClick={() => void applyPasteEditor()}>
               Pas JSON toe
             </Button>
             <Button type="button" size="sm" variant="outline" onClick={resetPasteEditor}>
               Vul met huidig formulier
             </Button>
           </div>
+          {manualApplyError ? (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-100">
+              <p className="font-medium text-red-300">JSON fout</p>
+              <p className="mt-1 whitespace-pre-wrap">{manualApplyError}</p>
+            </div>
+          ) : null}
           <p className="text-[11px] text-muted-foreground">
-            Plak direct een payload-object, een <code>payload</code>-wrapper of een album-track array.
+            Plak normaal één object per item. Arrays en wrappers zoals <code>songs[]</code>, <code>albums[]</code> en <code>sweeps[]</code> blijven ondersteund als bulk-import.
           </p>
         </div>
 
@@ -1041,7 +1178,7 @@ export function AIPromptStep({
                   spellCheck={false}
                   className="font-mono text-[11px] leading-relaxed"
                 />
-                <Button type="button" size="sm" variant="outline" onClick={() => applyPasteEditor(i + 1)}>
+                <Button type="button" size="sm" variant="outline" onClick={() => void applyPasteEditor(i + 1)}>
                   Pas dit blok toe
                 </Button>
               </div>

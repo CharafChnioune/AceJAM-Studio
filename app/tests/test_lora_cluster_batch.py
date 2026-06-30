@@ -12,6 +12,7 @@ class FakeManager:
         self.results_by_trigger = results_by_trigger
         self.started_payloads = []
         self.job_sequences = {}
+        self.start_counts = {}
 
     def active_job(self):
         return None
@@ -21,6 +22,11 @@ class FakeManager:
         job_id = f"job-{len(self.started_payloads) + 1}"
         self.started_payloads.append(dict(payload))
         sequence = self.results_by_trigger[trigger]
+        if sequence and isinstance(sequence[0], list):
+            index = self.start_counts.get(trigger, 0)
+            chosen = sequence[min(index, len(sequence) - 1)]
+            self.start_counts[trigger] = index + 1
+            sequence = chosen
         self.job_sequences[job_id] = [dict(item) for item in sequence]
         return {"id": job_id, "state": "queued"}
 
@@ -230,6 +236,63 @@ class LoraClusterBatchTest(unittest.TestCase):
 
             self.assertEqual(summary["completed"], 1)
             self.assertTrue(output_dir.exists())
+
+    def test_batch_retries_mps_oom_with_lighter_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cluster_root = root / "clusters"
+            mirror_root = root / "mirror"
+            state_file = root / "state.json"
+            log_file = root / "batch.log"
+            folder = cluster_root / "lora_westcoast_gfunk"
+            folder.mkdir(parents=True)
+            registered = self.make_adapter(root / "app" / "data" / "loras" / "westcoast_gfunk")
+            manager = FakeManager(
+                {
+                    "westcoast_gfunk": [
+                        [
+                            {"id": "job-1", "state": "running", "stage": "train"},
+                            {
+                                "id": "job-1",
+                                "state": "failed",
+                                "error": "[FAIL] Training failed: MPS backend out of memory while allocating attention",
+                                "result": {},
+                            },
+                        ],
+                        [
+                            {"id": "job-2", "state": "running", "stage": "train"},
+                            {
+                                "id": "job-2",
+                                "state": "succeeded",
+                                "result": {"registered_adapter_path": str(registered)},
+                            },
+                        ],
+                    ]
+                }
+            )
+
+            with patch("train_lora_cluster_batch.time.sleep", return_value=None):
+                summary = run_batch(
+                    manager=manager,
+                    cluster_root=cluster_root,
+                    mirror_root=mirror_root,
+                    state_file=state_file,
+                    log_file=log_file,
+                    poll_interval=0.01,
+                )
+
+            self.assertEqual(summary["completed"], 1)
+            self.assertEqual(len(manager.started_payloads), 2)
+            self.assertEqual(manager.started_payloads[0]["max_duration"], 240.0)
+            self.assertEqual(manager.started_payloads[0]["rank"], 64)
+            self.assertFalse(manager.started_payloads[0]["offload_encoder"])
+            self.assertEqual(manager.started_payloads[1]["max_duration"], 180.0)
+            self.assertEqual(manager.started_payloads[1]["rank"], 32)
+            self.assertTrue(manager.started_payloads[1]["offload_encoder"])
+            saved = json.loads(state_file.read_text(encoding="utf-8"))
+            entry = saved["entries"][folder.name]
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(entry["oom_retry_profile_name"], "oom_retry_180_rank32")
 
 
 if __name__ == "__main__":

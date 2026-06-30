@@ -96,6 +96,12 @@ TRAP WRITING RULES
 6. Alternate denser bars with simpler bars when it improves bounce.
 7. line_intent_map must show hook support, flex turns, escalation, and pocket
    changes.
+8. Internal rhyme, multis, and word-hit placement should make even simpler bars
+   feel crafted instead of empty.
+9. Punchlines and flexes need setup, spacing, and contrast instead of generic
+   trap placeholders.
+10. Keep rewriting internally until the verse sounds expensive, technical, and
+    easy to perform in pocket.
 
 TRAP ANALYSIS EXPECTATIONS
 

@@ -45,11 +45,13 @@ const ICONS: Record<JobKind, React.ComponentType<{ className?: string }>> = {
   generation: Music4,
   "song-batch": ListMusic,
   album: Disc3,
+  "album-batch": ListMusic,
   mflux: ImageIcon,
   "mlx-video": Video,
   lora: GraduationCap,
   "lora-benchmark": BarChart3,
   "lora-sweep": BarChart3,
+  "lora-sweep-batch": ListMusic,
   "ollama-pull": Brain,
   "model-download": Download,
   "lm-download": Download,
@@ -126,11 +128,13 @@ function deletePathForJob(job: JobEntry): string {
   if (job.kind === "generation") return `/api/generation/jobs/${encoded}`;
   if (job.kind === "song-batch") return `/api/song-batches/jobs/${encoded}`;
   if (job.kind === "album") return `/api/album/jobs/${encoded}`;
+  if (job.kind === "album-batch") return `/api/album-batches/jobs/${encoded}`;
   if (job.kind === "mflux") return `/api/mflux/jobs/${encoded}`;
   if (job.kind === "mlx-video") return `/api/mlx-video/jobs/${encoded}`;
   if (job.kind === "lora") return `/api/lora/jobs/${encoded}`;
   if (job.kind === "lora-benchmark") return `/api/lora/benchmarks/jobs/${encoded}`;
   if (job.kind === "lora-sweep") return `/api/lora/sweeps/jobs/${encoded}`;
+  if (job.kind === "lora-sweep-batch") return `/api/lora/sweep-batches/jobs/${encoded}`;
   return "";
 }
 
@@ -198,9 +202,11 @@ function formatTime(value: unknown): string {
 function kindLabel(kind: JobKind): string {
   if (kind === "generation") return "Song render";
   if (kind === "song-batch") return "Song batch";
+  if (kind === "album-batch") return "Album batch";
   if (kind === "lora") return "LoRA training";
   if (kind === "lora-benchmark") return "LoRA benchmark";
   if (kind === "lora-sweep") return "LoRA sweep";
+  if (kind === "lora-sweep-batch") return "LoRA sweep batch";
   if (kind === "mflux") return "MFLUX image";
   if (kind === "mlx-video") return "MLX video";
   if (kind === "album") return "Album job";
@@ -346,6 +352,29 @@ function jobPatchFromAlbum(job: JsonRecord): JobEntry {
   };
 }
 
+function jobPatchFromAlbumBatch(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const id = text(job.id, "album-batch-job");
+  const label = text(job.batch_title || payload.batch_title || id, "Album batch");
+  return {
+    id,
+    kind: "album-batch",
+    label,
+    progress: progressOf({ id, kind: "album-batch", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "album-batch", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "album-batch", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "Album batch",
+    detailsPath: `/api/album-batches/jobs/${encodeURIComponent(id)}`,
+    logPath: `/api/album-batches/jobs/${encodeURIComponent(id)}/log`,
+    metadata: job,
+    error: text(job.error || asArray(job.errors)[0], ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/album-batches/jobs/${encodeURIComponent(id)}`,
+  };
+}
+
 function jobPatchFromSongBatch(job: JsonRecord): JobEntry {
   const payload = asRecord(job.payload);
   const id = text(job.id, "song-batch-job");
@@ -412,6 +441,29 @@ function jobPatchFromLoraSweep(job: JsonRecord): JobEntry {
     startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
     updatedAt: text(job.updated_at || job.finished_at, ""),
     deletePath: `/api/lora/sweeps/jobs/${encodeURIComponent(id)}`,
+  };
+}
+
+function jobPatchFromLoraSweepBatch(job: JsonRecord): JobEntry {
+  const payload = asRecord(job.payload);
+  const id = text(job.id, "lora-sweep-batch-job");
+  const label = text(job.batch_title || payload.batch_title || id, "LoRA sweep batch");
+  return {
+    id,
+    kind: "lora-sweep-batch",
+    label,
+    progress: progressOf({ id, kind: "lora-sweep-batch", label: "", startedAt: Date.now() }, job),
+    status: stageOf({ id, kind: "lora-sweep-batch", label: "", startedAt: Date.now() }, job) || stateOf({ id, kind: "lora-sweep-batch", label: "", startedAt: Date.now() }, job),
+    state: text(job.state || job.status, "queued"),
+    stage: text(job.stage || job.status, ""),
+    kindLabel: "LoRA sweep batch",
+    detailsPath: `/api/lora/sweep-batches/jobs/${encodeURIComponent(id)}`,
+    logPath: `/api/lora/sweep-batches/jobs/${encodeURIComponent(id)}/log`,
+    metadata: job,
+    error: text(job.error || asArray(job.errors)[0], ""),
+    startedAt: job.created_at ? new Date(String(job.created_at)).getTime() : Date.now(),
+    updatedAt: text(job.updated_at || job.finished_at, ""),
+    deletePath: `/api/lora/sweep-batches/jobs/${encodeURIComponent(id)}`,
   };
 }
 
@@ -1221,6 +1273,79 @@ function SongBatchDetails({
   );
 }
 
+function AlbumBatchDetails({
+  job,
+  log,
+}: {
+  job: JsonRecord;
+  log: string;
+}) {
+  const payload = asRecord(job.payload);
+  const entries = asArray(job.entries).map(asRecord);
+  const logs = log ? log.split("\n") : asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
+  return (
+    <div className="space-y-4">
+      <Section title="Batch setup" icon={ListMusic}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <InfoRow label="Batch title" value={job.batch_title || payload.batch_title} />
+          <InfoRow label="Current album" value={job.current_item ? `${text(job.current_item)} / ${text(job.total_items)}` : ""} />
+          <InfoRow label="Completed" value={job.completed_items} />
+          <InfoRow label="Failed" value={job.failed_items} />
+          <InfoRow label="Remaining" value={job.remaining_items} />
+          <InfoRow label="Child job" value={job.child_job_id} />
+          <InfoRow label="Stop on error" value={payload.stop_on_error} />
+        </div>
+      </Section>
+
+      <Section title="Albums">
+        <div className="space-y-3">
+          {entries.map((entry, index) => {
+            const result = asRecord(entry.result);
+            const state = String(entry.state || "").toLowerCase();
+            return (
+              <div key={`${entry.item_number || index + 1}-${entry.child_job_id || entry.title}`} className="rounded-lg border bg-background/35 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {text(entry.item_number || index + 1)}. {text(entry.title, `Album ${index + 1}`)}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      job {text(entry.child_job_id)}
+                    </p>
+                  </div>
+                  <Badge variant={state === "failed" ? "destructive" : state === "succeeded" ? "default" : "outline"}>
+                    {text(entry.status || entry.state)}
+                  </Badge>
+                </div>
+                {Number.isFinite(Number(entry.progress)) && (
+                  <Progress value={Math.max(0, Math.min(100, Number(entry.progress)))} className="mt-2 h-1" />
+                )}
+                {Boolean(entry.error) && (
+                  <p className="mt-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                    {text(entry.error)}
+                  </p>
+                )}
+                {Object.keys(result).length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <InfoRow label="Album family" value={result.album_family_id} />
+                    <InfoRow label="Tracks ready" value={result.completed_track_count || asArray(result.tracks).length} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function LoraBenchmarkDetails({
   job,
   log,
@@ -1436,6 +1561,79 @@ function LoraSweepDetails({
   );
 }
 
+function LoraSweepBatchDetails({
+  job,
+  log,
+}: {
+  job: JsonRecord;
+  log: string;
+}) {
+  const payload = asRecord(job.payload);
+  const entries = asArray(job.entries).map(asRecord);
+  const logs = log ? log.split("\n") : asArray(job.logs).map((item) => text(item, "")).filter(Boolean);
+  return (
+    <div className="space-y-4">
+      <Section title="Batch setup" icon={ListMusic}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <InfoRow label="Batch title" value={job.batch_title || payload.batch_title} />
+          <InfoRow label="Current sweep" value={job.current_item ? `${text(job.current_item)} / ${text(job.total_items)}` : ""} />
+          <InfoRow label="Completed" value={job.completed_items} />
+          <InfoRow label="Failed" value={job.failed_items} />
+          <InfoRow label="Remaining" value={job.remaining_items} />
+          <InfoRow label="Child job" value={job.child_job_id} />
+          <InfoRow label="Stop on error" value={payload.stop_on_error} />
+        </div>
+      </Section>
+
+      <Section title="Sweeps">
+        <div className="space-y-3">
+          {entries.map((entry, index) => {
+            const result = asRecord(entry.result);
+            const state = String(entry.state || "").toLowerCase();
+            return (
+              <div key={`${entry.item_number || index + 1}-${entry.child_job_id || entry.title}`} className="rounded-lg border bg-background/35 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {text(entry.item_number || index + 1)}. {text(entry.title, `Sweep ${index + 1}`)}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      job {text(entry.child_job_id)}
+                    </p>
+                  </div>
+                  <Badge variant={state === "failed" ? "destructive" : state === "succeeded" ? "default" : "outline"}>
+                    {text(entry.status || entry.state)}
+                  </Badge>
+                </div>
+                {Number.isFinite(Number(entry.progress)) && (
+                  <Progress value={Math.max(0, Math.min(100, Number(entry.progress)))} className="mt-2 h-1" />
+                )}
+                {Boolean(entry.error) && (
+                  <p className="mt-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                    {text(entry.error)}
+                  </p>
+                )}
+                {Object.keys(result).length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <InfoRow label="Sweep state" value={result.state} />
+                    <InfoRow label="Sweep title" value={result.sweep_title} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      <Section title="Log tail" icon={ScrollText}>
+        <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          {logs.join("\n") || "Nog geen logregels beschikbaar."}
+        </pre>
+      </Section>
+    </div>
+  );
+}
+
 function GenericDetails({ job }: { job: JsonRecord }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -1536,6 +1734,23 @@ function JobDetailsDialog({
           metadata: next,
           error: text(next.error || asArray(next.errors)[0], ""),
         });
+      } else if (job.kind === "album-batch") {
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/album-batches/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/album-batches/jobs/${encodeURIComponent(job.id)}/log`);
+        const next = asRecord(jobResp.job);
+        setRemoteJob(next);
+        if (nextLog !== null) setLog(nextLog);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
+          metadata: next,
+          error: text(next.error || asArray(next.errors)[0], ""),
+        });
       } else if (job.kind === "lora-benchmark") {
         const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
           job.detailsPath || `/api/lora/benchmarks/jobs/${encodeURIComponent(job.id)}`,
@@ -1558,6 +1773,23 @@ function JobDetailsDialog({
           job.detailsPath || `/api/lora/sweeps/jobs/${encodeURIComponent(job.id)}`,
         );
         const nextLog = await getOptionalLog(job.logPath || `/api/lora/sweeps/jobs/${encodeURIComponent(job.id)}/log`);
+        const next = asRecord(jobResp.job);
+        setRemoteJob(next);
+        if (nextLog !== null) setLog(nextLog);
+        updateJob(job.id, {
+          progress: progressOf(job, next),
+          status: stageOf(job, next) || stateOf(job, next),
+          state: stateOf(job, next),
+          stage: stageOf(job, next),
+          updatedAt: next.updated_at ? text(next.updated_at) : Date.now(),
+          metadata: next,
+          error: text(next.error || asArray(next.errors)[0], ""),
+        });
+      } else if (job.kind === "lora-sweep-batch") {
+        const jobResp = await getWithRetry<{ success: boolean; job?: JsonRecord }>(
+          job.detailsPath || `/api/lora/sweep-batches/jobs/${encodeURIComponent(job.id)}`,
+        );
+        const nextLog = await getOptionalLog(job.logPath || `/api/lora/sweep-batches/jobs/${encodeURIComponent(job.id)}/log`);
         const next = asRecord(jobResp.job);
         setRemoteJob(next);
         if (nextLog !== null) setLog(nextLog);
@@ -1804,10 +2036,14 @@ function JobDetailsDialog({
             <GenerationDetails job={remote} log={log} />
           ) : job.kind === "song-batch" ? (
             <SongBatchDetails job={remote} log={log} />
+          ) : job.kind === "album-batch" ? (
+            <AlbumBatchDetails job={remote} log={log} />
           ) : job.kind === "lora-benchmark" ? (
             <LoraBenchmarkDetails job={remote} log={log} />
           ) : job.kind === "lora-sweep" ? (
             <LoraSweepDetails job={remote} log={log} />
+          ) : job.kind === "lora-sweep-batch" ? (
+            <LoraSweepBatchDetails job={remote} log={log} />
           ) : job.kind === "album" ? (
             <AlbumDetails job={remote} />
           ) : job.kind === "mflux" ? (
@@ -1861,12 +2097,14 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
     let cancelled = false;
     const hydrateRemoteJobs = async () => {
       try {
-        const [loraResult, generationResult, songBatchResult, loraBenchmarkResult, loraSweepResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
+        const [loraResult, generationResult, songBatchResult, albumBatchResult, loraBenchmarkResult, loraSweepResult, loraSweepBatchResult, mfluxResult, mlxVideoResult, albumResult, ollamaResult] = await Promise.allSettled([
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/generation/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/song-batches/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/album-batches/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/benchmarks/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/sweeps/jobs"),
+          api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/lora/sweep-batches/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mflux/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/mlx-video/jobs"),
           api.get<{ success: boolean; jobs?: JsonRecord[] }>("/api/album/jobs"),
@@ -1890,8 +2128,10 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
         const loraJobs = loraResult.status === "fulfilled" ? loraResult.value.jobs || [] : [];
         const generationJobs = generationResult.status === "fulfilled" ? generationResult.value.jobs || [] : [];
         const songBatchJobs = songBatchResult.status === "fulfilled" ? songBatchResult.value.jobs || [] : [];
+        const albumBatchJobs = albumBatchResult.status === "fulfilled" ? albumBatchResult.value.jobs || [] : [];
         const loraBenchmarkJobs = loraBenchmarkResult.status === "fulfilled" ? loraBenchmarkResult.value.jobs || [] : [];
         const loraSweepJobs = loraSweepResult.status === "fulfilled" ? loraSweepResult.value.jobs || [] : [];
+        const loraSweepBatchJobs = loraSweepBatchResult.status === "fulfilled" ? loraSweepBatchResult.value.jobs || [] : [];
         const mfluxJobs = mfluxResult.status === "fulfilled" ? mfluxResult.value.jobs || [] : [];
         const mlxVideoJobs = mlxVideoResult.status === "fulfilled" ? mlxVideoResult.value.jobs || [] : [];
         const albumJobs = albumResult.status === "fulfilled" ? albumResult.value.jobs || [] : [];
@@ -1924,6 +2164,13 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromSongBatch(rawJob));
         }
+        for (const rawJob of albumBatchJobs) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
+          addJob(jobPatchFromAlbumBatch(rawJob));
+        }
         for (const rawJob of loraBenchmarkJobs) {
           const id = text(rawJob.id, "");
           if (!id) continue;
@@ -1937,6 +2184,13 @@ export function JobTracker({ compact = false }: { compact?: boolean }) {
           reviveDismissedIfActive(rawJob, id);
           if (shouldSkipRemoteJob(rawJob, id)) continue;
           addJob(jobPatchFromLoraSweep(rawJob));
+        }
+        for (const rawJob of loraSweepBatchJobs) {
+          const id = text(rawJob.id, "");
+          if (!id) continue;
+          reviveDismissedIfActive(rawJob, id);
+          if (shouldSkipRemoteJob(rawJob, id)) continue;
+          addJob(jobPatchFromLoraSweepBatch(rawJob));
         }
         for (const rawJob of mfluxJobs) {
           const id = text(rawJob.id, "");

@@ -357,6 +357,32 @@ class MfluxManagerTests(unittest.TestCase):
         self.assertEqual(summary["caption_count"], 1)
         self.assertEqual(summary["missing_caption_count"], 1)
 
+    def test_list_jobs_marks_stale_running_job_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jobs_dir = root / "jobs"
+            jobs_dir.mkdir()
+            (jobs_dir / "stale.json").write_text(
+                json.dumps(
+                    {
+                        "id": "stale",
+                        "state": "running",
+                        "status": "running",
+                        "stage": "rendering",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(mflux_manager, "MFLUX_JOBS_DIR", jobs_dir):
+                jobs = mflux_manager.mflux_list_jobs()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["state"], "failed")
+        self.assertEqual(jobs[0]["stage"], "Interrupted by app restart")
+        self.assertEqual(jobs[0]["error"], "Interrupted by app restart")
+        self.assertTrue(jobs[0]["finished_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

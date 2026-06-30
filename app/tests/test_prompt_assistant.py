@@ -48,7 +48,67 @@ class PromptAssistantTest(unittest.TestCase):
         self.assertIn("genre_execution_contract", prompt)
         self.assertIn("lyric_technique_report", prompt)
         self.assertIn("AVAILABLE LORA CATALOG", prompt)
+        self.assertIn("RAP QUALITY GATE", prompt)
+        self.assertIn("remaining blockers", prompt)
         self.assertIn(acejam_app.PROMPT_KIT_VERSION, prompt)
+
+    def test_prompt_assistant_staged_rap_request_runs_audit_and_rewrite(self):
+        responses = iter([
+            json.dumps({"payload": {"song_intent": {"genre_family": "rap"}, "caption": "rap, hard drums", "tags": "rap, hard drums"}}),
+            json.dumps({"payload": {"title": "Pressure Test", "lyrics": "[Verse - rap]\nweak bar one\nweak bar two", "vocal_language": "en"}}),
+            json.dumps({"payload": {"rap_quality_report": {"blocking_issues": ["weak internal rhyme density", "punchlines lack setup"]}, "rap_blocking_issues": ["weak internal rhyme density", "punchlines lack setup"], "rap_revision_focus": ["increase multis", "add setup/payoff"], "rap_rewrite_status": "rewrite_required"}}),
+            json.dumps({"payload": {"lyrics": "[Verse - rap]\nchrome in the dome with a poem in the tone\nstone-cold control when I load up the zone", "rap_strengths": ["dense internal rhyme", "clear setup/payoff"], "rap_rewrite_status": "rewritten_once"}}),
+            json.dumps({"payload": {"rap_quality_report": {"blocking_issues": [], "strengths": ["dense internal rhyme", "performable cadence"]}, "rap_blocking_issues": [], "rap_strengths": ["dense internal rhyme", "performable cadence"], "rap_revision_focus": [], "rap_rewrite_status": "passed_after_rewrite"}}),
+            json.dumps({"payload": {"lyrics": "[Verse - rap]\nchrome in the dome with a poem in the tone\nstone-cold control when I load up the zone", "rap_blocking_issues": [], "rap_strengths": ["dense internal rhyme", "performable cadence"], "rap_rewrite_status": "rewritten_twice"}}),
+            json.dumps({"payload": {"rap_quality_report": {"blocking_issues": [], "strengths": ["dense internal rhyme", "performable cadence"]}, "rap_blocking_issues": [], "rap_strengths": ["dense internal rhyme", "performable cadence"], "rap_revision_focus": [], "rap_rewrite_status": "passed_after_rewrite"}}),
+            json.dumps({"payload": {"task_type": "text2music", "song_model": "acestep-v15-xl-sft", "quality_profile": "chart_master"}}),
+        ])
+
+        def fake_run(*_args, **_kwargs):
+            return next(responses)
+
+        with patch.object(acejam_app, "_run_prompt_assistant_local", side_effect=fake_run):
+            raw = acejam_app._run_prompt_assistant_local_staged(
+                "system",
+                "write a hard rap song",
+                "ollama",
+                "qwen-test",
+                {},
+                {},
+                mode="custom",
+                prompt_preset="hiphop",
+            )
+
+        data = json.loads(raw)
+        self.assertTrue(data["multi_pass"])
+        self.assertIn("rap_quality_audit_1", data["stage_payloads"])
+        self.assertIn("rap_quality_rewrite_1", data["stage_payloads"])
+        self.assertEqual(data["payload"]["rap_blocking_issues"], [])
+        self.assertTrue(data["payload"]["payload_gate_passed"])
+        self.assertEqual(data["payload"]["rap_rewrite_status"], "passed_after_rewrite")
+        self.assertIn("chrome in the dome", data["payload"]["lyrics"])
+
+    def test_validate_generation_payload_blocks_failed_rap_gate(self):
+        validation = acejam_app._validate_generation_payload(
+            {
+                "task_type": "text2music",
+                "title": "Blocked Rap",
+                "artist_name": "Atlas",
+                "caption": "rap, hard drums, dark bass, aggressive vocal",
+                "tags": "rap, hard drums, dark bass, aggressive vocal",
+                "lyrics": "[Verse - rap]\nplain line\nplain line",
+                "song_model": "acestep-v15-xl-sft",
+                "quality_profile": "chart_master",
+                "vocal_language": "en",
+                "rap_blocking_issues": ["too many filler bars", "weak internal rhyme density"],
+                "rap_rewrite_status": "blocked_after_rewrites",
+            }
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("Rap quality gate failed", validation["field_errors"]["lyrics"])
+        self.assertIn("too many filler bars", validation["blocking_issues"])
+        self.assertEqual(validation["payload_gate_status"], "rap_quality_blocked")
 
     def test_prompt_assistant_genre_preset_rejects_unsupported_mode(self):
         with self.assertRaisesRegex(ValueError, "not available for cover mode"):
@@ -560,7 +620,7 @@ ACEJAM_PAYLOAD_JSON
         with patch.object(acejam_app, "_run_prompt_assistant_local", side_effect=[stage_intent, stage_writing, stage_render]) as runner:
             response = client.post(
                 "/api/prompt-assistant/run",
-                json={"mode": "custom", "user_prompt": "make a coherent glitch rap song", "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
+                json={"mode": "custom", "user_prompt": "make a coherent dark synth song", "planner_lm_provider": "lmstudio", "planner_model": "local-qwen"},
             )
 
         self.assertEqual(response.status_code, 200)

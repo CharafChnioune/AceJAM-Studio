@@ -20,13 +20,11 @@ export function normalizePasteBlocks(value: unknown): PasteBlock[] {
     return value
       .map((item, index): PasteBlock | undefined => {
         if (typeof item === "string") {
-          const content = item.trim();
-          return content ? { label: `Block ${index + 1}`, content } : undefined;
+          return { label: `Block ${index + 1}`, content: item };
         }
         if (item && typeof item === "object") {
           const record = item as Record<string, unknown>;
-          const content = String(record.content ?? record.text ?? "").trim();
-          if (!content) return undefined;
+          const content = String(record.content ?? record.text ?? "");
           const label = String(
             record.label ?? record.title ?? `Block ${index + 1}`,
           ).trim();
@@ -36,8 +34,8 @@ export function normalizePasteBlocks(value: unknown): PasteBlock[] {
       })
       .filter((item): item is PasteBlock => Boolean(item));
   }
-  if (typeof value === "string" && value.trim()) {
-    return [{ label: "Paste block", content: value.trim() }];
+  if (typeof value === "string") {
+    return [{ label: "Paste block", content: value }];
   }
   return [];
 }
@@ -47,8 +45,11 @@ interface WizardSlice {
   prompts: Record<string, string>;
   promptPresets: Record<string, string | undefined>;
   payloads: Record<string, Record<string, unknown> | undefined>;
+  validations: Record<string, Record<string, unknown> | undefined>;
   warnings: Record<string, string[] | undefined>;
   pasteBlocks: Record<string, PasteBlock[] | undefined>;
+  companions: Record<string, Record<string, unknown> | undefined>;
+  queues: Record<string, Record<string, unknown>[] | undefined>;
   /** Persisted form values per wizard mode. */
   drafts: Record<string, Record<string, unknown> | undefined>;
   /** Last successful generation result per mode (audio + metadata) */
@@ -64,7 +65,10 @@ interface WizardSlice {
     data: {
       payload?: Record<string, unknown>;
       warnings?: unknown;
+      validation?: Record<string, unknown> | null;
       paste_blocks?: unknown;
+      companion?: Record<string, unknown> | null;
+      queue?: Record<string, unknown>[] | null;
     },
   ) => void;
   setResult: (mode: string, result: Record<string, unknown>) => void;
@@ -107,8 +111,11 @@ export const useWizardStore = create<WizardSlice>()(
       prompts: {},
       promptPresets: {},
       payloads: {},
+      validations: {},
       warnings: {},
       pasteBlocks: {},
+      companions: {},
+      queues: {},
       drafts: {},
       lastResult: {},
       setPrompt: (mode, value) =>
@@ -134,8 +141,17 @@ export const useWizardStore = create<WizardSlice>()(
       setHydration: (mode, data) =>
         set((s) => ({
           payloads: { ...s.payloads, [mode]: data.payload },
+          validations: { ...s.validations, [mode]: data.validation ?? undefined },
           warnings: { ...s.warnings, [mode]: normalizeWarnings(data.warnings) },
           pasteBlocks: { ...s.pasteBlocks, [mode]: normalizePasteBlocks(data.paste_blocks) },
+          companions: {
+            ...s.companions,
+            [mode]: data.companion && Object.keys(data.companion).length > 0 ? data.companion : undefined,
+          },
+          queues: {
+            ...s.queues,
+            [mode]: data.queue && data.queue.length > 0 ? data.queue : undefined,
+          },
         })),
       setResult: (mode, result) =>
         set((s) => ({ lastResult: { ...s.lastResult, [mode]: result } })),
@@ -144,22 +160,28 @@ export const useWizardStore = create<WizardSlice>()(
           prompts: { ...s.prompts, [mode]: "" },
           promptPresets: { ...s.promptPresets, [mode]: undefined },
           payloads: { ...s.payloads, [mode]: undefined },
+          validations: { ...s.validations, [mode]: undefined },
           warnings: { ...s.warnings, [mode]: undefined },
           pasteBlocks: { ...s.pasteBlocks, [mode]: undefined },
+          companions: { ...s.companions, [mode]: undefined },
+          queues: { ...s.queues, [mode]: undefined },
           drafts: { ...s.drafts, [mode]: undefined },
           lastResult: { ...s.lastResult, [mode]: undefined },
         })),
     }),
     {
       name: "acejam-wizard-state",
-      version: 3,
+      version: 5,
       migrate: (state) => migratePersistedAudioDefaults(state) as WizardSlice,
       partialize: (state) => ({
         prompts: state.prompts,
         promptPresets: state.promptPresets,
         payloads: state.payloads,
+        validations: state.validations,
         warnings: state.warnings,
         pasteBlocks: state.pasteBlocks,
+        companions: state.companions,
+        queues: state.queues,
         drafts: state.drafts,
       }),
     },

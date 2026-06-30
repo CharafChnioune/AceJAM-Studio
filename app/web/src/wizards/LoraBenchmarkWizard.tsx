@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
+import { MusicQueueEditor } from "@/components/wizard/MusicQueueEditor";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationAudioList } from "@/components/wizard/GenerationAudioList";
 import { RenderInsightPanel } from "@/components/wizard/RenderInsightPanel";
@@ -34,6 +35,7 @@ import {
 import { toast } from "@/components/ui/sonner";
 import {
   getLoraAdapters,
+  startLoraSweepBatchJob,
   getLoraSweepJob,
   startLoraSweepJob,
   type LoraAdapter,
@@ -50,6 +52,7 @@ import {
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { isGenerationLoraAdapter, loraAdapterLabel, loraTriggerOptions } from "@/lib/lora";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
+import { extractPromptCompanion, mergePayloadWithCompanion, stripPromptCompanion, summarizeQueueEntry } from "@/lib/musicQueue";
 import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useJobsStore } from "@/store/jobs";
@@ -370,8 +373,12 @@ export function LoraSweepWizard() {
   const addJob = useJobsStore((s) => s.addJob);
   const openJob = useJobsStore((s) => s.openJob);
   const setResult = useWizardStore((s) => s.setResult);
+  const setPasteBlocks = useWizardStore((s) => s.setPasteBlocks);
   const lastResult = useWizardStore((s) => s.lastResult[MODE]);
   const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
+  const storedQueue = useWizardStore((s) => s.queues[MODE]) ?? [];
+  const storedCompanion = useWizardStore((s) => s.companions[MODE]) ?? {};
+  const setHydration = useWizardStore((s) => s.setHydration);
   const draft = useWizardStore((s) => s.drafts[MODE]);
   const defaults = React.useMemo<CustomFormValues>(
     () => ({
@@ -408,6 +415,9 @@ export function LoraSweepWizard() {
 
   const [step, setStep] = React.useState(0);
   const [isStarting, setIsStarting] = React.useState(false);
+  const [queue, setQueue] = React.useState<Record<string, unknown>[]>(storedQueue);
+  const [editingQueueIndex, setEditingQueueIndex] = React.useState(-1);
+  const [companion, setCompanion] = React.useState<Record<string, unknown>>(storedCompanion);
   const [includeBaseline, setIncludeBaseline] = React.useState(false);
   const [loraScale, setLoraScale] = React.useState(1);
   const [selectedAdapterPaths, setSelectedAdapterPaths] = React.useState<string[]>([]);
@@ -508,6 +518,7 @@ export function LoraSweepWizard() {
   };
 
   const hydrate = (payload: Record<string, unknown>) => {
+    setCompanion(extractPromptCompanion(payload));
     const next: Partial<CustomFormValues> = normalizeLoraSweepHydrationPayload(payload);
     for (const [k, v] of Object.entries(payload)) {
       if (k in form.getValues() || k === "simple_description") {
@@ -524,6 +535,8 @@ export function LoraSweepWizard() {
     draftState.saveNow(merged);
     return merged;
   };
+
+  const buildCompanion = React.useCallback(() => ({ ...companion }), [companion]);
 
   const buildPayload = () => {
     const v = form.getValues();
@@ -575,28 +588,131 @@ export function LoraSweepWizard() {
     };
   };
 
+  const buildSweepRequest = React.useCallback(() => ({
+    sweep_title: form.getValues("title") || "LoRA Sweep",
+    adapter_paths: selectedAdapters.map((adapter) => adapter.path),
+    selected_adapters: selectedAdapters.map((adapter) => ({
+      path: adapter.path,
+      name: loraAdapterLabel(adapter),
+    })),
+    render_payload: buildPayload(),
+    variant_count: form.getValues("batch_size"),
+    include_baseline: includeBaseline,
+    lora_scale: loraScale,
+    trigger_mode: "auto",
+    stop_on_error: false,
+  }), [buildPayload, form, includeBaseline, loraScale, selectedAdapters]);
+
+  const buildDraftPayload = React.useCallback(
+    () => mergePayloadWithCompanion(buildSweepRequest(), buildCompanion()),
+    [buildCompanion, buildSweepRequest],
+  );
+
+  const syncQueueState = React.useCallback(
+    (nextQueue: Record<string, unknown>[]) => {
+      setQueue(nextQueue);
+      setHydration(MODE, {
+        payload: buildSweepRequest(),
+        warnings,
+        companion: buildCompanion(),
+        queue: nextQueue,
+      });
+    },
+    [buildCompanion, buildSweepRequest, setHydration, warnings],
+  );
+
+  const resetForNextDraft = React.useCallback(() => {
+    const current = form.getValues();
+    const next: CustomFormValues = {
+      ...current,
+      title: "",
+      artist_name: "",
+      caption: "",
+      style_profile: "auto",
+      tags: "",
+      negative_tags: "",
+      lyrics: undefined,
+      art_prompt: "",
+      video_prompt: "",
+      payload_gate_status: "",
+      payload_gate_passed: false,
+      payload_gate_blocking_issues: [],
+      payload_quality_gate: {},
+      rap_quality_report: {},
+      rap_rewrite_status: "",
+      rap_blocking_issues: [],
+      rap_strengths: [],
+      rap_revision_focus: [],
+    };
+    form.reset(next);
+    setCompanion({});
+    setEditingQueueIndex(-1);
+    draftState.saveNow(next);
+    setPasteBlocks(MODE, [{ label: "Huidige wizard JSON", content: "" }]);
+  }, [draftState, form, setPasteBlocks]);
+
+  const addCurrentToQueue = React.useCallback(() => {
+    const entry = buildDraftPayload();
+    const nextQueue = [...queue];
+    if (editingQueueIndex >= 0 && editingQueueIndex < nextQueue.length) {
+      nextQueue[editingQueueIndex] = entry;
+    } else {
+      nextQueue.push(entry);
+    }
+    syncQueueState(nextQueue);
+    resetForNextDraft();
+  }, [buildDraftPayload, editingQueueIndex, queue, resetForNextDraft, syncQueueState]);
+
+  const queueItemsForSubmit = React.useMemo(() => {
+    const current = buildDraftPayload();
+    if (editingQueueIndex >= 0) {
+      return queue.map((item, index) => (index === editingQueueIndex ? current : item));
+    }
+    const hasMeaningfulDraft =
+      Boolean((values.title ?? "").trim()) ||
+      Boolean((values.caption ?? "").trim()) ||
+      Boolean((values.tags ?? "").trim()) ||
+      Boolean((values.lyrics ?? "").trim()) ||
+      selectedAdapters.length > 0;
+    return hasMeaningfulDraft ? [...queue, current] : queue;
+  }, [buildDraftPayload, editingQueueIndex, queue, selectedAdapters.length, values.caption, values.lyrics, values.tags, values.title]);
+
   const handleFinish = async () => {
     setIsStarting(true);
     try {
+      const queued = queueItemsForSubmit;
+      if (queued.length > 1) {
+        const resp = await startLoraSweepBatchJob({
+          batch_title: values.title || "Queued LoRA sweeps",
+          stop_on_error: false,
+          sweeps: queued.map((item) => stripPromptCompanion(item)),
+        });
+        if (!resp.success || !resp.job_id) throw new Error(resp.error || "LoRA sweep queue starten mislukt");
+        addJob({
+          id: resp.job_id,
+          kind: "lora-sweep-batch",
+          label: values.title || "LoRA sweep batch",
+          progress: resp.job?.progress || 0,
+          status: resp.job?.status || resp.job?.state || "queued",
+          state: resp.job?.state || "queued",
+          stage: resp.job?.stage || "",
+          kindLabel: "LoRA sweep batch",
+          detailsPath: `/api/lora/sweep-batches/jobs/${encodeURIComponent(resp.job_id)}`,
+          logPath: `/api/lora/sweep-batches/jobs/${encodeURIComponent(resp.job_id)}/log`,
+          metadata: (resp.job as Record<string, unknown> | undefined) ?? {},
+          error: resp.error || "",
+          startedAt: Date.now(),
+          deletePath: `/api/lora/sweep-batches/jobs/${encodeURIComponent(resp.job_id)}`,
+        });
+        openJob(resp.job_id);
+        toast.success("LoRA sweep queue gestart.");
+        return;
+      }
       if (!selectedAdapters.length && !includeBaseline) {
         toast.error("Kies minstens één LoRA of zet de baseline aan.");
         return;
       }
-      const payload = buildPayload();
-      const resp = await startLoraSweepJob({
-        sweep_title: values.title || "LoRA Sweep",
-        adapter_paths: selectedAdapters.map((adapter) => adapter.path),
-        selected_adapters: selectedAdapters.map((adapter) => ({
-          path: adapter.path,
-          name: loraAdapterLabel(adapter),
-        })),
-        render_payload: payload,
-        variant_count: values.batch_size,
-        include_baseline: includeBaseline,
-        lora_scale: loraScale,
-        trigger_mode: "auto",
-        stop_on_error: false,
-      });
+      const resp = await startLoraSweepJob(buildSweepRequest());
       if (!resp.success || !resp.job_id) throw new Error(resp.error || "LoRA Sweep starten mislukt");
       const job = resp.job || ({ id: resp.job_id, sweep_title: values.title || "LoRA Sweep", state: "queued" } as LoraSweepJob);
       setActiveJob(job);
@@ -999,6 +1115,17 @@ export function LoraSweepWizard() {
               render_payload: buildPayload(),
             }}
             warnings={warnings}
+            blockingIssues={reviewBlockers}
+            queueSummary={{
+              queuedItems: queue.length,
+              totalRenders: queueItemsForSubmit.reduce((sum, item) => {
+                const adapterCount = Array.isArray(item.selected_adapters) ? item.selected_adapters.length : Number(item.selected_lora_count || 0);
+                const variantCount = Number(item.variant_count || 1);
+                const baselineCount = item.include_baseline ? variantCount : 0;
+                return sum + adapterCount * variantCount + baselineCount;
+              }, 0),
+            }}
+            companion={buildCompanion()}
             primaryFields={[
               { key: "sweep_title", label: "Sweep" },
               { key: "variant_count", label: "Variaties per LoRA" },
@@ -1009,6 +1136,49 @@ export function LoraSweepWizard() {
               { key: "render_payload.song_model", label: "Fallback model" },
               { key: "render_payload.audio_backend", label: "Backend", format: audioBackendLabel },
             ]}
+          />
+          <MusicQueueEditor
+            items={queueItemsForSubmit.map((item, index) => summarizeQueueEntry(item, `Sweep ${index + 1}`))}
+            activeIndex={editingQueueIndex}
+            onSelect={(index) => {
+              const selected = queueItemsForSubmit[index];
+              if (!selected) return;
+              setEditingQueueIndex(index < queue.length ? index : -1);
+              setCompanion(extractPromptCompanion(selected));
+              const renderPayload =
+                selected.render_payload && typeof selected.render_payload === "object" && !Array.isArray(selected.render_payload)
+                  ? (selected.render_payload as Record<string, unknown>)
+                  : selected;
+              hydrate(renderPayload);
+              setPasteBlocks(MODE, [
+                { label: "Huidige wizard JSON", content: JSON.stringify(selected, null, 2) },
+              ]);
+              setIncludeBaseline(Boolean(selected.include_baseline));
+              setLoraScale(Number(selected.lora_scale || 1));
+              const adapterPaths = Array.isArray(selected.adapter_paths)
+                ? selected.adapter_paths.map((value) => String(value))
+                : [];
+              if (adapterPaths.length > 0) setSelectedAdapterPaths(adapterPaths);
+            }}
+            onRemove={(index) => {
+              const nextQueue = queue.filter((_, itemIndex) => itemIndex !== index);
+              syncQueueState(nextQueue);
+              if (editingQueueIndex === index) setEditingQueueIndex(-1);
+            }}
+            onDuplicate={(index) => {
+              const selected = queueItemsForSubmit[index];
+              if (!selected) return;
+              const nextQueue = [...queue, selected];
+              syncQueueState(nextQueue);
+            }}
+            onMove={(from, direction) => {
+              const nextQueue = [...queue];
+              const to = from + direction;
+              if (from < 0 || from >= nextQueue.length || to < 0 || to >= nextQueue.length) return;
+              const [item] = nextQueue.splice(from, 1);
+              nextQueue.splice(to, 0, item);
+              syncQueueState(nextQueue);
+            }}
           />
           {reviewBlockers.length > 0 && (
             <FieldGroup title="Start blokkades">
@@ -1132,7 +1302,12 @@ export function LoraSweepWizard() {
       onStepChange={setStep}
       onFinish={handleFinish}
       isFinishing={isStarting || Boolean(activeJob && !TERMINAL_STATES.has(String(activeJob.state || "").toLowerCase()))}
-      finishLabel={isStarting ? "Start…" : "Start LoRA Sweep"}
+      finishLabel={isStarting ? "Start…" : queueItemsForSubmit.length > 1 ? "Start sweep queue" : "Start LoRA Sweep"}
+      secondaryFinishAction={{
+        label: editingQueueIndex >= 0 ? "Werk queue-item bij" : "Nog een toevoegen",
+        onClick: addCurrentToQueue,
+        disabled: !canStartSweep || isStarting,
+      }}
     />
   );
 }

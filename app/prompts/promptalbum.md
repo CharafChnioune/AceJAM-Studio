@@ -176,12 +176,20 @@ User-provided album spec — LOCK these fields verbatim, do not paraphrase:
 - `num_tracks` MUST equal the user's track count. If they list 10 tracks, set `num_tracks: 10` and produce all 10 in `tracks[]`.
 
 Caption/tag rules: per track build a 12-24 tag stack from the **ACE-Step Tag Library** appended to this system prompt at runtime. Vary the stacks across tracks while keeping one sonic identity. Follow the **ACE-Step Authoring Rules** verbatim — single-dash modifier syntax in lyrics only, parentheses-for-background-vocals, no BPM/key/time-signature in caption, no standalone vocal-technique or energy/emotion brackets in lyrics (those words go comma-separated in the tags field).
+Important SFX rule: per track, production sound effects belong in caption/tags,
+not as made-up lyric tags. If a track needs gunshots, sirens, rewinds, crowd
+noise, airhorns, bomb drops, glass breaks, or radio chatter, encode them as
+sound-design cues like `gunshot stabs`, `police siren texture`, `vinyl rewind
+FX`, `crowd chant`, `radio chatter intro`. Put them in lyrics only when a
+voice is actually vocalizing them in parentheses.
 
 Every track must be render-ready before output. Do not return concepts-only tracks. Every non-instrumental `tracks[]` item needs final `caption`, `tags`, `negative_tags`, `bpm`, `key_scale`, `time_signature`, `duration`, `song_model`, `audio_backend`, `inference_steps`, `shift`, `guidance_scale`, LoRA fields, and full lyrics with section tags.
 
 Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 tags from that entry. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each cookbook entry and merge.
 
 Rap requests: pair caption-side rap cue (Rap, Trap Flow, Spoken Word, Melodic Rap) with section tag `[Verse - rap]`. Use the **Rap-Mode Cookbook** appended to this prompt for ad-lib placement, hook structure, line length, and rap caption stack template.
+
+Hard rap quality gate: for rap tracks, keep rewriting internally until the verses show heavy multisyllabic rhyme, dense internal rhyme, varied rhyme schemes, setup/payoff punchlines, layered wordplay, alliteration, assonance, high syllable density with clear cadence, and zero filler bars. Every rap line needs a job and weak bars must be rewritten.
 
 Always use negative_tags to fight: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, repetitive chorus, contradictory style.
 

@@ -98,6 +98,14 @@ GANGSTER RAP WRITING RULES
 7. Ad-libs should behave like emphasis weapons, not decorative noise.
 8. line_intent_map must expose the job of each line: threat, flex, warning,
    humiliation, mob energy, street detail, or payoff.
+9. Use dense internal rhyme and multis across bars so the aggression sounds
+   crafted, not just loud.
+10. Punchlines must have setup and spacing. Cold disrespect lands harder when
+    the bar earns its payoff.
+11. Vary rhyme schemes and cadence pressure by section so the record keeps
+    escalating instead of looping one texture.
+12. Keep rewriting internally until every verse sounds dangerous, quotable, and
+    technically sharp out loud.
 
 GANGSTER RAP ANALYSIS EXPECTATIONS
 

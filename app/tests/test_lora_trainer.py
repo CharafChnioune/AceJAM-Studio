@@ -93,6 +93,24 @@ class ResumeTrainingManager(AuditionTrainingManager):
         return None
 
 
+class OomRetryTrainingManager(AuditionTrainingManager):
+    def __init__(self, *args, **kwargs):
+        self.offload_retry_seen = False
+        super().__init__(*args, **kwargs)
+
+    def _run_command_step(self, job_id, command, log_path, *, stage):
+        self.commands.append((stage, list(command)))
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        if "--offload-encoder" not in command:
+            raise RuntimeError("[FAIL] Training failed: MPS backend out of memory while allocating attention")
+        self.offload_retry_seen = True
+        epoch = int(command[command.index("--epochs") + 1])
+        checkpoint = output_dir / "checkpoints" / f"epoch_{epoch}_loss_0.1000"
+        checkpoint.mkdir(parents=True, exist_ok=True)
+        self._append_log(log_path, f"{stage}\n")
+        return {"loss_samples": [{"loss": 0.1, "line": "Loss: 0.1000"}], "last_loss": 0.1}
+
+
 class ImmediateThread:
     def __init__(self, target, args=(), daemon=None):
         self.target = target
@@ -114,6 +132,26 @@ class FakeNanProcess:
 
     def wait(self):
         return -15 if self.terminated else 0
+
+
+class FakeTrainingFailedProcess:
+    pid = 67890
+
+    def __init__(self):
+        self.stdout = iter(
+            [
+                "Training failed\n",
+                "[FAIL] Training failed: MPS backend out of memory while allocating attention\n",
+                "\n============================================================\n",
+                "  TRAINING FAILED -- 0 steps executed\n",
+            ]
+        )
+
+    def terminate(self):
+        return None
+
+    def wait(self):
+        return 0
 
 
 class LoraTrainerTest(unittest.TestCase):
@@ -1055,6 +1093,108 @@ class LoraTrainerTest(unittest.TestCase):
         self.assertIsNone(parse_training_loss_line("Loss: nan"))
         self.assertEqual(parse_checkpoint_loss(Path("epoch_2_loss_0.8726")), 0.8726)
         self.assertEqual(parse_checkpoint_loss(Path("epoch_2_loss_0_8726")), 0.8726)
+
+    def test_run_command_step_raises_logged_training_failure_even_with_zero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            job = TrainingJob(
+                id="oomjob",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+            fake = FakeTrainingFailedProcess()
+
+            with patch("lora_trainer.subprocess.Popen", return_value=fake), \
+                self.assertRaisesRegex(RuntimeError, "MPS backend out of memory"):
+                manager._run_command_step("oomjob", ["python", "train.py"], Path(job.log_path), stage="train epoch 10/500")
+
+            self.assertIn("TRAINING FAILED -- 0 steps executed", Path(job.log_path).read_text(encoding="utf-8"))
+
+    def test_epoch_training_retries_mps_oom_once_with_encoder_offload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = OomRetryTrainingManager(
+                base_dir=root,
+                data_dir=root / "data",
+                model_cache_dir=root / "model_cache",
+            )
+            output_dir = root / "data" / "lora_training" / "unit"
+            job = TrainingJob(
+                id="retryjob",
+                kind="train",
+                state="queued",
+                created_at=utc_now(),
+                updated_at=utc_now(),
+                command=["python", "train.py"],
+                params={},
+                paths={},
+                log_path=str(root / "job.log"),
+            )
+            with manager._lock:
+                manager._write_job_unlocked(job)
+
+            manager._run_train_command_with_epoch_auditions(
+                "retryjob",
+                [
+                    "python",
+                    "train.py",
+                    "--output-dir",
+                    str(output_dir),
+                    "--epochs",
+                    "20",
+                    "--save-every",
+                    "10",
+                    "--device",
+                    "mlx",
+                    "--no-offload-encoder",
+                ],
+                output_dir,
+                Path(job.log_path),
+                epochs=20,
+                params={
+                    "adapter_type": "lora",
+                    "device": "mlx",
+                    "save_every_n_epochs": 10,
+                    "epoch_audition": {"enabled": True, "caption": "test", "lyrics": "[Verse]\nLine", "duration": 20, "every_n_epochs": 10},
+                },
+            )
+
+            stored = manager.get_job("retryjob")
+            self.assertTrue(manager.offload_retry_seen)
+            self.assertEqual(len(manager.commands), 3)
+            self.assertIn("--no-offload-encoder", manager.commands[0][1])
+            self.assertIn("--offload-encoder", manager.commands[1][1])
+            self.assertTrue(stored["params"]["offload_encoder"])
+            self.assertIn("retrying once with encoder offload enabled", Path(job.log_path).read_text(encoding="utf-8"))
+
+    def test_command_without_arg_keeps_following_flag_values_for_boolean_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = self.make_manager(root)
+            command = [
+                "python",
+                "train.py",
+                "--gradient-checkpointing",
+                "--no-offload-encoder",
+                "--num-workers",
+                "0",
+            ]
+
+            updated = manager._command_without_arg(command, "--no-offload-encoder")
+
+            self.assertEqual(
+                updated,
+                ["python", "train.py", "--gradient-checkpointing", "--num-workers", "0"],
+            )
 
     def test_epoch_training_stops_when_loss_plateaus_after_patience(self):
         with tempfile.TemporaryDirectory() as tmp:

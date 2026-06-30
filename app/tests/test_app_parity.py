@@ -6341,6 +6341,37 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual([song["state"] for song in job["songs"]], ["succeeded", "failed", "succeeded"])
         self.assertEqual(job["songs"][0]["audio_urls"], ["/media/results/child1/take.wav"])
 
+    def test_song_batch_snapshot_marks_stale_disk_job_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job_dir = root / "stalebatch"
+            job_dir.mkdir()
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": "stalebatch",
+                        "state": "running",
+                        "status": "Rendering",
+                        "stage": "rendering",
+                        "logs": ["still busy?"],
+                        "errors": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with acejam_app._song_batch_jobs_lock:
+                acejam_app._song_batch_jobs.clear()
+            with patch.object(acejam_app, "SONG_BATCHES_DIR", root):
+                job = acejam_app._song_batch_snapshot("stalebatch")
+            with acejam_app._song_batch_jobs_lock:
+                acejam_app._song_batch_jobs.clear()
+
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["stage"], "Interrupted by app restart")
+        self.assertEqual(job["error"], "Interrupted by app restart")
+        self.assertTrue(job["finished_at"])
+
     def test_lora_benchmark_body_expands_all_adapters_scales_and_baseline(self):
         with patch.object(acejam_app, "_validate_generation_payload", return_value={"valid": True, "field_errors": {}}):
             payload, attempts = acejam_app._normalise_lora_benchmark_body(
@@ -6971,6 +7002,38 @@ class AppParityTest(unittest.TestCase):
         self.assertEqual(job["results"][0]["variants"][0]["state"], "succeeded")
         self.assertEqual(job["results"][0]["variants"][1]["state"], "failed")
         self.assertEqual(job["results"][0]["variants"][1]["error"], "boom")
+
+    def test_lora_sweep_snapshot_marks_stale_disk_job_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job_dir = root / "stalesweep"
+            job_dir.mkdir()
+            (job_dir / "job.json").write_text(
+                json.dumps(
+                    {
+                        "id": "stalesweep",
+                        "kind": "lora_sweep",
+                        "state": "running",
+                        "status": "Rendering",
+                        "stage": "rendering",
+                        "logs": ["waiting on child"],
+                        "errors": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with acejam_app._lora_sweep_jobs_lock:
+                acejam_app._lora_sweep_jobs.clear()
+            with patch.object(acejam_app, "LORA_SWEEPS_DIR", root):
+                job = acejam_app._lora_sweep_snapshot("stalesweep")
+            with acejam_app._lora_sweep_jobs_lock:
+                acejam_app._lora_sweep_jobs.clear()
+
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["stage"], "Interrupted by app restart")
+        self.assertEqual(job["error"], "Interrupted by app restart")
+        self.assertTrue(job["finished_at"])
 
     def test_lora_sweep_list_endpoint_returns_compact_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:

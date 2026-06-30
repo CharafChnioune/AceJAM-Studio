@@ -95,6 +95,11 @@ DRILL WRITING RULES
 5. Verses should vary line length enough to keep momentum alive.
 6. Direct-address phrasing should feel tactical, not theatrical.
 7. line_intent_map must explain the attack role of each line.
+8. Dense internal rhyme and clipped multis should sharpen menace instead of
+   softening it.
+9. Punchlines, threats, and mocks need setup so the shock lands harder.
+10. Keep rewriting internally until the cadence feels dangerous and performable
+    out loud with no wasted bars.
 
 DRILL ANALYSIS EXPECTATIONS
 

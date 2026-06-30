@@ -90,6 +90,7 @@ export interface PromptAssistantRunRequest {
 export interface PromptAssistantRunResponse {
   success: boolean;
   payload?: Record<string, unknown>;
+  validation?: Record<string, unknown> | null;
   warnings?: string[] | string | null;
   paste_blocks?: Array<{ label?: string; content?: string; text?: string }> | string | null;
   prompt_preset?: string | null;
@@ -100,6 +101,9 @@ export interface PromptAssistantRunResponse {
 
 export const promptAssistantRun = (body: PromptAssistantRunRequest) =>
   api.post<PromptAssistantRunResponse>("/api/prompt-assistant/run", body);
+
+export const validatePayload = (body: Record<string, unknown>) =>
+  api.post<Record<string, unknown>>("/api/payload/validate", body);
 
 export interface PromptAssistantPreset {
   id: string;
@@ -386,6 +390,61 @@ export const getSongBatchJob = (jobId: string) =>
 export const listSongBatchJobs = () =>
   api.get<SongBatchJobResponse>("/api/song-batches/jobs");
 
+export interface AlbumBatchEntry {
+  index?: number;
+  item_number?: number;
+  title?: string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  payload?: Record<string, unknown>;
+  child_job_id?: string;
+  result?: Record<string, unknown> | null;
+  error?: string;
+}
+
+export interface AlbumBatchJob {
+  id: string;
+  kind?: "album_batch";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  batch_title?: string;
+  payload?: Record<string, unknown>;
+  entries?: AlbumBatchEntry[];
+  logs?: string[];
+  errors?: string[];
+  current_item?: number;
+  total_items?: number;
+  completed_items?: number;
+  failed_items?: number;
+  remaining_items?: number;
+  child_job_id?: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+}
+
+export interface AlbumBatchJobResponse {
+  success: boolean;
+  job_id?: string;
+  job?: AlbumBatchJob;
+  jobs?: AlbumBatchJob[];
+  error?: string;
+}
+
+export const startAlbumBatchJob = (body: Record<string, unknown>) =>
+  api.post<AlbumBatchJobResponse>("/api/album-batches/jobs", body);
+
+export const getAlbumBatchJob = (jobId: string) =>
+  api.get<AlbumBatchJobResponse>(`/api/album-batches/jobs/${encodeURIComponent(jobId)}`);
+
+export const listAlbumBatchJobs = () =>
+  api.get<AlbumBatchJobResponse>("/api/album-batches/jobs");
+
 // ---- LoRA benchmarks -----------------------------------------------------
 
 export interface LoraBenchmarkResult {
@@ -568,6 +627,61 @@ export const listLoraSweepJobs = () =>
 
 export const stopLoraSweepJob = (jobId: string) =>
   api.post<LoraSweepJobResponse>(`/api/lora/sweeps/jobs/${encodeURIComponent(jobId)}/stop`, {});
+
+export interface LoraSweepBatchEntry {
+  index?: number;
+  item_number?: number;
+  title?: string;
+  state?: string;
+  status?: string;
+  progress?: number;
+  payload?: Record<string, unknown>;
+  child_job_id?: string;
+  result?: Record<string, unknown> | null;
+  error?: string;
+}
+
+export interface LoraSweepBatchJob {
+  id: string;
+  kind?: "lora_sweep_batch";
+  state?: string;
+  status?: string;
+  stage?: string;
+  progress?: number;
+  batch_title?: string;
+  payload?: Record<string, unknown>;
+  entries?: LoraSweepBatchEntry[];
+  logs?: string[];
+  errors?: string[];
+  current_item?: number;
+  total_items?: number;
+  completed_items?: number;
+  failed_items?: number;
+  remaining_items?: number;
+  child_job_id?: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  updated_at?: string;
+  error?: string;
+}
+
+export interface LoraSweepBatchJobResponse {
+  success: boolean;
+  job_id?: string;
+  job?: LoraSweepBatchJob;
+  jobs?: LoraSweepBatchJob[];
+  error?: string;
+}
+
+export const startLoraSweepBatchJob = (body: Record<string, unknown>) =>
+  api.post<LoraSweepBatchJobResponse>("/api/lora/sweep-batches/jobs", body);
+
+export const getLoraSweepBatchJob = (jobId: string) =>
+  api.get<LoraSweepBatchJobResponse>(`/api/lora/sweep-batches/jobs/${encodeURIComponent(jobId)}`);
+
+export const listLoraSweepBatchJobs = () =>
+  api.get<LoraSweepBatchJobResponse>("/api/lora/sweep-batches/jobs");
 
 // ---- LoRA adapters -------------------------------------------------------
 

@@ -770,6 +770,11 @@ def parse_training_loss_line(line: str) -> float | None:
     return loss
 
 
+def is_mps_oom_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return "mps backend out of memory" in text or ("mps" in text and "out of memory" in text)
+
+
 def parse_checkpoint_loss(path: Path | str | None) -> float | None:
     if path is None:
         return None
@@ -2992,6 +2997,8 @@ class AceTrainingManager:
             "max_duration": parse_float(payload.get("max_duration"), 240.0, 10.0, 600.0),
             "device": device,
             "precision": training_precision_for_device(device, payload.get("precision")),
+            "offload_encoder": parse_bool(payload.get("offload_encoder"), False),
+            "gradient_checkpointing": parse_bool(payload.get("gradient_checkpointing"), True),
             "auto_load": parse_bool(payload.get("auto_load"), True),
             "lora_scale": parse_float(payload.get("lora_scale"), DEFAULT_LORA_GENERATION_SCALE, 0.0, 1.0),
             "use_official_lm_labels": parse_bool(payload.get("use_official_lm_labels"), False),
@@ -3365,11 +3372,17 @@ class AceTrainingManager:
                 str(params["device"]),
                 "--precision",
                 str(params["precision"]),
-                "--gradient-checkpointing",
-                "--no-offload-encoder",
                 "--num-workers",
                 "0",
             ]
+            if parse_bool(params.get("gradient_checkpointing"), True):
+                train_command.append("--gradient-checkpointing")
+            else:
+                train_command.append("--no-gradient-checkpointing")
+            if parse_bool(params.get("offload_encoder"), False):
+                train_command.append("--offload-encoder")
+            else:
+                train_command.append("--no-offload-encoder")
             if adapter_type == "lokr":
                 train_command.extend(["--lokr-linear-dim", "64", "--lokr-linear-alpha", "128", "--lokr-factor", "-1", "--lokr-weight-decompose"])
             else:
@@ -3541,6 +3554,8 @@ class AceTrainingManager:
         self._append_log(log_path, f"\n[{stage}] $ {' '.join(command)}\n\n")
         nonfinite_loss_line = ""
         loss_samples: list[dict[str, Any]] = []
+        training_failed = False
+        training_failure_line = ""
         with log_path.open("a", encoding="utf-8") as log:
             process = subprocess.Popen(
                 command,
@@ -3561,6 +3576,11 @@ class AceTrainingManager:
             for line in process.stdout:
                 log.write(line)
                 log.flush()
+                if "[FAIL] Training failed:" in line:
+                    training_failed = True
+                    training_failure_line = line.strip()
+                elif "TRAINING FAILED" in line:
+                    training_failed = True
                 if NONFINITE_TRAINING_LOSS_RE.search(line):
                     nonfinite_loss_line = line.strip()
                     process.terminate()
@@ -3584,6 +3604,9 @@ class AceTrainingManager:
             self._write_job_unlocked(current)
         if nonfinite_loss_line:
             raise RuntimeError(f"{stage} produced non-finite loss: {nonfinite_loss_line}")
+        if training_failed:
+            detail = training_failure_line or f"{stage} failed; see {log_path}"
+            raise RuntimeError(detail)
         if return_code != 0:
             raise RuntimeError(f"{stage} exited with code {return_code}")
         return {
@@ -3686,8 +3709,35 @@ class AceTrainingManager:
         updated = list(command)
         while flag in updated:
             index = updated.index(flag)
-            del updated[index : min(index + 2, len(updated))]
+            end = index + 1
+            if end < len(updated) and not str(updated[end]).startswith("--"):
+                end += 1
+            del updated[index:end]
         return updated
+
+    def _command_has_flag(self, command: list[str], flag: str) -> bool:
+        return flag in list(command)
+
+    def _command_with_toggle(self, command: list[str], *, enable_flag: str, disable_flag: str, enabled: bool) -> list[str]:
+        updated = self._command_without_arg(list(command), enable_flag)
+        updated = self._command_without_arg(updated, disable_flag)
+        updated.append(enable_flag if enabled else disable_flag)
+        return updated
+
+    def _should_retry_train_step_with_encoder_offload(self, command: list[str], error: Any) -> bool:
+        if not is_mps_oom_error(error):
+            return False
+        command_list = list(command)
+        device = ""
+        if "--device" in command_list:
+            index = command_list.index("--device")
+            if index + 1 < len(command_list):
+                device = str(command_list[index + 1]).strip().lower()
+        if device not in {"mps", "mlx", "native_mlx", "mlx_training"}:
+            return False
+        if self._command_has_flag(command_list, "--offload-encoder"):
+            return False
+        return self._command_has_flag(command_list, "--no-offload-encoder")
 
     def _latest_checkpoint_for_epoch(self, output_dir: Path, epoch: int) -> Path | None:
         checkpoints_dir = output_dir / "checkpoints"
@@ -3944,11 +3994,17 @@ class AceTrainingManager:
             str(params.get("device") or "auto"),
             "--precision",
             training_precision_for_device(params.get("device") or "auto", params.get("precision")),
-            "--gradient-checkpointing",
-            "--no-offload-encoder",
             "--num-workers",
             "0",
         ]
+        if parse_bool(params.get("gradient_checkpointing"), True):
+            command.append("--gradient-checkpointing")
+        else:
+            command.append("--no-gradient-checkpointing")
+        if parse_bool(params.get("offload_encoder"), False):
+            command.append("--offload-encoder")
+        else:
+            command.append("--no-offload-encoder")
         if adapter_type == "lokr":
             command.extend(["--lokr-linear-dim", "64", "--lokr-linear-alpha", "128", "--lokr-factor", "-1", "--lokr-weight-decompose"])
         else:
@@ -4282,7 +4338,36 @@ class AceTrainingManager:
                 chunk_command = self._command_with_arg(chunk_command, "--resume-from", str(last_checkpoint))
             else:
                 chunk_command = self._command_without_arg(chunk_command, "--resume-from")
-            command_result = self._run_command_step(job_id, chunk_command, log_path, stage=stage_label) or {}
+            try:
+                command_result = self._run_command_step(job_id, chunk_command, log_path, stage=stage_label) or {}
+            except RuntimeError as exc:
+                if not self._should_retry_train_step_with_encoder_offload(chunk_command, exc):
+                    raise
+                retry_command = self._command_with_toggle(
+                    chunk_command,
+                    enable_flag="--offload-encoder",
+                    disable_flag="--no-offload-encoder",
+                    enabled=True,
+                )
+                command = self._command_with_toggle(
+                    command,
+                    enable_flag="--offload-encoder",
+                    disable_flag="--no-offload-encoder",
+                    enabled=True,
+                )
+                params = {**dict(params), "offload_encoder": True}
+                self._append_log(
+                    log_path,
+                    f"[retry] {stage_label} hit MPS OOM; retrying once with encoder offload enabled.\n",
+                )
+                with self._lock:
+                    current = self._read_job_unlocked(job_id)
+                    current.command = list(retry_command)
+                    current.params = {**dict(current.params or {}), **params}
+                    current.updated_at = utc_now()
+                    self._write_job_unlocked(current)
+                self._set_job_state(job_id, stage=f"{stage_label} retry with encoder offload", progress=before_progress)
+                command_result = self._run_command_step(job_id, retry_command, log_path, stage=stage_label) or {}
             checkpoint = self._latest_checkpoint_for_epoch(output_dir, epoch)
             if checkpoint is not None:
                 last_checkpoint = checkpoint

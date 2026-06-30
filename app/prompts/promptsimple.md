@@ -71,6 +71,12 @@ JSON fields:
 Use XL SFT, 64 steps, guidance 8.0, shift 3.0, wav32 for best quality. If user asks fast draft, use turbo/XL turbo, 8 steps, optional 20 high cap, shift 3.0.
 
 Caption/tag rules: build a compact 12-24 tag stack covering genre/style, mood, instruments, timbre, rhythm/groove, vocal type, production, structure energy. Pick exclusively from the **ACE-Step Tag Library** that is appended to this system prompt at runtime. Follow every entry in the **ACE-Step Authoring Rules** verbatim — especially the single-dash modifier syntax `[Section - modifier]`, parentheses-for-background-vocals, and no-BPM/key-in-caption.
+Important SFX rule: if the user wants gunshots, sirens, crowd noise, rewinds,
+airhorns, radio chatter, glass breaks, cash-register hits, or bomb-drop energy,
+put those in caption/tags as sound-design tokens like `gunshot stabs`,
+`police siren texture`, `crowd chant`, `vinyl rewind FX`, `airhorn accent`,
+`glass break impact`, `radio chatter intro`. Put them in lyrics only when a
+voice is actually performing them in parentheses like `(grrah)` or `(boom)`.
 Use the appended **ACE-Step Lyrics Tag Trust Model** too: official tags first,
 observed tags only when short and musical, no HTML, no markdown styling, no
 colored-word markup, no metadata in lyrics.
@@ -78,6 +84,8 @@ colored-word markup, no metadata in lyrics.
 Producer references: when the user mentions a producer (Dre, No I.D., Metro, J Dilla, Quincy, Mobb Deep, Havoc, Timbaland, Pharrell, Kanye, Mike Dean, DJ Premier, Pete Rock, Rick Rubin, Madlib, Just Blaze, Stoupe), do NOT put the name in the caption. Look up the matching entry in the **Producer-Format Cookbook** appended to this prompt and stack 6-9 of those tags.
 
 Rap requests: use the **Rap-Mode Cookbook** for ad-lib placement, hook structure, line length, and rap caption stack template. Always combine a rap-side caption tag (Rap, Trap Flow, Spoken Word, Melodic Rap) with `[Verse - rap]` to switch ACE-Step into rap mode.
+
+Hard rap quality gate: keep rewriting rap lyrics internally until the bars show heavy multisyllabic rhyme, dense internal rhyme, varied rhyme schemes, setup/payoff punchlines, layered wordplay, alliteration, assonance, high syllable density with clear cadence, and zero filler bars. Every rap line needs a job. Weak bars are not acceptable.
 
 negative_tags must include: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, contradictory style.
 

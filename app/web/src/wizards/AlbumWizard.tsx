@@ -12,6 +12,7 @@ import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
 import { AutomationFields } from "@/components/wizard/AutomationFields";
+import { MusicQueueEditor } from "@/components/wizard/MusicQueueEditor";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
@@ -36,6 +37,7 @@ import { albumSchema, type AlbumFormValues } from "@/lib/schemas";
 import { ACE_STEP_KEY_SCALE_OPTIONS, ACE_STEP_TIME_SIGNATURE_OPTIONS } from "@/lib/aceStepSettings";
 import {
   api,
+  startAlbumBatchJob,
   startAlbumJob,
   getAlbumPlanJob,
   PROVIDER_LABEL,
@@ -44,6 +46,7 @@ import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, emptyLoraSelection, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { collectValidationMessages } from "@/lib/formValidation";
+import { extractPromptCompanion, mergePayloadWithCompanion, stripPromptCompanion, summarizeQueueEntry } from "@/lib/musicQueue";
 import { mergeWizardDraft, usePromptMirror, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
 import { useSettingsStore } from "@/store/settings";
@@ -267,8 +270,12 @@ function sanitizeAlbumTrackForGenerate(track: AlbumTrack): AlbumTrack {
 export function AlbumWizard() {
   const navigate = useNavigate();
   const setResult = useWizardStore((s) => s.setResult);
+  const setPasteBlocks = useWizardStore((s) => s.setPasteBlocks);
   const lastResult = useWizardStore((s) => s.lastResult[MODE]);
   const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
+  const storedQueue = useWizardStore((s) => s.queues[MODE]) ?? [];
+  const storedCompanion = useWizardStore((s) => s.companions[MODE]) ?? {};
+  const setHydration = useWizardStore((s) => s.setHydration);
   const storePrompt = useWizardStore((s) => s.prompts[MODE]);
   const draft = useWizardStore((s) => s.drafts[MODE]);
   const plannerProvider = useSettingsStore((s) => s.plannerProvider);
@@ -327,6 +334,9 @@ export function AlbumWizard() {
 
   const [step, setStep] = React.useState(0);
   const [aiPromptPending, setAiPromptPending] = React.useState(false);
+  const [queue, setQueue] = React.useState<Record<string, unknown>[]>(storedQueue);
+  const [editingQueueIndex, setEditingQueueIndex] = React.useState(-1);
+  const [companion, setCompanion] = React.useState<Record<string, unknown>>(storedCompanion);
   const [plan, setPlan] = React.useState<AlbumPlan | null>(null);
   const [jobId, setJobId] = React.useState<string | null>(null);
   const [jobProgress, setJobProgress] = React.useState<number>(0);
@@ -343,6 +353,7 @@ export function AlbumWizard() {
 
   // ---- Hydration from AI prompt assistant ----
   const hydrate = (payload: Record<string, unknown>) => {
+    setCompanion(extractPromptCompanion(payload));
     const next: Partial<AlbumFormValues> = {};
     for (const k of [
       "concept",
@@ -421,6 +432,8 @@ export function AlbumWizard() {
     draftState.saveNow(merged);
     return merged;
   };
+
+  const buildCompanion = React.useCallback(() => ({ ...companion }), [companion]);
 
   const setTrackLoraSelection = (trackIndex: number, selection: LoraSelection) => {
     const currentTracks = normalizeAlbumTracks(values.tracks?.length ? values.tracks : plan?.tracks, values.track_duration);
@@ -535,58 +548,135 @@ export function AlbumWizard() {
     ],
   );
 
+  const buildAlbumJobBody = React.useCallback(() => {
+    const currentValues = form.getValues();
+    const tracksForGenerate = reviewTracks.map(sanitizeAlbumTrackForGenerate);
+    return {
+      concept: currentValues.concept,
+      album_title: currentValues.album_title,
+      artist_name: currentValues.artist_name,
+      num_tracks: currentValues.num_tracks,
+      track_duration: currentValues.track_duration,
+      track_variants: albumTrackVariantCount,
+      duration_mode: currentValues.duration_mode,
+      album_writer_mode: currentValues.album_writer_mode,
+      language: currentValues.language,
+      song_model: currentValues.song_model,
+      audio_backend: currentValues.audio_backend,
+      use_mlx_dit: useMlxDitForAudioBackend(currentValues.audio_backend),
+      song_model_strategy: currentValues.song_model_strategy,
+      quality_profile: currentValues.quality_profile,
+      album_mood: currentValues.album_mood,
+      vocal_type: currentValues.vocal_type,
+      genre_prompt: currentValues.genre_prompt,
+      style_profile: currentValues.style_profile,
+      custom_tags: currentValues.custom_tags,
+      negative_tags: currentValues.negative_tags,
+      auto_song_art: currentValues.auto_song_art,
+      auto_album_art: currentValues.auto_album_art,
+      auto_video_clip: currentValues.auto_video_clip,
+      art_prompt: currentValues.art_prompt,
+      album_art_prompt: currentValues.album_art_prompt,
+      album_art_negative_prompt: currentValues.album_art_negative_prompt,
+      single_art_prompt: currentValues.single_art_prompt,
+      single_art_negative_prompt: currentValues.single_art_negative_prompt,
+      video_prompt: currentValues.video_prompt,
+      video_negative_prompt: currentValues.video_negative_prompt,
+      visual_palette: currentValues.visual_palette,
+      camera_motion: currentValues.camera_motion,
+      no_text_policy: currentValues.no_text_policy,
+      planner_lm_provider: plannerProvider,
+      ollama_model: plannerModel || undefined,
+      planner_model: plannerModel || undefined,
+      embedding_provider: embeddingProvider,
+      embedding_lm_provider: embeddingProvider,
+      embedding_model: embeddingModel || undefined,
+      ace_step_text_encoder: "Qwen3-Embedding-0.6B",
+      tracks: tracksForGenerate,
+      album_generation_mode: "render_existing_tracks",
+      render_from_existing_tracks: true,
+      skip_album_planning: true,
+    };
+  }, [albumTrackVariantCount, embeddingModel, embeddingProvider, form, plannerModel, plannerProvider, reviewTracks]);
+
+  const buildDraftPayload = React.useCallback(
+    () => mergePayloadWithCompanion(buildAlbumJobBody(), buildCompanion()),
+    [buildAlbumJobBody, buildCompanion],
+  );
+
+  const syncQueueState = React.useCallback(
+    (nextQueue: Record<string, unknown>[]) => {
+      setQueue(nextQueue);
+      setHydration(MODE, {
+        payload: buildAlbumJobBody(),
+        warnings,
+        companion: buildCompanion(),
+        queue: nextQueue,
+      });
+    },
+    [buildAlbumJobBody, buildCompanion, setHydration, warnings],
+  );
+
+  const resetForNextDraft = React.useCallback(() => {
+    const current = form.getValues();
+    const next: AlbumFormValues = {
+      ...current,
+      concept: "",
+      album_title: "",
+      artist_name: "",
+      album_mood: "",
+      vocal_type: "",
+      genre_prompt: "",
+      custom_tags: "",
+      negative_tags: "",
+      art_prompt: "",
+      album_art_prompt: "",
+      album_art_negative_prompt: "",
+      single_art_prompt: "",
+      single_art_negative_prompt: "",
+      video_prompt: "",
+      video_negative_prompt: "",
+      visual_palette: "",
+      camera_motion: "",
+      no_text_policy: "",
+      tracks: [],
+    };
+    form.reset(next);
+    setPlan(null);
+    setCompanion({});
+    setEditingQueueIndex(-1);
+    draftState.saveNow(next);
+    setPasteBlocks(MODE, [{ label: "Huidige wizard JSON", content: "" }]);
+  }, [draftState, form, setPasteBlocks]);
+
+  const addCurrentToQueue = React.useCallback(() => {
+    const entry = buildDraftPayload();
+    const nextQueue = [...queue];
+    if (editingQueueIndex >= 0 && editingQueueIndex < nextQueue.length) {
+      nextQueue[editingQueueIndex] = entry;
+    } else {
+      nextQueue.push(entry);
+    }
+    syncQueueState(nextQueue);
+    resetForNextDraft();
+  }, [buildDraftPayload, editingQueueIndex, queue, resetForNextDraft, syncQueueState]);
+
+  const queueItemsForSubmit = React.useMemo(() => {
+    const current = buildDraftPayload();
+    if (editingQueueIndex >= 0) {
+      return queue.map((item, index) => (index === editingQueueIndex ? current : item));
+    }
+    const hasMeaningfulDraft =
+      Boolean((values.concept ?? "").trim()) ||
+      Boolean((values.album_title ?? "").trim()) ||
+      Boolean((values.artist_name ?? "").trim()) ||
+      reviewTracks.length > 0;
+    return hasMeaningfulDraft ? [...queue, current] : queue;
+  }, [buildDraftPayload, editingQueueIndex, queue, reviewTracks.length, values.album_title, values.artist_name, values.concept]);
+
   // ---- Async generate ----
   const startJob = useMutation({
-    mutationFn: () => {
-      const tracksForGenerate = reviewTracks.map(sanitizeAlbumTrackForGenerate);
-      const body = {
-        concept: values.concept,
-        album_title: values.album_title,
-        artist_name: values.artist_name,
-        num_tracks: values.num_tracks,
-        track_duration: values.track_duration,
-        track_variants: albumTrackVariantCount,
-        duration_mode: values.duration_mode,
-        album_writer_mode: values.album_writer_mode,
-        language: values.language,
-        song_model: values.song_model,
-        audio_backend: values.audio_backend,
-        use_mlx_dit: useMlxDitForAudioBackend(values.audio_backend),
-        song_model_strategy: values.song_model_strategy,
-        quality_profile: values.quality_profile,
-        album_mood: values.album_mood,
-        vocal_type: values.vocal_type,
-        genre_prompt: values.genre_prompt,
-        style_profile: values.style_profile,
-        custom_tags: values.custom_tags,
-        negative_tags: values.negative_tags,
-        auto_song_art: values.auto_song_art,
-        auto_album_art: values.auto_album_art,
-        auto_video_clip: values.auto_video_clip,
-        art_prompt: values.art_prompt,
-        album_art_prompt: values.album_art_prompt,
-        album_art_negative_prompt: values.album_art_negative_prompt,
-        single_art_prompt: values.single_art_prompt,
-        single_art_negative_prompt: values.single_art_negative_prompt,
-        video_prompt: values.video_prompt,
-        video_negative_prompt: values.video_negative_prompt,
-        visual_palette: values.visual_palette,
-        camera_motion: values.camera_motion,
-        no_text_policy: values.no_text_policy,
-        planner_lm_provider: plannerProvider,
-        ollama_model: plannerModel || undefined,
-        planner_model: plannerModel || undefined,
-        embedding_provider: embeddingProvider,
-        embedding_lm_provider: embeddingProvider,
-        embedding_model: embeddingModel || undefined,
-        ace_step_text_encoder: "Qwen3-Embedding-0.6B",
-        tracks: tracksForGenerate,
-        album_generation_mode: "render_existing_tracks",
-        render_from_existing_tracks: true,
-        skip_album_planning: true,
-      };
-      return startAlbumJob(body);
-    },
+    mutationFn: () => startAlbumJob(buildAlbumJobBody()),
     onSuccess: (resp) => {
       if (!resp.success || !resp.job_id) {
         toast.error(resp.error || "Job kon niet starten");
@@ -602,6 +692,7 @@ export function AlbumWizard() {
 
   // Poll job status + mirror into global JobTracker
   const addJob = useJobsStore((s) => s.addJob);
+  const openJob = useJobsStore((s) => s.openJob);
   const updateJob = useJobsStore((s) => s.updateJob);
 
   React.useEffect(() => {
@@ -693,6 +784,44 @@ export function AlbumWizard() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
+
+  const handleFinish = React.useCallback(async () => {
+    const queued = queueItemsForSubmit;
+    if (queued.length > 1) {
+      try {
+        const resp = await startAlbumBatchJob({
+          batch_title: values.album_title || values.concept || "Queued albums",
+          stop_on_error: false,
+          albums: queued.map((item) => stripPromptCompanion(item)),
+        });
+        if (!resp.success || !resp.job_id) {
+          throw new Error(resp.error || "Album queue starten mislukt");
+        }
+        addJob({
+          id: resp.job_id,
+          kind: "album-batch",
+          label: values.album_title || values.concept || "Album batch",
+          progress: resp.job?.progress || 0,
+          status: resp.job?.status || "queued",
+          state: resp.job?.state || "queued",
+          stage: resp.job?.stage || "queued",
+          kindLabel: "Album batch",
+          detailsPath: `/api/album-batches/jobs/${encodeURIComponent(resp.job_id)}`,
+          logPath: `/api/album-batches/jobs/${encodeURIComponent(resp.job_id)}/log`,
+          metadata: (resp.job as Record<string, unknown> | undefined) ?? {},
+          error: resp.error || "",
+          startedAt: Date.now(),
+          deletePath: `/api/album-batches/jobs/${encodeURIComponent(resp.job_id)}`,
+        });
+        openJob(resp.job_id);
+        toast.success("Album queue gestart.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Album queue starten mislukt");
+      }
+      return;
+    }
+    startJob.mutate();
+  }, [addJob, openJob, queueItemsForSubmit, startJob, values.album_title, values.concept]);
 
   const albumFamilyId =
     (lastResult?.album_family_id as string | undefined) ||
@@ -1409,6 +1538,15 @@ export function AlbumWizard() {
             }}
             warnings={warnings}
             blockingIssues={reviewBlockingIssues}
+            queueSummary={{
+              queuedItems: queue.length,
+              totalRenders: queueItemsForSubmit.reduce((sum, item) => {
+                const trackCount = Array.isArray(item.tracks) ? item.tracks.length : Number(item.num_tracks || 0);
+                const variants = Number(item.track_variants || 1);
+                return sum + Math.max(1, trackCount) * Math.max(1, variants);
+              }, 0),
+            }}
+            companion={buildCompanion()}
             primaryFields={[
               { key: "album_title", label: "Album titel" },
               { key: "artist_name", label: "Artiest" },
@@ -1428,6 +1566,39 @@ export function AlbumWizard() {
               { key: "language", label: "Taal" },
               { key: "quality_profile", label: "Kwaliteit" },
             ]}
+          />
+          <MusicQueueEditor
+            items={queueItemsForSubmit.map((item, index) => summarizeQueueEntry(item, `Album ${index + 1}`))}
+            activeIndex={editingQueueIndex}
+            onSelect={(index) => {
+              const selected = queueItemsForSubmit[index];
+              if (!selected) return;
+              setEditingQueueIndex(index < queue.length ? index : -1);
+              setCompanion(extractPromptCompanion(selected));
+              hydrate(selected);
+              setPasteBlocks(MODE, [
+                { label: "Huidige wizard JSON", content: JSON.stringify(selected, null, 2) },
+              ]);
+            }}
+            onRemove={(index) => {
+              const nextQueue = queue.filter((_, itemIndex) => itemIndex !== index);
+              syncQueueState(nextQueue);
+              if (editingQueueIndex === index) setEditingQueueIndex(-1);
+            }}
+            onDuplicate={(index) => {
+              const selected = queueItemsForSubmit[index];
+              if (!selected) return;
+              const nextQueue = [...queue, selected];
+              syncQueueState(nextQueue);
+            }}
+            onMove={(from, direction) => {
+              const nextQueue = [...queue];
+              const to = from + direction;
+              if (from < 0 || from >= nextQueue.length || to < 0 || to >= nextQueue.length) return;
+              const [item] = nextQueue.splice(from, 1);
+              nextQueue.splice(to, 0, item);
+              syncQueueState(nextQueue);
+            }}
           />
         </div>
       ),
@@ -1668,9 +1839,14 @@ export function AlbumWizard() {
       steps={steps}
       step={step}
       onStepChange={setStep}
-      onFinish={() => startJob.mutate()}
+      onFinish={handleFinish}
       isFinishing={startJob.isPending || !!jobId}
-      finishLabel={jobId ? "Renderen…" : startJob.isPending ? "Job start…" : "Genereer album"}
+      finishLabel={jobId ? "Renderen…" : startJob.isPending ? "Job start…" : queueItemsForSubmit.length > 1 ? "Start album queue" : "Genereer album"}
+      secondaryFinishAction={{
+        label: editingQueueIndex >= 0 ? "Werk queue-item bij" : "Nog een toevoegen",
+        onClick: addCurrentToQueue,
+        disabled: !form.formState.isValid || !!jobId,
+      }}
     />
   );
 }

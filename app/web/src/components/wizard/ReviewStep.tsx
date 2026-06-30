@@ -8,6 +8,12 @@ interface ReviewStepProps {
   warnings?: string[];
   blockingIssues?: string[];
   primaryFields: Array<{ key: string; label: string; format?: (v: unknown) => string }>;
+  queueSummary?: {
+    queuedItems?: number;
+    totalRenders?: number;
+    label?: string;
+  };
+  companion?: Record<string, unknown>;
   className?: string;
 }
 
@@ -16,9 +22,12 @@ export function ReviewStep({
   warnings = [],
   blockingIssues = [],
   primaryFields,
+  queueSummary,
+  companion,
   className,
 }: ReviewStepProps) {
   const [showJson, setShowJson] = React.useState(false);
+  const [showCompanion, setShowCompanion] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
 
   const copyJson = async () => {
@@ -49,6 +58,29 @@ export function ReviewStep({
         })}
       </div>
 
+      {queueSummary && (queueSummary.queuedItems || queueSummary.totalRenders) ? (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border border-border/60 bg-card/40 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Queue items
+            </p>
+            <p className="mt-1 text-sm font-medium">{queueSummary.queuedItems ?? 0}</p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-card/40 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Totaal renders
+            </p>
+            <p className="mt-1 text-sm font-medium">{queueSummary.totalRenders ?? queueSummary.queuedItems ?? 0}</p>
+          </div>
+          <div className="rounded-lg border border-border/60 bg-card/40 p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Type
+            </p>
+            <p className="mt-1 text-sm font-medium">{queueSummary.label || "music"}</p>
+          </div>
+        </div>
+      ) : null}
+
       {blockingIssues.length > 0 && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
           <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-red-300">
@@ -73,6 +105,21 @@ export function ReviewStep({
             ))}
           </ul>
         </div>
+      )}
+
+      {companion && Object.keys(companion).length > 0 && (
+        <details
+          open={showCompanion}
+          onToggle={(e) => setShowCompanion((e.target as HTMLDetailsElement).open)}
+          className="rounded-xl border bg-card/40"
+        >
+          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+            AI analyse / prompt contract
+          </summary>
+          <pre className="max-h-[280px] overflow-auto px-4 pb-4 text-[11px] leading-relaxed text-muted-foreground">
+            {JSON.stringify(companion, null, 2)}
+          </pre>
+        </details>
       )}
 
       <details

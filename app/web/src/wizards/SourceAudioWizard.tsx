@@ -6,6 +6,7 @@ import { Music4, Video } from "lucide-react";
 
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
+import { MusicQueueEditor } from "@/components/wizard/MusicQueueEditor";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
 import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
@@ -29,14 +30,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type WizardMode, api } from "@/lib/api";
+import { type WizardMode, api, startSongBatchJob } from "@/lib/api";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
 import { collectValidationMessages } from "@/lib/formValidation";
+import { mergePayloadWithCompanion, summarizeQueueEntry } from "@/lib/musicQueue";
 import { useGenerationJobRunner } from "@/hooks/useGenerationJobRunner";
 import { mergeWizardDraft, useWizardDraft } from "@/hooks/useWizardDraft";
 import { useWizardStore } from "@/store/wizard";
+import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
 import { cn, formatDuration } from "@/lib/utils";
 
@@ -123,9 +126,12 @@ export interface SourceAudioWizardConfig {
 export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig }) {
   const navigate = useNavigate();
   const setResult = useWizardStore((s) => s.setResult);
+  const setPasteBlocks = useWizardStore((s) => s.setPasteBlocks);
   const lastResult = useWizardStore((s) => s.lastResult[config.mode]);
   const hydratedPayload = useWizardStore((s) => s.payloads[config.mode]);
   const warnings = useWizardStore((s) => s.warnings[config.mode]) ?? [];
+  const storedQueue = useWizardStore((s) => s.queues[config.mode]) ?? [];
+  const setHydration = useWizardStore((s) => s.setHydration);
   const draft = useWizardStore((s) => s.drafts[config.mode]);
   const sourceDefaults = React.useMemo<BaseSourceForm>(
     () => ({
@@ -173,7 +179,11 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const [step, setStep] = React.useState(0);
   const [aiPromptPending, setAiPromptPending] = React.useState(false);
   const [source, setSource] = React.useState<SourceAudioValue | undefined>();
+  const [queue, setQueue] = React.useState<Record<string, unknown>[]>(storedQueue);
+  const [editingQueueIndex, setEditingQueueIndex] = React.useState(-1);
   const [audioCodes, setAudioCodes] = React.useState<string>("");
+  const addJob = useJobsStore((s) => s.addJob);
+  const openJob = useJobsStore((s) => s.openJob);
   const storePrompt = useWizardStore((s) => s.prompts[config.mode]);
   const aiDescription = storePrompt ?? "";
   const values = form.watch();
@@ -299,6 +309,111 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     }
     return payload;
   };
+
+  const buildDraftPayload = React.useCallback(() => mergePayloadWithCompanion(buildPayload(), {
+    __queue_source: source
+      ? {
+          uploadId: source.uploadId,
+          filename: source.filename,
+          duration: source.duration,
+          audioUrl: source.audioUrl,
+        }
+      : undefined,
+  }), [buildPayload, source]);
+
+  const syncQueueState = React.useCallback((nextQueue: Record<string, unknown>[]) => {
+    setQueue(nextQueue);
+    setHydration(config.mode, {
+      payload: buildPayload(),
+      warnings,
+      queue: nextQueue,
+    });
+  }, [buildPayload, config.mode, setHydration, warnings]);
+
+  const resetForNextDraft = React.useCallback(() => {
+    const current = form.getValues();
+    const next: BaseSourceForm = {
+      ...current,
+      title: "",
+      artist_name: "",
+      caption: "",
+      tags: "",
+      negative_tags: "",
+      lyrics: config.variant === "extract" ? "[Instrumental]" : "",
+      global_caption: "",
+    };
+    form.reset(next);
+    setEditingQueueIndex(-1);
+    draftState.saveNow(next);
+    setPasteBlocks(config.mode, [{ label: "Huidige wizard JSON", content: "" }]);
+  }, [config.mode, config.variant, draftState, form, setPasteBlocks]);
+
+  const addCurrentToQueue = React.useCallback(() => {
+    const entry = buildDraftPayload();
+    const nextQueue = [...queue];
+    if (editingQueueIndex >= 0 && editingQueueIndex < nextQueue.length) {
+      nextQueue[editingQueueIndex] = entry;
+    } else {
+      nextQueue.push(entry);
+    }
+    syncQueueState(nextQueue);
+    resetForNextDraft();
+  }, [buildDraftPayload, editingQueueIndex, queue, resetForNextDraft, syncQueueState]);
+
+  const queueItemsForSubmit = React.useMemo(() => {
+    const current = buildDraftPayload();
+    if (editingQueueIndex >= 0) {
+      return queue.map((item, index) => (index === editingQueueIndex ? current : item));
+    }
+    const hasMeaningfulDraft =
+      Boolean(source?.uploadId) ||
+      Boolean((values.title ?? "").trim()) ||
+      Boolean((values.caption ?? "").trim()) ||
+      Boolean((values.tags ?? "").trim());
+    return hasMeaningfulDraft ? [...queue, current] : queue;
+  }, [buildDraftPayload, editingQueueIndex, queue, source?.uploadId, values.caption, values.tags, values.title]);
+
+  const handleFinish = React.useCallback(async () => {
+    const queued = queueItemsForSubmit;
+    if (queued.length > 1) {
+      try {
+        const resp = await startSongBatchJob({
+          batch_title: values.title || config.title,
+          stop_on_error: false,
+          songs: queued.map((item) => {
+            const next = { ...item };
+            delete next.__queue_source;
+            return next;
+          }),
+        });
+        if (!resp.success || !resp.job_id) {
+          throw new Error(resp.error || "Queue starten mislukt");
+        }
+        addJob({
+          id: resp.job_id,
+          kind: "song-batch",
+          label: values.title || config.title,
+          progress: resp.job?.progress || 0,
+          status: resp.job?.status || "queued",
+          state: resp.job?.state || "queued",
+          stage: resp.job?.stage || "",
+          kindLabel: "Song batch",
+          detailsPath: `/api/song-batches/jobs/${encodeURIComponent(resp.job_id)}`,
+          logPath: `/api/song-batches/jobs/${encodeURIComponent(resp.job_id)}/log`,
+          metadata: (resp.job as Record<string, unknown> | undefined) ?? {},
+          error: resp.error || "",
+          startedAt: Date.now(),
+          deletePath: `/api/song-batches/jobs/${encodeURIComponent(resp.job_id)}`,
+        });
+        openJob(resp.job_id);
+        toast.success("Queue gestart.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Queue starten mislukt");
+      }
+      return;
+    }
+    void generation.start(buildPayload());
+  }, [addJob, buildPayload, config.title, generation, openJob, queueItemsForSubmit, values.title]);
 
   const audioUrl =
     firstGenerationAudioUrl(lastResult) ||
@@ -670,6 +785,10 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
             payload={buildPayload()}
             warnings={warnings}
             blockingIssues={reviewBlockingIssues}
+            queueSummary={{
+              queuedItems: queue.length,
+              totalRenders: queueItemsForSubmit.reduce((sum, item) => sum + Number(item.batch_size || 1), 0),
+            }}
             primaryFields={[
               { key: "task_type", label: "Modus" },
               { key: "title", label: "Titel" },
@@ -682,6 +801,54 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
               { key: "batch_size", label: "Variaties" },
               { key: "src_audio_id", label: "Source ID" },
             ]}
+          />
+          <MusicQueueEditor
+            items={queueItemsForSubmit.map((item, index) => summarizeQueueEntry(item, `${config.title} ${index + 1}`))}
+            activeIndex={editingQueueIndex}
+            onSelect={(index) => {
+              const selected = queueItemsForSubmit[index];
+              if (!selected) return;
+              setEditingQueueIndex(index < queue.length ? index : -1);
+              hydrate(selected);
+              setPasteBlocks(config.mode, [
+                { label: "Huidige wizard JSON", content: JSON.stringify(selected, null, 2) },
+              ]);
+              const sourceMeta =
+                selected.__queue_source && typeof selected.__queue_source === "object" && !Array.isArray(selected.__queue_source)
+                  ? (selected.__queue_source as Record<string, unknown>)
+                  : null;
+              if (sourceMeta) {
+                const uploadId = typeof sourceMeta.uploadId === "string" ? sourceMeta.uploadId : "";
+                if (!uploadId) return;
+                setSource({
+                  uploadId,
+                  filename: typeof sourceMeta.filename === "string" ? sourceMeta.filename : "",
+                  duration: typeof sourceMeta.duration === "number" ? sourceMeta.duration : undefined,
+                  audioUrl: typeof sourceMeta.audioUrl === "string" ? sourceMeta.audioUrl : "",
+                });
+              } else {
+                setSource(undefined);
+              }
+            }}
+            onRemove={(index) => {
+              const nextQueue = queue.filter((_, itemIndex) => itemIndex !== index);
+              syncQueueState(nextQueue);
+              if (editingQueueIndex === index) setEditingQueueIndex(-1);
+            }}
+            onDuplicate={(index) => {
+              const selected = queueItemsForSubmit[index];
+              if (!selected) return;
+              const nextQueue = [...queue, selected];
+              syncQueueState(nextQueue);
+            }}
+            onMove={(from, direction) => {
+              const nextQueue = [...queue];
+              const to = from + direction;
+              if (from < 0 || from >= nextQueue.length || to < 0 || to >= nextQueue.length) return;
+              const [item] = nextQueue.splice(from, 1);
+              nextQueue.splice(to, 0, item);
+              syncQueueState(nextQueue);
+            }}
           />
           <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
           {(generation.jobId || generation.isSubmitting) && (
@@ -752,9 +919,14 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       steps={steps}
       step={step}
       onStepChange={setStep}
-      onFinish={() => void generation.start(buildPayload())}
+      onFinish={handleFinish}
       isFinishing={generation.isSubmitting || generation.isRunning}
-      finishLabel={generation.isSubmitting || generation.isRunning ? "Renderen…" : "Genereer"}
+      finishLabel={generation.isSubmitting || generation.isRunning ? "Renderen…" : queueItemsForSubmit.length > 1 ? "Start queue" : "Genereer"}
+      secondaryFinishAction={{
+        label: editingQueueIndex >= 0 ? "Werk queue-item bij" : "Nog een toevoegen",
+        onClick: addCurrentToQueue,
+        disabled: !source?.uploadId || !!baseOnlyModelError || generation.isSubmitting || generation.isRunning,
+      }}
     />
   );
 }

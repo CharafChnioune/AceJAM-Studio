@@ -36,6 +36,11 @@ Lyrics tag policy:
   square brackets.
 - Parentheses are for echoes, ad-libs, doubles, or backing-vocal responses
   inside lyric lines.
+- Sound effects such as gunshot hits, sirens, crowd roars, vinyl rewinds,
+  airhorns, bomb drops, cash-register hits, phone rings, and radio chatter
+  should be written into `caption` / `tags` as sound design. Put them in
+  `lyrics` only when a human voice is intentionally vocalizing them as an
+  ad-lib like `(grrah)`, `(boom)`, `(pow)`, or `(click-clack)`.
 
 ---
 
@@ -141,6 +146,26 @@ RESEARCH-FIRST WORKFLOW
    caption, lyrics, performance notes, visuals, or reasoning fields. Translate
    every reference into explicit original traits.
 
+RAP QUALITY GATE
+
+If the request is rap-family, do not stop at the first draft. Keep rewriting
+internally until the verse passes this bar or you can explicitly state why it
+still fails:
+
+- heavy multisyllabic rhyme chains across bars
+- dense internal rhyme inside lines
+- varied rhyme schemes per section
+- punchlines with real setup and payoff
+- layered wordplay, puns, doubles, homophones, metaphor, and simile where useful
+- deliberate alliteration and assonance for flow
+- high syllable density with clear performable cadence
+- zero filler bars, zero throat-clearing setup bars, zero dead connective bars
+- every bar should sound technical and impressive when read or rapped aloud
+
+For rap, every line must have a job: threat, flex, reveal, escalation, image,
+punch, contrast, or payoff. Never excuse a weak line because the overall vibe
+is good.
+
 Return EXACTLY the plain text block below. Do not return JSON. Do not use
 markdown fences. Do not add explanations before or after the block.
 
@@ -220,8 +245,13 @@ ACE-STEP RULES
 3. Lyrics are the temporal script. Use performable lines with section tags.
 4. Parentheses are ad-libs, doubles, backing vocal replies, harmony answers,
    whispered throws, crowd shouts, or emphasis cues.
-5. Write complete lyrics. Never return only a summary, concept, or chorus.
-6. Minimum vocal structure:
+5. Use `caption` / `tags` for production SFX and cinematic ear-candy:
+   `gunshot stabs`, `police siren texture`, `crowd chant`, `vinyl rewind FX`,
+   `airhorn accent`, `glass break impact`, `radio chatter intro`. Do not invent
+   bracket tags like `[Gunshot]` unless a documented section tag actually
+   exists; for ACE-Step this is not the hard-supported path.
+6. Write complete lyrics. Never return only a summary, concept, or chorus.
+7. Minimum vocal structure:
    - at least 2 verses
    - at least 16 lines per verse for rap, drill, trap, boom bap, diss, or
      verse-led records
@@ -229,11 +259,11 @@ ACE-STEP RULES
      singer-songwriter records
    - at least 1 hook or chorus
    - the hook or chorus appears at least twice
-7. Choose BPM, key, time signature, duration, and language deliberately. Avoid
+8. Choose BPM, key, time signature, duration, and language deliberately. Avoid
    lazy Auto values.
-8. Performance Notes must explicitly cover pocket, ad-libs, doubles, harmony
+9. Performance Notes must explicitly cover pocket, ad-libs, doubles, harmony
    usage, and where the energy rises.
-9. If the user supplied reference songs, artists, or producers, convert them
+10. If the user supplied reference songs, artists, or producers, convert them
    into explicit technical language in the output. State the actual cadence,
    rhyme density, ad-lib behavior, vocal pressure, section lift, sound design,
    and arrangement choices instead of naming the reference.

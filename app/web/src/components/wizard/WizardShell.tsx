@@ -23,6 +23,11 @@ interface WizardShellProps {
   step: number;
   onStepChange: (next: number) => void;
   onFinish?: () => void;
+  secondaryFinishAction?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+  };
   finishLabel?: string;
   isFinishing?: boolean;
   className?: string;
@@ -41,6 +46,7 @@ export function WizardShell({
   step,
   onStepChange,
   onFinish,
+  secondaryFinishAction,
   finishLabel = "Genereer",
   isFinishing = false,
   className,
@@ -163,6 +169,16 @@ export function WizardShell({
           <span className="hidden text-xs text-muted-foreground sm:inline">
             {progress}%
           </span>
+          {isLast && secondaryFinishAction ? (
+            <Button
+              onClick={secondaryFinishAction.onClick}
+              disabled={secondaryFinishAction.disabled || isFinishing}
+              size="lg"
+              variant="outline"
+            >
+              {secondaryFinishAction.label}
+            </Button>
+          ) : null}
           <Button
             onClick={goNext}
             disabled={current.isValid === false || isFinishing}

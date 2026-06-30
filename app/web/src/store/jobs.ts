@@ -5,11 +5,13 @@ export type JobKind =
   | "generation"
   | "song-batch"
   | "album"
+  | "album-batch"
   | "mflux"
   | "mlx-video"
   | "lora"
   | "lora-benchmark"
   | "lora-sweep"
+  | "lora-sweep-batch"
   | "ollama-pull"
   | "model-download"
   | "lm-download";

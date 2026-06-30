@@ -7,6 +7,7 @@ import { Newspaper, Music4, Hash, Video } from "lucide-react";
 import { WizardShell, FieldGroup, type WizardStepDef } from "@/components/wizard/WizardShell";
 import { AIPromptStep } from "@/components/wizard/AIPromptStep";
 import { ReviewStep } from "@/components/wizard/ReviewStep";
+import { MusicQueueEditor } from "@/components/wizard/MusicQueueEditor";
 import { GenerationJobStatus } from "@/components/wizard/GenerationJobStatus";
 import { GenerationAudioList, firstGenerationAudioUrl } from "@/components/wizard/GenerationAudioList";
 import { LoraSelector } from "@/components/wizard/LoraSelector";
@@ -34,7 +35,9 @@ import { useWizardStore } from "@/store/wizard";
 import { DEFAULT_LORA_SCALE, normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { DEFAULT_AUDIO_BACKEND, audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
-import { collectValidationMessages } from "@/lib/formValidation";
+import { collectPayloadBlockingIssues, collectValidationMessages } from "@/lib/formValidation";
+import { startSongBatchJob } from "@/lib/api";
+import { mergePayloadWithCompanion, stripPromptCompanion, summarizeQueueEntry } from "@/lib/musicQueue";
 import { formatDuration } from "@/lib/utils";
 
 const MODE = "news" as const;
@@ -75,6 +78,22 @@ interface NewsForm {
   lora_adapters: LoraSelection["lora_adapters"];
   adapter_model_variant: string;
   adapter_song_model: string;
+  payload_gate_status: string;
+  payload_gate_passed: boolean;
+  payload_gate_blocking_issues: string[];
+  payload_quality_gate: Record<string, unknown>;
+  rap_quality_report: Record<string, unknown>;
+  rap_rewrite_status: string;
+  rap_blocking_issues: string[];
+  rap_strengths: string[];
+  rap_revision_focus: string[];
+  genre_execution_contract: Record<string, unknown>;
+  lyric_technique_report: Record<string, unknown>;
+  lora_selection_reason: string;
+  performance_notes: string;
+  strict_completion_notes: string;
+  single_art_negative_prompt: string;
+  video_negative_prompt: string;
   social_post_caption?: string;
   social_hook_line?: string;
   social_hashtags?: string;
@@ -88,8 +107,12 @@ interface NewsForm {
 export function NewsWizard() {
   const navigate = useNavigate();
   const setResult = useWizardStore((s) => s.setResult);
+  const setPasteBlocks = useWizardStore((s) => s.setPasteBlocks);
   const lastResult = useWizardStore((s) => s.lastResult[MODE]);
   const warnings = useWizardStore((s) => s.warnings[MODE]) ?? [];
+  const promptValidation = useWizardStore((s) => s.validations[MODE]);
+  const storedQueue = useWizardStore((s) => s.queues[MODE]) ?? [];
+  const setHydration = useWizardStore((s) => s.setHydration);
   const storePrompt = useWizardStore((s) => s.prompts[MODE]);
   const draft = useWizardStore((s) => s.drafts[MODE]);
   const newsDefaults = React.useMemo<NewsForm>(
@@ -119,6 +142,22 @@ export function NewsWizard() {
       lora_adapters: [],
       adapter_model_variant: "",
       adapter_song_model: "",
+      payload_gate_status: "",
+      payload_gate_passed: false,
+      payload_gate_blocking_issues: [],
+      payload_quality_gate: {},
+      rap_quality_report: {},
+      rap_rewrite_status: "",
+      rap_blocking_issues: [],
+      rap_strengths: [],
+      rap_revision_focus: [],
+      genre_execution_contract: {},
+      lyric_technique_report: {},
+      lora_selection_reason: "",
+      performance_notes: "",
+      strict_completion_notes: "",
+      single_art_negative_prompt: "",
+      video_negative_prompt: "",
       social_post_caption: "",
       social_hook_line: "",
       social_hashtags: "",
@@ -138,10 +177,15 @@ export function NewsWizard() {
 
   const [step, setStep] = React.useState(0);
   const [aiPromptPending, setAiPromptPending] = React.useState(false);
+  const [queue, setQueue] = React.useState<Record<string, unknown>[]>(storedQueue);
+  const [editingQueueIndex, setEditingQueueIndex] = React.useState(-1);
   const values = form.watch();
   const reviewBlockingIssues = React.useMemo(
-    () => collectValidationMessages(form.formState.errors),
-    [form.formState.errors],
+    () => [
+      ...collectValidationMessages(form.formState.errors),
+      ...collectPayloadBlockingIssues(promptValidation, form.getValues()),
+    ],
+    [form, form.formState.errors, promptValidation],
   );
   const draftState = useWizardDraft(MODE, form);
 
@@ -196,6 +240,15 @@ export function NewsWizard() {
       use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
       batch_size: v.batch_size,
       variant_count: v.batch_size,
+      payload_gate_status: v.payload_gate_status,
+      payload_gate_passed: v.payload_gate_passed,
+      payload_gate_blocking_issues: v.payload_gate_blocking_issues,
+      payload_quality_gate: v.payload_quality_gate,
+      rap_quality_report: v.rap_quality_report,
+      rap_rewrite_status: v.rap_rewrite_status,
+      rap_blocking_issues: v.rap_blocking_issues,
+      rap_strengths: v.rap_strengths,
+      rap_revision_focus: v.rap_revision_focus,
       auto_song_art: v.auto_song_art,
       auto_album_art: false,
       auto_video_clip: v.auto_video_clip,
@@ -211,6 +264,108 @@ export function NewsWizard() {
       },
     };
   };
+
+  const buildCompanion = () => {
+    const v = form.getValues();
+    return {
+      genre_execution_contract: v.genre_execution_contract,
+      lyric_technique_report: v.lyric_technique_report,
+      lora_selection_reason: v.lora_selection_reason,
+      performance_notes: v.performance_notes,
+      strict_completion_notes: v.strict_completion_notes,
+      single_art_negative_prompt: v.single_art_negative_prompt,
+      video_negative_prompt: v.video_negative_prompt,
+      payload_gate_status: v.payload_gate_status,
+      payload_gate_passed: v.payload_gate_passed,
+      payload_gate_blocking_issues: v.payload_gate_blocking_issues,
+      payload_quality_gate: v.payload_quality_gate,
+      rap_quality_report: v.rap_quality_report,
+      rap_rewrite_status: v.rap_rewrite_status,
+      rap_blocking_issues: v.rap_blocking_issues,
+      rap_strengths: v.rap_strengths,
+      rap_revision_focus: v.rap_revision_focus,
+    };
+  };
+
+  const buildDraftPayload = () => mergePayloadWithCompanion(buildPayload(), buildCompanion());
+
+  const syncQueueState = React.useCallback(
+    (nextQueue: Record<string, unknown>[]) => {
+      setQueue(nextQueue);
+      setHydration(MODE, {
+        payload: buildPayload(),
+        validation: promptValidation ?? null,
+        warnings,
+        companion: buildCompanion(),
+        queue: nextQueue,
+      });
+    },
+    [buildPayload, buildCompanion, promptValidation, setHydration, warnings],
+  );
+
+  const resetForNextDraft = () => {
+    const current = form.getValues();
+    const next: NewsForm = {
+      ...current,
+      user_prompt: "",
+      title: "",
+      artist_name: "",
+      news_angle: "",
+      caption: "",
+      tags: "",
+      negative_tags: "",
+      lyrics: "",
+      social_post_caption: "",
+      social_hook_line: "",
+      social_hashtags: "",
+      art_prompt: "",
+      video_prompt: "",
+      genre_execution_contract: {},
+      lyric_technique_report: {},
+      lora_selection_reason: "",
+      performance_notes: "",
+      strict_completion_notes: "",
+      payload_gate_status: "",
+      payload_gate_passed: false,
+      payload_gate_blocking_issues: [],
+      payload_quality_gate: {},
+      rap_quality_report: {},
+      rap_rewrite_status: "",
+      rap_blocking_issues: [],
+      rap_strengths: [],
+      rap_revision_focus: [],
+    };
+    form.reset(next);
+    draftState.saveNow(next);
+    setEditingQueueIndex(-1);
+    setPasteBlocks(MODE, [{ label: "Huidige wizard JSON", content: "" }]);
+  };
+
+  const addCurrentToQueue = () => {
+    const entry = buildDraftPayload();
+    const nextQueue = [...queue];
+    if (editingQueueIndex >= 0 && editingQueueIndex < nextQueue.length) {
+      nextQueue[editingQueueIndex] = entry;
+    } else {
+      nextQueue.push(entry);
+    }
+    syncQueueState(nextQueue);
+    resetForNextDraft();
+  };
+
+  const queueItemsForSubmit = React.useMemo(() => {
+    const current = buildDraftPayload();
+    if (editingQueueIndex >= 0) {
+      return queue.map((item, index) => (index === editingQueueIndex ? current : item));
+    }
+    const hasMeaningfulDraft =
+      Boolean((values.user_prompt ?? "").trim()) ||
+      Boolean((values.title ?? "").trim()) ||
+      Boolean((values.news_angle ?? "").trim()) ||
+      Boolean((values.caption ?? "").trim()) ||
+      Boolean((values.lyrics ?? "").trim());
+    return hasMeaningfulDraft ? [...queue, current] : queue;
+  }, [buildDraftPayload, editingQueueIndex, queue, values.caption, values.lyrics, values.news_angle, values.title, values.user_prompt]);
 
   const hydrate = (payload: Record<string, unknown>) => {
     const social = (payload.social_pack as Record<string, unknown> | undefined) ?? {};
@@ -228,6 +383,29 @@ export function NewsWizard() {
     form.reset(next);
     draftState.saveNow(next);
     return next;
+  };
+
+  const handleFinish = () => {
+    const queued = queueItemsForSubmit;
+    if (queued.length > 1) {
+      void (async () => {
+        try {
+          const resp = await startSongBatchJob({
+            batch_title: values.title || "Queued news songs",
+            stop_on_error: false,
+            songs: queued.map((item) => stripPromptCompanion(item)),
+          });
+          if (!resp.success || !resp.job_id) {
+            throw new Error(resp.error || "News queue starten mislukt");
+          }
+          setStep(999);
+        } catch (error) {
+          console.error(error);
+        }
+      })();
+      return;
+    }
+    void generation.start(buildPayload());
   };
 
   const audioUrl =
@@ -456,13 +634,19 @@ export function NewsWizard() {
     {
       key: "review",
       title: "Review & genereer",
-      isValid: form.formState.isValid,
+      isValid: form.formState.isValid && reviewBlockingIssues.length === 0,
       render: () => (
         <div className="space-y-4">
           <ReviewStep
-            payload={buildPayload()}
+            payload={buildDraftPayload()}
             warnings={warnings}
             blockingIssues={reviewBlockingIssues}
+            queueSummary={{
+              queuedItems: queue.length,
+              totalRenders: queueItemsForSubmit.reduce((sum, item) => sum + Number(item.batch_size || 1), 0),
+              label: "news songs",
+            }}
+            companion={buildCompanion()}
             primaryFields={[
               { key: "title", label: "Titel" },
               { key: "satire_mode", label: "Satire-modus" },
@@ -476,6 +660,37 @@ export function NewsWizard() {
               { key: "social_hook_line", label: "Hook" },
               { key: "tags", label: "Tags" },
             ]}
+          />
+          <MusicQueueEditor
+            items={queue.map((item, index) => summarizeQueueEntry(item, `News song ${index + 1}`))}
+            activeIndex={editingQueueIndex}
+            onSelect={(index) => {
+              const selected = queue[index];
+              if (!selected) return;
+              hydrate(selected);
+              setEditingQueueIndex(index);
+              setPasteBlocks(MODE, [
+                { label: "Huidige wizard JSON", content: JSON.stringify(selected, null, 2) },
+              ]);
+            }}
+            onRemove={(index) => {
+              const nextQueue = queue.filter((_, itemIndex) => itemIndex !== index);
+              syncQueueState(nextQueue);
+              if (editingQueueIndex === index) setEditingQueueIndex(-1);
+            }}
+            onDuplicate={(index) => {
+              const nextQueue = [...queue];
+              nextQueue.splice(index + 1, 0, { ...queue[index] });
+              syncQueueState(nextQueue);
+            }}
+            onMove={(index, direction) => {
+              const target = index + direction;
+              if (target < 0 || target >= queue.length) return;
+              const nextQueue = [...queue];
+              const [item] = nextQueue.splice(index, 1);
+              nextQueue.splice(target, 0, item);
+              syncQueueState(nextQueue);
+            }}
           />
           <RenderInsightPanel payload={buildPayload()} warnings={warnings} />
           {(generation.jobId || generation.isSubmitting) && (
@@ -542,9 +757,14 @@ export function NewsWizard() {
       steps={steps}
       step={step}
       onStepChange={setStep}
-      onFinish={() => void generation.start(buildPayload())}
+      onFinish={handleFinish}
+      secondaryFinishAction={{
+        label: "Nog een toevoegen",
+        onClick: addCurrentToQueue,
+        disabled: !form.formState.isValid || reviewBlockingIssues.length > 0,
+      }}
       isFinishing={generation.isSubmitting || generation.isRunning}
-      finishLabel={generation.isSubmitting || generation.isRunning ? "Renderen…" : "Genereer track"}
+      finishLabel={generation.isSubmitting || generation.isRunning ? "Renderen…" : "Nu genereren"}
     />
   );
 }

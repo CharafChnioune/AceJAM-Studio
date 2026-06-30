@@ -5,7 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 
-PROMPT_KIT_VERSION = "ace-step-multilingual-hit-kit-2026-04-26"
+PROMPT_KIT_VERSION = "ace-step-multilingual-hit-kit-2026-06-28"
 
 PROMPT_KIT_OUTPUT_CONTRACT_FIELDS = [
     "concept_summary",
@@ -30,6 +30,11 @@ PROMPT_KIT_OUTPUT_CONTRACT_FIELDS = [
     "variations",
     "negative_control",
     "quality_checks",
+    "rap_quality_report",
+    "rap_rewrite_status",
+    "rap_blocking_issues",
+    "rap_strengths",
+    "rap_revision_focus",
     "anti_ai_rewrite_notes",
     "copy_paste_block",
 ]
@@ -48,6 +53,7 @@ MASTER_RULES = [
     "Anchor every song in one emotional promise, one coherent image world, and a hook short enough to remember.",
     "Lyric craft must be human and specific: concrete scenes, earned metaphors, natural cadence, no generic AI phrases such as neon dreams / fire inside / we rise.",
     "Adapt craft to the genre: rap needs cadence and internal rhyme; sung music needs vowel-friendly emotional clarity; EDM/instrumental needs motif and energy movement rather than forced verses.",
+    "Rap-family output must pass a hard quality gate: every bar needs line intent, performable cadence, internal rhyme pressure, multisyllabic control, punch setup/payoff, and zero filler.",
     "Write in the requested language/script unless the user explicitly asks for romanization or code switching.",
     "Use full polished output without ACE-Step format_input unless the workflow is a rough draft, repair, or explicit formatting task.",
     "For source-audio workflows, mark duration and structure as source-locked advisory metadata unless the handler supports a runtime knob.",
@@ -545,6 +551,7 @@ ACE_STEP_AUTHORING_RULES: list[str] = [
     "ALL CAPS lyric lines render as shouted intensity. Use sparingly for hook accents like 'WE RUN THIS!' or one-word chants, never for whole verses.",
     "BPM, key/scale, time signature, and duration go in the dedicated metadata fields. ACE-Step also reads them from tag prose ('130 bpm', 'G major'), but our policy keeps them only in metadata to avoid double sources.",
     "Caption is sound-only: genre, mood, instruments, timbre, era, production style, vocal type, rhythm, structure energy. No song titles, no producer credits as prose, no lyrics, no JSON, no BPM/key/time text.",
+    "Sound effects and cinematic ear-candy belong in caption/tags, not as invented standalone lyrics tags. If you want gunshot stabs, sirens, crowd roars, bomb drops, vinyl rewinds, airhorns, phone rings, cash-register hits, glass breaks, or police-radio texture, describe them as sound design in the caption/tag stack ('gunshot stabs', 'police siren texture', 'crowd chant', 'vinyl rewind FX'). Put them in lyrics only when a human voice is actually performing the sound as an ad-lib, chant, or response.",
     "Lyrics are a temporal script: a section tag header per block, then performable lines (rap can run 6-14 syllables/line, sung 6-10). Internal rhyme and ad-libs go inside the lyric text or in (parens) on the same line, not as separate tags.",
     "Producer references: never put a producer or label name in the caption. Map the request to the matching Producer-Format Cookbook entry below and use that tag stack instead. ACE-Step does not recognise producer names; it only responds to genre+era+drum+timbre vocabulary.",
     "Six-dimension beat-spec rule: every caption stack must cover at least five of these six dimensions: drum kit (kick + snare + hat triad), bass character, sample/source material, mix treatment, era marker, groove word. Missing one is acceptable; missing two reads as 'names a few instruments' and underspecifies the beat.",
@@ -1039,7 +1046,10 @@ RAP_MODE_COOKBOOK: dict[str, str] = {
     "ad-libs / background vocals": (
         "Write ad-libs in parentheses on the same line as the main lyric: "
         "'I came up from the bottom (yeah!) / now they want a feature (uh!)'. "
-        "Common ad-libs: (yeah), (uh), (huh), (skrrt), (woo), (let's go), (alright), (come on)."
+        "Common ad-libs: (yeah), (uh), (huh), (skrrt), (woo), (let's go), (alright), (come on), "
+        "(grrah), (boom), (pow), (click-clack) when the artist is VOCALISING the sound. "
+        "Non-vocal sound design like real gunshot FX, sirens, airhorns, rewinds, glass breaks, or crowd noise "
+        "belongs in the caption/tag stack instead."
     ),
     "rap section structure": (
         "Use [Verse - rap] for rapped verses, [Hook] or [Hook/Chorus] for the main repeating hook, "
@@ -1402,6 +1412,20 @@ VALIDATION_CHECKLIST = [
     "genre_module_matches_caption",
     "negative_control_present",
     "runtime_fields_supported_or_advisory",
+    "rap_gate_passed_when_rap_mode",
+]
+
+RAP_QUALITY_CONTRACT = [
+    "Each rap line must have a job: threat, flex, reveal, escalation, image, punch, contrast, or payoff.",
+    "Use heavy multisyllabic rhyme chains across bars, not only line-end rhyme.",
+    "Use dense internal rhyme inside lines so flow stays musical before the bar resolves.",
+    "Vary rhyme schemes by section and break them deliberately only for impact.",
+    "Punchlines need setup. Do not output isolated clever bars with no earned payoff.",
+    "Layer wordplay with double meanings, puns, homophones, metaphor, and simile where it fits naturally.",
+    "Use alliteration and assonance to create vowel music and forward momentum.",
+    "Keep syllable density high without muddying clarity, breath, or groove.",
+    "No filler bars, no starter bars, no throat-clearing bars, and no generic flex placeholders.",
+    "If the verse would not sound technical and impressive when read or rapped aloud, rewrite it.",
 ]
 
 DEFAULT_NEGATIVE_CONTROL = [
@@ -1669,6 +1693,11 @@ def kit_metadata_defaults(
         ],
         "negative_control": negative_control_for(genre_hint, instrumental=sparse),
         "quality_checks": _quality_checks_template(),
+        "rap_quality_report": {},
+        "rap_rewrite_status": "not_applicable",
+        "rap_blocking_issues": [],
+        "rap_strengths": [],
+        "rap_revision_focus": [],
         "anti_ai_rewrite_notes": "Rewrite generic lines into concrete scenes; keep one metaphor world and avoid formulaic AI phrasing.",
         "copy_paste_block": "",
     }
@@ -1685,6 +1714,7 @@ def prompt_kit_payload() -> dict[str, Any]:
         "section_tags": SECTION_TAGS,
         "troubleshooting_matrix": TROUBLESHOOTING_MATRIX,
         "validation_checklist": VALIDATION_CHECKLIST,
+        "rap_quality_contract": RAP_QUALITY_CONTRACT,
         "negative_control": DEFAULT_NEGATIVE_CONTROL,
         "advanced_generation_advisory": ADVANCED_GENERATION_ADVISORY,
     }
@@ -1725,6 +1755,7 @@ def _format_lyrics_tag_trust_block() -> str:
         "5. Do not invent long bracket prose. If a modifier is longer than a few words, move the idea into caption, tags, or performance notes.",
         "6. Never use HTML, markdown styling, colored-word markup, nested tags, or metadata text inside lyrics.",
         "7. Vocal-character and energy words mostly belong in caption/tags. Use square brackets only for section identity and short section modifiers.",
+        "8. Sound effects such as gunshots, sirens, rewinds, crowd noise, bomb drops, and radio chatter are safer in caption/tags than in brackets. Put them in lyrics only when a voice is actually saying them in (parens).",
     ]
     return "\n".join(lines)
 
@@ -1752,6 +1783,20 @@ def _format_rap_cookbook_block() -> str:
     lines = ["## Rap-Mode Cookbook"]
     for label, body in RAP_MODE_COOKBOOK.items():
         lines.append(f"- **{label}**: {body}")
+    return "\n".join(lines)
+
+
+def _format_rap_quality_gate_block() -> str:
+    lines = [
+        "## Rap Quality Gate",
+        "Apply this gate to hip-hop, gangster rap, boom bap, drill, trap, and any request that clearly behaves like rap. "
+        "Do not stop at the first draft. Audit, rewrite, and re-audit until these conditions pass or you can explicitly name the remaining blockers.",
+    ]
+    for item in RAP_QUALITY_CONTRACT:
+        lines.append(f"- {item}")
+    lines.append("- Return rap_quality_report, rap_strengths, rap_revision_focus, rap_rewrite_status, and rap_blocking_issues whenever the request is rap-family.")
+    lines.append("- If any blocker remains, name it directly: too many filler bars, weak internal rhyme density, punchlines lack setup, rhyme scheme too flat, cadence likely awkward when performed.")
+    lines.append("- Never leave artist-name shorthand in the output. Translate every reference into explicit lyrical and production mechanics.")
     return "\n".join(lines)
 
 
@@ -1850,6 +1895,7 @@ def prompt_kit_system_block(mode: str = "custom") -> str:
     if str(mode or "").strip().lower() in MUSIC_MODES_FOR_RAP_COOKBOOK:
         blocks.append(_format_producer_cookbook_block())
         blocks.append(_format_rap_cookbook_block())
+        blocks.append(_format_rap_quality_gate_block())
         blocks.append(_format_songwriter_cookbook_block())
         blocks.append(_format_anti_patterns_block())
         blocks.append(_format_worked_examples_block())

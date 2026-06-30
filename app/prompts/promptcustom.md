@@ -79,6 +79,12 @@ Required JSON:
 }
 
 Caption/tag rules: build a compact 12-24 tag stack covering genre/style, mood, instruments, timbre, rhythm/groove, vocal type, production, structure energy. Pick exclusively from the **ACE-Step Tag Library** that is appended to this system prompt at runtime. Follow every entry in the **ACE-Step Authoring Rules** verbatim — especially the single-dash modifier syntax `[Section - modifier]`, the parentheses-for-background-vocals rule, and the no-BPM/key-in-caption rule.
+Important SFX rule: if the request needs gunshots, sirens, rewinds, crowd
+noise, airhorns, bomb drops, radio chatter, glass breaks, or other cinematic
+ear-candy, put those in caption/tags as production cues like `gunshot stabs`,
+`police siren texture`, `vinyl rewind FX`, `crowd chant`, `radio chatter intro`.
+Put them in lyrics only when a voice is actually saying them in parentheses:
+`(grrah)`, `(boom)`, `(pow)`, `(click-clack)`.
 Also follow the appended **ACE-Step Lyrics Tag Trust Model**: official tags
 first, observed tags only when short and clearly musical, no HTML, no markdown
 styling, no colored-word markup, and no metadata inside lyrics.
@@ -86,6 +92,8 @@ styling, no colored-word markup, and no metadata inside lyrics.
 Producer references: when the user says "Dr. Dre", "No I.D.", "Metro Boomin", "J Dilla", "Quincy Jones", "Mobb Deep", "Havoc", "Timbaland", "Pharrell", "Kanye", "Mike Dean", "DJ Premier", "Pete Rock", "Rick Rubin", "Madlib", "Just Blaze", or "Stoupe", do NOT put the name in the caption. Look up the matching entry in the **Producer-Format Cookbook** at the end of this system prompt and stack 6-9 of the cookbook's tags in caption. Compound style names like "Dre x Blaze" combine entries — pick 4-5 tags from each entry and merge.
 
 Rap requests: use the **Rap-Mode Cookbook** for ad-lib placement, hook structure, line length, shouted intensity, and rap caption stack template. The combination of a rap-side caption tag (Rap, Trap Flow, Spoken Word, Melodic Rap) PLUS section tag `[Verse - rap]` is what reliably switches ACE-Step into rap mode.
+
+Hard rap quality gate: keep rewriting rap lyrics internally until they show heavy multisyllabic rhyme, dense internal rhyme, varied rhyme schemes, setup/payoff punchlines, layered wordplay, alliteration, assonance, high syllable density with clear cadence, and zero filler bars. Every rap line needs a job: threat, flex, reveal, escalation, image, punch, contrast, or payoff. If a bar would not sound technical and impressive out loud, rewrite it.
 
 negative_tags: muddy mix, generic lyrics, weak hook, empty lyrics, off-key vocal, unclear vocal, noisy artifacts, flat drums, harsh high end, overcompressed, boring arrangement, contradictory style.
 

@@ -20,10 +20,21 @@ DEFAULT_SCRATCH_ROOT = Path("/Volumes/4tb/tmp/acejam-lora-batch")
 DEFAULT_STATE_FILE = BASE_DIR / "data" / "lora_cluster_batch_state.json"
 DEFAULT_LOG_FILE = BASE_DIR / "data" / "lora_cluster_batch.log"
 ACTIVE_JOB_STATES = {"queued", "running", "stopping"}
+OOM_RETRY_PROFILES = [
+    {"name": "default", "max_duration": 240.0, "rank": 64, "alpha": 128, "offload_encoder": False},
+    {"name": "oom_retry_180_rank32", "max_duration": 180.0, "rank": 32, "alpha": 64, "offload_encoder": True},
+    {"name": "oom_retry_120_rank32", "max_duration": 120.0, "rank": 32, "alpha": 64, "offload_encoder": True},
+    {"name": "oom_retry_90_rank16", "max_duration": 90.0, "rank": 16, "alpha": 32, "offload_encoder": True},
+]
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_mps_oom_error(error: str | None) -> bool:
+    text = str(error or "").lower()
+    return "mps backend out of memory" in text or ("mps" in text and "out of memory" in text)
 
 
 def derive_trigger_tag(folder_name: str) -> str:
@@ -272,86 +283,112 @@ def run_batch(
             save_state(state_file, state)
             continue
 
-        entry.update(
-            {
-                "status": "running",
-                "job_id": "",
-                "started_at": utc_now(),
-                "finished_at": "",
-                "registered_path": "",
-                "mirror_path": "",
-                "error": "",
-            }
-        )
-        entries[folder_name] = entry
-        save_state(state_file, state)
-        logger.info("start folder=%s trigger=%s source=%s", folder_name, trigger_tag, folder)
+        profile_index = 0
+        if entry.get("status") == "failed" and is_mps_oom_error(entry.get("error")):
+            profile_index = max(0, min(int(entry.get("oom_retry_profile_index") or 0), len(OOM_RETRY_PROFILES) - 1))
 
-        payload = {
-            "dataset_id": folder_name,
-            "import_root": str(folder),
-            "trigger_tag": trigger_tag,
-            "custom_tag": trigger_tag,
-            "language": language,
-            "auto_load": False,
-            "save_every_n_epochs": 10,
-            "epoch_audition_every_n_epochs": 10,
-        }
-
-        try:
-            started_job = dict(manager.start_one_click_train(payload))
-            job_id = str(started_job.get("id") or "")
-            if not job_id:
-                raise RuntimeError(f"Could not determine job id from start_one_click_train response: {started_job}")
-            entry["job_id"] = job_id
-            entry["tensor_output_dir"] = str(((started_job.get("paths") or {}).get("tensor_output") or "")).strip()
+        completed = False
+        final_failure_recorded = False
+        for attempt_index in range(profile_index, len(OOM_RETRY_PROFILES)):
+            profile = dict(OOM_RETRY_PROFILES[attempt_index])
+            entry.update(
+                {
+                    "status": "running",
+                    "job_id": "",
+                    "started_at": utc_now(),
+                    "finished_at": "",
+                    "registered_path": "",
+                    "mirror_path": "",
+                    "error": "",
+                    "oom_retry_profile_index": attempt_index,
+                    "oom_retry_profile_name": profile["name"],
+                }
+            )
             entries[folder_name] = entry
             save_state(state_file, state)
-
-            finished_job = wait_for_job_completion(
-                manager,
-                job_id,
-                poll_interval=poll_interval,
-                logger=logger,
+            logger.info(
+                "start folder=%s trigger=%s source=%s profile=%s max_duration=%s rank=%s alpha=%s offload_encoder=%s",
+                folder_name,
+                trigger_tag,
+                folder,
+                profile["name"],
+                profile["max_duration"],
+                profile["rank"],
+                profile["alpha"],
+                profile["offload_encoder"],
             )
-            result = dict(finished_job.get("result") or {})
-            job_state = str(finished_job.get("state") or "")
-            entry["result_ids"] = collect_result_ids(result, finished_job)
-            entry["finished_at"] = utc_now()
 
-            if job_state == "succeeded":
-                registered_path = Path(str(result.get("registered_adapter_path") or "")).expanduser().resolve()
-                if not registered_path.exists():
-                    raise FileNotFoundError(f"Succeeded job missing registered adapter: {registered_path}")
-                mirrored_path = mirror_adapter(registered_path, mirror_root)
-                output_dir = str(
-                    result.get("output_dir")
-                    or finished_job.get("paths", {}).get("output_dir")
-                    or entry.get("training_output_dir")
-                    or ""
-                ).strip()
-                entry.update(
-                    {
-                        "status": "completed",
-                        "registered_path": str(registered_path),
-                        "mirror_path": str(mirrored_path),
-                        "generation_trigger_tag": str(result.get("generation_trigger_tag") or result.get("trigger_tag") or trigger_tag),
-                        "training_output_dir": output_dir,
-                        "tensor_output_dir": str(result.get("tensor_output") or finished_job.get("paths", {}).get("tensor_output") or entry.get("tensor_output_dir") or "").strip(),
-                        "error": "",
-                    }
+            payload = {
+                "dataset_id": folder_name,
+                "import_root": str(folder),
+                "trigger_tag": trigger_tag,
+                "custom_tag": trigger_tag,
+                "language": language,
+                "auto_load": False,
+                "save_every_n_epochs": 10,
+                "epoch_audition_every_n_epochs": 10,
+                "max_duration": profile["max_duration"],
+                "rank": profile["rank"],
+                "alpha": profile["alpha"],
+                "offload_encoder": profile["offload_encoder"],
+            }
+
+            try:
+                started_job = dict(manager.start_one_click_train(payload))
+                job_id = str(started_job.get("id") or "")
+                if not job_id:
+                    raise RuntimeError(f"Could not determine job id from start_one_click_train response: {started_job}")
+                entry["job_id"] = job_id
+                entry["tensor_output_dir"] = str(((started_job.get("paths") or {}).get("tensor_output") or "")).strip()
+                entries[folder_name] = entry
+                save_state(state_file, state)
+
+                finished_job = wait_for_job_completion(
+                    manager,
+                    job_id,
+                    poll_interval=poll_interval,
+                    logger=logger,
                 )
-                summary["completed"] += 1
-                logger.info(
-                    "completed folder=%s trigger=%s registered=%s mirror=%s",
-                    folder_name,
-                    trigger_tag,
-                    registered_path,
-                    mirrored_path,
-                )
-                if cleanup_training_artifacts:
-                    cleanup_entry_artifacts(entry, logger=logger)
-            else:
+                result = dict(finished_job.get("result") or {})
+                job_state = str(finished_job.get("state") or "")
+                entry["result_ids"] = collect_result_ids(result, finished_job)
+                entry["finished_at"] = utc_now()
+
+                if job_state == "succeeded":
+                    registered_path = Path(str(result.get("registered_adapter_path") or "")).expanduser().resolve()
+                    if not registered_path.exists():
+                        raise FileNotFoundError(f"Succeeded job missing registered adapter: {registered_path}")
+                    mirrored_path = mirror_adapter(registered_path, mirror_root)
+                    output_dir = str(
+                        result.get("output_dir")
+                        or finished_job.get("paths", {}).get("output_dir")
+                        or entry.get("training_output_dir")
+                        or ""
+                    ).strip()
+                    entry.update(
+                        {
+                            "status": "completed",
+                            "registered_path": str(registered_path),
+                            "mirror_path": str(mirrored_path),
+                            "generation_trigger_tag": str(result.get("generation_trigger_tag") or result.get("trigger_tag") or trigger_tag),
+                            "training_output_dir": output_dir,
+                            "tensor_output_dir": str(result.get("tensor_output") or finished_job.get("paths", {}).get("tensor_output") or entry.get("tensor_output_dir") or "").strip(),
+                            "error": "",
+                        }
+                    )
+                    summary["completed"] += 1
+                    logger.info(
+                        "completed folder=%s trigger=%s registered=%s mirror=%s",
+                        folder_name,
+                        trigger_tag,
+                        registered_path,
+                        mirrored_path,
+                    )
+                    if cleanup_training_artifacts:
+                        cleanup_entry_artifacts(entry, logger=logger)
+                    completed = True
+                    break
+
                 error = str(finished_job.get("error") or result.get("error") or f"job ended with state={job_state}")
                 entry.update(
                     {
@@ -361,21 +398,50 @@ def run_batch(
                         "error": error,
                     }
                 )
-                summary["failed"] += 1
-                logger.error("failed folder=%s trigger=%s job=%s error=%s", folder_name, trigger_tag, job_id, error)
                 if cleanup_training_artifacts:
                     cleanup_entry_artifacts(entry, logger=logger)
-        except Exception as exc:
-            entry["finished_at"] = utc_now()
-            entry["status"] = "failed"
-            entry["error"] = str(exc)
+                if is_mps_oom_error(error) and attempt_index + 1 < len(OOM_RETRY_PROFILES):
+                    next_profile = OOM_RETRY_PROFILES[attempt_index + 1]
+                    logger.warning(
+                        "oom retry folder=%s trigger=%s job=%s current_profile=%s next_profile=%s",
+                        folder_name,
+                        trigger_tag,
+                        job_id,
+                        profile["name"],
+                        next_profile["name"],
+                    )
+                    continue
+                summary["failed"] += 1
+                final_failure_recorded = True
+                logger.error("failed folder=%s trigger=%s job=%s error=%s", folder_name, trigger_tag, job_id, error)
+                break
+            except Exception as exc:
+                entry["finished_at"] = utc_now()
+                entry["status"] = "failed"
+                entry["error"] = str(exc)
+                if cleanup_training_artifacts:
+                    cleanup_entry_artifacts(entry, logger=logger)
+                if is_mps_oom_error(str(exc)) and attempt_index + 1 < len(OOM_RETRY_PROFILES):
+                    next_profile = OOM_RETRY_PROFILES[attempt_index + 1]
+                    logger.warning(
+                        "batch oom exception folder=%s trigger=%s current_profile=%s next_profile=%s error=%s",
+                        folder_name,
+                        trigger_tag,
+                        profile["name"],
+                        next_profile["name"],
+                        exc,
+                    )
+                    continue
+                summary["failed"] += 1
+                final_failure_recorded = True
+                logger.exception("batch exception folder=%s trigger=%s", folder_name, trigger_tag)
+                break
+            finally:
+                entries[folder_name] = entry
+                save_state(state_file, state)
+
+        if not completed and not final_failure_recorded:
             summary["failed"] += 1
-            logger.exception("batch exception folder=%s trigger=%s", folder_name, trigger_tag)
-            if cleanup_training_artifacts:
-                cleanup_entry_artifacts(entry, logger=logger)
-        finally:
-            entries[folder_name] = entry
-            save_state(state_file, state)
 
     logger.info("summary total=%s completed=%s failed=%s skipped=%s", summary["total"], summary["completed"], summary["failed"], summary["skipped"])
     return summary

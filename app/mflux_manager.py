@@ -737,6 +737,16 @@ def mflux_list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     for path in sorted(MFLUX_JOBS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         job = _read_job(path.stem)
         if job:
+            state = str(job.get("state") or "").lower()
+            if state in {"queued", "running", "stopping"}:
+                job = _set_job(
+                    str(job.get("id") or path.stem),
+                    state="failed",
+                    status="failed",
+                    stage="Interrupted by app restart",
+                    error="Interrupted by app restart",
+                    finished_at=_now(),
+                )
             jobs.append(job)
         if len(jobs) >= limit:
             break
