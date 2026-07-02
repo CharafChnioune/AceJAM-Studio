@@ -33,7 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { simpleSchema, simpleDefaults, type SimpleFormValues } from "@/lib/schemas";
-import { ACE_STEP_KEY_SCALE_OPTIONS, ACE_STEP_TIME_SIGNATURE_OPTIONS } from "@/lib/aceStepSettings";
+import { ACE_STEP_KEY_SCALE_OPTIONS, ACE_STEP_TIME_SIGNATURE_OPTIONS, aceStepRenderDefaults } from "@/lib/aceStepSettings";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
 import { audioBackendLabel, useMlxDitForAudioBackend } from "@/lib/audioBackend";
@@ -167,6 +167,7 @@ export function SimpleWizard() {
 
   const buildPayload = () => {
     const v = form.getValues();
+    const renderDefaults = aceStepRenderDefaults(v.song_model, v.quality_profile);
     return {
       task_type: "text2music",
       simple_description: v.simple_description,
@@ -188,8 +189,15 @@ export function SimpleWizard() {
       song_model: v.song_model,
       audio_backend: v.audio_backend,
       use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
-      quality_profile: v.quality_profile,
+      quality_profile: renderDefaults.quality_profile,
       seed: v.seed,
+      inference_steps: renderDefaults.inference_steps,
+      guidance_scale: renderDefaults.guidance_scale,
+      shift: renderDefaults.shift,
+      audio_format: renderDefaults.audio_format,
+      infer_method: renderDefaults.infer_method,
+      sampler_mode: renderDefaults.sampler_mode,
+      use_adg: renderDefaults.use_adg,
       batch_size: v.batch_size,
       variant_count: v.batch_size,
       payload_gate_status: v.payload_gate_status,

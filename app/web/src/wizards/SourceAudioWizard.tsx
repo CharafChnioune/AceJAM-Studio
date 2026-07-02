@@ -16,6 +16,7 @@ import { SourceAudioStep, type SourceAudioValue } from "@/components/wizard/Sour
 import { TagInput } from "@/components/wizard/TagInput";
 import { AudioStyleSelector } from "@/components/wizard/AudioStyleSelector";
 import { AudioBackendSelector } from "@/components/wizard/AudioBackendSelector";
+import { AceStepAdvancedSettings } from "@/components/wizard/AceStepAdvancedSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -42,6 +43,11 @@ import { useWizardStore } from "@/store/wizard";
 import { useJobsStore } from "@/store/jobs";
 import { toast } from "@/components/ui/sonner";
 import { cn, formatDuration } from "@/lib/utils";
+import {
+  ACE_STEP_ADVANCED_DEFAULTS,
+  ACE_STEP_ADVANCED_PAYLOAD_FIELDS,
+  aceStepRenderDefaults,
+} from "@/lib/aceStepSettings";
 
 const TASK_TYPE_BY_MODE: Record<string, string> = {
   cover: "cover",
@@ -73,6 +79,12 @@ const SONG_MODELS = [
   ["acestep-v15-turbo-shift1", "ACE-Step v1.5 Turbo (shift 1)"],
 ] as const;
 
+const QUALITY_PROFILES = [
+  ["draft", "Laag (docs-correct, volledig)"],
+  ["standard", "Middel (docs standaard)"],
+  ["chart_master", "Hoog (beste standaardkwaliteit)"],
+] as const;
+
 const BASE_ONLY_VARIANTS = new Set(["extract", "lego", "complete"]);
 
 interface BaseSourceForm {
@@ -91,6 +103,11 @@ interface BaseSourceForm {
   vocal_language: string;
   song_model: string;
   audio_backend: "mlx";
+  quality_profile: "draft" | "standard" | "chart_master";
+  inference_steps: number;
+  guidance_scale: number;
+  shift: number;
+  audio_format: "wav" | "wav32" | "flac" | "mp3" | "opus" | "aac";
   batch_size: number;
   // Mode-specific:
   audio_cover_strength?: number;
@@ -111,6 +128,10 @@ interface BaseSourceForm {
   lora_adapters: LoraSelection["lora_adapters"];
   adapter_model_variant: string;
   adapter_song_model: string;
+  infer_method?: "ode" | "sde";
+  sampler_mode?: "euler" | "heun";
+  use_adg?: boolean;
+  [key: string]: unknown;
 }
 
 export interface SourceAudioWizardConfig {
@@ -148,6 +169,11 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       vocal_language: "en",
       song_model: config.defaultModel ?? "acestep-v15-xl-sft",
       audio_backend: DEFAULT_AUDIO_BACKEND,
+      quality_profile: "chart_master",
+      inference_steps: 64,
+      guidance_scale: 8,
+      shift: 3,
+      audio_format: "wav32",
       batch_size: 1,
       audio_cover_strength: 0.6,
       cover_noise_strength: 0.2,
@@ -167,6 +193,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       lora_adapters: [],
       adapter_model_variant: "",
       adapter_song_model: "",
+      ...(ACE_STEP_ADVANCED_DEFAULTS as Partial<BaseSourceForm>),
     }),
     [config.defaultModel, config.variant],
   );
@@ -230,8 +257,7 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
   const hydrate = (payload: Record<string, unknown>) => {
     for (const k of Object.keys(form.getValues())) {
       if (k in payload) {
-        // @ts-expect-error dynamic
-        form.setValue(k, payload[k]);
+        form.setValue(k as never, payload[k] as never);
       }
     }
     if (Array.isArray(payload.track_names)) {
@@ -261,12 +287,33 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
     form.setValue("adapter_model_variant", selection.adapter_model_variant, { shouldValidate: true });
     form.setValue("adapter_song_model", selection.adapter_song_model, { shouldValidate: true });
     if (selection.use_lora && selection.adapter_song_model) {
+      const renderDefaults = aceStepRenderDefaults(selection.adapter_song_model, form.getValues("quality_profile"));
       form.setValue("song_model", selection.adapter_song_model, { shouldValidate: true });
+      form.setValue("inference_steps", renderDefaults.inference_steps, { shouldValidate: true });
+      form.setValue("guidance_scale", renderDefaults.guidance_scale, { shouldValidate: true });
+      form.setValue("shift", renderDefaults.shift, { shouldValidate: true });
+      form.setValue("audio_format", renderDefaults.audio_format, { shouldValidate: true });
+      form.setValue("infer_method", renderDefaults.infer_method, { shouldValidate: true });
+      form.setValue("sampler_mode", renderDefaults.sampler_mode, { shouldValidate: true });
+      form.setValue("use_adg", renderDefaults.use_adg, { shouldValidate: true });
     }
+  };
+
+  const setAdvancedValue = (key: string, value: unknown) => {
+    form.setValue(key as never, value as never, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
   };
 
   const buildPayload = () => {
     const v = form.getValues();
+    const advanced: Record<string, unknown> = {};
+    for (const key of ACE_STEP_ADVANCED_PAYLOAD_FIELDS) {
+      const value = v[key];
+      if (value === undefined || value === "") continue;
+      advanced[key] = value;
+    }
     const payload: Record<string, unknown> = {
       task_type: v.task_type,
       title: v.title,
@@ -285,9 +332,18 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
       song_model: v.song_model,
       audio_backend: v.audio_backend,
       use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
+      quality_profile: v.quality_profile,
+      inference_steps: v.inference_steps,
+      guidance_scale: v.guidance_scale,
+      shift: v.shift,
+      audio_format: v.audio_format,
+      infer_method: v.infer_method,
+      sampler_mode: v.sampler_mode,
+      use_adg: v.use_adg,
       batch_size: v.batch_size,
       variant_count: v.batch_size,
       src_audio_id: source?.uploadId,
+      ...advanced,
       ...normalizeLoraSelection(v),
     };
     if (config.variant === "cover") {
@@ -624,7 +680,17 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
                   control={form.control}
                   name="song_model"
                   render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
+                    <Select value={field.value} onValueChange={(nextModel) => {
+                      field.onChange(nextModel);
+                      const next = aceStepRenderDefaults(nextModel, values.quality_profile);
+                      form.setValue("inference_steps", next.inference_steps);
+                      form.setValue("guidance_scale", next.guidance_scale);
+                      form.setValue("shift", next.shift);
+                      form.setValue("audio_format", next.audio_format);
+                      form.setValue("infer_method", next.infer_method);
+                      form.setValue("sampler_mode", next.sampler_mode);
+                      form.setValue("use_adg", next.use_adg);
+                    }}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {SONG_MODELS.map(([id, label]) => (
@@ -637,6 +703,33 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
                 {baseOnlyModelError && (
                   <p className="text-xs text-amber-500">{baseOnlyModelError}</p>
                 )}
+              </div>
+              <div className="space-y-1.5">
+                <Label>Kwaliteit</Label>
+                <Controller
+                  control={form.control}
+                  name="quality_profile"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={(nextQuality) => {
+                      field.onChange(nextQuality);
+                      const next = aceStepRenderDefaults(values.song_model, nextQuality);
+                      form.setValue("inference_steps", next.inference_steps);
+                      form.setValue("guidance_scale", next.guidance_scale);
+                      form.setValue("shift", next.shift);
+                      form.setValue("audio_format", next.audio_format);
+                      form.setValue("infer_method", next.infer_method);
+                      form.setValue("sampler_mode", next.sampler_mode);
+                      form.setValue("use_adg", next.use_adg);
+                    }}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {QUALITY_PROFILES.map(([id, label]) => (
+                          <SelectItem key={id} value={id}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
               </div>
               <AudioBackendSelector
                 value={values.audio_backend}
@@ -657,6 +750,9 @@ export function SourceAudioWizard({ config }: { config: SourceAudioWizardConfig 
                 <p className="text-xs text-muted-foreground">Zelfde source-task, andere seed.</p>
               </div>
             </div>
+          </FieldGroup>
+          <FieldGroup title="Official ACE-Step controls">
+            <AceStepAdvancedSettings values={values} onChange={setAdvancedValue} showSourceControls />
           </FieldGroup>
           {renderModeStep()}
         </div>

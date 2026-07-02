@@ -48,6 +48,7 @@ import {
   ACE_STEP_KEY_SCALE_OPTIONS,
   ACE_STEP_TIME_SIGNATURE_OPTIONS,
   OFFICIAL_AUDIO_FORMAT_OPTIONS,
+  aceStepRenderDefaults,
 } from "@/lib/aceStepSettings";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { isGenerationLoraAdapter, loraAdapterLabel, loraTriggerOptions } from "@/lib/lora";
@@ -98,25 +99,15 @@ function isBaseSongModel(songModel: string) {
 }
 
 function normalizeLoraSweepQualityProfile(value: unknown): CustomFormValues["quality_profile"] {
-  const normalized = String(value || "chart_master").trim().toLowerCase().replace(/[-\s]+/g, "_");
-  if (["draft", "low", "laag", "fast", "preview", "preview_fast"].includes(normalized)) return "draft";
-  if (["standard", "medium", "middle", "middel", "balanced", "balanced_pro"].includes(normalized)) return "standard";
-  return "chart_master";
+  return aceStepRenderDefaults("acestep-v15-xl-sft", value).quality_profile;
 }
 
 function loraSweepMlxRenderDefaults(songModel: string, qualityProfile = "chart_master") {
-  const normalizedQuality = normalizeLoraSweepQualityProfile(qualityProfile);
-  const turbo = songModel.includes("turbo");
+  const defaults = aceStepRenderDefaults(songModel, qualityProfile);
   return {
     audio_backend: DEFAULT_AUDIO_BACKEND,
-    quality_profile: normalizedQuality,
-    inference_steps: turbo ? 8 : normalizedQuality === "chart_master" ? 64 : 50,
-    guidance_scale: turbo ? 7 : 8,
-    shift: 3,
-    audio_format: normalizedQuality === "draft" ? "wav" : "wav32",
-    infer_method: "ode" as const,
-    sampler_mode: "heun" as const,
-    use_adg: !turbo && normalizedQuality === "chart_master" && isBaseSongModel(songModel),
+    ...defaults,
+    use_adg: defaults.use_adg && isBaseSongModel(songModel),
   };
 }
 

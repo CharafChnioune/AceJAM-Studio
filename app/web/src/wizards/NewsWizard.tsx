@@ -39,6 +39,7 @@ import { collectPayloadBlockingIssues, collectValidationMessages } from "@/lib/f
 import { startSongBatchJob } from "@/lib/api";
 import { mergePayloadWithCompanion, stripPromptCompanion, summarizeQueueEntry } from "@/lib/musicQueue";
 import { formatDuration } from "@/lib/utils";
+import { aceStepRenderDefaults } from "@/lib/aceStepSettings";
 
 const MODE = "news" as const;
 
@@ -218,6 +219,7 @@ export function NewsWizard() {
 
   const buildPayload = () => {
     const v = form.getValues();
+    const renderDefaults = aceStepRenderDefaults(v.song_model, "chart_master");
     return {
       task_type: "text2music",
       title: v.title,
@@ -238,6 +240,14 @@ export function NewsWizard() {
       song_model: v.song_model,
       audio_backend: v.audio_backend,
       use_mlx_dit: useMlxDitForAudioBackend(v.audio_backend),
+      quality_profile: renderDefaults.quality_profile,
+      inference_steps: renderDefaults.inference_steps,
+      guidance_scale: renderDefaults.guidance_scale,
+      shift: renderDefaults.shift,
+      audio_format: renderDefaults.audio_format,
+      infer_method: renderDefaults.infer_method,
+      sampler_mode: renderDefaults.sampler_mode,
+      use_adg: renderDefaults.use_adg,
       batch_size: v.batch_size,
       variant_count: v.batch_size,
       payload_gate_status: v.payload_gate_status,

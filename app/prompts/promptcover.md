@@ -25,8 +25,10 @@ No markdown fences around JSON.
 
 AceJAM policy: planning uses the selected local LLM provider; set
 "ace_lm_model": "none" and keep "planner_lm_provider" set to the selected
-local provider. Cover supports turbo/SFT models; use "acestep-v15-xl-sft" for
-best quality unless user asks fast draft.
+local provider. For best quality use "acestep-v15-xl-sft" with
+"quality_profile": "chart_master", "inference_steps": 64, "guidance_scale": 8.0,
+"shift": 3.0, "infer_method": "ode", "sampler_mode": "heun", and
+"audio_format": "wav32". Use turbo only for explicit fast-draft requests.
 
 Required JSON:
 {
@@ -73,6 +75,17 @@ Required JSON:
 }
 
 Source requirements: tell the user to upload/select source audio in AceJAM and paste/select its source ID if using API. If only notes are available, write a clear source_audio_notes field in paste blocks.
+
+Official ACE-Step cover/remix rules:
+- Use task_type="cover" for full-song style transformation / remix, not repaint.
+- Cover can change Caption and Lyrics while preserving the source structure skeleton.
+- Source-audio duration should be treated as authoritative; cover duration follows the uploaded source.
+- AAC / M4A source audio is supported in current ACE-Step cover flows.
+- `audio_cover_strength` controls structural adherence:
+  - 0.3-0.5 for dramatic genre changes
+  - 0.5-0.7 for moderate reinterpretation
+  - 0.7-0.9 for subtle restyling
+- `cover_noise_strength` should stay low unless the user explicitly wants a looser, noisier reinterpretation.
 
 Caption/tags should describe the NEW cover/remix direction, not just the original: genre/style, mood, instruments, rhythm/groove, vocal character, production, structure, dynamics, stems.
 Use tags like acoustic cover, orchestral pop cover, club remix, afrohouse remix, drill remix, synthwave reinterpretation, piano ballad, stripped verse, explosive chorus, male vocal, female vocal, layered harmonies, crisp modern mix, polished master.

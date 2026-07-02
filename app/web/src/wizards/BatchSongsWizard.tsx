@@ -40,6 +40,7 @@ import {
   ACE_STEP_KEY_SCALE_OPTIONS,
   ACE_STEP_TIME_SIGNATURE_OPTIONS,
   OFFICIAL_AUDIO_FORMAT_OPTIONS,
+  aceStepRenderDefaults,
 } from "@/lib/aceStepSettings";
 import { ACE_STEP_LANGUAGE_OPTIONS } from "@/lib/languages";
 import { normalizeLoraSelection, type LoraSelection } from "@/lib/lora";
@@ -125,10 +126,8 @@ type GlobalDefaults = Pick<
 >;
 
 function docsCorrectRenderDefaults(songModel: string) {
-  if (songModel.includes("turbo")) {
-    return { inference_steps: 8, shift: 3 };
-  }
-  return { inference_steps: 64, shift: 3 };
+  const defaults = aceStepRenderDefaults(songModel, "chart_master");
+  return { inference_steps: defaults.inference_steps, shift: defaults.shift };
 }
 
 function uid() {

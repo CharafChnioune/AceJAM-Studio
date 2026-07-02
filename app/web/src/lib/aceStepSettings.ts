@@ -161,6 +161,8 @@ export type AceStepAdvancedValues = Partial<Record<AceStepAdvancedField, unknown
   seed?: number;
 };
 
+export type AceStepQualityProfile = "draft" | "standard" | "chart_master";
+
 export const ACE_STEP_ADVANCED_DEFAULTS: Partial<Record<AceStepAdvancedField, unknown>> = {
   infer_method: "ode",
   sampler_mode: "euler",
@@ -216,3 +218,39 @@ export const ACE_STEP_ADVANCED_DEFAULTS: Partial<Record<AceStepAdvancedField, un
   track_name: "",
   track_classes: [],
 };
+
+export function normalizeAceStepQualityProfile(value: unknown): AceStepQualityProfile {
+  const normalized = String(value || "chart_master").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (["draft", "low", "laag", "fast", "preview", "preview_fast"].includes(normalized)) return "draft";
+  if (["standard", "medium", "middle", "middel", "balanced", "balanced_pro"].includes(normalized)) return "standard";
+  return "chart_master";
+}
+
+export function aceStepRenderDefaults(
+  songModel: string,
+  qualityProfile: unknown = "chart_master",
+): {
+  quality_profile: AceStepQualityProfile;
+  inference_steps: number;
+  guidance_scale: number;
+  shift: number;
+  audio_format: "wav" | "wav32";
+  infer_method: "ode";
+  sampler_mode: "heun";
+  use_adg: boolean;
+} {
+  const profile = normalizeAceStepQualityProfile(qualityProfile);
+  const normalizedModel = String(songModel || "acestep-v15-xl-sft").toLowerCase();
+  const turbo = normalizedModel.includes("turbo");
+  const base = normalizedModel.endsWith("-base") || normalizedModel.includes("-xl-base");
+  return {
+    quality_profile: profile,
+    inference_steps: turbo ? 8 : profile === "chart_master" ? 64 : 50,
+    guidance_scale: turbo ? 7 : 8,
+    shift: 3,
+    audio_format: profile === "draft" ? "wav" : "wav32",
+    infer_method: "ode",
+    sampler_mode: "heun",
+    use_adg: !turbo && base && profile === "chart_master",
+  };
+}
