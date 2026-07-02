@@ -105,6 +105,17 @@ function migratePersistedAudioDefaults(state: unknown): unknown {
   return next;
 }
 
+function clearLegacyBrokenLoraSweepQueue(state: unknown): unknown {
+  if (!state || typeof state !== "object") return state;
+  const next = { ...(state as Record<string, unknown>) };
+  for (const key of ["queues", "payloads", "validations", "warnings", "pasteBlocks", "companions"]) {
+    const bucket = next[key];
+    if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) continue;
+    next[key] = { ...(bucket as Record<string, unknown>), lora_sweep: undefined };
+  }
+  return next;
+}
+
 export const useWizardStore = create<WizardSlice>()(
   persist(
     (set) => ({
@@ -171,8 +182,8 @@ export const useWizardStore = create<WizardSlice>()(
     }),
     {
       name: "acejam-wizard-state",
-      version: 5,
-      migrate: (state) => migratePersistedAudioDefaults(state) as WizardSlice,
+      version: 6,
+      migrate: (state) => clearLegacyBrokenLoraSweepQueue(migratePersistedAudioDefaults(state)) as WizardSlice,
       partialize: (state) => ({
         prompts: state.prompts,
         promptPresets: state.promptPresets,

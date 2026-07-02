@@ -193,6 +193,9 @@ class StudioCoreTest(unittest.TestCase):
         self.assertEqual(normalize_key_scale("Am"), "A minor")
         self.assertEqual(normalize_key_scale("C Major"), "C major")
         self.assertEqual(normalize_key_scale("F# Minor"), "F# minor")
+        self.assertEqual(normalize_key_scale("E Phrygian dominant"), "E minor")
+        self.assertEqual(normalize_key_scale("G Mixolydian"), "G major")
+        self.assertEqual(normalize_key_scale("D Dorian with dusty Rhodes voicings"), "D minor")
         self.assertEqual(normalize_key_scale("auto"), "")
         with self.assertRaises(ValueError):
             normalize_key_scale("H major")

@@ -2941,6 +2941,29 @@ def normalize_key_scale(value: Any, *, default: str | None = None) -> str:
     if not text or text.lower() in {"auto", "none", "n/a", "na"}:
         return default or ""
     text = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip() or text
+    modal_match = re.match(r"^([A-Ga-g])\s*([#b♯♭]?)\s+(.+)$", text)
+    if modal_match:
+        note = modal_match.group(1).upper()
+        accidental = modal_match.group(2) or ""
+        descriptor = re.sub(r"[\s,/_-]+", " ", modal_match.group(3).strip().lower())
+        modal_aliases = (
+            ("phrygian dominant", "minor"),
+            ("harmonic minor", "minor"),
+            ("melodic minor", "minor"),
+            ("natural minor", "minor"),
+            ("aeolian", "minor"),
+            ("dorian", "minor"),
+            ("phrygian", "minor"),
+            ("locrian", "minor"),
+            ("ionian", "major"),
+            ("lydian", "major"),
+            ("mixolydian", "major"),
+        )
+        for alias, mode in modal_aliases:
+            if descriptor.startswith(alias) or f" {alias} " in f" {descriptor} ":
+                candidate = f"{note}{accidental} {mode}"
+                if candidate in VALID_KEY_SCALE_SET:
+                    return candidate
     match = re.fullmatch(r"([A-Ga-g])\s*([#b♯♭]?)\s*(major|minor|maj|min|m)?", text)
     if match:
         note = match.group(1).upper()

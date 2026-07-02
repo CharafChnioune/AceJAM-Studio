@@ -1962,6 +1962,10 @@ class AppParityTest(unittest.TestCase):
             acejam_app.normalize_key_scale("F# minor with a halftime bridge"),
             "F# minor",
         )
+        self.assertEqual(
+            acejam_app.normalize_key_scale("E Phrygian dominant"),
+            "E minor",
+        )
 
     def test_generation_metadata_audit_flags_missing_legacy_request_metadata(self):
         params = {

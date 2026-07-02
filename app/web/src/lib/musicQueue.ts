@@ -90,6 +90,12 @@ export function summarizeQueueEntry(
   payload: Record<string, unknown>,
   fallbackLabel: string,
 ): QueueSummaryItem {
+  const selectedAdapters = Array.isArray(payload.selected_adapters)
+    ? payload.selected_adapters
+        .map((item) => (isRecord(item) ? textOrEmpty(item.name ?? item.path) : textOrEmpty(item)))
+        .filter(Boolean)
+    : [];
+  const adapterCount = selectedAdapters.length || (Array.isArray(payload.adapter_paths) ? payload.adapter_paths.length : 0);
   const title =
     textOrEmpty(payload.title) ||
     textOrEmpty(payload.album_title) ||
@@ -101,6 +107,9 @@ export function summarizeQueueEntry(
     textOrEmpty(payload.concept) ||
     undefined;
   const detail =
+    (selectedAdapters.length > 0
+      ? `${adapterCount} LoRA${adapterCount === 1 ? "" : "s"}: ${selectedAdapters.slice(0, 2).join(", ")}${selectedAdapters.length > 2 ? "..." : ""}`
+      : "") ||
     textOrEmpty(payload.lora_adapter_name) ||
     textOrEmpty(payload.lora_trigger_tag) ||
     textOrEmpty(payload.vocal_language) ||

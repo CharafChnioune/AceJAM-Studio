@@ -421,7 +421,6 @@ export function LoraSweepWizard() {
   const [includeBaseline, setIncludeBaseline] = React.useState(false);
   const [loraScale, setLoraScale] = React.useState(1);
   const [selectedAdapterPaths, setSelectedAdapterPaths] = React.useState<string[]>([]);
-  const [adapterSelectionTouched, setAdapterSelectionTouched] = React.useState(false);
   const [activeJob, setActiveJob] = React.useState<LoraSweepJob | null>(null);
   const values = form.watch();
   const draftState = useWizardDraft(MODE, form);
@@ -460,15 +459,11 @@ export function LoraSweepWizard() {
   React.useEffect(() => {
     setSelectedAdapterPaths((current) => {
       const available = new Set(adapters.map((adapter) => adapter.path));
-      const kept = current.filter((path) => available.has(path));
-      if (kept.length || adapterSelectionTouched || !adapters.length) return kept;
-      const latest = latestAdapterPath(adapters);
-      return latest ? [latest] : [];
+      return current.filter((path) => available.has(path));
     });
-  }, [adapters, adapterSelectionTouched]);
+  }, [adapters]);
 
   const toggleAdapterPath = React.useCallback((path: string, checked: boolean) => {
-    setAdapterSelectionTouched(true);
     setSelectedAdapterPaths((current) => {
       if (checked) return Array.from(new Set([...current, path]));
       return current.filter((item) => item !== path);
@@ -476,18 +471,15 @@ export function LoraSweepWizard() {
   }, []);
 
   const selectAllAdapters = React.useCallback(() => {
-    setAdapterSelectionTouched(true);
     setSelectedAdapterPaths(adapters.map((adapter) => adapter.path));
   }, [adapters]);
 
   const selectLatestAdapter = React.useCallback(() => {
-    setAdapterSelectionTouched(true);
     const latest = latestAdapterPath(adapters);
     setSelectedAdapterPaths(latest ? [latest] : []);
   }, [adapters]);
 
   const clearSelectedAdapters = React.useCallback(() => {
-    setAdapterSelectionTouched(true);
     setSelectedAdapterPaths([]);
   }, []);
 
